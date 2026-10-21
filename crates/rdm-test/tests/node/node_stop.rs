@@ -188,6 +188,17 @@ async fn stop_then_start(test: &str, node: &str) {
         assert!(dialled, "the start rode a connection between {caller} and {node}'s birth dialled after the stop's transport cut: {call}");
     }
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a parked node is not drift");
+    // node-mesh-join.md steps 5 and 7 (Q87): every join is issued a fresh member cert and the node
+    // installs the one its join answered, the start's join after a stop as much as its first.
+    let issued: Vec<&Value> = named(&spans, "rdm.node_admin.cert.create.via-join").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "outcome") == "issued").collect();
+    let installed = of_node("rdm.node.cert.update.via-join");
+    let last = issued.iter().max_by_key(|sp| start_ns(sp)).unwrap_or_else(|| panic!("{node}'s joins were issued member certs: {issued:#?}"));
+    assert!(issued.len() >= 2, "{node}'s first start and its start after the stop were each issued a cert: {issued:#?}");
+    assert!(
+        installed.iter().any(|sp| attr(sp, "expires_at") == attr(last, "expires_at_rafka_ms") && start_ns(sp) > start_ns(last)),
+        "{node} installs the cert its start's join was issued, expiring {}: installed {installed:#?}",
+        attr(last, "expires_at_rafka_ms")
+    );
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 

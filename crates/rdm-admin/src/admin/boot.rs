@@ -731,7 +731,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
                 let member_cert: Option<Vec<u8>> = joined.as_ref().map(|a| a.control.member_cert.clone());
                 if let Some(cert) = &member_cert {
-                    data_connections.set_member_cert(cert.clone());
+                    rdm_node::node::install_join_cert(&data_connections, cert, &name.to_string(), &node_id, &incarnation);
                 }
                 // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
                 // once, here. A recovery start (a flag or an inherited root) takes it from the nodes it reaches below.
@@ -1965,6 +1965,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // is installed on, and what node.connections.delete closes, as on every node.
                                         own.set_data_connections(data_connections.clone());
                                         own.set_session(Arc::new(AdminSession {
+                                            data_connections: data_connections.clone(),
                                             gate: park_gate.clone(),
                                             node_id: node_id.clone(),
                                             incarnation: incarnation.clone(),

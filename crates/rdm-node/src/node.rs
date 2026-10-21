@@ -184,6 +184,16 @@ impl RunningNode {
     }
 }
 
+/// Install the member cert a join answered (node-mesh-join.md steps 5 and 7, Q87): every join is issued a
+/// fresh one, a start after a stop and a commanded join as much as a first start, and every connection
+/// this birth opens from now presents it.
+pub fn install_join_cert(registry: &rdm_transport::connections::ConnectionsRegistry, cert: &[u8], node: &str, node_id: &NodeId, incarnation: &IncarnationId) {
+    registry.set_member_cert(cert.to_vec());
+    let expires_at = rdm_core::certs::cert_from_bytes(cert).map(|s| s.cert.expiry_ms).unwrap_or(0);
+    tracing::info_span!("rdm.node.cert.update.via-join", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), expires_at, cert_len = cert.len() as u64)
+        .in_scope(|| tracing::info!("the member cert the join answered is installed: every connection opened from now presents it"));
+}
+
 /// Hold the row's name and config a join answer handed (R-JN1, node-start.md step 2): every digest
 /// `membership` publishes from now on carries them.
 fn install_handed(membership: &Membership, control: &crate::wire::JoinControl) {
@@ -579,7 +589,7 @@ async fn start_booted(
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
                 let member_cert = joined.control.member_cert.clone();
-                data_connections.set_member_cert(member_cert.clone());
+                install_join_cert(&data_connections, &member_cert, &launch.name.to_string(), &launch.node_id, &launch.incarnation);
                 // The mesh's id names its channel; the launching admin writes it.
                 let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
                 step.record("mesh_id", tracing::field::display(&mesh_id));
@@ -685,6 +695,7 @@ async fn start_booted(
                                 status: status.clone(),
                                 owed: owed_state.clone(),
                                 held: connections.held(),
+                                data_connections: data_connections.clone(),
                                 rafka_time: rafka_time.clone(),
                                 before_ready: before_ready.clone(),
                                 addressed: addressed.clone(),
@@ -828,6 +839,9 @@ struct NodeSession {
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     owed: Arc<Mutex<OwedDeclaration>>,
+    /// The app protocols this birth opens connections on: what the member cert each join answers is
+    /// installed on.
+    data_connections: rdm_transport::connections::ConnectionsRegistry,
     rafka_time: rdm_transport::clock::RafkaTime,
     before_ready: crate::before_ready::BeforeReadyHook,
     addressed: Arc<crate::before_ready::Addressed>,
@@ -882,6 +896,7 @@ impl NodeSession {
         step.record("mesh_id", tracing::field::display(&self.mesh_id));
         if let Some(joined) = joined {
             install_handed(&self.membership, &joined.control);
+            install_join_cert(&self.data_connections, &joined.control.member_cert, &self.membership.node_name().to_string(), &self.node_id, &self.incarnation);
         }
         drop(rows);
         self.membership.unpark().await;

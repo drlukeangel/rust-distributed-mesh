@@ -298,6 +298,9 @@ pub(crate) struct AdminSession {
     pub(crate) responders: crate::fetch_build::Responders,
     /// What this admin owes its authorities: a start begins its next own-state cycle there.
     pub(crate) declarer: Arc<crate::status_declare::Declarer>,
+    /// The app protocols this admin opens connections on: what the member cert each join answers is
+    /// installed on.
+    pub(crate) data_connections: rdm_transport::connections::ConnectionsRegistry,
 }
 
 #[async_trait::async_trait]
@@ -359,6 +362,8 @@ impl AdminSession {
                     d.config = c.clone();
                 }
             }
+            // The member cert this join was issued, as at every join (Q87).
+            rdm_node::node::install_join_cert(&s.data_connections, &joined.control.member_cert, &s.membership.node_name().to_string(), &s.node_id, &s.incarnation);
             // Only now are its connections recorded: the join's names the handed name.
             drop(rows.take());
         }
@@ -459,13 +464,13 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &authority);
             }
         }
+        // Back on the topic means a neighbour: only then does this admin report NodeJoined and is it
+        // held again, as an rpc node is. It publishes no Pending of its own: its Digest heartbeat
+        // follows (node-mesh-join.md step 9), and its mesh-primary publishes it once as Pending (step 10).
+        membership.wait_for_neighbour().await;
         if let Some(progress) = &self.progress {
             let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
         }
-        // Back on the topic means a neighbour: only then is the admin held again. It publishes no
-        // Pending of its own: its Digest heartbeat follows (node-mesh-join.md step 9), and the
-        // mesh-primary, hearing it as a neighbour, publishes it once as Pending (step 10).
-        membership.wait_for_neighbour().await;
         let presented = s.digest.lock().unwrap().clone();
         if let Some(held) = self.held_again.take() {
             let _ = held.send(());
