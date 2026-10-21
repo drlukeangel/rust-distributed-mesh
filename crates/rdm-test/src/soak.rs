@@ -874,6 +874,49 @@ impl SpanTail {
     }
 }
 
+/// The peer mesh the fabric-primary `fp_name` (of `fp_mesh`) holds unheard at `now` (ns), if any,
+/// with why, read from the node-admins' `spans` in start order: the mesh its investigation ladder
+/// tracks, marked silent, or decided, until its `heard-again` verdict (mesh-investigation.md; the
+/// Build door refuses every action on a node of such a mesh, `unheard-mesh`, control_plane.rs). A
+/// tracked mesh with no later row past the mark rung was heard again before its first probe: the
+/// ladder says nothing of that, so the wait is the floor.
+/// The driver acts on a peer mesh only when this is `None`: at `4aa58cf0` the authority soak
+/// restarted `mesh2.admin.2` 6 s after its mesh-primary was released from a hold, 2.6 s into the
+/// fabric-primary's silence of mesh2 (its frames resumed 3.3 s after the release), and the
+/// restart was refused `unheard-mesh` although every view had converged.
+fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, spans: &[Value]) -> Option<String> {
+    let mut last: BTreeMap<String, &Value> = BTreeMap::new();
+    for sp in spans.iter().filter(|sp| sp["attributes"]["node"] == fp_name) {
+        last.insert(s(&sp["attributes"]["mesh"]), sp);
+    }
+    for (mesh, sp) in last {
+        if mesh == fp_mesh {
+            continue;
+        }
+        let a = &sp["attributes"];
+        let age = Duration::from_nanos(now.saturating_sub(sp["start_unix_nano"].as_u64().unwrap_or(0)));
+        let unheard_ms = a["unheard_ms"].as_str().map(str::to_string).unwrap_or_else(|| a["unheard_ms"].to_string());
+        match sp["name"].as_str() {
+            Some("rdm.node_admin.mesh.update.via-unheard") => {
+                let marked = a["mark"] == true || a["mark"] == "true";
+                if marked {
+                    return Some(format!("{fp_name} holds {mesh} unheard: marked silent at {unheard_ms} ms, no heard-again verdict yet"));
+                }
+                if age < floor + Duration::from_secs(2) {
+                    return Some(format!("{fp_name} holds {mesh} unheard: tracked at {unheard_ms} ms {} ms ago, the mark rung not yet passed", age.as_millis()));
+                }
+            }
+            Some("rdm.node_admin.mesh.update.via-probe-verdict") => {
+                if a["outcome"] != "heard-again" {
+                    return Some(format!("{fp_name} holds {mesh} unheard: the investigation's verdict is {} at {unheard_ms} ms, no heard-again verdict yet", a["outcome"]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// A fault or an execution step that broke a rule.
 struct Broken {
     rule: &'static str,
@@ -953,50 +996,12 @@ impl Driver {
         }
     }
 
-    /// The peer mesh the fabric-primary holds unheard now, if any, with why: the mesh its
-    /// investigation ladder tracks, marked silent, or decided, until its `heard-again` verdict
-    /// (mesh-investigation.md; the Build door refuses every action on a node of such a mesh,
-    /// `unheard-mesh`, control_plane.rs). A tracked mesh with no later row past the mark rung was
-    /// heard again before its first probe: the ladder says nothing of that, so the wait is the floor.
-    /// The driver acts on a peer mesh only when this is `None`: at `4aa58cf0` the authority soak
-    /// restarted `mesh2.admin.2` 6 s after its mesh-primary was released from a hold, 2.6 s into the
-    /// fabric-primary's silence of mesh2 (its frames resumed 3.3 s after the release), and the
-    /// restart was refused `unheard-mesh` although every view had converged.
+    /// The peer mesh the fabric-primary of `nodes` holds unheard now, if any, with why: what
+    /// [`held_unheard_by`] reads of its investigation rows. The driver acts on a peer mesh only when
+    /// this is `None`.
     fn held_unheard(&mut self, nodes: &[Value]) -> Option<String> {
         let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic")?;
-        let (fp_name, fp_mesh) = (s(&fp["name"]), s(&fp["mesh"]));
-        let floor = self.cfg.floor;
-        let now = now_ns();
-        let mut last: BTreeMap<String, &Value> = BTreeMap::new();
-        for sp in self.ladder.poll().iter().filter(|sp| sp["attributes"]["node"] == fp_name.as_str()) {
-            last.insert(s(&sp["attributes"]["mesh"]), sp);
-        }
-        for (mesh, sp) in last {
-            if mesh == fp_mesh {
-                continue;
-            }
-            let a = &sp["attributes"];
-            let age = Duration::from_nanos(now.saturating_sub(sp["start_unix_nano"].as_u64().unwrap_or(0)));
-            let unheard_ms = a["unheard_ms"].as_str().map(str::to_string).unwrap_or_else(|| a["unheard_ms"].to_string());
-            match sp["name"].as_str() {
-                Some("rdm.node_admin.mesh.update.via-unheard") => {
-                    let marked = a["mark"] == true || a["mark"] == "true";
-                    if marked {
-                        return Some(format!("{fp_name} holds {mesh} unheard: marked silent at {unheard_ms} ms, no heard-again verdict yet"));
-                    }
-                    if age < floor + Duration::from_secs(2) {
-                        return Some(format!("{fp_name} holds {mesh} unheard: tracked at {unheard_ms} ms {} ms ago, the mark rung not yet passed", age.as_millis()));
-                    }
-                }
-                Some("rdm.node_admin.mesh.update.via-probe-verdict") => {
-                    if a["outcome"] != "heard-again" {
-                        return Some(format!("{fp_name} holds {mesh} unheard: the investigation's verdict is {} at {unheard_ms} ms, no heard-again verdict yet", a["outcome"]));
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        held_unheard_by(&s(&fp["name"]), &s(&fp["mesh"]), self.cfg.floor, now_ns(), self.ladder.poll())
     }
 
     /// What a panicking run has done so far; read it after a join error.
