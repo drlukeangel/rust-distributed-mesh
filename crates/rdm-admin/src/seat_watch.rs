@@ -189,35 +189,9 @@ impl Looker {
     }
 }
 
-/// The provider's inspection of the exact runtime of `n`'s birth (node-recovery.md step 3: "the
-/// exact runtime recorded at launch"): the runtime fact its digest carries in `book`, or else the
-/// runtime row `nodes` holds for the exact birth (recorded at its launch, or handed into this
-/// admin's nodes.storage at its own create). A birth lost before this admin heard it has no digest
-/// here; its row is still the runtime recorded at launch. Neither held: unproven, naming both.
-pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rdm_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
-    let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
-    let held = book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
-    let (fact, data_dir) = match held {
-        Some((digest, _)) => match digest.node.runtime.clone() {
-            Some(fact) => (fact, digest.data_dir.clone()),
-            None => return Finding::Unproven { reason: "its digest carries no runtime fact".into() },
-        },
-        None => {
-            let row = match nodes {
-                Some(nodes) => match nodes.runtime(&n.node_id, &inc).await {
-                    Ok(row) => row,
-                    Err(e) => return Finding::Unproven { reason: format!("this admin holds no digest of this exact birth, and its nodes.storage runtime row could not be read: {e}") },
-                },
-                None => None,
-            };
-            match row {
-                Some(r) => (r.runtime, r.data_dir),
-                None => return Finding::Unproven { reason: "this admin holds no digest of this exact birth and no runtime row of it, so no runtime fact".into() },
-            }
-        }
-    };
-    crate::deployment::provider::inspect_runtime(provider, &fact, data_dir.as_deref(), &inc.as_str()).await.into()
-}
+/// The provider's inspection of the exact runtime of `n`'s birth: node.runtime.inspect over the one
+/// runtime resolution (node_investigation.rs).
+pub use crate::node_investigation::inspect_birth;
 
 pub use crate::offline::birth_answered;
 

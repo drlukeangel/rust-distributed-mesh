@@ -110,6 +110,75 @@ where
     }
 }
 
+/// The runtime recorded at launch of one exact birth, as node.runtime.inspect asks about it
+/// (node-runtime-inspect.md step 1: "the birth's launch record").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BirthRuntime {
+    /// The exact runtime: provider, control domain and locator.
+    pub fact: rdm_core::RuntimeFact,
+    /// The data dir the birth reported, where a process runtime records its exit code.
+    pub data_dir: Option<String>,
+    /// The birth the runtime is of.
+    pub incarnation: crate::model::IncarnationId,
+}
+
+/// The runtime fact of a birth, one way for every inspect: the one a digest of it carries, else the
+/// one its durable runtime row records (written at its admission, or handed into this admin's
+/// nodes.storage at its own create). `None` when neither holds one.
+pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&crate::storage::RuntimeRow>) -> Option<BirthRuntime> {
+    match (digest, row) {
+        (Some(d), _) if d.node.runtime.is_some() => Some(BirthRuntime { fact: d.node.runtime.clone().expect("checked"), data_dir: d.data_dir.clone(), incarnation: d.node.incarnation.clone() }),
+        (_, Some(r)) => Some(BirthRuntime { fact: r.runtime.clone(), data_dir: r.data_dir.clone(), incarnation: r.incarnation_id.clone() }),
+        _ => None,
+    }
+}
+
+/// The runtime recorded at launch of `n`'s exact birth (node-recovery.md step 3: "the exact runtime
+/// recorded at launch"), the one resolution every inspect copy makes: a digest `book` holds of that
+/// exact birth (heard, else carried by its mesh-primary's projection, else the last one of a stopped
+/// birth) when it carries a runtime fact, else the birth's own durable runtime row in `nodes`, a point
+/// read by its key ([`runtime_of`]). A birth lost before this admin heard it has no digest here; its
+/// row is still the runtime recorded at launch. `Err` names what was missing.
+pub async fn birth_runtime(book: &rdm_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Result<BirthRuntime, String> {
+    let Some(incarnation) = n.incarnation_id.clone() else { return Err(format!("{} ({}) holds no recorded birth: there is no exact runtime to inspect", n.name, n.node_id)) };
+    let id = n.node_id.as_str();
+    let exact = |d: &rdm_core::digest::MeshDigest| d.node.incarnation == incarnation;
+    let digest = book
+        .get(id)
+        .map(|(d, _)| d)
+        .filter(exact)
+        .or_else(|| book.projected_at(id, std::time::Instant::now()).map(|(d, _)| d).filter(exact))
+        .or_else(|| book.parked().into_iter().find(|d| d.node.node_id == n.node_id && exact(d)));
+    let row = match (digest.as_ref().is_some_and(|d| d.node.runtime.is_some()), nodes) {
+        (false, Some(nodes)) => nodes.runtime(&n.node_id, &incarnation).await.map_err(|e| format!("the durable runtime row of {} at {} could not be read: {e}", n.node_id, incarnation.as_str()))?,
+        _ => None,
+    };
+    runtime_of(digest.as_ref(), row.as_ref()).ok_or_else(|| {
+        let held = if digest.is_some() { "a digest of this exact birth that carries no runtime fact" } else { "no digest of this exact birth" };
+        format!("this admin holds {held} and no runtime row of it, so no runtime fact")
+    })
+}
+
+/// node.runtime.inspect of `n`'s exact birth: [`birth_runtime`], then the one inspect
+/// ([`crate::deployment::provider::inspect_runtime`]); beside its answer, the exact runtime handle
+/// the provider was asked about (node-runtime-inspect.md "Target"; the inspect span's `handle`),
+/// `None` when no fact was held or the provider refused to adopt it, so nothing was asked.
+pub async fn inspect_birth_with_handle(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rdm_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> (crate::deployment::provider::Inspected, Option<crate::deployment::provider::DeploymentHandle>) {
+    match birth_runtime(book, nodes, n).await {
+        Err(why) => (crate::deployment::provider::Inspected::Unavailable(why), None),
+        Ok(b) => {
+            let handle = crate::deployment::provider::adopt(provider, &b.fact).ok();
+            (crate::deployment::provider::inspect_runtime(provider, &b.fact, b.data_dir.as_deref(), b.incarnation.as_str()).await, handle)
+        }
+    }
+}
+
+/// [`inspect_birth_with_handle`]'s answer as the investigation's verdict: the provider's inspection of
+/// the exact runtime of `n`'s birth, unproven by name when no runtime fact is held.
+pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rdm_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
+    inspect_birth_with_handle(provider, book, nodes, n).await.0.into()
+}
+
 /// Step a's leads of `node`'s exact birth, from `rows`, the store's by-destination index read for its
 /// node id (connections.md §3.1): the sources of the rows that hold a connection to that birth, each
 /// resolved to a member of `view` in any mesh that is ready for traffic, never `me` (the caller is
@@ -218,6 +287,57 @@ mod tests {
         view.nodes.iter_mut().find(|n| n.node_id == m1.node_id).unwrap().status = NodeStatus::PendingReconnect;
         assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), ["mesh1.rpc.2"], "a source the view holds off ready-for-traffic carries nothing");
         assert!(leads_of(&rows, &view, &Node { incarnation_id: None, ..node.clone() }, None).is_empty(), "no birth, no leads");
+    }
+
+    fn fact(pid: u32) -> rdm_core::RuntimeFact {
+        rdm_core::RuntimeFact { deployment_id: rdm_core::fixture_crockford60(&format!("dep-{pid}")), provider: rdm_core::RuntimeProvider::Process, control_domain: "host-7".into(), locator: rdm_core::RuntimeLocator::Process { pid, start: 1 } }
+    }
+
+    fn digest(n: &Node, incarnation: IncarnationId, runtime: Option<rdm_core::RuntimeFact>) -> rdm_core::MeshDigest {
+        rdm_core::MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: FabricId::mint(),
+            node: rdm_core::MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
+            status: rdm_core::MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 0,
+            data_dir: Some("/data/from-the-digest".into()),
+            mesh_id: None,
+            in_flight: None,
+            config: Default::default(),
+            load: None,
+            gossip: None,
+        }
+    }
+
+    /// CONTRACT (node-runtime-inspect.md step 1: "The caller holds the birth's launch record: the
+    /// handle the provider returned when it launched this exact incarnation"; node-recovery.md step 3:
+    /// "the exact runtime recorded at launch"): every inspect resolves a birth's runtime one way, a
+    /// digest of that exact birth that carries a runtime fact, else the birth's own durable runtime
+    /// row; a digest of another birth of the node, or one with no fact, falls to the row; with neither,
+    /// nothing is resolved and the reason names both.
+    #[tokio::test]
+    async fn a_births_runtime_is_its_digests_else_its_durable_row_one_way_for_every_inspect() {
+        use crate::storage::NodesStorage as _;
+        let (node, _) = world();
+        let inc = node.incarnation_id.clone().unwrap();
+        let nodes = crate::storage::MemoryNodesStorage::default();
+        let empty = rdm_transport::membership::DigestBook::default();
+        let none = birth_runtime(&empty, Some(&nodes), &node).await.unwrap_err();
+        assert!(none.contains("no digest of this exact birth") && none.contains("no runtime row"), "{none}");
+        nodes.put_runtime(&crate::storage::RuntimeRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
+        let from_row = BirthRuntime { fact: fact(2), data_dir: Some("/data/from-the-row".into()), incarnation: inc.clone() };
+        assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the durable row");
+        for (book_holds, why) in [(digest(&node, IncarnationId::mint(), Some(fact(3))), "a digest of another birth"), (digest(&node, inc.clone(), None), "a digest with no runtime fact")] {
+            let book = rdm_transport::membership::DigestBook::default();
+            assert!(book.record(book_holds));
+            assert_eq!(birth_runtime(&book, Some(&nodes), &node).await, Ok(from_row.clone()), "{why}: the durable row");
+        }
+        let book = rdm_transport::membership::DigestBook::default();
+        assert!(book.record(digest(&node, inc.clone(), Some(fact(1)))));
+        assert_eq!(birth_runtime(&book, Some(&nodes), &node).await, Ok(BirthRuntime { fact: fact(1), data_dir: Some("/data/from-the-digest".into()), incarnation: inc }), "the exact birth's digest carries the runtime recorded at launch");
     }
 
     /// A caller whose direct probe and carried probes answer as the cell says.

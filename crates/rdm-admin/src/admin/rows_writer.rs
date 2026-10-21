@@ -424,10 +424,9 @@ pub async fn inspection_with_handle(
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
 ) -> (Result<(Option<i32>, &'static str), NotProven>, Option<DeploymentHandle>) {
-    let (fact, data_dir, birth) = match (held_row, row) {
-        (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
-        (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
-        _ => return (Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))), None),
+    // The runtime fact one way for every inspect (`node_investigation::runtime_of`).
+    let Some(crate::node_investigation::BirthRuntime { fact, data_dir, incarnation: birth }) = crate::node_investigation::runtime_of(held_row.as_ref().map(|(dg, _)| dg), row) else {
+        return (Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))), None);
     };
     // The exact runtime handle the inspect asks about: none when the provider refuses to adopt the
     // fact, which the inspect names as its `unavailable`.
