@@ -293,6 +293,64 @@ pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: 
     }
 }
 
+/// What node.runtime.inspect found of the exact runtime (node-runtime-inspect.md "Result"): its
+/// three answers and `unavailable { reason }`, which is neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inspected {
+    /// `exit-proven { code }`: the exit code, when one is provable, and where the proof came from,
+    /// the `proof` of the exit-proof row the caller writes (node-runtime-inspect.md step 5):
+    /// `provider` (the provider's own terminal status), `exit-record` (the runtime's exit record in
+    /// its data dir) or `none` (exited with no code).
+    Exited(Option<i32>, &'static str),
+    /// The exact runtime runs, however silent (`R-FM1`'s hold).
+    Running,
+    /// The operating system holds the exact runtime suspended (R-PV1): an observation, never a hold.
+    OsStopped,
+    /// Nothing proven (no runtime fact, an adoption the provider refused, an unreadable row or exit
+    /// record, the provider's `Unknown`): why.
+    Unavailable(String),
+}
+
+impl Inspected {
+    /// True when the provider inspection explicitly reported the runtime `Running` (`R-FM1`).
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
+}
+
+/// node.runtime.inspect of the exact runtime `fact` names, the birth `incarnation`'s, by `provider`
+/// (node-runtime-inspect.md steps 2 and 5): the fact adopted in this provider's control domain
+/// ([`adopt`]) and inspected, the code the runtime's own exit record proves read from `data_dir`
+/// ([`exit_proof`]), and only the runtime's own terminal status an exit. The one inspect every
+/// caller runs: the seat watch's ladder, the mesh primary's recovery tick, the fabric authority's
+/// drift pass, the create's read of the path's previous birth, a mesh delete's proof of a lost
+/// member. A fact the provider refuses to adopt, an unreadable exit record and the provider's
+/// `Unknown` are each `Unavailable`, named why. The proof of an exit names where its code came
+/// from: `provider` when the provider's own inspection carried it, `exit-record` when only the
+/// runtime's record did, `none` when neither proves a code.
+pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
+    use DeploymentStatus as S;
+    let handle = match adopt(provider, fact) {
+        Ok(handle) => handle,
+        Err(e) => return Inspected::Unavailable(format!("the provider refused to adopt its runtime: {e}")),
+    };
+    let inspected = provider.inspect(&handle).await;
+    match exit_proof(inspected.clone(), fact, data_dir.map(std::path::Path::new), incarnation).await {
+        Ok(S::Exited { code }) => {
+            let proof = match (&inspected, code) {
+                (_, None) => "none",
+                (S::Exited { code: Some(_) }, Some(_)) => "provider",
+                (S::Exited { code: None } | S::Running | S::OsStopped | S::Unknown, Some(_)) => "exit-record",
+            };
+            Inspected::Exited(code, proof)
+        }
+        Ok(S::Running) => Inspected::Running,
+        Ok(S::OsStopped) => Inspected::OsStopped,
+        Ok(S::Unknown) => Inspected::Unavailable("its runtime is not proven exited: Unknown".into()),
+        Err(e) => Inspected::Unavailable(format!("its exit record cannot be read: {e}")),
+    }
+}
+
 /// What a provider knows of the exact runtime (deployment-provider.md §2.5): one meaning per state
 /// for a process and a container alike; a caller reads this, never `/proc` or Docker.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,7 +4,7 @@
 //! rafka-time, `node.connections.delete`, the transport cut, the exit proof, row claim/put/tombstone,
 //! topology reads, and status reports/applies.
 
-pub use crate::admin::{exit_proof_of, nodes_exit_proof};
+pub use crate::deployment::provider::{inspect_runtime, Inspected};
 pub use crate::before_ready;
 pub use crate::connections_writer;
 pub use crate::fetch_build;

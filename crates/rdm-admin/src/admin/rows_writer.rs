@@ -429,21 +429,18 @@ pub async fn inspection_with_handle(
         (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
         _ => return (Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))), None),
     };
-    let handle = match crate::deployment::provider::adopt(provider, &fact) {
-        Ok(h) => h,
-        Err(e) => return (Err(NotProven::Unavailable(format!("the provider refused to adopt its runtime: {e}"))), None),
+    // The exact runtime handle the inspect asks about: none when the provider refuses to adopt the
+    // fact, which the inspect names as its `unavailable`.
+    let handle = crate::deployment::provider::adopt(provider, &fact).ok();
+    // The one inspect (node-runtime-inspect.md; `deployment::provider::inspect_runtime`): its
+    // `Exited` carries the code and where the proof came from, the row's `proof`.
+    let answer = match crate::deployment::provider::inspect_runtime(provider, &fact, data_dir.as_deref(), &birth.as_str()).await {
+        Inspected::Exited(code, proof) => Ok((code, proof)),
+        Inspected::Running => Err(NotProven::Running),
+        Inspected::OsStopped => Err(NotProven::OsStopped),
+        Inspected::Unavailable(reason) => Err(NotProven::Unavailable(reason)),
     };
-    // The one inspect (node-runtime-inspect.md; `seat_watch::inspect_handle`): its `Exited` carries
-    // the code and where the proof came from, the row's `proof`.
-    let answer = match crate::seat_watch::inspect_handle(provider, &handle, &fact, data_dir.as_deref(), &birth.as_str()).await {
-        crate::seat_watch::Finding::Exited { code, proof } => Ok((code, proof)),
-        crate::seat_watch::Finding::Running => Err(NotProven::Running),
-        crate::seat_watch::Finding::OsStopped => Err(NotProven::OsStopped),
-        crate::seat_watch::Finding::Unproven { reason } => Err(NotProven::Unavailable(reason)),
-        // The inspect asks the birth nothing: no probe answers here.
-        crate::seat_watch::Finding::Answered | crate::seat_watch::Finding::AnsweredViaPeer { .. } => unreachable!("the provider's inspection is no probe"),
-    };
-    (answer, Some(handle))
+    (answer, handle)
 }
 
 /// The provider's proof that the exact birth a digest or a durable row names exited

@@ -488,7 +488,7 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 /// member of an unanswered mesh during fabric.delete), whose runtime was admitted as `runtime`, proven
 /// from the durable runtime row this admin stored for that birth (`row`, the point read of the blind
 /// put every admin makes the moment it first holds a birth): the same runtime by fingerprint, then the
-/// one inspect ([`crate::seat_watch::inspect_runtime`]), and on its `exit-proven` the birth's exit-proof
+/// one inspect ([`crate::deployment::provider::inspect_runtime`]), and on its `exit-proven` the birth's exit-proof
 /// row through [`crate::admin::Records::put_exit`], its proof the inspect's (node-runtime-inspect.md
 /// step 5). A birth with no row, another runtime, or a runtime not proven exited proves nothing and
 /// writes nothing.
@@ -498,13 +498,15 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
     if &RuntimeProof::of(&row.runtime) != runtime {
         return Err(format!("the durable runtime row of {named} names the runtime {:?}, not the one admitted for it {runtime:?}", RuntimeProof::of(&row.runtime)));
     }
-    match crate::seat_watch::inspect_runtime(provider, &row.runtime, row.data_dir.as_deref(), &lost.incarnation_id).await {
-        crate::seat_watch::Finding::Exited { code, proof } => {
+    use crate::deployment::provider::Inspected;
+    match crate::deployment::provider::inspect_runtime(provider, &row.runtime, row.data_dir.as_deref(), &lost.incarnation_id).await {
+        Inspected::Exited(code, proof) => {
             let node = lost.record().map_err(|e| format!("the exit of {named} is proven and its row is not written: {e}"))?;
             records.put_exit(&node, code, proof).await.map_err(|e| format!("the exit of {named} is proven and its exit-proof row is not written: {e}"))
         }
-        found @ (crate::seat_watch::Finding::Running | crate::seat_watch::Finding::OsStopped) => Err(format!("the runtime of {named} is not proven exited: {}", found.name())),
-        found => Err(format!("the runtime of {named} is not proven exited: {}", found.detail())),
+        Inspected::Running => Err(format!("the runtime of {named} is not proven exited: running")),
+        Inspected::OsStopped => Err(format!("the runtime of {named} is not proven exited: os-stopped")),
+        Inspected::Unavailable(why) => Err(format!("the runtime of {named} is not proven exited: {why}")),
     }
 }
 

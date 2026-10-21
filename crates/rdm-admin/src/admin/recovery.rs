@@ -113,25 +113,9 @@ where
     Ok("put")
 }
 
-/// What the provider's inspection of a TRUE OFFLINE member found (node-runtime-inspect.md "Result").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Inspected {
-    /// Exited: the exit code and where it came from.
-    Exited(Option<i32>, &'static str),
-    /// The exact runtime runs, however silent (`R-FM1`'s hold).
-    Running,
-    /// The operating system holds the exact runtime suspended (R-PV1): an observation, never a hold.
-    OsStopped,
-    /// Nothing proven (no runtime fact, an unreadable row, the provider's `Unknown`): why.
-    Unavailable(String),
-}
-
-impl Inspected {
-    /// True when the provider inspection explicitly reported the runtime `Running` (`R-FM1`).
-    pub fn is_running(&self) -> bool {
-        matches!(self, Self::Running)
-    }
-}
+/// What the provider's inspection of a TRUE OFFLINE member found: node.runtime.inspect's own answer
+/// ([`crate::deployment::provider::inspect_runtime`]).
+pub use crate::deployment::provider::Inspected;
 
 impl RecoverySubmitter {
     /// Whether this admin's tick still holds `n`'s exact birth TRUE OFFLINE. The tick drops a birth
