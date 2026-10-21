@@ -810,13 +810,16 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary records mesh2's primary's receipt", Duration::from_secs(30), received_from_the_fabric_primary(primary_name.clone())).await;
     estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's secondary installs the update its primary carried", Duration::from_secs(30), installed(secondary_name.clone(), primary_name.clone())).await;
     let to_secondary = estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary records the secondary's receipt", Duration::from_secs(30), received_from_the_fabric_primary(secondary_name.clone())).await;
-    let spans = estate.spans();
     let trace = to_secondary["trace_id"].as_str().unwrap_or_default().to_string();
-    let in_trace = |name: &str| -> Vec<serde_json::Value> { named(&spans, name).into_iter().filter(|sp| sp["trace_id"].as_str() == Some(trace.as_str())).cloned().collect() };
-    let forwards: Vec<_> = in_trace("rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr(sp, "op") == "26" && attr(sp, "target").contains(&primary_id)).collect();
-    assert!(!forwards.is_empty(), "the fabric-primary's update to the secondary is a Forward (0x1A) whose carrier is mesh2's primary {primary_id}: {:#?}", in_trace("rdm.node_rpc.request.update.via-call"));
-    let carried: Vec<_> = in_trace("rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| attr(sp, "inner_op") == "27" && attr(sp, "target") == secondary_id).collect();
-    assert!(!carried.is_empty(), "mesh2's primary carries the Status (0x1B) UpdateIssuer to the secondary {secondary_id}");
+    // Each process writes its own spans: the carrier's are on disk when it flushes them, not when the
+    // fabric-primary's receipt is, so each is waited for, bounded, in the update's trace.
+    let in_this_trace = |want: &'static str, op: &'static str, peer: String| {
+        let trace = trace.clone();
+        move |sp: &serde_json::Value| sp["trace_id"].as_str() == Some(trace.as_str()) && attr(sp, want) == op && attr(sp, "target").contains(&peer)
+    };
+    estate_span(&estate, "rdm.node_rpc.request.update.via-call", "the fabric-primary's update to the secondary is a Forward (0x1A) whose carrier is mesh2's primary", Duration::from_secs(10), in_this_trace("op", "26", primary_id.clone())).await;
+    estate_span(&estate, "rdm.node_rpc.request.serve.via-carried-inner", "mesh2's primary carries the Status (0x1B) UpdateIssuer to the secondary", Duration::from_secs(10), in_this_trace("inner_op", "27", secondary_id.clone())).await;
+    let spans = estate.spans();
     let alone: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") != "mesh1.admin.1").collect();
     assert!(alone.is_empty(), "no update to the secondary is originated by anyone but the fabric-primary: {alone:#?}");
     let direct: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") == "mesh1.admin.1").collect();
