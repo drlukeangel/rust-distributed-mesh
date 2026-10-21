@@ -2463,6 +2463,42 @@ fn after_the_fabric_seat_moved_to_another_mesh_the_first_ready_check_finds_the_f
     });
 }
 
+/// CONTRACT (states.md "The initial fabric before ready-for-traffic": no seat moves before the initial
+/// fabric first reaches ready-for-traffic, the takeover of the fabric seat included; elections §5;
+/// Q104: the takeover takes the same first-ready gate as every seat move): P, the fabric-primary, is
+/// lost and M proposes the takeover to N, the winner, while the initial fabric has not first reached
+/// ready-for-traffic (N's view holds it in state-sync and no mesh's status rows on the store root hold a
+/// ready-for-traffic row). N refuses `RejectedFabricNotReady` under its reject span `fabric-not-ready`,
+/// and so does its own noticing (`propose_take_over`): no takeover row is committed and N's seat book
+/// still names P at revision 7. Once P's ready-for-traffic row stands among mesh1's status rows, the same
+/// proposal commits the one takeover row. What must NOT happen: a seat move committed before the fabric
+/// first reached ready-for-traffic (the container cell at ce251b3f: mesh2, cut off at state-commit, took
+/// the fabric seat, and its hand-back was then refused `fabric-not-ready`).
+#[test]
+fn a_takeover_before_the_initial_fabric_first_reaches_ready_for_traffic_is_refused_and_commits_no_row() {
+    use rdm_admin::status_storage::FabricEventRow;
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let f = seats_fabric().await;
+        let take = |successor: &Admin, expected: u64| Request::TakeOverFabricSeat { fabric: "fabric1".into(), lost: birth(&f.p), expected_revision: expected, successor: birth(successor), proposer: birth(&f.m) };
+        let fabric_id = f.n.door.topology.read().await.fabric.id.clone();
+        f.n.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
+        let takeovers = || async { f.n.door.storage.seat_moves().await.unwrap().into_iter().filter(|m| m.row.cause == MoveCause::Takeover).count() };
+        let r = send(&f.m, &f.n, take(&f.n, 7)).await;
+        assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "the winner refuses the takeover before the fabric first reached ready-for-traffic: {r:?}");
+        assert!(refusals(&spans).iter().any(|(_, reason, _)| reason == "fabric-not-ready"), "{:?}", refusals(&spans));
+        let noticed = f.n.door.propose_take_over(&holder_of(&f.p, 7)).await;
+        assert!(matches!(&noticed, Some(Reply::RejectedFabricNotReady { .. })), "the winner noticing it itself is refused too: {noticed:?}");
+        assert_eq!(takeovers().await, 0, "no takeover row is committed");
+        assert_eq!(f.n.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "N's seat book still names P");
+        // P's ready-for-traffic row among mesh1's status rows: the fabric first reached ready-for-traffic.
+        f.n.status.put_fabric_event_of("mesh1", &FabricEventRow { fabric_id, event: "ready-for-traffic".into() });
+        assert_eq!(send(&f.m, &f.n, take(&f.n, 7)).await, updated(vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(&f.n, 8))]), "the same proposal commits once the fabric first reached ready-for-traffic");
+        assert_eq!(takeovers().await, 1, "one takeover row");
+    });
+}
+
 // ---- No caller check inside the mesh (node-rpc.md §14) ----
 
 /// An admin endpoint no view of the fabric holds a birth for, reaching `to`: the caller a receiver

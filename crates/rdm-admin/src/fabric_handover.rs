@@ -1431,7 +1431,9 @@ impl HandoverDoor {
     /// the winner the backbone rule seats with `lost`'s mesh excluded (§4.3): the fabric seat from
     /// `lost` at `expected` to itself at the next revision, kind `takeover`. Then it seals the fabric
     /// lane at `expected`, takes the record and announces it. A repeat for the same takeover and
-    /// successor answers `AlreadyApplied`; a proposal its view or the fold refuses is refused, naming
+    /// successor answers `AlreadyApplied`; before the initial fabric first reaches ready-for-traffic the
+    /// takeover is refused `fabric-not-ready`, as every seat move is (R-PB1,
+    /// [`Self::refused_before_first_ready`]); a proposal its view or the fold refuses is refused, naming
     /// why; a store that cannot commit holds the takeover, named.
     pub async fn take_over(self: &Arc<Self>, lost: HandoverBirth, expected: u64, successor: HandoverBirth, proposer: Option<HandoverBirth>) -> Reply {
         let _one_at_a_time = self.locks.updating.lock().await;
@@ -1477,6 +1479,14 @@ impl HandoverDoor {
                 return rdm_core::reply::handover::already_applied(taken(s.revision));
             }
             return rdm_core::reply::handover::rejected_conflict(format!("takeover of {} at revision {expected}, committed to {}", births(lost), s.holder.as_ref().map(births).unwrap_or_else(|| "no holder".into())));
+        }
+        // Before the initial fabric first reaches ready-for-traffic no seat moves, the takeover included
+        // (states.md, "The initial fabric before ready-for-traffic"): refused before anything, on the same
+        // durable fact every seat move reads; nothing is decided or written.
+        let operation = format!("takeover of {} at revision {expected}", births(lost));
+        let of = Refusing { operation: &operation, build_id: "", attempt: 0, holder: Some(lost), successor: Some(me) };
+        if let Some(refusal) = self.refused_before_first_ready("winner", &of).await {
+            return refusal;
         }
         // The seat as this admin holds it: the lost birth at the revision the proposal names.
         let book = self.membership.seats();
