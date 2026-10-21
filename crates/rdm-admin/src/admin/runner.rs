@@ -189,12 +189,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         self.backbone.announce_update_of_stopped_holder(op).await;
     }
     async fn joined(&self, op: &rdm_core::LifecycleOp) {
-        self.membership.book.joined(op);
+        let _ = crate::status_rpc::set_member_status(&self.membership.book, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });
     }
     async fn leaving(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         span.in_scope(|| {
-            self.membership.book.admitted(op, MemberStatus::Leaving);
+            let _ = crate::status_rpc::set_member_status(&self.membership.book, crate::status_rpc::MemberStatusReceipt::StopAdmitted(op));
             tracing::info!("the birth admitted stop-node: this mesh-primary sets it stopping and its projection carries that; no frame is published");
         });
     }

@@ -277,7 +277,7 @@ impl SeatFold {
                 continue;
             }
             let status = member_of_declared(state);
-            let outcome = match book.adopt_status(&node_id, &incarnation, &name, status) {
+            let outcome = match set_member_status(book, MemberStatusReceipt::SeatFold { node_id: &node_id, incarnation: &incarnation, name: &name, state }) {
                 Ok(_) => "adopted",
                 Err(why) => why,
             };
@@ -298,6 +298,74 @@ impl SeatFold {
 }
 
 pub use rdm_core::status::{declared_of_member, member_of_declared};
+
+/// What a member's status, set at its mesh-primary, is the receipt of: the frame or declaration that
+/// caused it. The mesh-primary is the sole author of member status (node-primary-update.md step 3) and
+/// sets it from its member's report (node-status.md "Status report": "A node reports to its mesh's
+/// primary, which sets its status"); every such write goes through [`set_member_status`], naming its
+/// cause. The rule a cause applies before its write (a forward move of the declared state, a stop not
+/// yet completed, a predecessor's state ahead of what the book holds) is its caller's.
+#[derive(Debug, Clone, Copy)]
+pub enum MemberStatusReceipt<'a> {
+    /// The birth's declared state, its row put, acknowledged and applied by this admin's status
+    /// authority: the Pending of its accepted join report, the ReadyForTraffic of its node.started,
+    /// the Stopped of its stop, or the state its `DeclareNodeState` names. Its ReadyForTraffic also
+    /// ends that exact birth's open restart.
+    Declared(&'a crate::status_storage::NodeDeclaredRow),
+    /// `NodeJoined` on the start's command stream (`node.mesh.joined`): the birth's stop, if one is
+    /// held, ends, and the birth is held Pending; or, when `already` names the state its declared state
+    /// holds in its new cycle (that Pending, or the ReadyForTraffic it declared since), held with that
+    /// state, never set back to Pending.
+    NodeJoined {
+        /// The start's operation on the exact birth.
+        op: &'a rdm_core::LifecycleOp,
+        /// The state the birth's declared state already holds in its new cycle, when it holds one.
+        already: Option<NodeState>,
+    },
+    /// `CommandAccepted` on the stop's command stream: the stop's admission sets the birth stopping
+    /// (`Leaving`).
+    StopAdmitted(&'a rdm_core::LifecycleOp),
+    /// `ConnectionsDeleting` on `node.connections.delete`'s command stream: the node's report.
+    ConnectionsDeleting {
+        /// The node.
+        node_id: &'a NodeId,
+        /// Its exact birth.
+        incarnation: &'a IncarnationId,
+    },
+    /// The seat fold: the state its predecessor set for the birth, as the mesh's status rows hold it,
+    /// adopted by the admin that took the mesh's seat (fabric-authority.md §7: hydration, not
+    /// transition).
+    SeatFold {
+        /// The node.
+        node_id: &'a NodeId,
+        /// Its exact birth.
+        incarnation: &'a IncarnationId,
+        /// The path.name the birth declared at.
+        name: &'a crate::model::PathName,
+        /// The state the status rows hold for the birth.
+        state: NodeState,
+    },
+}
+
+/// Set a member's status at its mesh-primary in `book`, the digest book its member projection is
+/// published from, from `receipt`, its cause: the one place this admin, as its members' status
+/// authority, writes a member's status. `Ok(true)` when the book holds the status for the birth;
+/// `Ok(false)` when it sets nothing (a birth of another mesh, or one the book holds nothing of);
+/// `Err` naming why a seat fold adopts nothing. The book's own span of each cause is its record.
+pub fn set_member_status(book: &rdm_transport::membership::DigestBook, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
+    use rdm_core::MemberStatus as M;
+    match receipt {
+        MemberStatusReceipt::Declared(row) => Ok(match row.state {
+            NodeState::ReadyForTraffic => book.started(&row.node_id, &row.incarnation_id, &row.name),
+            state => book.reported(&row.node_id, &row.incarnation_id, member_of_declared(state)),
+        }),
+        MemberStatusReceipt::NodeJoined { op, already: Some(state) } => Ok(book.joined_already_applied(op, member_of_declared(state))),
+        MemberStatusReceipt::NodeJoined { op, already: None } => Ok(book.joined(op)),
+        MemberStatusReceipt::StopAdmitted(op) => Ok(book.admitted(op, M::Leaving)),
+        MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation } => Ok(book.reported(node_id, incarnation, M::ConnectionsDeleting)),
+        MemberStatusReceipt::SeatFold { node_id, incarnation, name, state } => book.adopt_status(node_id, incarnation, name, member_of_declared(state)).map(|_| true),
+    }
+}
 
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
@@ -383,9 +451,9 @@ pub struct StatusAuthority {
     /// answers beside the view. `None` only where no admin owns a digest book; a view read there is
     /// refused `NotReady` by name.
     pub loads: Option<crate::views::Loads>,
-    /// This admin's digest book: as its mesh's primary it sets each member's status there from the
-    /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
-    /// otherwise). `None` only where no admin owns a digest book.
+    /// This admin's digest book: as its mesh's primary it sets each member's status there through
+    /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
+    /// owns a digest book.
     pub book: Option<rdm_transport::membership::DigestBook>,
     /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
     /// property command is refused `RejectedFabricNotReady` and nothing is written.
@@ -1016,12 +1084,12 @@ impl StatusAuthority {
         let held = self.declared.lock().unwrap().node(&node.node_id, birth);
         if let Some(state @ (NodeState::Pending | NodeState::ReadyForTraffic)) = held {
             if let Some(book) = &self.book {
-                book.joined_already_applied(op, member_of_declared(state));
+                let _ = set_member_status(book, MemberStatusReceipt::NodeJoined { op, already: Some(state) });
             }
             return rdm_core::reply::already_applied();
         }
         if let Some(book) = &self.book {
-            book.joined(op);
+            let _ = set_member_status(book, MemberStatusReceipt::NodeJoined { op, already: None });
         }
         self.pending_held(&node.node_id, &node.name, birth).await
     }
@@ -1145,7 +1213,7 @@ impl StatusAuthority {
                     let identity = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
                     let completed = self.declared.lock().unwrap().operations.contains_key(&operation_row(&declared, &identity).key());
                     if !start && !completed {
-                        if let Some(book) = &self.book { book.admitted(&op, rdm_core::MemberStatus::Leaving); }
+                        if let Some(book) = &self.book { let _ = set_member_status(book, MemberStatusReceipt::StopAdmitted(&op)); }
                         tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
                     }
                     None
@@ -1297,7 +1365,7 @@ impl StatusAuthority {
                         // The node reported it: this mesh-primary records and publishes the state the
                         // node entered (states.md "Who sets each state"), never before.
                         reported = true;
-                        let recorded = self.book.as_ref().is_some_and(|book| book.reported(node_id, incarnation, rdm_core::MemberStatus::ConnectionsDeleting));
+                        let recorded = self.book.as_ref().is_some_and(|book| set_member_status(book, MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation }) == Ok(true));
                         let position = frames.position();
                         let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", invocation_id = tracing::field::Empty, seq = tracing::field::Empty, node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal");
                         if let Some((invocation, seq)) = position {
@@ -1440,14 +1508,7 @@ impl StatusAuthority {
             // (gossip.md "NodeRestarting stays until node.started of the same (node.id, incarnation)
             // arrives").
             if let Some(book) = &self.book {
-                match row.state {
-                    NodeState::ReadyForTraffic => {
-                        book.started(&row.node_id, &row.incarnation_id, &row.name);
-                    }
-                    state => {
-                        book.reported(&row.node_id, &row.incarnation_id, member_of_declared(state));
-                    }
-                }
+                let _ = set_member_status(book, MemberStatusReceipt::Declared(row));
             }
             let mut t = self.topology.write().await;
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
