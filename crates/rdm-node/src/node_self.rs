@@ -1229,24 +1229,16 @@ impl NodeSelf {
             span.record("turns_in_progress", held.turns_in_progress);
             span.record("waited_for", held.waited_for.as_str());
         }
-        // 4. R-NS1 item 2 (gossip.md mesh-deleted section): a node-admin that still publishes its
-        // mesh's aggregate (the last admin of a deleted mesh, still its primary) publishes it once
-        // more before the cut, itself Leaving: "Its last aggregate before a stop carries itself
-        // Leaving." It follows the hold, so no gated turn publishes after it; after the cut it
-        // publishes nothing (node-stop.md step 4, R-ON1). A command's and a signal's stop alike; only
-        // a command's delete writes the mesh's deleting into the book.
-        if let Some(backbone) = self.backbone.as_ref().filter(|b| b.is_mesh_primary()) {
-            let mesh_deleted = self.membership.book.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
-            if let Some(op) = op.filter(|_| by_command) {
-                if (!op.is_restart() && !op.is_stop()) || mesh_deleted {
-                    let del_op = if op.is_stop() {
-                        LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() }
-                    } else {
-                        op.clone()
-                    };
-                    self.membership.book.deleting(del_op);
-                }
-            }
+        // 4. A stopping node gossips nothing (node-stop.md step 4, R-ON1; Q95), a command's stop and a
+        // signal's alike. The one exception is R-NS1 item 2: when node.delete reaches a deleted mesh's
+        // last admin, still its primary, its final aggregate carries the mesh deleted and itself
+        // deleting, then nothing. It follows the hold, so no gated turn publishes after it.
+        let mesh_deleted = self.membership.book.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
+        // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
+        let final_delete = op.filter(|op| by_command && mesh_deleted && !op.is_restart());
+        if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
+            let del_op = if op.is_stop() { LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() } } else { op.clone() };
+            self.membership.book.deleting(del_op);
             let me = (self.set_status)(MemberStatus::Leaving);
             let mut members: Vec<MeshDigest> = backbone.own_members(&self.membership);
             match members.iter_mut().find(|d| d.node.node_id == me.node.node_id) {

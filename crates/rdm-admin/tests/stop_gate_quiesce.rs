@@ -87,9 +87,9 @@ impl Capture {
 /// it; the cell lets the lock go only once the stop has parked the gate. The stop is answered
 /// `Stopped`; its quiesce step (in the stop's own trace) names the executor among the turns it
 /// waited for, and the stop's connection cut begins only after the quiesce ended: the cut finds no
-/// turn in progress, and no aggregate of the admin's mesh is published once the cut began. Between
-/// the quiesce and the cut the stop publishes the admin's last aggregate, carrying itself Leaving
-/// (gossip.md, "Mesh delete"), in the stop's own trace. Nothing of the admin's Build drive (its
+/// turn in progress, and no aggregate of the admin's mesh is published once the cut began. The stop
+/// gossips nothing of its own (node-stop.md step 4, R-ON1, Q95): no stopping aggregate. Nothing of
+/// the admin's Build drive (its
 /// claim, its dispatch, the run it called, the facts it broadcast) runs on past the cut: a drive
 /// whose turn was in progress at the park ended it before the cut, and one that would begin after
 /// the park waits at the gate. Must NOT happen: a turn that was in progress at the park running on
@@ -191,16 +191,10 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     assert!(waited_for.split(',').any(|t| t.split(':').next() == Some("executor")), "the quiesce waited for the executor's held turn (stop trace {stop_trace}): {quiesce}");
     assert!(quiesce["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the quiesce ended: {quiesce}");
     assert!(all[0]["end_ns"].as_u64().unwrap() <= quiesce["start_ns"].as_u64().unwrap(), "the hold began before the All ended: {}", all[0]);
-    // The admin publishes its mesh's aggregate, so its last one, carrying itself Leaving, goes out
-    // after the hold and before the cut (gossip.md, "Mesh delete": "Its last aggregate before a stop
-    // carries itself Leaving"): no gated turn publishes after it.
+    // A stop gossips nothing of its own (Q95): the one final aggregate is R-NS1 item 2's, a deleted
+    // mesh's last admin's on its node.delete.
     let leaving = named("rdm.node_admin.node.update.via-leaving-aggregate");
-    assert_eq!(leaving.len(), 1, "one last aggregate carrying the admin Leaving for the stop (stop trace {stop_trace}): {leaving:?}");
-    let leaving = leaving[0];
-    assert_eq!(leaving["trace_id"], stop_trace.as_str(), "the last aggregate is in the stop's own trace");
-    assert_eq!(leaving["attributes"]["published"], "true", "the admin's last aggregate went out on the backbone: {leaving}");
-    assert!(quiesce["end_ns"].as_u64().unwrap() <= leaving["start_ns"].as_u64().unwrap(), "the last aggregate went out before the hold ended (stop trace {stop_trace}): {leaving}");
-    assert!(leaving["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the last aggregate went out (stop trace {stop_trace}): {leaving}");
+    assert!(leaving.is_empty(), "a stop publishes no stopping aggregate (stop trace {stop_trace}): {leaving:?}");
     let cut_report = named("rdm.node_admin.node.update.via-stop-transport-cut");
     assert_eq!(cut_report.len(), 1, "{cut_report:?}");
     assert_eq!(cut_report[0]["attributes"]["turns_in_progress"], "0", "the cut found a turn in progress (stop trace {stop_trace}): {}", cut_report[0]);

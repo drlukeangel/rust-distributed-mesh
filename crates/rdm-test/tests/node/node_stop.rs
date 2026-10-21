@@ -1356,10 +1356,10 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
 /// owed to its mesh-primary; `node.mesh.leave` (`via-leaving`), its own mesh and the backbone each
 /// left (`via-left` own and backbone), its Node RPC pool cut (`via-stop-transport-cut`); its `Stopped`
 /// owed to its mesh-primary (`via-owed-on-signal`); then its process ends, before the estate's bound.
-/// The mesh-primary admin, sent SIGTERM at the estate's stop, publishes its last aggregate before the
-/// cut carrying itself Leaving (`via-leaving-aggregate`, operation `signal`). Must NOT happen: a
-/// runtime the bound kills, a heartbeat of the stopping admin after it left its mesh, or a leave with
-/// no connections delete before it.
+/// The mesh-primary admin, sent SIGTERM at the estate's stop, gossips nothing for its stop either
+/// (node-stop.md step 4, R-ON1, Q95): no `via-leaving-aggregate`. Must NOT happen: a runtime the bound
+/// kills, a heartbeat of the stopping admin after it left its mesh, a leave with no connections delete
+/// before it, or a stopping aggregate from a signal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
     let test = "a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped";
@@ -1405,11 +1405,11 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
     let last_left = left.iter().map(|sp| start_ns(sp)).max().unwrap_or(0);
     let published_after: Vec<&Value> = of("rdm.mesh.node.update.via-heartbeat", &member).into_iter().filter(|h| start_ns(h) > last_left).collect();
     assert!(published_after.is_empty(), "{member} published nothing after it left its mesh: {published_after:#?}");
-    // The mesh-primary's signal, at the estate's stop: its last aggregate before the cut carries itself Leaving.
-    let aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| attr(sp, "node") == primary && attr(sp, "operation") == "signal").collect();
-    assert_eq!(aggregate.len(), 1, "{primary}'s signal stop published its last aggregate once, itself Leaving: {aggregate:#?}");
-    assert_eq!(attr(aggregate[0], "status"), "Leaving", "{:#?}", aggregate[0]);
-    estate.artifact("admin-signal-stop.json", &serde_json::json!({"member": member, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"], "primary": primary, "leaving_aggregate": aggregate[0]["trace_id"]}));
+    // The mesh-primary's signal, at the estate's stop, gossips nothing for the stop (Q95): the one
+    // final aggregate is R-NS1 item 2's, a deleted mesh's last admin's on its node.delete.
+    let aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| attr(sp, "node") == primary || attr(sp, "node") == member).collect();
+    assert!(aggregate.is_empty(), "a signal stop publishes no aggregate (Q95): {aggregate:#?}");
+    estate.artifact("admin-signal-stop.json", &serde_json::json!({"member": member, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"], "primary": primary}));
     estate.record_trace_url(leaving[0]["trace_id"].as_str().unwrap_or(""));
 }
 
