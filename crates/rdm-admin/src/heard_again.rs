@@ -120,6 +120,15 @@ async fn command_mesh_join(
     }
     // Reserved now, before the command goes out: concurrent looks at one birth command it once.
     commanded().lock().unwrap().insert(key.clone(), Instant::now());
+    // Each command back is its own join (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted
+    // join report, per join and not per birth), so its operation names this command by the instant it
+    // was reserved, fixed here: every resend of this one request carries it unchanged. The birth's
+    // ready-for-traffic declaration carries the operation, and an operation row survives every cycle
+    // begin with no state in its key (`NodeOperationRow::key`): a second command back in one Build
+    // attempt under the first one's operation would have its ready answered AlreadyApplied from the
+    // first join's row, and the birth would stay Pending.
+    let reserved_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let operation = format!("node.mesh.join:{}@{reserved_ms}", node.name);
     let (build_id, attempt) = match builds.current().await {
         Ok(Some(b)) => (b.build_id.to_string(), b.attempt),
         _ => (String::new(), 0),
@@ -131,6 +140,7 @@ async fn command_mesh_join(
         incarnation_id = %incarnation.as_str(),
         build_id = %build_id,
         attempt,
+        operation = %operation,
         outcome = tracing::field::Empty,
         "otel.kind" = "internal"
     );
@@ -159,7 +169,7 @@ async fn command_mesh_join(
             incarnation: incarnation.clone(),
             build_id,
             attempt,
-            operation: format!("node.mesh.join:{}", node.name),
+            operation,
         };
         let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
         match out.reply() {
