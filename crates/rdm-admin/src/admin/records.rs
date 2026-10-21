@@ -311,6 +311,9 @@ pub struct Records {
     /// fed by a prover. Shown `Dead` whatever their last digest said, and the proof an election takes
     /// that a seat's holder is gone (fabric-node-lifecycle-elections.md §4.1).
     pub(crate) exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// The path.name each exit-proof row read named for its birth: where a birth proven gone lived, for
+    /// the hand-back owed to the node re-created at that name (fabric-recovery.md step 4).
+    pub(crate) exited_names: Mutex<std::collections::HashMap<(NodeId, IncarnationId), PathName>>,
     /// The `os-stopped` facts (deployment-provider.md §2.5) of the births the installing projection
     /// read ([`Self::read_os_stopped`]): a point read of each birth's own row at every install, never
     /// fed by the recorder. Folded into the view as `Node::os_stopped`.
@@ -880,6 +883,7 @@ impl Records {
             let mut exited = self.exited.lock().unwrap();
             let entered = read.iter().filter(|(k, _)| !exited.contains(*k)).map(|(_, v)| v.clone()).collect();
             let kept: std::collections::HashSet<(NodeId, IncarnationId)> = exited.iter().filter(|k| named.contains(*k)).cloned().collect();
+            self.exited_names.lock().unwrap().extend(read.iter().map(|(k, (_, row))| (k.clone(), row.name.clone())));
             *exited = kept.into_iter().chain(read.into_keys()).collect();
             entered
         };
@@ -938,6 +942,11 @@ impl Records {
     /// Whether this admin has not yet been told who holds the seats (its entry read has not answered).
     pub fn is_entering(&self) -> bool {
         self.entering.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The path.name the exit-proof row of this birth named, when the projection read one.
+    pub fn exited_name(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<PathName> {
+        self.exited_names.lock().unwrap().get(&(node_id.clone(), incarnation.clone())).cloned()
     }
 
     /// The incarnations whose exit-proof row the installed projection read.

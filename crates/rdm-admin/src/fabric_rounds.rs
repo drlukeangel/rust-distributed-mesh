@@ -157,6 +157,9 @@ pub(crate) struct RoundEnv {
     pub hooks: FabricHooks,
     /// The action this admin completes before its own check-in.
     pub actions: Arc<dyn RoundActions>,
+    /// The round keys this node's action ran for, in any role (`rdm_node::rounds::ActedRecord`),
+    /// shared with the node's member path: once per round key (states.md "The round checklist").
+    pub acted: Arc<rdm_node::rounds::ActedRecord>,
 }
 
 /// Which rounds of an adopted status are complete now.
@@ -309,6 +312,12 @@ impl FabricRounds {
             .own(&self.env.node_id)
             .map(|n| n.name.clone())
             .unwrap_or_else(|| self.env.me.clone())
+    }
+
+    /// Does this admin's view authorize an act on it (gossip.md §6: a cut-off or healing view
+    /// authorizes nothing)? With no gossip plugged in, there is no view to be cut off from.
+    fn view_authorizes(&self) -> bool {
+        self.gossip.get().is_none_or(|g| g.membership.authorizes())
     }
 
     /// Where this admin's round hooks are published, once it has joined the backbone.
@@ -752,11 +761,18 @@ impl FabricRounds {
             self.mesh_book.open(key);
             self.spawn_mesh_driver(key.clone(), false, parent.clone());
         }
-        for (node_id, expected, event) in self.fabric_book.take_due(key, view) {
-            if node_id == self.env.node_id {
-                continue;
+        // An admin whose view is cut off or healing commands nothing on it (gossip.md §6;
+        // node-admin-lifecycle.md §1 rule 6): the commands wait for the view to heal, which wakes the climb.
+        if self.view_authorizes() {
+            for (node_id, expected, event) in self.fabric_book.take_due(key, view) {
+                if node_id == self.env.node_id {
+                    continue;
+                }
+                self.spawn_command(key.clone(), true, node_id, expected, event, parent.clone());
             }
-            self.spawn_command(key.clone(), true, node_id, expected, event, parent.clone());
+        } else {
+            tracing::info_span!("rdm.node_admin.fabric.update.via-round-command", node = %self.env.me, round = key.kind.command(), to = "", event = "view-cut-off", outcome = "view-cut-off")
+                .in_scope(|| tracing::info!("this admin's view authorizes nothing: the round's commands wait for the view to heal"));
         }
         self.fabric_book.missing(key)
     }
@@ -876,7 +892,7 @@ impl FabricRounds {
 
     async fn drive_mesh(self: &Arc<Self>, key: &RoundKey, owes_upward: bool, opening: u64) {
         let mesh = self.env.me.mesh.clone();
-        let mut own_done = self.acted.lock().unwrap().contains(key);
+        let mut own_done = self.acted.lock().unwrap().contains(key) || self.env.acted.acted(key);
         if own_done {
             // A round run again: this admin's own action is stored, and its check-in is made from that.
             tracing::Span::current().record("own_action", "from-record");
@@ -939,14 +955,22 @@ impl FabricRounds {
                 }
             }
             self.mesh_book.expect(key, planned, unresolved);
-            for (node_id, expected, event) in self.mesh_book.take_due(key, &view) {
-                self.spawn_command(key.clone(), false, node_id, expected, event, round_span.clone());
+            // An admin whose view is cut off or healing commands nothing on it (gossip.md §6;
+            // node-admin-lifecycle.md §1 rule 6): the view's heal is a view change, which wakes this loop.
+            if self.view_authorizes() {
+                for (node_id, expected, event) in self.mesh_book.take_due(key, &view) {
+                    self.spawn_command(key.clone(), false, node_id, expected, event, round_span.clone());
+                }
+            } else {
+                tracing::info_span!("rdm.node_admin.fabric.update.via-round-command", node = %me, round = key.kind.command(), to = "", event = "view-cut-off", outcome = "view-cut-off")
+                    .in_scope(|| tracing::info!("this admin's view authorizes nothing: the round's commands wait for the view to heal"));
             }
             if !own_done {
                 match run_action(&*self.env.actions, &me, key.kind).await {
                     Ok(()) => {
                         own_done = true;
                         self.acted.lock().unwrap().insert(key.clone());
+                        self.env.acted.record(key);
                         round_span.record("own_action", "run");
                     }
                     Err(e) => {
@@ -1486,6 +1510,7 @@ mod tests {
             records: records.clone(),
             hooks: FabricHooks { sync_state: Some(hook), traffic_opened: None },
             actions: Arc::new(NoScratchpad),
+            acted: Arc::default(),
         });
         // The one-mesh Build's climb entered state-sync; the frame that says so has not gone out yet.
         records.set_published_fabric_state(Some(FabricState::Pending));
@@ -1531,6 +1556,7 @@ mod tests {
             records,
             hooks: FabricHooks { sync_state: Some(SyncState::NoAppWork), traffic_opened: None },
             actions,
+            acted: Arc::default(),
         })
     }
 

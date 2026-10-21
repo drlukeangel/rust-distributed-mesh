@@ -362,6 +362,8 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
     let looker = rdm_admin::seat_watch::Looker { me: path.parse().unwrap(), me_id: node_id.clone(), membership: membership.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default() };
     let door = Arc::new(HandoverDoor {
+        provider: provider.clone(),
+        nodes: Some(nodes.clone()),
         fabric: "fabric1".into(),
         me: path.parse().unwrap(),
         node_id: node_id.clone(),
@@ -1042,31 +1044,77 @@ async fn the_holder_cuts_off(op: &'static str) {
 /// identical command to P, its own command door, and P's identical node.primary.update to N each
 /// replay the row. The same operation with a conflicting payload (another revision) is RejectedConflict
 /// at N. Nothing commits twice.
-/// CONTRACT (elections §5, Q24: "Every mesh-primary that notices tells the winner
-/// (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer
-/// `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row";
-/// Q48: every seat change is a row): P holds the fabric seat at revision 7 and its mesh is lost. A
-/// takeover proposed to X, the backbone rule's winner with mesh1 excluded, commits ONE seat move of
-/// kind `takeover`: the fabric seat from P at 7 to X at 8, and mesh1's primary seat, which P holds too,
-/// from P to no holder (Q51 A), written by X; X holds the fabric record at 8 and mesh1's seat vacant.
-/// The same proposal again answers `AlreadyApplied` and writes nothing. A proposal naming another
-/// winner is refused not-authority, one from the revision the takeover moved is refused stale, and
-/// N, which the rule does not seat, refuses a proposal naming it. Must NOT happen: two takeover rows,
-/// a takeover written by an admin the rule does not seat, or the seat moving from a revision the log
-/// no longer holds.
+/// CONTRACT (Q89, elections §4.3 and §5: a fabric-primary unheard past the floor is superseded by "the
+/// lowest ReadyForTraffic node-admin of its own mesh", "every seat the holder held in the one row"; "the
+/// seat leaves the mesh only when no node-admin of the mesh answers mesh investigation's ladder by its
+/// decision step: then the lowest ReadyForTraffic mesh-primary on the backbone writes it"; "repeated calls
+/// for the same takeover and committed successor answer `AlreadyApplied`"; Q48: every seat change is a
+/// row): P holds the fabric seat at revision 7 and mesh1's seat at 3, and is lost; N, mesh1's lowest
+/// ReadyForTraffic node-admin, is the rule's winner. A takeover proposed to X, outside the mesh, is refused
+/// not-authority naming N; a takeover proposed to N commits ONE seat move of kind `takeover`, both seats to
+/// N: the fabric seat from P at 7 to N at 8 and mesh1's seat from P at 3 to N at 4, written by N, which holds
+/// both records. The same proposal again answers `AlreadyApplied` and writes nothing; one from the revision
+/// the takeover moved is refused stale. Must NOT happen: two takeover rows, the seat leaving the mesh
+/// while it has a Ready node-admin, mesh1's seat left with no holder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_takeover_proposed_to_the_winner_is_committed_once_and_a_repeat_answers_already_applied() {
+async fn a_takeover_proposed_to_the_lost_fabric_primarys_own_mesh_standby_commits_both_seats_once_and_a_repeat_answers_already_applied() {
     let f = seats_fabric().await;
     let take = |successor: &Admin, expected: u64| Request::TakeOverFabricSeat { fabric: "fabric1".into(), lost: birth(&f.p), expected_revision: expected, successor: birth(successor), proposer: birth(&f.m) };
+    let taken = vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(&f.n, 8))];
+    assert!(matches!(send(&f.m, &f.x, take(&f.x, 7)).await, Reply::RejectedNotAuthority { reason } if reason.contains("mesh1.admin.2")), "X, outside the mesh, is not the winner while mesh1 keeps a Ready node-admin: it refuses naming N");
+    assert!(matches!(send(&f.m, &f.n, take(&f.x, 7)).await, Reply::RejectedNotAuthority { .. }), "N refuses a proposal naming another winner");
+    assert_eq!(send(&f.m, &f.n, take(&f.n, 7)).await, updated(taken.clone()), "the winner, mesh1's standby, commits the takeover");
+    let moves = f.n.door.storage.seat_moves().await.unwrap();
+    let takeovers: Vec<_> = moves.iter().filter(|m| m.row.cause == MoveCause::Takeover).collect();
+    assert_eq!(takeovers.len(), 1, "one takeover row: {moves:?}");
+    let row = &takeovers[0].row;
+    assert_eq!((row.seats.len(), row.seats[0].seat.clone(), row.seats[0].from_revision, row.seats[0].revision, row.seats[0].holder.clone(), row.seats[0].from.clone(), row.by.clone()), (2, WireSeat::FabricPrimary, 7, 8, Some(birth(&f.n)), Some(birth(&f.p)), birth(&f.n)), "the fabric seat moves from P at 7 to N at 8: {row:?}");
+    let mesh_seat = row.seats.iter().find(|m| m.seat == WireSeat::MeshPrimary { mesh: "mesh1".into() }).unwrap_or_else(|| panic!("the takeover row moves mesh1's primary seat too: {row:?}"));
+    assert_eq!((mesh_seat.holder.clone(), mesh_seat.from.clone(), mesh_seat.from_revision, mesh_seat.revision), (Some(birth(&f.n)), Some(birth(&f.p)), 3, 4), "mesh1's seat moved from P to N in the same row: {mesh_seat:?}");
+    assert_eq!(f.n.door.membership.seats().fabric(), Some(holder_of(&f.n, 8)), "the winner holds the fabric record");
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "and mesh1's");
+    assert_eq!(send(&f.m, &f.n, take(&f.n, 7)).await, Reply::AlreadyApplied { revisions: taken.clone() }, "the same takeover again");
+    assert_eq!(f.n.door.propose_take_over(&holder_of(&f.p, 7)).await, Some(Reply::AlreadyApplied { revisions: taken }), "the winner noticing it itself");
+    assert!(matches!(send(&f.m, &f.n, take(&f.n, 8)).await, Reply::RejectedStaleSeat { expected: 8, current: 8, .. } | Reply::RejectedNotAuthority { .. }), "a proposal from the revision the takeover moved names no lost birth at it");
+    assert_eq!(f.n.door.storage.seat_moves().await.unwrap().iter().filter(|m| m.row.cause == MoveCause::Takeover).count(), 1, "nothing written again");
+}
+
+/// CONTRACT (Q89, elections §4.3, §5; Q51 A): the same loss when mesh1 keeps no ReadyForTraffic node-admin
+/// (N and M off ready-for-traffic): the backbone rule names X, the lowest ReadyForTraffic mesh-primary; a
+/// takeover proposed to N is refused not-authority naming X; X commits ONE `takeover` row: the fabric seat
+/// from P at 7 to X at 8, and mesh1's primary seat, which P holds too, from P to no holder (its next
+/// node-admin fills it by the ordinary rule); X holds the fabric record at 8 and mesh1's seat vacant. The
+/// same proposal again answers `AlreadyApplied`; a proposal naming another winner is refused not-authority;
+/// one from the moved revision is refused stale. Must NOT happen: two takeover rows, a takeover written by
+/// an admin the rule does not seat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_takeover_of_a_fabric_primary_whose_mesh_keeps_no_ready_admin_is_the_backbones_and_vacates_the_mesh_seat() {
+    let store: Arc<dyn FabricStorage> = Arc::new(MemoryFabricStorage::new());
+    let f = seats_fabric_shaped(FabricSeat::P, true, ["000000000002", "000000000003", "000000000009"], NodeStatus::Pending, || {
+        let store = store.clone();
+        async move { store }
+    })
+    .await;
+    // mesh1 keeps no ReadyForTraffic node-admin but P: N and M are Pending in every admin's view.
+    for a in [&f.p, &f.n, &f.m, &f.x] {
+        let mut t = a.door.topology.write().await;
+        for n in t.nodes.iter_mut() {
+            if matches!(n.name.to_string().as_str(), "mesh1.admin.2" | "mesh1.admin.3") {
+                n.status = NodeStatus::Pending;
+            }
+        }
+    }
+    let take = |successor: &Admin, expected: u64| Request::TakeOverFabricSeat { fabric: "fabric1".into(), lost: birth(&f.p), expected_revision: expected, successor: birth(successor), proposer: birth(&f.m) };
     let taken = vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(&f.x, 8))];
-    assert!(matches!(send(&f.m, &f.n, take(&f.n, 7)).await, Reply::RejectedNotAuthority { reason } if reason.contains("mesh1") && reason.contains("mesh2.admin.1")), "N, which the rule does not seat, refuses naming the winner");
+    let n_reply = send(&f.m, &f.n, take(&f.n, 7)).await;
+    assert!(matches!(n_reply, Reply::RejectedNotAuthority { .. } | Reply::NotReady { .. }), "N, off ready-for-traffic, is not the rule's winner: it refuses: {n_reply:?}");
     assert!(matches!(send(&f.m, &f.x, take(&f.n, 7)).await, Reply::RejectedNotAuthority { .. }), "X refuses a proposal naming another winner");
     assert_eq!(send(&f.m, &f.x, take(&f.x, 7)).await, updated(taken.clone()), "the winner commits the takeover");
     let moves = f.x.door.storage.seat_moves().await.unwrap();
     let takeovers: Vec<_> = moves.iter().filter(|m| m.row.cause == MoveCause::Takeover).collect();
     assert_eq!(takeovers.len(), 1, "one takeover row: {moves:?}");
     let row = &takeovers[0].row;
-    assert_eq!((row.seats.len(), row.seats[0].seat.clone(), row.seats[0].from_revision, row.seats[0].revision, row.seats[0].holder.clone(), row.seats[0].from.clone(), row.by.clone()), (2, WireSeat::FabricPrimary, 7, 8, Some(birth(&f.x)), Some(birth(&f.p)), birth(&f.x)));
+    assert_eq!((row.seats.len(), row.seats[0].seat.clone(), row.seats[0].from_revision, row.seats[0].revision, row.seats[0].holder.clone(), row.seats[0].from.clone(), row.by.clone()), (2, WireSeat::FabricPrimary, 7, 8, Some(birth(&f.x)), Some(birth(&f.p)), birth(&f.x)), "the fabric seat moves from P at 7 to X at 8: {row:?}");
     let vacated = row.seats.iter().find(|m| m.seat == WireSeat::MeshPrimary { mesh: "mesh1".into() }).unwrap_or_else(|| panic!("the takeover row moves mesh1's primary seat too: {row:?}"));
     assert_eq!((vacated.holder.clone(), vacated.from.clone()), (None, Some(birth(&f.p))), "mesh1's seat moved from P to no holder: {vacated:?}");
     assert_eq!(f.x.door.membership.seats().vacant_meshes().get("mesh1").copied(), Some(vacated.revision), "X holds mesh1's seat vacant at the row's revision");

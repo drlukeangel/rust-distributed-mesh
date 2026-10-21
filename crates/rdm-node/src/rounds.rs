@@ -203,6 +203,26 @@ impl<'a> RoundOp<'a> {
     }
 }
 
+/// The round keys this node's own action ran for, whichever role ran it: a member commanded by its
+/// primary, or a mesh-primary's own action in its mesh round. One record per process, so a node whose
+/// role changes inside a round (a standby that takes its mesh's seats, a fabric-primary that comes back
+/// as a member, Q89) runs each round action once per round key (states.md "The round checklist") and
+/// checks in from its record after.
+#[derive(Debug, Default)]
+pub struct ActedRecord(std::sync::Mutex<std::collections::HashSet<RoundKey>>);
+
+impl ActedRecord {
+    /// Did this node's action run for `key`?
+    pub fn acted(&self, key: &RoundKey) -> bool {
+        self.0.lock().unwrap().contains(key)
+    }
+
+    /// This node's action ran for `key`.
+    pub fn record(&self, key: &RoundKey) {
+        self.0.lock().unwrap().insert(key.clone());
+    }
+}
+
 /// A round: the Build and attempt it belongs to, in one fabric.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RoundKey {

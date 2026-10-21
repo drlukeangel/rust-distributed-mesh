@@ -280,6 +280,11 @@ impl UpdateMemo {
 /// Every side of node.primary.update on one node-admin: the holder's update, the successor's
 /// install, the commander's command and its resume.
 pub struct HandoverDoor {
+    /// This admin's deployment provider: a takeover asks it about the lost birth before releasing its
+    /// name (fabric-recovery.md step 3: the name is released only when nobody is able to inspect it).
+    pub provider: Arc<dyn crate::deployment::provider::DeploymentProvider>,
+    /// This admin's nodes.storage, the runtime row of each birth, for that inspection.
+    pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
     /// The fabric's name.
     pub fabric: String,
     /// This admin's path.
@@ -845,6 +850,15 @@ impl HandoverDoor {
             return Err(rdm_core::reply::handover::bounded_record_absent(&record, &me_name.to_string()));
         };
         tracing::Span::current().record("successor", successor.name.to_string().as_str()).record("successor_node_id", to.node_id.as_str());
+        // The hand-back across meshes (Q89, fabric-recovery.md step 4: "every seat it took back to it ...
+        // in one row"): the takeover from a holder outside the lost mesh left that mesh's primary seat
+        // vacant; the same row seats the node at the lost path.name there too, so it is its mesh's
+        // primary again (node-primary-update.md "Both seats on one holder") and no view elects another.
+        if named.is_some() && to.mesh != self.me.mesh {
+            if let Some(v) = book.vacant_meshes().get(&to.mesh).copied() {
+                held.push((WireSeat::of(Seat::MeshPrimary, &to.mesh), rdm_core::SeatHolder { mesh: to.mesh.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), revision: v }));
+            }
+        }
         let seats: Vec<CommittedSeat> = held.iter().map(|(seat, h)| CommittedSeat { seat: seat.clone(), holder: to.clone(), revision: h.revision + 1 }).collect();
         let row = SeatTransferRow {
             operation: operation.to_string(),
@@ -1482,6 +1496,19 @@ impl HandoverDoor {
         // fabric-primary whose mesh still has a Ready node-admin stays a member of the view: heard
         // again it is commanded back (Q87); proven gone, node recovery runs (Q89).
         let whole_mesh_lost = !nodes.iter().any(|n| n.mesh == lost.mesh && n.kind == crate::model::NodeKind::NodeAdmin && n.node_id != lost.node_id && n.status == crate::model::NodeStatus::ReadyForTraffic);
+        // ... and only when this admin cannot inspect the lost birth either (fabric-recovery.md step 3:
+        // running, it is held-running toward its terminate; exited, node recovery re-creates it over its
+        // dir; uninspectable, its name is released and it is re-created over a new dir, R-FM2).
+        let uninspectable = whole_mesh_lost
+            && match nodes.iter().find(|n| n.node_id == lost.node_id) {
+                Some(n) => {
+                    let finding = crate::seat_watch::inspect_birth(&*self.provider, &self.book, self.nodes.as_deref(), n).await;
+                    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %me_name, subject = %n.name, node_id = %n.node_id, inspector = %me_name, verdict = finding.name(), route = "takeover")
+                        .in_scope(|| tracing::info!("the lost fabric-primary's runtime, asked of the provider at the takeover"));
+                    matches!(finding, crate::seat_watch::Finding::Unproven { .. })
+                }
+                None => true,
+            };
         let row = crate::fabric_storage::SeatMoveRow { seats, cause: crate::fabric_storage::MoveCause::Takeover, by: me.clone() };
         // The fence: the takeover's row, then the seal of the lost authority's revision. Nothing of
         // the lost authority commits past either, and recovery begins only once both stand.
@@ -1516,7 +1543,7 @@ impl HandoverDoor {
             }
         }
         (self.project_view)().await;
-        if whole_mesh_lost {
+        if uninspectable {
             self.release_lost_admin(me_name, lost, moved.t).await;
         }
         self.backbone.announce_seat(Seat::FabricPrimary, record).await;

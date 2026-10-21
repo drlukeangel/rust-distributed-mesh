@@ -1,5 +1,5 @@
 //! i146 process E2E: a round's check-ins are owed messages (node-rpc.md §43, `Budget::Owed`), and a
-//! fabric-primary healed from a cut-off rebuilds its round's checklist (Q45). Each cell suspends or
+//! fabric-primary held past the staleness floor is superseded, the interim re-sending the round (Q89). Each cell suspends or
 //! kills a primary past the staleness floor and a call's former 10 s budget: a release-gate stem.
 //!
 //! A real estate whose node-admin is the testkit's (the fault door's round-action cut orders each
@@ -181,17 +181,18 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
     estate.record_trace_url(&s(&moved["trace_id"]));
 }
 
-/// The fabric-primary cut off during the resize's `round` and healed (i146 Q45, e3 owner 3): mesh2's
-/// primary is held in its own `round` action (the fault door's round-action cut), the fabric-primary
-/// suspended until every connection to it idles out and past the 10 s a call had (past the floor: it
-/// is cut off), the action released (mesh2's check-in owed upward to the suspended fabric-primary),
-/// then the fabric-primary continued. With another member in its mesh, its cut-off ended its tenure;
-/// healed, it re-opens the round, re-runs its own mesh's round (its own action from its record). Alone
-/// in its mesh it is never cut off and keeps its seat (gossip.md §6, "A cut-off view"); its round
-/// completes once it wakes. Either way the fabric reaches ready-for-traffic under the resize, and every
-/// round action runs once per round key. A cut-off is the suspension's only between the suspension and
-/// the cell's own `estate.stop()`: once every node is signalled, a fabric-primary whose shutdown outlasts
-/// a staleness floor hears no other member and spans a cut-off that belongs to the teardown.
+/// The fabric-primary held during the resize's `round` and released (Q89, fabric-recovery.md "The loss of
+/// the fabric-primary while a node-admin lives"; states.md "The round checklist"): mesh2's primary is held
+/// in its own `round` action (the fault door's round-action cut), the fabric-primary suspended past the
+/// staleness floor and past the 10 s a call had, the action released (mesh2's check-in owed upward), then
+/// the fabric-primary continued. Unheard past the floor it is superseded: with another node-admin in its
+/// mesh, that standby holds both seats by one row at the first tick after the mark; alone in its mesh, the
+/// other mesh's primary runs mesh investigation's ladder on it and takes the fabric seat at the decision
+/// step. The interim is the new primary of the round: it re-sends the current round, the members already
+/// done check in again, the owed check-in is re-owed to it (node-rpc.md §43), and the fabric reaches
+/// ready-for-traffic under the resize. Continued, the lost fabric-primary is commanded back through
+/// node.mesh.join by the interim and commands nobody itself; one floor after it is ready the interim hands
+/// every seat it took home. Every round action runs once per round key across the seat's move.
 async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
@@ -200,8 +201,15 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let primary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 has a primary");
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().expect("the fabric has a primary");
     assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's admin");
+    assert!(fp.is_primary, "the fabric-primary holds its mesh's seat too");
     let (primary_s, fp_s) = (primary.name.to_string(), fp.name.to_string());
-    let members: Vec<String> = views.iter().filter(|n| n.mesh == "mesh1" && n.name != fp.name).map(|n| n.name.to_string()).collect();
+    let members: Vec<String> = views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode).map(|n| n.name.to_string()).collect();
+    let standby: Option<String> = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.name != fp.name).map(|n| n.name.to_string());
+    // The interim the leadership rule names: the standby of the fabric-primary's own mesh, else mesh2's primary.
+    let interim = standby.clone().unwrap_or_else(|| primary_s.clone());
+    let floor = rdm_transport::membership::staleness_floor();
+    // Its own mesh writes at the first tick after the mark; the backbone at the ladder's decision step (twice the floor).
+    let seat_moves_within = if standby.is_some() { floor * 3 } else { floor * 5 } + Duration::from_secs(30);
 
     let door = Door::at(&estate, &primary_s).await;
     door.arm("round-action", json!({"kind": "round-action", "node": primary_s, "round": round})).await;
@@ -209,21 +217,36 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let resize_id = resize.build_id().to_string();
     door.wait_held("round-action").await;
 
-    // The fabric-primary is the estate's Day-0 admin: its process is the estate's own child.
+    // The fabric-primary is the estate's Day-0 admin: its process is the estate's own child. Control is
+    // read through the interim from here: a held admin answers nothing.
     let pid = match estate.bootstrap_pid() {
         Some(p) if fp_s == "mesh1.admin.1" => u64::from(p),
         _ => estate.pid_of(&fp_s).await,
     };
+    estate.enter(&Estate::path(&interim)).await;
     let suspended_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     signal(pid, "-STOP");
-    tokio::time::sleep(rdm_transport::membership::staleness_floor() + Duration::from_secs(2)).await;
+    let taken = estate
+        .until_view(&format!("{interim} holds the fabric seat while {fp_s} is held"), seat_moves_within, |views| {
+            views.iter().find(|n| n.is_fabric_primary).filter(|n| n.name.to_string() == interim).map(|n| (n.name.to_string(), n.is_primary))
+        })
+        .await;
+    if standby.is_some() {
+        assert!(taken.1, "the standby of the fabric-primary's own mesh holds both seats in the one row: {taken:?}");
+    }
     door.release("round-action").await;
     tokio::time::sleep(DEFAULT_CALL_BUDGET + Duration::from_secs(3)).await;
+    let released_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     signal(pid, "-CONT");
     estate.follow(resize).await;
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(resize_id.as_str()), Duration::from_secs(60)).await;
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(resize_id.as_str()), Duration::from_secs(120)).await;
+    // The seats go home one floor after the node at the original path.name is ready again.
+    estate
+        .until_view(&format!("{interim} hands the seats back to {fp_s}"), floor * 6 + Duration::from_secs(90), |views| {
+            views.iter().find(|n| n.is_fabric_primary).filter(|n| n.name.to_string() == fp_s && n.is_primary).map(|_| ())
+        })
+        .await;
 
-    let stopping_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
     let of_resize = |name: &str, node: &str, r: &str| -> Vec<Value> {
@@ -231,64 +254,78 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
         v.sort_by_key(start);
         v
     };
-    let own = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &fp_s, round);
-    // Woken, the fabric-primary is cut off only if its watch ticks before the member digests queued
-    // during the suspension apply; those digests are fresh, and applied first they are hearing
-    // (gossip.md §6, "A cut-off view"). Alone in its mesh it is never cut off and keeps its seat. When
-    // the cut-off fired, it ended the fabric-primary's tenure; healed, it ran its own mesh's round
-    // again, its own action from its record. A cut-off spanned once the cell began stopping the estate
-    // is the teardown's (every peer signalled), never the suspension's.
-    let cut_off = named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s && sp["attributes"]["role"] == "start" && (suspended_at..stopping_at).contains(&start(sp)));
-    if cut_off {
-        assert!(named(&spans, "rdm.node_admin.fabric.remove.via-tenure-ended").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s), "the cut-off ended {fp_s}'s tenure");
-        assert!(own.len() >= 2, "{fp_s} ran its own mesh's {round} round again after the cut-off: {own:#?}");
-        assert!(own.iter().skip(1).all(|r| r["attributes"]["own_action"] == "from-record"), "its own action came from its record: {own:#?}");
-    }
-    // Every round action ran once per round key across the cut-off: the fabric-primary's, mesh2's
-    // primary's and each member's.
+    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "committed" && (suspended_at..released_at).contains(&start(sp))).collect();
+    assert_eq!(takeovers.len(), 1, "one committed takeover row while the fabric-primary was held: {takeovers:#?}");
+    assert_eq!(s(&takeovers[0]["attributes"]["node"]), interim, "written by the interim the leadership rule names: {takeovers:#?}");
+    // The interim re-sent the current round as its new primary (states.md "The round checklist").
+    let re_sent: Vec<Value> = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &interim, round).into_iter().filter(|sp| start(sp) >= start(takeovers[0])).collect();
+    assert!(!re_sent.is_empty(), "{interim} ran mesh1's {round} round as the new primary after the takeover: {re_sent:#?}");
+    // Every round action ran once per round key across the seat's move (states.md "The round checklist":
+    // the key is the Build's attempt and the round; a new fabric-primary that claims the next attempt opens
+    // a new key): mesh1's own action (whichever holder ran it), mesh2's primary's and each member's, once
+    // per attempt that reached them.
+    let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]);
     for r in ["commit-state", "open-traffic"] {
-        for admin in [&fp_s, &primary_s] {
-            let ran = of_resize("rdm.node_admin.fabric.update.via-mesh-round", admin, r).into_iter().filter(|m| m["attributes"]["own_action"] == "run").count();
-            assert_eq!(ran, 1, "{admin}'s own {r} action ran once");
+        let mesh1_rounds: Vec<Value> = [Some(fp_s.clone()), standby.clone()].into_iter().flatten().flat_map(|admin| of_resize("rdm.node_admin.fabric.update.via-mesh-round", &admin, r)).collect();
+        let attempts: std::collections::BTreeSet<String> = mesh1_rounds.iter().map(attempt_of).collect();
+        assert!(!attempts.is_empty(), "mesh1 ran its {r} round");
+        for a in &attempts {
+            let ran = mesh1_rounds.iter().filter(|m| attempt_of(m) == *a && m["attributes"]["own_action"] == "run").count();
+            assert_eq!(ran, 1, "mesh1's own {r} action ran once for attempt {a}, across the seat's move");
+        }
+        let primary_rounds = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &primary_s, r);
+        for a in primary_rounds.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
+            let ran = primary_rounds.iter().filter(|m| attempt_of(m) == a && m["attributes"]["own_action"] == "run").count();
+            assert_eq!(ran, 1, "{primary_s}'s own {r} action ran once for attempt {a}");
         }
         for m in &members {
-            let acted = of_resize("rdm.node_admin.fabric.update.via-member-round", m, r).into_iter().filter(|m| flag(&m["attributes"]["acted"])).count();
-            assert_eq!(acted, 1, "{m}'s {r} action ran once");
+            let member_rounds = of_resize("rdm.node_admin.fabric.update.via-member-round", m, r);
+            for a in member_rounds.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
+                let acted = member_rounds.iter().filter(|x| attempt_of(x) == a && flag(&x["attributes"]["acted"])).count();
+                assert_eq!(acted, 1, "{m}'s {r} action ran once for attempt {a}");
+            }
         }
     }
-    let flame = own.last().map(|r| s(&r["trace_id"])).unwrap_or_default();
-    println!("fabric-primary suspended during {round} (cut off: {cut_off}): its own mesh round ran {} time(s); flame http://192.168.68.99:16687/trace/{flame}", own.len());
+    // Continued, the lost fabric-primary was commanded back by the interim and commanded nobody itself.
+    // The commands sent (a look that sent nothing is spanned too, `sent = false`, with why).
+    let commanded: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| start(sp) >= released_at && sp["attributes"]["sent"] != "false" && sp["attributes"]["sent"] != false).map(|sp| format!("{}:{}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["outcome"]))).collect();
+    assert!(commanded.iter().any(|c| c == &format!("{fp_s}:mesh-joined")), "the interim commands the returned fabric-primary back through node.mesh.join: {commanded:?}");
+    assert!(commanded.iter().all(|c| c.starts_with(&fp_s)), "the returned fabric-primary commands nobody on its stale book: {commanded:?}");
+    let flame = s(&takeovers[0]["trace_id"]);
+    println!("fabric-primary held during {round}: {interim} took the seat and re-sent the round; seats home; flame http://192.168.68.99:16687/trace/{flame}");
     estate.record_trace_url(&flame);
 }
 
-/// CONTRACT (i146 Q45; states.md "The round checklist": "A new primary, through election or recovery,
+/// CONTRACT (Q89; states.md "The round checklist": "A new primary, through election or recovery,
 /// re-sends the current round. Members already done check in again, and the checklist rebuilds
-/// itself"; gossip.md: "a cut-off view holds no fabric-primary authority"): a fabric-primary cut off
-/// during state-commit and healed re-runs its own mesh's round, whose members check in again from
-/// their record, and the fabric reaches ready-for-traffic. A cut-off during the estate's own teardown
-/// (after the cell stops it, every peer signalled) is not the suspension's and asserts nothing. Must NOT
-/// happen: the fabric held in state-commit on the fabric-primary's own check-in, a round action run
-/// twice.
+/// itself"): a fabric-primary held past the staleness floor during state-commit is superseded by its own
+/// mesh's standby, which re-sends the round; the members check in again from their record and the fabric
+/// reaches ready-for-traffic under the resize; continued, the lost fabric-primary re-enters through
+/// node.mesh.join and gets both seats back one floor after it is ready. Must NOT happen: the fabric held
+/// in state-commit on the fabric-primary's own check-in, a round action run twice, the seats left with
+/// the standby.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_cut_off_during_state_commit_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready() {
-    fabric_primary_cut_off("a_fabric_primary_cut_off_during_state_commit_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready", (2, 1), "commit-state").await;
+async fn a_fabric_primary_held_during_state_commit_is_superseded_by_its_standby_which_re_sends_the_round() {
+    fabric_primary_cut_off("a_fabric_primary_held_during_state_commit_is_superseded_by_its_standby_which_re_sends_the_round", (2, 1), "commit-state").await;
 }
 
-/// CONTRACT (i146 Q45): the same for open-traffic: a fabric-primary cut off during the open-traffic
-/// round and healed re-runs its own mesh's round and the fabric reaches ready-for-traffic; no round
-/// action runs twice. A cut-off during the estate's own teardown is not the suspension's.
+/// CONTRACT (Q89): the same for open-traffic: a fabric-primary held past the floor during the open-traffic
+/// round is superseded by its standby, which re-sends the round; the fabric reaches ready-for-traffic; no
+/// round action runs twice; the seats go home.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_cut_off_during_open_traffic_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready() {
-    fabric_primary_cut_off("a_fabric_primary_cut_off_during_open_traffic_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready", (2, 1), "open-traffic").await;
+async fn a_fabric_primary_held_during_open_traffic_is_superseded_by_its_standby_which_re_sends_the_round() {
+    fabric_primary_cut_off("a_fabric_primary_held_during_open_traffic_is_superseded_by_its_standby_which_re_sends_the_round", (2, 1), "open-traffic").await;
 }
 
-/// CONTRACT (i146 e3 owner 3, Q45; node-rpc.md §43; fabric-state-commit.md step 3, "node →
-/// mesh-primary → fabric-primary"): a mesh primary's check-in is owed to the fabric-primary until it
-/// answers, however long it cannot be reached; and a fabric-primary that is its mesh's only node keeps
-/// its seat while suspended (gossip.md §6: a view that holds no other member is not cut off), and its
-/// round completes once it wakes. The fabric reaches ready-for-traffic. Must NOT happen: the check-in
-/// ending unanswered, the fabric held in state-commit.
+/// CONTRACT (Q89, fabric-recovery.md "Outside its mesh"; node-rpc.md §43; fabric-state-commit.md step 3,
+/// "node → mesh-primary → fabric-primary"): a mesh primary's check-in is owed to the fabric-primary until
+/// it answers, and is re-owed to the holder the seat names next. A fabric-primary that is its mesh's only
+/// node, held past the floor, is probed by mesh2's primary and superseded by it at mesh investigation's
+/// decision step; mesh2's primary, now the fabric-primary, re-sends the round and the fabric reaches
+/// ready-for-traffic under the resize; continued, mesh1's admin re-enters and gets the fabric seat back
+/// one floor after it is ready. Must NOT happen: the check-in ending unanswered, the fabric held in
+/// state-commit, the seat left with mesh2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready() {
-    fabric_primary_cut_off("a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready", (1, 0), "commit-state").await;
+async fn a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_superseded_at_the_decision_step_by_the_backbone() {
+    fabric_primary_cut_off("a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_superseded_at_the_decision_step_by_the_backbone", (1, 0), "commit-state").await;
 }

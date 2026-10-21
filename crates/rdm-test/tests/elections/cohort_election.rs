@@ -325,28 +325,33 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
                 })
                 .await;
             assert_eq!(primary_of(&a_view, &rpc).as_deref(), Some(rpc_now.as_str()), "a cut-off rpc holder keeps its seat: side A names no rpc primary of its own: {a_view:#?}");
-            // Side B has now heard nothing from the admin primary for longer than the staleness
-            // floor, and it elects no admin primary of its own: a silent holder keeps its seat, and
-            // silence is not proof of exit (R-A2).
-            let b_view = estate.node_values_at(&admin2_name).await;
-            assert_ne!(primary_of(&b_view, &admin).as_deref(), Some(admin2_name.as_str()), "a cut-off holder keeps the admin seat: side B names no admin primary of its own: {b_view:#?}");
+            // Side B has heard nothing from the admin primary, the fabric-primary, past the staleness
+            // floor: the playbook (Q89, fabric-recovery.md "The loss of the fabric-primary while a
+            // node-admin lives"): its standby writes the one row and holds both seats.
+            let b_view = estate
+                .until_view_at(&admin2, &format!("side B's standby {admin2_name} holds both seats within a floor of the mark"), rdm_transport::membership::staleness_floor() * 3 + Duration::from_secs(30), |views| {
+                    let nodes = Estate::values(views);
+                    (primary_of(&nodes, &admin).as_deref() == Some(admin2_name.as_str()) && advertised_fabric(&nodes).as_deref() == Some(admin2_name.as_str())).then_some(nodes)
+                })
+                .await;
+            assert_eq!(primary_of(&b_view, &rpc).as_deref(), Some(rpc_now.as_str()), "the rpc seat, whose holder side B hears, does not move: {b_view:#?}");
             for at in [&admin_pp, &admin2] {
                 for (c, p) in advertised_primaries(&estate.node_values_at(&at.to_string()).await) {
                     assert!(p.len() <= 1, "{at}: a view never names two primaries of {c:?}: {p:?}");
                 }
             }
             drop(partition);
-            // A view cut off from a side is already "settled" on the seats it computes from the
-            // members it hears; it has healed only once it holds every pre-cut member as live
-            // and ready. Wait for that fact (the same member set in both views), then for the
-            // computed seats over it.
+            // Healed, the superseded fabric-primary is commanded back through node.mesh.join by the
+            // interim, and one floor after it is ready the interim hands both seats home (Q89). A view
+            // has healed once it holds every pre-cut member live and ready and the seats are home; then
+            // the computed seats over it agree on both sides.
             let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
             let mut healed = Vec::new();
             for at in [&admin_pp, &admin2] {
                 estate
-                    .until_view_at(at, &format!("{at} holds every pre-cut member ready"), Duration::from_secs(30), |views| {
+                    .until_view_at(at, &format!("{at} holds every pre-cut member ready and the seats home at {admin_p}"), rdm_transport::membership::staleness_floor() * 6 + Duration::from_secs(90), |views| {
                         let view = live(&Estate::values(views));
-                        everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic")).then_some(())
+                        (everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic")) && primary_of(&view, &admin).as_deref() == Some(admin_p.as_str()) && advertised_fabric(&view).as_deref() == Some(admin_p.as_str())).then_some(())
                     })
                     .await;
                 healed.push(settle(&estate, at, &format!("{at} heals")).await);

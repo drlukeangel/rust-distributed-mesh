@@ -363,6 +363,10 @@ pub struct Watch {
     pub ladder: Arc<Mutex<Ladder>>,
     /// The carrier each mesh's latest probe went through.
     pub carriers: Mutex<BTreeMap<String, PathName>>,
+    /// The handover door: a mesh-primary outside the fabric-primary's mesh proposes the takeover of
+    /// the fabric seat from the ladder's decision step (fabric-recovery.md "The loss of the
+    /// fabric-primary while a node-admin lives" step 2, "Outside its mesh").
+    pub handover: crate::fabric_handover::HandoverSlot,
 }
 
 impl Watch {
@@ -386,6 +390,9 @@ pub async fn run(w: Watch) {
     // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
     let mut never_since: BTreeMap<String, Instant> = BTreeMap::new();
     let mut was_fabric_primary = false;
+    // The role the ladder's state was built in: a decision taken as the fabric-primary (on a peer mesh) is
+    // not the backbone rule's decision on the fabric seat's mesh once the seat has moved elsewhere.
+    let mut ladder_role_fabric_primary: Option<bool> = None;
     let mut wait = w.round;
     loop {
         tokio::select! {
@@ -403,9 +410,43 @@ pub async fn run(w: Watch) {
         inv.set_me(me.to_string());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
         was_fabric_primary = fabric_primary && w.membership.authorizes();
+        if ladder_role_fabric_primary != Some(fabric_primary) {
+            if ladder_role_fabric_primary.is_some() {
+                w.ladder.lock().unwrap().clear();
+            }
+            ladder_role_fabric_primary = Some(fabric_primary);
+        }
         if !was_fabric_primary {
-            w.ladder.lock().unwrap().clear();
             never_since.clear();
+            // A mesh-primary outside the fabric-primary's mesh runs the ladder on that mesh alone
+            // while the fabric-primary is unheard (fabric-recovery.md "The loss of the fabric-primary
+            // while a node-admin lives" step 2; elections §4.3): the fabric-primary first, then its
+            // other node-admins; no answer from any of them by the decision step is the backbone rule.
+            // An admin whose view is cut off or healing acts on nothing (gossip.md §6).
+            match fabric_seat_mesh_to_investigate(&w, &view, &me) {
+                Some(mesh) => {
+                    forget_unheard_meshes(&w.ladder, &BTreeSet::from([mesh.clone()]));
+                    if let Some(unheard) = w.membership.book.mesh_unheard(&mesh, Instant::now()) {
+                        investigate(&w, &inv, &view, mesh.clone(), unheard).await;
+                        if let Some(due) = w.membership.book.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
+                            wait = wait.min(due);
+                        }
+                        // The decision stands (no node-admin of that mesh answered): the backbone rule's
+                        // proposal, every round until the record moves (elections §5: "Every mesh-primary
+                        // that notices tells the winner"; repeats answer AlreadyApplied; a store that
+                        // could not commit is asked again).
+                        let decided = { let l = w.ladder.lock().unwrap(); l.unreachable_decided(&mesh) || l.recovery_decided(&mesh) };
+                        let record = w.membership.seats().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
+                        // ... and only a holder this book has held as the holder for a floor (a record learned a
+                        // moment ago, after a heal, names a holder whose silence predates it).
+                        let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
+                        if let (true, true, Some(record), Some(door)) = (decided, held_a_floor, record, w.handover.get().cloned()) {
+                            let _ = door.propose_take_over(&record).await;
+                        }
+                    }
+                }
+                None => w.ladder.lock().unwrap().clear(),
+            }
             continue;
         }
         let book = &w.membership.book;
@@ -458,6 +499,23 @@ pub async fn run(w: Watch) {
         }
         restore_peer_recovery(&me, &w.records, &view);
     }
+}
+
+/// The mesh this admin, a mesh-primary that does not hold the fabric seat, investigates while the
+/// fabric-primary is unheard: the fabric seat record's mesh, when it is not this admin's own (its own
+/// mesh's standby is the seat watch's arm, node-recovery.md step 2) and the record's birth is held off
+/// ready-for-traffic in this admin's view. `None` otherwise, and whenever this admin's view authorizes
+/// nothing (gossip.md §6).
+fn fabric_seat_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
+    if !w.membership.authorizes() || !view.holds_mesh_seat(&me.mesh, &w.me_id) {
+        return None;
+    }
+    let record = w.membership.seats().fabric()?;
+    if record.mesh == me.mesh {
+        return None;
+    }
+    let held = view.members().any(|n| n.node_id == record.node_id && n.incarnation_id.as_ref() == Some(&record.incarnation) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
+    held.then_some(record.mesh)
 }
 
 /// The peer meshes the view holds nodes of that the backbone has never carried to this admin: it
@@ -609,6 +667,15 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
             }
             Step::Probe { .. } | Step::Stop { .. } => {}
             Step::Decide { recover, latest, unheard_ms } => {
+                // The fabric seat's mesh, decided at a mesh-primary that does not hold the fabric seat:
+                // no node-admin of that mesh answered either probe, so the backbone rule writes the row
+                // (fabric-recovery.md "Outside its mesh"; elections §4.3). The re-creation of the lost
+                // mesh's node-admin follows the committed row, as today.
+                let record = w.membership.seats().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
+                if let (Some(_), false) = (record, view.holds_fabric_seat(&w.me_id)) {
+                    verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule writes the seat row");
+                    continue;
+                }
                 verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
                 if recover {
                     let verdict_ms = w.membership.clock().now_rafka_ms();

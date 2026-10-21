@@ -98,7 +98,8 @@ async fn a_fabric_primary_held_past_the_floor_is_superseded_by_its_meshs_standby
     let spans = estate.spans();
     let republished = named(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == standby && at(sp) >= held_at && at(sp) < released_at).count();
     assert!(republished > 0, "the standby publishes mesh1's aggregate again as its primary (via-aggregate-publisher) while the fabric-primary is held");
-    let commanded: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| at(sp) >= released_at).map(|sp| format!("{}:{}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["outcome"]))).collect();
+    // The commands sent (a look that sent nothing is spanned too, `sent = false`, with why).
+    let commanded: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| at(sp) >= released_at && sp["attributes"]["sent"] != "false" && sp["attributes"]["sent"] != false).map(|sp| format!("{}:{}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["outcome"]))).collect();
     assert!(commanded.iter().any(|c| c == &format!("{fp}:mesh-joined")), "the interim commands the returned fabric-primary back through node.mesh.join: {commanded:?}");
     assert!(commanded.iter().all(|c| c.starts_with(fp)), "the returned fabric-primary commands nobody on its stale book: {commanded:?}");
     let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "terminated").count();

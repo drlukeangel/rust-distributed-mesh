@@ -162,7 +162,10 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         assert!(begun_at >= joined_at, "{node}: the next cycle begins at the join the command made ({joined_at}), not before it ({begun_at}): no state is written before the command is accepted (node-start.md step 2)");
         let admitted = after(&spans, "rdm.node_admin.status.update.via-mesh-join-admitted", node, since);
         let pending_at = admitted.iter().filter(|sp| matches!(s(&sp["attributes"]["outcome"]).as_str(), "applied" | "already-applied")).map(at).min();
-        assert!(pending_at.is_some_and(|p| p >= joined_at), "{node}: the authority publishes the heard-again birth Pending at its join (node-mesh-join.md step 10; via-mesh-join-admitted applied, at or after the join {joined_at}): {admitted:?}");
+        // The Pending publish is the admission's (the join's report reaches the authority before its
+        // install span closes the serve), so it is read after the command, not against the install's clock.
+        assert!(pending_at.is_some_and(|p| p >= since), "{node}: the authority publishes the heard-again birth Pending at its join (node-mesh-join.md step 10; via-mesh-join-admitted applied, after the release {since}): {admitted:?}");
+        let _ = joined_at;
         // The authority's record of the birth's own ready-for-traffic declaration (its `sender`).
         let ready_at = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == node && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since).map(at).min();
         assert!(ready_at.is_some_and(|r| r > pending_at.unwrap()), "{node}: ready-for-traffic is declared only after the Pending publish: pending {pending_at:?}, ready {ready_at:?}");

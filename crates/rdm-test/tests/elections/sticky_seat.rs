@@ -1,5 +1,6 @@
-//! Ruling R-A2 process cells: the fabric-primary seat stays in its mesh until that mesh is proven
-//! unable to hold it, and a silent holder is looked at, never replaced for being silent.
+//! Ruling R-A2 and Q89 process cells: the fabric-primary seat stays in its mesh while a node-admin of it
+//! answers; a fabric-primary unheard past the staleness floor is superseded by the playbook of
+//! fabric-recovery.md, and the seat goes home once the node at its path.name is back.
 //!
 //! Each cell runs a two-mesh fabric of two node-admins and three rpc nodes per mesh. A cell that
 //! kills the fabric primary is permitted by R-P1; no other cell kills a fabric-primary node-admin.
@@ -308,10 +309,15 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     assert_eq!(attr(&heard, "outcome"), "held", "{heard:#?}");
 }
 
-/// CONTRACT: every UDP path between the fabric primary's mesh and the other mesh is cut while
-/// all processes run. Each admin uses its own silence evidence to inspect the exact birth;
-/// the seat does not move on either side. After healing it remains held. The investigation
-/// carries iroh's local view of the holder (A1), in its shape and read as nothing more.
+
+/// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
+/// "Outside its mesh": "An answer from any of them ends the investigation and the seats stay in that
+/// mesh"): every UDP path between the fabric-primary's mesh's node-admins and the other mesh's is cut
+/// while all processes run; the rpc nodes are not cut. The other mesh's primary probes the fabric-primary
+/// through a member of its mesh, which answers for it: the investigation stops and the seat does not move
+/// on either side. Each admin looks at the exact silent birth from its own silence evidence; after healing
+/// the seat remains held. The look carries iroh's local view of the holder (A1), in its shape and read as
+/// nothing more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
     let (mut estate, nodes) = fabric("a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat").await;
@@ -353,6 +359,98 @@ async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
     assert_ne!(attr(&looked, "finding"), "exit-proven", "a running birth is not a loss: {looked:#?}");
     // A1: the investigation carries iroh's local view of the holder.
     iroh_observation_shape(&looked).unwrap_or_else(|why| panic!("{why}"));
+}
+
+/// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
+/// "Outside its mesh", and step 4; elections §4.3): every UDP path between every node of the
+/// fabric-primary's mesh and every node of the other mesh is cut while all processes run. The other
+/// mesh's primary hears nothing of the fabric-primary's mesh once its aggregate stops, runs mesh
+/// investigation's ladder on it (the fabric-primary first, then its other node-admin; each probe
+/// `unreachable`, no member of that mesh reachable to carry it), and at the decision step,
+/// no node-admin of that mesh having answered, the backbone rule names it: it writes the one takeover row
+/// and holds the fabric seat. The incumbent mesh hears its fabric-primary all along and names the
+/// unchanged holder while the cut stands. Healed, the record names the other mesh's primary; the node at
+/// the original path.name has been ReadyForTraffic in its view for one floor, and it hands the seat home
+/// by the committed handover: both sides name the original holder again. The seat watch's look at the
+/// silent holder carries iroh's local view of it (A1), in its shape and read as nothing more. Must NOT
+/// happen: a Concern on the wire, an exit proof for a running birth, the seat left with the other mesh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal() {
+    let (mut estate, nodes) = fabric("a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal").await;
+    let fp = fabric_primary(&nodes).expect("one fabric primary");
+    let fp_node = node(&nodes, &fp).clone();
+    // Every node of the fabric-primary's mesh is cut from every node of the other: no member can carry a probe.
+    let (mine, theirs): (Vec<String>, Vec<String>) = {
+        let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| s(&n["name"])).collect::<Vec<_>>();
+        (side(true), side(false))
+    };
+    let other_primary = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).expect("the other mesh's primary")["name"]);
+    let floor = rdm_transport::membership::staleness_floor();
+    // The ladder's decision step stands at twice the floor (mesh-investigation.md; rungs 20/30/40/60 s by default).
+    let decision = floor * 2;
+    let cut = match Partition::start(&udp_ports(&nodes, &mine), &udp_ports(&nodes, &theirs)) {
+        Ok(p) => p,
+        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
+            eprintln!("SKIPPED by name: the host cannot cut UDP between node-admins: {why}");
+            estate.stop().await;
+            return;
+        }
+        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
+    };
+    let cut_at = std::time::Instant::now();
+    let fp_id = s(&fp_node["node_id"]);
+    let looked = wait_for("an admin looked at the exact silent birth", Duration::from_secs(60), || {
+        let spans = estate.spans();
+        let found = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter().find(|sp| attr(sp, "suspect_node_id") == fp_id).cloned();
+        async move { found }
+    })
+    .await;
+    // The other mesh's primary takes the seat at the decision step, by one takeover row.
+    let from_other = wait_for(&format!("{other_primary} holds the fabric seat at the decision step"), decision + floor * 3 + Duration::from_secs(30), || async {
+        let ns = estate.node_values_at(&other_primary).await;
+        (fabric_primary(&ns).as_deref() == Some(other_primary.as_str())).then_some(ns)
+    })
+    .await;
+    assert!(cut_at.elapsed() >= decision, "the seat moved before the decision step: {:?} < {decision:?}", cut_at.elapsed());
+    let from_incumbent = estate.node_values_at(&fp).await;
+    assert_eq!(fabric_primary(&from_incumbent).as_deref(), Some(fp.as_str()), "the incumbent mesh hears its fabric-primary and names the unchanged holder while the cut stands: {from_incumbent:#?}");
+    drop(cut);
+    // Healed: the node at the original path.name, Ready for one floor in the holder's view, gets the seat home.
+    tokio::time::sleep(floor * 3).await;
+    for at in [&other_primary, &fp] {
+        let ns = estate.node_values_at(at).await;
+        let seats: Vec<String> = ns.iter().map(|n| format!("{}: primary={} fabric={} status={}", s(&n["name"]), n["is_primary"], n["is_fabric_primary"], s(&n["status"]))).collect();
+        eprintln!("{at}'s view three floors after the heal: {seats:#?}");
+    }
+    let mut healed = Vec::new();
+    for at in [&other_primary, &fp] {
+        let ns = estate
+            .until_view_at(&Estate::path(at), &format!("{at} names the original holder again after the heal"), floor * 5 + Duration::from_secs(60), |views| {
+                let ns = Estate::values(views);
+                (fabric_primary(&ns).as_deref() == Some(fp.as_str())).then_some(ns)
+            })
+            .await;
+        healed.push(ns);
+    }
+    estate.stop().await;
+    let spans = estate.spans();
+    let _ = from_other;
+    assert_eq!(attr(&looked, "trigger"), "silence");
+    assert!(named(&spans, "rdm.mesh.seat.update.via-concern").is_empty(), "no Concern on the wire");
+    assert_ne!(attr(&looked, "finding"), "exit-proven", "a running birth is not a loss: {looked:#?}");
+    // A1: the investigation carries iroh's local view of the holder.
+    iroh_observation_shape(&looked).unwrap_or_else(|why| panic!("{why}"));
+    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| attr(sp, "outcome") == "committed").collect();
+    assert_eq!(takeovers.len(), 1, "one committed takeover row, the backbone rule's: {takeovers:#?}");
+    assert_eq!(attr(takeovers[0], "node"), other_primary, "written by the other mesh's primary: {takeovers:#?}");
+    // The probes before the row: after the heal the ladder probes again and is answered.
+    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == other_primary && attr(sp, "mesh") == s(&fp_node["mesh"]) && at_ns(sp) <= at_ns(takeovers[0])).collect();
+    assert!(probes.len() >= 2, "the other mesh's primary probed the fabric-primary's mesh twice before deciding: {probes:#?}");
+    assert!(probes.iter().all(|sp| attr(sp, "outcome") != "admin-alive"), "no node-admin of the cut mesh answered a probe: {probes:#?}");
+    let exits = named(&spans, "rdm.node_admin.node.delete.via-exit-proof").into_iter().filter(|sp| attr(sp, "node_id") == fp_id).count();
+    assert_eq!(exits, 0, "no exit proof for a running birth");
+    estate.record_trace_url(&s(&takeovers[0]["trace_id"]));
+    eprintln!("whole-mesh cut: {other_primary} took the seat after {:?} (decision {decision:?}); home again at both sides after the heal", cut_at.elapsed());
 }
 
 fn at_ns(sp: &Value) -> u64 {

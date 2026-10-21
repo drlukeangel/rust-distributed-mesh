@@ -306,6 +306,8 @@ pub struct NodeSelf {
     round_actions: Mutex<Arc<dyn crate::rounds::RoundActions>>,
     /// The rounds this birth took, by round, and how far it took each.
     rounds_seen: Mutex<std::collections::HashMap<crate::rounds::RoundKey, RoundProgress>>,
+    /// The round keys this node's action ran for, in any role (`rounds::ActedRecord`).
+    acted: Arc<crate::rounds::ActedRecord>,
 }
 
 impl NodeSelf {
@@ -325,7 +327,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         membership.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -701,6 +703,13 @@ impl NodeSelf {
         self
     }
 
+    /// This surface, with the record of the round keys this node's action ran for shared with the
+    /// admin's round driver: one action per round key whichever role runs it.
+    pub fn with_acted(mut self, acted: Arc<crate::rounds::ActedRecord>) -> Self {
+        self.acted = acted;
+        self
+    }
+
     /// Complete `actions` before checking in to a round, from the next round this birth takes.
     pub fn set_round_actions(&self, actions: Arc<dyn crate::rounds::RoundActions>) {
         *self.round_actions.lock().unwrap() = actions;
@@ -734,6 +743,12 @@ impl NodeSelf {
         let admit = {
             let mut seen = self.rounds_seen.lock().unwrap();
             match seen.get_mut(&key) {
+                // This node's action for the round ran in another role (its mesh round as the primary):
+                // the command is checked in from the record, the action is not run again.
+                None if self.acted.acted(&key) => {
+                    seen.insert(key.clone(), RoundProgress::Acted);
+                    Admit::CheckIn
+                }
                 None => {
                     seen.insert(key.clone(), RoundProgress::Acting { first: commander.clone(), joined: Vec::new() });
                     Admit::Act
@@ -775,6 +790,7 @@ impl NodeSelf {
                 self.rounds_seen.lock().unwrap().remove(&key);
                 return;
             }
+            self.acted.record(&key);
             let joined = match self.rounds_seen.lock().unwrap().insert(key.clone(), RoundProgress::Acted) {
                 Some(RoundProgress::Acting { joined, .. }) => joined,
                 _ => Vec::new(),
@@ -1022,6 +1038,12 @@ impl NodeSelf {
         let Some(session) = self.session.lock().unwrap().clone() else {
             return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.held_name()));
         };
+        // The fabric-primary has no authority above it (Q87; fabric-recovery.md step 3): a commanded join
+        // reaching the birth whose own record holds the fabric seat is refused by name, whoever sent it
+        // (a superseded holder healing from a cut-off commands on a stale book).
+        if self.membership.seats().fabric().is_some_and(|h| h.node_id == self.node_id && h.incarnation == self.incarnation) {
+            return rdm_core::reply::status::rejected_not_authority(rdm_core::status::NotAuthority::ReceiverNotPrimary { needed: format!("a birth with an authority above it: {} holds the fabric seat, which nothing above commands to join", self.held_name()) });
+        }
         let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
         let (commander_tx, commander_rx) = tokio::sync::watch::channel(key);
         {

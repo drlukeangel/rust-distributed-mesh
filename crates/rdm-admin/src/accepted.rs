@@ -477,16 +477,17 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// successor"): the fabric seat was taken from `taken`'s lost birth, it is held outside that birth's
 /// mesh, and that mesh's primary seat is held by a ReadyForTraffic node-admin other than the lost
 /// birth. `None` once the seat is back in that mesh, and for a fabric seat no takeover moved.
-pub fn handback_due(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>) -> Option<PathName> {
+pub fn handback_due(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>) -> Option<PathName> {
     let (_, lost) = taken?;
     let holder = observed.fabric_primary()?;
     if holder.node_id == lost.node_id {
         return None;
     }
     // The node at the lost fabric-primary's path.name (Q89): the lost birth itself, heard again and
-    // ready; or, when its name was released (the whole-mesh arm), the node-admin re-created at it,
-    // its mesh's primary by the ordinary rule.
-    let at_path = observed.members().find(|n| n.node_id == lost.node_id).map(|n| n.name.clone()).and_then(|name| observed.node(&name).cloned());
+    // ready; the node re-created at the name its exit-proof row names (`lost_name`); or, with neither
+    // known (the whole-mesh arm, its name released), the node-admin re-created as its mesh's primary
+    // by the ordinary rule.
+    let at_path = observed.members().find(|n| n.node_id == lost.node_id).map(|n| n.name.clone()).or_else(|| lost_name.cloned()).and_then(|name| observed.node(&name).cloned());
     let candidate = match at_path {
         Some(n) => n,
         None => observed.cohort_primary(&lost.mesh, NodeKind::NodeAdmin)?.clone(),
@@ -504,8 +505,8 @@ fn handback_ready() -> &'static std::sync::Mutex<std::collections::HashMap<rdm_c
 }
 
 /// [`handback_due`] once the node it names has been ready-for-traffic for `dwell` (Q89): `None` before.
-pub fn handback_due_after_dwell(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>, dwell: std::time::Duration) -> Option<PathName> {
-    let due = handback_due(observed, taken)?;
+pub fn handback_due_after_dwell(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>, dwell: std::time::Duration) -> Option<PathName> {
+    let due = handback_due(observed, taken, lost_name)?;
     let id = observed.node(&due)?.node_id.clone();
     let mut ready = handback_ready().lock().unwrap();
     let since = *ready.entry(id).or_insert_with(std::time::Instant::now);
@@ -965,18 +966,51 @@ mod tests {
         };
         let o = view(R, true);
         let taken = lost(&o);
-        assert_eq!(handback_due(&o, Some(&taken)).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "owed to mesh1's re-created, Ready primary");
-        assert_eq!(handback_due(&o, None), None, "no takeover moved the seat");
-        assert_eq!(handback_due(&view(P, true), Some(&taken)), None, "the re-created admin is still Pending");
-        assert_eq!(handback_due(&view(R, false), Some(&taken)), None, "the seat is back in mesh1");
+        assert_eq!(handback_due(&o, Some(&taken), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "owed to mesh1's re-created, Ready primary");
+        assert_eq!(handback_due(&o, None, None), None, "no takeover moved the seat");
+        assert_eq!(handback_due(&view(P, true), Some(&taken), None), None, "the re-created admin is still Pending");
+        assert_eq!(handback_due(&view(R, false), Some(&taken), None), None, "the seat is back in mesh1");
         let as_lost = (taken.0, rdm_core::handover::HandoverBirth { node_id: o.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone(), ..taken.1.clone() });
-        assert_eq!(handback_due(&o, Some(&as_lost)), None, "the primary of mesh1 is the lost birth itself");
+        assert_eq!(handback_due(&o, Some(&as_lost), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "the lost birth itself, returned and Ready at its path.name, is owed the seats back (Q89)");
         let cur = t(&[("mesh1", 1, 1), ("mesh2", 1, 1)]);
         let to: PathName = "mesh1.admin.1".parse().unwrap();
         let planned = plan_with(&cur, &o, None, ActionProgress::default(), &BTreeSet::new(), &[], Some(&to)).operations;
         assert_eq!(planned, vec![BuildOperation::HandFabricSeat { to: to.clone() }], "the converged topology owes nothing else");
         let restart = AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: o.node(&"mesh2.rpc.1".parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
         assert!(!plan_with(&cur, &o, Some(&restart), ActionProgress::default(), &BTreeSet::new(), &[], Some(&to)).operations.iter().any(|op| matches!(op, BuildOperation::HandFabricSeat { .. })), "an attempt with an action repairs exactly its birth");
+    }
+
+    /// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4:
+    /// "Once the node at the lost fabric-primary's path.name, returned or re-created, has been
+    /// ReadyForTraffic for one staleness floor, the holder hands every seat it took back to it"): the
+    /// hand-back is owed to the lost birth itself once it is heard again and Ready, with the seats held by
+    /// its own mesh's standby; not while it is PendingReconnect; and only after the dwell: the first read
+    /// that finds it Ready starts the floor, a read inside the floor owes nothing, a read after it does.
+    #[test]
+    fn the_seats_are_owed_back_to_the_returned_fabric_primary_one_floor_after_it_is_ready() {
+        use NodeStatus::{PendingReconnect as H, ReadyForTraffic as R};
+        let view = |lost_status: NodeStatus| {
+            let mut o = observed(vec![n("mesh1.admin.1", lost_status, false), n("mesh1.admin.2", R, true), n("mesh1.rpc.1", R, true), n("mesh2.admin.1", R, true)], &["mesh1", "mesh2"]);
+            o.nodes.iter_mut().for_each(|x| x.is_fabric_primary = x.name.to_string() == "mesh1.admin.2");
+            o
+        };
+        let o = view(R);
+        let lost = o.node(&"mesh1.admin.1".parse().unwrap()).unwrap();
+        let taken = (4u64, rdm_core::handover::HandoverBirth { mesh: "mesh1".into(), node_id: lost.node_id.clone(), incarnation: lost.incarnation_id.clone().unwrap() });
+        assert_eq!(handback_due(&o, Some(&taken), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "owed to the returned birth at the lost path.name, Ready under the standby");
+        assert_eq!(handback_due(&view(H), Some(&taken), None), None, "not while the lost birth is still held off ready-for-traffic");
+        let dwell = std::time::Duration::from_millis(60);
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell), None, "the first read that finds it Ready starts the floor and owes nothing yet");
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell), None, "inside the floor nothing is owed");
+        std::thread::sleep(dwell);
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "one floor after it is Ready the hand-back is owed");
+        // The lost birth terminated and re-created at its path.name as a new birth, under the standby that
+        // holds both seats: the exit row's name finds the node at that path; without it nothing is owed yet.
+        let recreated = view(R);
+        let gone = (4u64, rdm_core::handover::HandoverBirth { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
+        let name: PathName = "mesh1.admin.1".parse().unwrap();
+        assert_eq!(handback_due(&recreated, Some(&gone), Some(&name)).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "owed to the new birth at the lost path.name");
+        assert_eq!(handback_due(&recreated, Some(&gone), None), None, "the standby itself is mesh1's primary: with no name, nothing is owed to it");
     }
 
     #[test]

@@ -51,13 +51,17 @@ pub type HeardAgainSlot = Arc<OnceLock<Arc<HeardAgain>>>;
 impl HeardAgain {
     /// Command `node`'s exact birth back through `node.mesh.join` ([`command_mesh_join`]).
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
-        let Some(runner) = self.runner.get() else {
-            return "no-runner".to_string();
+        let outcome = match self.runner.get() {
+            None => "no-runner".to_string(),
+            Some(_) if !(self.authorizes)() => "view-cut-off: this admin's view authorizes nothing now".to_string(),
+            Some(runner) => command_mesh_join(&self.client, &self.authority, &self.builds, runner, &self.book, node, incarnation).await,
         };
-        if !(self.authorizes)() {
-            return "view-cut-off: this admin's view authorizes nothing now".to_string();
+        // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
+        if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
+            tracing::info_span!("rdm.node_admin.node.update.via-mesh-join-commanded", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), sent = false, outcome = %outcome, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("a heard-again birth was looked at: node.mesh.join not sent"));
         }
-        command_mesh_join(&self.client, &self.authority, &self.builds, runner, &self.book, node, incarnation).await
+        outcome
     }
 }
 
@@ -182,7 +186,10 @@ async fn command_mesh_join(
         }
     };
     let outcome = tracing::Instrument::instrument(outcome, span.clone()).await;
-    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") {
+    // A command the birth refused by name (its own record still names it the fabric-primary a moment
+    // after the row moved, or it is not ready for one yet) is looked at again on the next pass, not
+    // held for a floor: the refusal is the birth's knowledge at that instant, not a new silence.
+    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-authority") || outcome.starts_with("not-ready") {
         commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());

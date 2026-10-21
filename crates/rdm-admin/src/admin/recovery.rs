@@ -811,6 +811,20 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
         .collect()
 }
 
+/// The node-admins, held off ready-for-traffic, of every mesh other than `me_mesh` that has no
+/// ReadyForTraffic node-admin: nobody in that mesh can tickle them or command them back, so the
+/// fabric-primary, the authority above them, does (fabric-recovery.md "The loss of the fabric-primary
+/// while a node-admin lives" step 3; Q89).
+pub fn admins_of_meshes_without_a_ready_admin<'a>(view: &'a Topology, me_mesh: &str) -> impl Iterator<Item = &'a Node> + 'a {
+    let me_mesh = me_mesh.to_string();
+    view.members().filter(move |n| {
+        n.kind == NodeKind::NodeAdmin
+            && n.mesh != me_mesh
+            && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)
+            && !view.members().any(|o| o.mesh == n.mesh && o.kind == NodeKind::NodeAdmin && o.status == NodeStatus::ReadyForTraffic)
+    })
+}
+
 /// What the mesh primary's tick hears a member again against (R-FM1: "an answer from the exact birth
 /// or its returning digest ends the hold and clears the fact", `offline-returned`): the node ids of
 /// `view`'s members and of every birth the tick watches (`watched_births`), the births only durable rows

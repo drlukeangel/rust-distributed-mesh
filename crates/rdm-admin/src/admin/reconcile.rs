@@ -171,6 +171,10 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 
     /// The fabric seat's latest move read from the fabric's seat moves, when it is a takeover. Moves
     /// that cannot be read are named and answer none: nothing is re-created without the takeover read.
+    fn lost_name(&self, lost: &rdm_core::handover::HandoverBirth) -> Option<PathName> {
+        self.records.exited_name(&lost.node_id, &lost.incarnation)
+    }
+
     async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
         match self.fabric.seat_moves().await {
             Ok(moves) => crate::fabric_storage::fabric_seat_taken_from(&moves),
@@ -308,12 +312,16 @@ pub(crate) async fn crashed_peer_mesh(
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     unreachable: &(dyn Fn(&str) -> bool + Sync),
     taken: Option<&(u64, rdm_core::handover::HandoverBirth)>,
+    released: &(dyn Fn(&rdm_core::handover::HandoverBirth) -> bool + Sync),
 ) -> Option<(String, PathName, Option<crate::drift::ExitedBirth>)> {
     for m in current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)) {
         let Some(first) = m.cohort(NodeKind::NodeAdmin).min() else { continue };
         // The mesh the fabric seat was taken from (elections §4.3): its first node-admin is re-created
         // with no exit proof, and the create's own fence decides its data dir (node-recovery.md `R-FM2`).
-        if let Some((seat_move, lost)) = taken.filter(|(_, lost)| lost.mesh == m.name) {
+        // ... and only once the lost birth's name was released (fabric-recovery.md step 3: nobody able to
+        // inspect it): a lost birth the view still holds as a member is held-running or proven exited by
+        // the standing playbook, never re-created beside itself.
+        if let Some((seat_move, lost)) = taken.filter(|(_, lost)| lost.mesh == m.name && released(lost)) {
             if t.cohort(&m.name, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
                 let Some(owed) = crate::build_drive::first_admin_owed(current, &m.name, first) else { continue };
                 if started.insert((current.build_id.clone(), 0u32, vec!["takeover-recreate".to_string(), m.name.clone(), lost.node_id.to_string(), seat_move.to_string()])) {
@@ -410,6 +418,7 @@ pub async fn reconcile_drift(
     unreachable: &(dyn Fn(&str) -> bool + Sync),
     exits: &Records,
     taken: Option<&(u64, rdm_core::handover::HandoverBirth)>,
+    lost_name: Option<&PathName>,
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
     let me = &authority.name;
@@ -445,7 +454,8 @@ pub async fn reconcile_drift(
     });
     // The fully crashed mesh (mesh-investigation.md step 5): a peer mesh the investigation found
     // unreachable, every node of which the provider proves exited, is owed the same create.
-    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, exits.path_probe().as_deref(), provider, started, unreachable, taken).await } else { None };
+    let released = |lost: &rdm_core::handover::HandoverBirth| exits.is_exited(&lost.node_id, &lost.incarnation);
+    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, exits.path_probe().as_deref(), provider, started, unreachable, taken, &released).await } else { None };
     // The births this authority may have to prove: the ones it no longer hears.
     let candidates = crate::drift::unheard(t);
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
@@ -600,7 +610,7 @@ pub async fn reconcile_drift(
     // The handback (elections §4.3, §4.4): the fabric seat a takeover moved is owed back to the lost
     // mesh's re-created node-admin once it is Ready and seated there. Its attempt carries no action: the
     // plan holds the handback, and the drive moves the seat, naming that admin, as its preceding update.
-    let handback = crate::accepted::handback_due_after_dwell(t, taken, rdm_transport::membership::staleness_floor());
+    let handback = crate::accepted::handback_due_after_dwell(t, taken, lost_name, rdm_transport::membership::staleness_floor());
     if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() && handback.is_none() {
         return None;
     }

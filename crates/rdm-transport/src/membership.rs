@@ -978,11 +978,14 @@ pub struct SeatBook {
     inner: Arc<Mutex<HeldSeats>>,
     /// Ticks whenever a record is held: whoever persists the records, or looks at the seats, wakes on it.
     changed: Arc<tokio::sync::watch::Sender<u64>>,
+    /// When this book was made: the fabric seat's record is held from then until `HeldSeats::fabric_since`
+    /// says it changed holder.
+    created: Instant,
 }
 
 impl Default for SeatBook {
     fn default() -> Self {
-        Self { inner: Arc::default(), changed: Arc::new(tokio::sync::watch::Sender::new(0)) }
+        Self { inner: Arc::default(), changed: Arc::new(tokio::sync::watch::Sender::new(0)), created: Instant::now() }
     }
 }
 
@@ -991,6 +994,8 @@ struct HeldSeats {
     contexts: HashMap<(Seat, String), (SeatHolder, crate::envelope::Context)>,
     together_context: Option<crate::envelope::Context>,
     fabric: Option<SeatHolder>,
+    /// When the fabric seat's record last changed holder here, by every writer (`put`).
+    fabric_since: Option<Instant>,
     meshes: HashMap<String, SeatHolder>,
     /// Every other (mesh, node type) cohort's primary record, by (mesh, kind).
     cohorts: HashMap<(String, rdm_core::NodeKind), SeatHolder>,
@@ -1034,7 +1039,12 @@ impl HeldSeats {
     fn put(&mut self, seat: Seat, mesh: &str, record: SeatHolder) {
         self.vacant.remove(&slot(seat, mesh));
         match seat {
-            Seat::FabricPrimary => self.fabric = Some(record),
+            Seat::FabricPrimary => {
+                if self.fabric.as_ref().is_none_or(|held| held.node_id != record.node_id) {
+                    self.fabric_since = Some(Instant::now());
+                }
+                self.fabric = Some(record);
+            }
             Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => {
                 self.meshes.insert(mesh.to_string(), record);
             }
@@ -1089,6 +1099,13 @@ impl SeatBook {
                 SeatTaken::Held { previous }
             }
         }
+    }
+
+    /// How long this book has held the fabric seat's current holder as the holder: a holder is unheard
+    /// past the staleness floor only once its book has held it as the holder for a floor (a record
+    /// learned a moment ago, after a heal, names a holder whose silence predates it).
+    pub fn fabric_held_for(&self) -> Duration {
+        self.inner.lock().unwrap().fabric_since.unwrap_or(self.created).elapsed()
     }
 
     /// Hold every seat of one committed update together, under one lock: either every seat's record
@@ -3052,7 +3069,8 @@ impl Membership {
     /// May this node's view authorize anything now: not cut off, and not
     /// within one silence window of healing ([`CutOff::authorizes`]).
     pub fn authorizes(&self) -> bool {
-        self.cut_off.lock().unwrap().authorizes(Instant::now())
+        let now = Instant::now();
+        self.cut_off.lock().unwrap().authorizes(now) && self.book.silence_healed_at().is_none_or(|t| now.saturating_duration_since(t) >= self.book.staleness_floor())
     }
 
     /// How many meshes this node holds a live member of.
@@ -3213,10 +3231,31 @@ impl Membership {
             if !self.mesh.neighbors.lock().unwrap().is_empty() {
                 return;
             }
+            // A node alone in its mesh has no neighbour to wait for: the projection its authority handed
+            // it (gossip.md §3.1, the member record) names its mesh with no member but itself, and its book
+            // holds none either. Knowing nothing yet (an empty projection) is not being alone.
+            if self.alone_in_mesh() {
+                return;
+            }
             if changed.changed().await.is_err() {
                 return;
             }
         }
+    }
+
+    /// Is this node its mesh's only member, by the projection it installed of its own mesh (the member
+    /// record, gossip.md §3.1) and its book: the projection names the mesh and no member of it but this
+    /// node, and the book holds no other. With no projection of the mesh installed, the answer is no.
+    pub fn alone_in_mesh(&self) -> bool {
+        let me = self.view.current_name();
+        let own_mesh = self.view.mesh.clone();
+        // The projection of this node's own mesh: what its primary last put into the mesh, held in the
+        // forwarder when this node was that primary, in the mesh channel's sources otherwise.
+        let mut snapshots = self.view.forwarder.lock().unwrap().snapshots();
+        snapshots.extend(self.view.mesh_rx.lock().unwrap().snapshots());
+        let Some(snapshot) = snapshots.into_iter().find(|s| s.mesh == own_mesh) else { return false };
+        let other = |d: &MeshDigest| d.node.name.mesh == own_mesh && d.node.name.to_string() != me;
+        !snapshot.digests.iter().any(other) && !self.book.all().iter().any(other)
     }
 
     /// The active gossip neighbours on this node's mesh channel.
@@ -4262,6 +4301,12 @@ pub struct DigestBook {
     /// never read: its one status is `member_statuses`'s, and every read that hands out a digest
     /// takes it from there ([`Self::hand_out`]).
     inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, Heard)>>>,
+    /// When this book last applied a member's receipt (`Direct` or `Forwarded`), and when a receipt
+    /// last ended a silence of a whole staleness floor or more: a view that heard members and then
+    /// heard none for a floor was cut off (gossip.md §6), whether or not a watch tick ran meanwhile (a
+    /// held process runs none), and it authorizes nothing for one floor after that receipt.
+    last_heard: Arc<Mutex<Option<Instant>>>,
+    silence_healed_at: Arc<Mutex<Option<Instant>>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
     /// changes, or a departure is accepted; a fresher digest of the same
     /// birth does not tick.
@@ -4456,6 +4501,32 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
 }
 
 impl DigestBook {
+    /// A member's receipt applied at `now`, the book holding `held` members before it: a receipt that
+    /// ends a silence of a staleness floor or more over a book that held members is the heal of a
+    /// cut-off view (gossip.md §6, "a view that heard members and hears none"), measured here on the
+    /// book's own receipts so a held process finds it at its first receipt, before any watch tick.
+    fn note_heard(&self, now: Instant, held: usize) {
+        let mut last = self.last_heard.lock().unwrap();
+        if let Some(prev) = *last {
+            let silent = now.saturating_duration_since(prev);
+            if held > 0 && silent >= self.staleness_floor() {
+                *self.silence_healed_at.lock().unwrap() = Some(now);
+                let node = self.holder_name().unwrap_or_default();
+                tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role = "start", silent_ms = silent.as_millis() as u64)
+                    .in_scope(|| tracing::info!("no member was heard for a staleness floor: what this node held was not acted on"));
+                tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role = "stop", silent_ms = silent.as_millis() as u64)
+                    .in_scope(|| tracing::info!("a member is heard again: the view heals, and authorizes nothing for one floor"));
+            }
+        }
+        *last = Some(now);
+    }
+
+    /// When a receipt last ended a silence of a whole staleness floor over a book that held members,
+    /// if ever: the view's heal, from which it authorizes nothing for one floor.
+    pub fn silence_healed_at(&self) -> Option<Instant> {
+        *self.silence_healed_at.lock().unwrap()
+    }
+
     /// The path name of the node holding this book, when set by its membership.
     pub fn holder_name(&self) -> Option<String> {
         let holder = self.holder.lock().unwrap();
@@ -4476,6 +4547,8 @@ impl DigestBook {
     pub(crate) fn with_floor(retention: Duration, staleness_floor: Duration) -> Self {
         Self {
             inner: Arc::default(),
+            last_heard: Arc::default(),
+            silence_healed_at: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
             overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
@@ -5569,6 +5642,7 @@ impl DigestBook {
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
+        self.note_heard(now, inner.len());
         inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
         drop(inner);
         if heard_changed {
@@ -5695,6 +5769,7 @@ impl DigestBook {
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
+        self.note_heard(now, inner.len());
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its

@@ -1145,6 +1145,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
                             // a fabric round is owed through it.
                             let declarer = crate::status_declare::Declarer::with_first_ready(records.first_ready.clone());
+                            // One record of the round keys this node's action ran for, whichever role ran it
+                            // (states.md "The round checklist": once per round key), shared by the admin's round
+                            // driver and the node's member path.
+                            let acted_record: Arc<rdm_node::rounds::ActedRecord> = Arc::default();
                             let _ = rounds_slot.set(crate::fabric_rounds::FabricRounds::new(crate::fabric_rounds::RoundEnv {
                                 me: name.clone(),
                                 node_id: node_id.clone(),
@@ -1159,6 +1163,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 records: records.clone(),
                                 hooks: fabric_hooks,
                                 actions: round_actions.clone(),
+                                acted: acted_record.clone(),
                             }));
                             rounds_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
                             // A Build this admin accepts as the fabric-primary reaches its climb inside the acceptance:
@@ -1214,6 +1219,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             }
                             let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
                             let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+                                provider: provider_dyn.clone(),
+                                nodes: Some(nodes_storage.clone()),
                                 fabric: cfg.fabric.clone(),
                                 me: name.clone(),
                                 node_id: node_id.clone(),
@@ -1952,7 +1959,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 })
                                             })
                                         };
-                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_retire(before_ready_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_retire(before_ready_cancel.clone()).with_round_actions(round_actions.clone()).with_acted(acted_record.clone()).with_backbone(backbone.clone()));
                                         own.set_connections(connections.clone());
                                         // The app protocols this admin opens connections on: what a renewed member cert
                                         // is installed on, and what node.connections.delete closes, as on every node.
@@ -2121,6 +2128,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
+                                                // The fabric-primary is the authority above the node-admins of a mesh that has no
+                                                // ReadyForTraffic node-admin of its own (fabric-recovery.md "The loss of the
+                                                // fabric-primary while a node-admin lives" step 3): it watches them, tickles them and
+                                                // commands them back when heard again.
+                                                if view.holds_fabric_seat(&me_id) {
+                                                    for n in crate::admin::recovery::admins_of_meshes_without_a_ready_admin(&view, &mesh) {
+                                                        watched.entry(n.node_id.to_string()).or_insert_with(|| n.clone());
+                                                    }
+                                                }
                                                 // One reading of the clocks for the tick: each birth's mark is read from the book at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason is
@@ -2759,6 +2775,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rdm_core::connections::ConnectionState::Connected)),
                                             ladder: ladder.clone(),
                                             carriers: Mutex::new(BTreeMap::new()),
+                                            handover: handover_slot.clone(),
                                         };
                                         // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
                                         tasks.push(tokio::spawn(crate::investigate::run(watch)));
@@ -2807,7 +2824,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if cut_off_view.authorizes() {
                                                     let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
                                 let taken = drive_env.departure.taken_from().await;
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &exit_verdicts, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (book.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &records, taken.as_ref()).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &exit_verdicts, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (book.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &records, taken.as_ref(), taken.as_ref().and_then(|(_, lost)| records.exited_name(&lost.node_id, &lost.incarnation)).as_ref()).await;
                                                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                                                     // proven exited is not live there, and holds no seat.
                                                     if opened.is_some() {

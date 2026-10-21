@@ -1411,18 +1411,21 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
     estate.stop().await;
 }
 
-/// CONTRACT (R-FM1, fabric-node-lifecycle-elections.md: for a hung fabric-primary, no node below it
-/// commands its termination; every seat watch publishes its Concern as today, the `held-running` fact
-/// is written by the watching admins on the holder's row and surfaced by `node.get` and `fabric.get`,
-/// and the fabric seat never moves on silence): `mesh1.admin.1` (the fabric-primary) is hung (every task
-/// but the leader held by a tracer) with
-/// `RDM_HUNG_HOLD_FLOORS=2`. Watching admins (`mesh1.admin.2`, `mesh2.admin.1`) publish Concern and
-/// record `held_running` surfaced on both `node.get` and `fabric.get`; even past the hold window,
-/// nothing terminates `mesh1.admin.1`. When thawed, `held_running` clears on `node.get` and `fabric.get`.
+/// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" steps 1-4;
+/// R-FM1, node-recovery.md step 4): `mesh1.admin.1`, the fabric-primary and mesh1's primary, is hung (every
+/// task but the leader held by a tracer: the operating system shows it running) with
+/// `RDM_HUNG_HOLD_FLOORS=2`. Unheard past the staleness floor it is superseded: within a floor of the mark
+/// `mesh1.admin.2`, the standby of its own mesh, holds both seats by one row and is the authority above it.
+/// The provider reporting the hung birth running, it is `held-running` on `node.get` and nothing terminates
+/// or recovers it inside the hung hold. When the hold expires the standby submits the recovery Build whose
+/// first step is `TerminateRuntime`, records exit proof, and re-creates `mesh1.admin.1` as a new birth at
+/// the same path.name; one floor after the new birth is ready-for-traffic the standby hands both seats
+/// back to it. Must NOT happen: a recovery submitted before `held-running` was recorded, the hung birth
+/// recovered by anyone but the standby, a second recovery of it, the seats left with the standby.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
-    let (mut estate, _birth_build) = born_at(
-        Estate::bootstrap_with_env(owner("a_hung_fabric_primary_is_marked_held_running_and_never_terminated"), "fabric1", "mesh1", &[("RDM_HUNG_HOLD_FLOORS", "2")]).await,
+async fn a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_after_the_hung_hold() {
+    let (mut estate, birth_build) = born_at(
+        Estate::bootstrap_with_env(owner("a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_after_the_hung_hold"), "fabric1", "mesh1", &[("RDM_HUNG_HOLD_FLOORS", "2")]).await,
         &[("mesh1", 2, 1), ("mesh2", 1, 1)],
         Duration::from_secs(90),
     )
@@ -1430,65 +1433,73 @@ async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     let fp_name = s(&fp["name"]);
-    let watcher = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != fp["name"]).expect("a watching node-admin")["name"]);
-    let watcher_path = Estate::path(&watcher);
-    estate.enter(&watcher_path).await;
+    assert_eq!((fp["mesh"].as_str(), fp["is_primary"].as_bool()), (Some("mesh1"), Some(true)), "the Day-0 admin holds both seats: {fp}");
+    let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp["name"]).expect("mesh1's standby admin")["name"]);
+    let standby_path = Estate::path(&standby);
+    // Control is read through the standby from here: a hung admin answers nothing.
+    estate.enter(&standby_path).await;
 
     let rt = exact_runtime(&estate, &fp_name).await;
     let held = rt.hang().expect("the fabric-primary runtime is hung");
     assert!(!held.held.is_empty(), "every task of the fabric-primary but the leader is held: the provider sees it running");
-
     let floor = rdm_transport::membership::staleness_floor();
-    let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {watcher}"), crate::node_recovery_due(), |n| {
+
+    // Superseded at the floor: the standby holds both seats by one row.
+    let taken = wait_for(&format!("{standby} holds both seats within a floor of the mark"), floor * 3 + Duration::from_secs(30), || async {
+        let n = estate.node_value(&standby).await;
+        (n["is_fabric_primary"] == true && n["is_primary"] == true).then_some(n)
+    })
+    .await;
+    // The hung birth, a member under the standby now: held-running, recorded by the authority above it.
+    let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {standby}"), crate::node_recovery_due(), |n| {
         n["node_id"] == fp["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
     })
     .await;
-    let held_fabric = wait_for(&format!("fabric.get at {watcher} surfaces held_running for {fp_name}"), floor * 2 + Duration::from_secs(15), || async {
-        let f = serde_json::to_value(estate.fabric_view_at(&watcher_path).await?).expect("fabric view serializes");
-        (f["held_running"]["since"].as_u64().unwrap_or(0) > 0 && f["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1).then_some(f)
-    })
-    .await;
-    // Wait past RDM_HUNG_HOLD_FLOORS=2 floors after held_running is recorded: nothing terminates the fabric-primary.
-    tokio::time::sleep(floor * 3).await;
-    let still_node = estate.node_value(&fp_name).await;
-    assert_eq!(still_node["node_id"], fp["node_id"], "the hung fabric-primary is never replaced from below: {still_node}");
-    assert_eq!(still_node["is_fabric_primary"], json!(true), "the fabric seat never moves on silence: {still_node}");
-    let submits: Vec<Value> = named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["node_id"] == fp["node_id"])
-        .cloned()
-        .collect();
-    assert!(submits.is_empty(), "no admin submits a recovery for the hung fabric-primary: {submits:?}");
+    let submits_before: Vec<Value> = named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == fp["node_id"]).cloned().collect();
+    assert!(submits_before.is_empty(), "no recovery is submitted for the hung fabric-primary before held-running is recorded: {submits_before:?}");
+    let still = estate.node_value(&fp_name).await;
+    assert_eq!(still["node_id"], fp["node_id"], "the hung birth is not replaced inside the hold: {still}");
 
-    held.release();
-    let resumed_node = until_node_where(&estate, &fp_name, &format!("{fp_name} back ready with held_running cleared"), floor * 3 + Duration::from_secs(30), |n| {
-        ready(n) && n["node_id"] == fp["node_id"] && n["held_running"].is_null()
+    // The hold expires: the standby terminates the exact runtime and re-creates the path as a new birth.
+    let after = until_node_where(&estate, &fp_name, &format!("{fp_name} recovered as a new birth after the hung hold"), SETTLE, |n| ready(n) && n["node_id"] != fp["node_id"] && n["held_running"].is_null()).await;
+    let recovery = recovery_span(&estate, &fp_name, &fp["node_id"]).await;
+    assert_eq!(s(&recovery["attributes"]["submitter"]), standby, "the standby, the authority above the hung birth, submits its recovery: {recovery}");
+    let attempt = s(&recovery["attributes"]["attempt"]);
+    // The recovery's first step is TerminateRuntime of the hung birth (R-FM1), spanned by the executor.
+    let _ = (&birth_build, &standby_path);
+    let terminate = wait_for(&format!("the TerminateRuntime step of {fp_name}'s recovery is exported"), Duration::from_secs(30), || async {
+        named(&estate.spans(), "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| sp["attributes"]["node"] == fp_name.as_str() && sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete").cloned()
     })
     .await;
-    let resumed_fabric = wait_for(&format!("fabric.get at {watcher} clears held_running"), floor * 2 + Duration::from_secs(15), || async {
-        let f = serde_json::to_value(estate.fabric_view_at(&watcher_path).await?).expect("fabric view serializes");
-        f["held_running"].is_null().then_some(f)
+    // The seats go home one floor after the new birth is ready.
+    let home = wait_for(&format!("{standby} hands both seats back to the new birth at {fp_name}"), floor * 4 + Duration::from_secs(60), || async {
+        let n = estate.node_value(&fp_name).await;
+        (n["is_fabric_primary"] == true && n["is_primary"] == true && n["node_id"] == after["node_id"]).then_some(n)
     })
     .await;
-    assert!(resumed_node["held_running"].is_null() && resumed_fabric["held_running"].is_null());
-    let spans = estate.spans();
-    let concern_span = named(&spans, "rdm.node_admin.fabric.update.via-seat-watch")
-        .into_iter()
-        .find(|sp| sp["attributes"]["holder"] == fp_name.as_str())
-        .or_else(|| named(&spans, "rdm.node_admin.node.resolve.via-seat-watch").into_iter().next())
-        .cloned();
-    if let Some(sp) = &concern_span {
-        estate.record_trace_url(sp["trace_id"].as_str().unwrap_or(""));
-    }
-    eprintln!(
-        "R-FM1 fabric-primary cell: {fp_name} (birth {}) held_running on node.get={} and fabric.get={}, never terminated after hold, cleared on thaw (trace {:?})",
-        s(&fp["node_id"]),
-        held_node["held_running"],
-        held_fabric["held_running"],
-        concern_span.as_ref().and_then(|sp| sp["trace_id"].as_str()),
-    );
+    drop(held);
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(30)).await;
     estate.stop().await;
+
+    let spans = estate.spans();
+    let proof_span = named(&spans, "rdm.node_admin.node.delete.via-exit-proof").into_iter().find(|sp| sp["attributes"]["node"] == fp_name.as_str() && sp["attributes"]["node_id"] == fp["node_id"]).cloned().expect("exit proof span for the hung fabric-primary");
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == fp["node_id"]).collect();
+    assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == standby), "the hung birth is recovered once, by {standby}: {recoveries:#?}");
+    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| sp["attributes"]["outcome"] == "committed").collect();
+    assert_eq!(takeovers.len(), 1, "one committed takeover row, the standby's: {takeovers:#?}");
+    assert_eq!(s(&takeovers[0]["attributes"]["node"]), standby, "{takeovers:#?}");
+    eprintln!(
+        "Q89 hung fabric-primary cell: {fp_name} (birth {}) superseded by {standby} (seat {}), held_running={} then terminated and recovered at attempt {attempt}: trace {} | TerminateRuntime {:?} | exit_proof {} | new birth {} | seats home {}",
+        s(&fp["node_id"]),
+        taken["is_fabric_primary"],
+        held_node["held_running"],
+        s(&recovery["trace_id"]),
+        terminate["step"],
+        s(&proof_span["attributes"]["proof"]),
+        s(&after["node_id"]),
+        home["is_fabric_primary"],
+    );
 }
 
 /// CONTRACT (node-recovery.md sequence step 1: "A repeat submit answers AlreadyApplied or

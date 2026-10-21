@@ -512,7 +512,10 @@ pub async fn run(w: Watch) {
         // mesh's standby proposes at the first tick after the mark; outside its mesh, an admin proposes once
         // the whole mesh is held past the hold (the lost-mesh arm). An admin whose view is cut off or
         // healing acts on nothing (gossip.md §6).
-        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric(), &said.unreachable, std::time::Duration::from_millis(crate::admin::hung_hold_ms())).filter(|_| w.membership.authorizes()) {
+        // ... and only once this admin has held the record's holder as the holder for a floor: a record
+        // learned a moment ago (after a heal) names a holder whose silence in this book predates it.
+        let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
+        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric()).filter(|_| w.membership.authorizes() && held_a_floor) {
             if let Some(door) = w.handover.get().cloned() {
                 drop(turn.take());
                 let _ = door.propose_take_over(&lost).await;
@@ -522,14 +525,14 @@ pub async fn run(w: Watch) {
     }
 }
 
-/// The fabric seat's record `record` when this admin, its own mesh's primary and not the fabric
-/// seat's holder, holds every node-admin of the record's mesh in its view unreached and
-/// uninspectable past `hold` (`unreachable`, from each birth's first such look), the record's own
-/// birth among them (elections §5: "For a fabric-primary that is unreached by the tickle ladder and
-/// whose exact runtime no surviving admin can inspect ... the hold runs, and when it expires the seat
-/// moves"). `None` otherwise: a mesh with any node-admin answering, running, stopped or proven gone
-/// keeps the seat by the ordinary rule.
-pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHolder>, unreachable: &std::collections::HashMap<Birth, std::time::Instant>, hold: std::time::Duration) -> Option<rdm_core::SeatHolder> {
+/// The fabric seat's record `record` when this admin, a ReadyForTraffic node-admin of the record's own
+/// mesh and not its holder, holds the record's birth off ready-for-traffic (`PendingReconnect` or
+/// `Dead`) in its view: the fabric-primary unheard past the staleness floor is superseded by its own
+/// mesh's standby at the first tick after the mark, whatever the provider says of its runtime (Q89;
+/// fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2, "Its own
+/// mesh"; elections §4.3). `None` otherwise: outside the record's mesh the proposal is mesh
+/// investigation's, at its decision step (`investigate::run`), and the holder never proposes its own.
+pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHolder>) -> Option<rdm_core::SeatHolder> {
     let record = record?;
     if record.is_birth(&me.0, &me.1) {
         return None;
@@ -544,15 +547,7 @@ pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHo
         let held = view.members().any(|n| n.node_id == record.node_id && n.incarnation_id.as_ref() == Some(&record.incarnation) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
         return held.then_some(record);
     }
-    if !view.holds_mesh_seat(&mine.mesh, &me.0) {
-        return None;
-    }
-    let expired = |b: &Birth| unreachable.get(b).is_some_and(|since| since.elapsed() >= hold);
-    if !expired(&(record.node_id.clone(), record.incarnation.clone())) {
-        return None;
-    }
-    let admins: Vec<&Node> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh == record.mesh).collect();
-    admins.iter().all(|n| birth(n).is_some_and(|b| expired(&b))).then_some(record)
+    None
 }
 
 #[cfg(test)]
@@ -602,30 +597,27 @@ mod tests {
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
     }
 
-    /// CONTRACT (elections §5: "For a fabric-primary that is unreached by the tickle ladder and whose
-    /// exact runtime no surviving admin can inspect ... the hold runs, and when it expires the seat
-    /// moves by §4.3's backbone rule"; "Every mesh-primary that notices tells the winner"): mesh2's
-    /// primary proposes the takeover of mesh1's fabric seat only once every node-admin of mesh1 it
-    /// holds, the record's birth among them, was found unreached and uninspectable at least the hold
-    /// ago. Not while one of them is held for less than the hold or not held at all (it answered, runs,
-    /// is stopped or proven gone: the ordinary rule), not at mesh1's own standby (the seat stays in its
-    /// mesh), and not at the record's holder.
+    /// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2;
+    /// elections §4.3): the standby of the fabric-primary's own mesh proposes the takeover at the first
+    /// tick after the mark, when the record's birth is held off ready-for-traffic in its view, and needs
+    /// no provider verdict and no hold. Not a mesh-primary outside that mesh (its proposal is mesh
+    /// investigation's decision step), not the holder itself, not a standby that is not ReadyForTraffic,
+    /// not while the holder is heard, not without a record.
     #[test]
-    fn a_mesh_primary_proposes_the_takeover_only_once_the_fabric_primarys_whole_mesh_is_held_past_the_hold() {
-        let (mut t, holder, mut standby, outsider) = world();
-        standby.status = NodeStatus::PendingReconnect;
-        t.nodes[1].status = NodeStatus::PendingReconnect;
+    fn the_standby_of_the_fabric_primarys_own_mesh_proposes_the_takeover_at_the_mark_and_an_outsider_never_does() {
+        let (mut t, holder, standby, outsider) = world();
         let record = SeatHolder { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation_id.clone().unwrap(), revision: 7 };
-        let hold = std::time::Duration::from_millis(50);
-        let past = std::time::Instant::now() - std::time::Duration::from_millis(100);
-        let held = |entries: &[(&Node, std::time::Instant)]| entries.iter().map(|(n, at)| (me_of(n), *at)).collect::<std::collections::HashMap<_, _>>();
-        let now = std::time::Instant::now();
-        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone()), &held(&[(&holder, past), (&standby, past)]), hold), Some(record.clone()), "every node-admin of mesh1 held past the hold");
-        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone()), &held(&[(&holder, past), (&standby, now)]), hold), None, "the standby is held for less than the hold");
-        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone()), &held(&[(&holder, past)]), hold), None, "the standby is not held: it answered, runs, is stopped or proven gone");
-        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone()), &held(&[(&holder, past), (&standby, past)]), hold), None, "mesh1's own admin never proposes moving the seat out of its mesh");
-        assert_eq!(takeover_due(&t, &me_of(&holder), Some(record.clone()), &held(&[(&holder, past), (&standby, past)]), hold), None, "the holder never proposes its own takeover");
-        assert_eq!(takeover_due(&t, &me_of(&outsider), None, &held(&[(&holder, past), (&standby, past)]), hold), None, "no record, no takeover");
+        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), Some(record.clone()), "the holder PendingReconnect in the standby's view: the standby proposes at the mark");
+        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone())), None, "an admin outside the holder's mesh proposes from the investigation's decision step, never from the seat watch");
+        assert_eq!(takeover_due(&t, &me_of(&holder), Some(record.clone())), None, "the holder never proposes its own takeover");
+        assert_eq!(takeover_due(&t, &me_of(&standby), None), None, "no record, no takeover");
+        t.nodes[0].status = NodeStatus::Dead;
+        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), Some(record.clone()), "a holder the view holds Dead is held off ready-for-traffic too");
+        t.nodes[0].status = NodeStatus::ReadyForTraffic;
+        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), None, "a holder heard keeps its seats");
+        t.nodes[0].status = NodeStatus::PendingReconnect;
+        t.nodes[1].status = NodeStatus::Pending;
+        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), None, "a standby that is not ReadyForTraffic is not the leadership rule's successor");
     }
 
     /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,
