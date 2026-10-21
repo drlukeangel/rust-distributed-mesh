@@ -1236,7 +1236,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 builds: builds_dyn.clone(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: cut_off_writes.clone(),
-                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone() },
+                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                                 held_takeover: held_takeover.clone(),
                             });
                             let _ = handover_slot.set(handover.clone());
@@ -2067,7 +2067,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
                                     // topology shows PendingReconnect, half a floor after the mark, with the one ladder
                                     // (node-tickle.md, `offline::tickle`): the probe (op 27) direct, and when it does not answer,
-                                    // the same probe through up to two live nodes of its mesh at once on the ViaPeer route. The
+                                    // the same probe through up to two peers at once on the ViaPeer route, the leads the store's
+                                    // by-destination connections index names first, then live nodes of its mesh (Q107 item 1). The
                                     // node's status lands on its row in nodes.storage and in the view.
                                     let recovery = RecoverySubmitter {
                                         me: name.clone(),
@@ -2090,6 +2091,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
                                         // A birth heard again is commanded back through node.mesh.join (Q87).
                                         let ladder_heard_again = heard_again_slot.clone();
+                                        // The ladder's leads: the by-destination index of the store (Q107 item 1).
+                                        let ladder_connections = connections_storage.clone();
                                         tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight, and the last verdict
                                             // named per birth. The tick never waits on either.
@@ -2190,11 +2193,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             // one of them. A birth the tick does not hold, or an admin without a Node
                                                             // RPC client, runs no ladder, by name.
                                                             let (client, node, view) = (client.clone(), watched.get(&id).cloned(), ladder_view.clone());
-                                                            let (me_id, me) = (me_id.clone(), me.to_string());
+                                                            let (me_id, me, connections) = (me_id.clone(), me.to_string(), Some(ladder_connections.clone()));
                                                             async move {
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
-                                                                crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me }).await
+                                                                crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me, connections }).await
                                                             }
                                                         },
                                                         |id| {
@@ -2393,7 +2396,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             membership: membership.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
-                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone() },
+                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                                             builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
                                             handover: handover_slot.clone(),

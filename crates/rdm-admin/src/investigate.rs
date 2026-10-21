@@ -802,6 +802,13 @@ impl TickleCalls for WatchCalls<'_> {
         let avoid = self.0.carriers.lock().unwrap().get(&admin.mesh).cloned();
         investigation_carriers(view, &admin.mesh, |id| (self.0.connected)(id), avoid.as_ref())
     }
+
+    /// No leads: the probe's kick goes through mesh-x's own members, active connections first
+    /// (mesh-investigation.md step 1), and step 5 decides on what a mesh-x member reports of its
+    /// node-admin, so no node of another mesh carries it.
+    async fn leads(&self, _view: &Topology, _admin: &Node) -> Result<Vec<Node>, String> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait::async_trait]
@@ -1437,6 +1444,10 @@ mod tests {
         fn carriers(&self, view: &Topology, admin: &Node) -> Vec<Node> {
             let avoid = self.carriers.lock().unwrap().get(&admin.mesh).cloned();
             investigation_carriers(view, &admin.mesh, |id| self.connected.contains(id), avoid.as_ref())
+        }
+
+        async fn leads(&self, _view: &Topology, _admin: &Node) -> Result<Vec<Node>, String> {
+            Ok(Vec::new())
         }
     }
 

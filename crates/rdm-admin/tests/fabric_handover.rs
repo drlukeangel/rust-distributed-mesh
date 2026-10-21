@@ -383,7 +383,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         })
     };
     let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
-    let looker = rdm_admin::seat_watch::Looker { me: path.parse().unwrap(), me_id: node_id.clone(), membership: membership.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default() };
+    let looker = rdm_admin::seat_watch::Looker { me: path.parse().unwrap(), me_id: node_id.clone(), membership: membership.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None };
     let door = Arc::new(HandoverDoor {
         provider: provider.clone(),
         nodes: Some(nodes.clone()),

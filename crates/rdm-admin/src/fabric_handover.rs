@@ -1174,7 +1174,7 @@ impl HandoverDoor {
         span.record("finding", finding.name()).record("detail", finding.detail().as_str());
         let stands = "the seat stays the successor's from the row and the update is incomplete until a later attempt obtains its answer";
         match (&finding, birth) {
-            (crate::seat_watch::Finding::Answered | crate::seat_watch::Finding::AnsweredViaPeer { .. }, _) => match self.call_once(&row.successor.node_id, req, &CallOptions::default()).await {
+            (crate::seat_watch::Finding::Reached { .. }, _) => match self.call_once(&row.successor.node_id, req, &CallOptions::default()).await {
                 Called::Reply(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => Ok(revisions),
                 other => {
                     let (retry, retry_why) = other.failure();

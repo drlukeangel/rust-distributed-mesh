@@ -306,9 +306,14 @@ pub trait TickleCalls: Send + Sync {
     /// The same probe carried by `carrier` as `Forward`, whose inner op is the probe.
     async fn via_peer(&self, carrier: &crate::model::Node, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd;
     /// The eligible live peers of `node`'s mesh, in the order asked, the caller never among them;
-    /// the ladder takes the first [`VIA_PEER_TICKLE_FANOUT`] ([`eligible_carriers`] is the page's
-    /// eligibility).
+    /// the ladder takes the first [`VIA_PEER_TICKLE_FANOUT`] after the leads ([`eligible_carriers`]
+    /// is the page's eligibility).
     fn carriers(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Vec<crate::model::Node>;
+    /// The leads of `node`'s exact birth (rulings INDEX Q107 item 1, step a): the nodes in any mesh
+    /// that the store's by-destination connections index names as holding a connection to it
+    /// ([`crate::node_investigation::leads_of`]), the peers the kick goes through first; never
+    /// evidence of reachability. `Err` names why the index could not be read.
+    async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String>;
 }
 
 /// The caller's Node RPC client at the default call budget: the mesh-primary's recovery tick and the
@@ -320,6 +325,9 @@ pub struct TickleClient {
     pub me_id: crate::model::NodeId,
     /// The caller's path.name.
     pub me: String,
+    /// The caller's connections store, whose by-destination index names the leads (connections.md
+    /// §3.1); `None`: no leads, the kick goes through the carriers alone.
+    pub connections: Option<std::sync::Arc<dyn crate::storage::ConnectionsStorage>>,
 }
 
 #[async_trait::async_trait]
@@ -352,12 +360,19 @@ impl TickleCalls for TickleClient {
     fn carriers(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Vec<crate::model::Node> {
         eligible_carriers(view, node, Some(&self.me_id)).cloned().collect()
     }
+
+    async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String> {
+        let Some(store) = &self.connections else { return Ok(Vec::new()) };
+        let rows = store.connections_to(&node.node_id).await.map_err(|e| format!("the by-destination connections index of {} ({}) could not be read: {e}", node.name, node.node_id))?;
+        Ok(crate::node_investigation::leads_of(&rows, view, node, Some(&self.me_id)))
+    }
 }
 
 /// `node.tickle` (node-tickle.md): ask `node`'s exact birth, by node id and incarnation, whether anyone
-/// can reach it. Direct first (step 2); on no answer the same probe through up to two eligible live
-/// peers of the node's mesh, both sent at once (step 3), each a `Forward` whose inner op is the
-/// probe. The first answer from the birth, under the probed incarnation, ends the ladder and cancels
+/// can reach it. The leads first (rulings INDEX Q107 item 1, step a: one read of the by-destination
+/// connections index, `calls.leads`); direct (step 2); on no answer the same probe through up to two
+/// peers at once, the leads first, then the caller's eligible live peers of the node's mesh (step 3;
+/// Q107 item 1 step c), each a `Forward` whose inner op is the probe. The first answer from the birth, under the probed incarnation, ends the ladder and cancels
 /// the probes still running; one failed peer probe does not cancel the other (step 4). It answers
 /// `reached` with what the node said, or `unreached`: never dead, a failure, a deadline included,
 /// proves nothing. A node the view holds no incarnation for names no exact birth to probe: refused
@@ -374,6 +389,16 @@ pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &c
     let deadline_ms = calls.deadline().as_millis() as i64;
     // Every probe names the same exact birth (node-tickle.md "Target").
     let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    // The leads (Q107 item 1, step a): who holds a connection to the birth, the peers the kick goes
+    // through first; never reachability. An index that cannot be read leaves the caller's carriers
+    // alone, named on the spans.
+    let (leads, leads_named) = match calls.leads(view, node).await {
+        Ok(leads) => {
+            let named = leads.iter().map(|l| l.name.to_string()).collect::<Vec<_>>().join(",");
+            (leads, named)
+        }
+        Err(e) => (Vec::new(), format!("unreadable: {e}")),
+    };
     // The probe's span carries its answer or its failure (node-tickle.md "Observability contract").
     let said = |span: &tracing::Span, end: &ProbeEnd| {
         match end {
@@ -381,7 +406,7 @@ pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &c
             other => span.record("failure", other.name().as_str()),
         };
     };
-    let span = tracing::info_span!("rdm.node.tickle.resolve.via-direct", caller = %caller, node = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), deadline_ms, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
+    let span = tracing::info_span!("rdm.node.tickle.resolve.via-direct", caller = %caller, node = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), deadline_ms, leads = %leads_named, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
     let direct = calls.direct(node, &probe).instrument(span.clone()).await;
     said(&span, &direct);
     if let ProbeEnd::Reply(answer) = &direct {
@@ -391,13 +416,21 @@ pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &c
         }
     }
     drop(span);
-    let carriers: Vec<crate::model::Node> = calls.carriers(view, node).into_iter().take(VIA_PEER_TICKLE_FANOUT).collect();
-    let (node_id, probe, caller, said) = (&node.node_id, &probe, &caller, &said);
+    // The leads first, then the caller's eligible carriers not already among them, within the fan-out.
+    let mut carriers: Vec<crate::model::Node> = leads.clone();
+    for c in calls.carriers(view, node) {
+        if !carriers.iter().any(|l| l.node_id == c.node_id) {
+            carriers.push(c);
+        }
+    }
+    carriers.truncate(VIA_PEER_TICKLE_FANOUT);
+    let (node_id, probe, caller, said, leads) = (&node.node_id, &probe, &caller, &said, &leads);
     let mut running: futures_util::stream::FuturesUnordered<_> = carriers
         .iter()
         .enumerate()
         .map(|(i, carrier)| async move {
-            let span = tracing::info_span!("rdm.node.tickle.resolve.via-peer", caller = %caller, node = %node.name, node_id = %node.node_id, carrier = %carrier.name, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
+            let lead = leads.iter().any(|l| l.node_id == carrier.node_id);
+            let span = tracing::info_span!("rdm.node.tickle.resolve.via-peer", caller = %caller, node = %node.name, node_id = %node.node_id, carrier = %carrier.name, lead, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
             let end = calls.via_peer(carrier, node, probe).instrument(span.clone()).await;
             said(&span, &end);
             (i, carrier.name.to_string(), end, span)
@@ -419,7 +452,7 @@ pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &c
     let asked = peers.iter().map(|p| p.carrier.as_str()).collect::<Vec<_>>().join(",");
     // The ladder's result when none of its probes carried the answer; the caller records what it
     // does next on it (`Unreached::next`), and it ends with the result.
-    let span = tracing::info_span!("rdm.node.tickle.returns-unknown.via-unreached", caller = %caller, node = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), direct = %direct.name(), carriers = %asked, next = tracing::field::Empty, "otel.kind" = "internal");
+    let span = tracing::info_span!("rdm.node.tickle.returns-unknown.via-unreached", caller = %caller, node = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), direct = %direct.name(), carriers = %asked, leads = %leads_named, next = tracing::field::Empty, "otel.kind" = "internal");
     span.in_scope(|| tracing::info!("nobody reached the birth within the ladder: unreached, never death"));
     Ok(Tickle::Unreached(Unreached { direct, peers, span }))
 }
@@ -1281,11 +1314,17 @@ pub(crate) mod tests {
             ended: Arc<AtomicUsize>,
             /// The carriers the ladder asked, in order.
             asked: Mutex<Vec<String>>,
+            /// The leads the index names, by path.name, in the order it gives them.
+            leads: Vec<&'static str>,
         }
 
         impl Rig {
             fn new(direct: Probe, peers: Vec<(&'static str, Probe)>) -> Self {
-                Self { direct, peers, ended: Arc::default(), asked: Mutex::default() }
+                Self { direct, peers, ended: Arc::default(), asked: Mutex::default(), leads: Vec::new() }
+            }
+
+            fn leading(self, leads: &[&'static str]) -> Self {
+                Self { leads: leads.to_vec(), ..self }
             }
 
             async fn run(&self, p: &Probe) -> ProbeEnd {
@@ -1325,6 +1364,40 @@ pub(crate) mod tests {
                 let me = view.members().find(|n| n.name.to_string() == self.caller()).map(|n| n.node_id.clone());
                 eligible_carriers(view, node, me.as_ref()).cloned().collect()
             }
+
+            async fn leads(&self, view: &crate::topology::Topology, _node: &Node) -> Result<Vec<Node>, String> {
+                Ok(self.leads.iter().filter_map(|l| view.members().find(|n| n.name.to_string() == *l).cloned()).collect())
+            }
+        }
+
+        /// CONTRACT (rulings INDEX Q107 item 1 step c: "The same kick via peers, the leads first";
+        /// node-tickle.md step 3: "up to two ... both sent at once"): after the direct probe failed the
+        /// kick goes through the leads first, a lead of another mesh included, then the caller's eligible
+        /// peers of the node's mesh not already among them, two in all; a lead that is also an eligible
+        /// peer is asked once. The spans name the leads read (`leads`, on the direct and the unreached
+        /// span) and mark each carrier that was a lead (`lead`).
+        #[tokio::test(start_paused = true)]
+        async fn the_kick_goes_through_the_leads_first_then_the_callers_peers_within_the_fan_out() {
+            let b = birth();
+            let (node, view) = member_and_view(&b);
+            let capture = crate::span_capture::Capture::new("node-tickle-leads");
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&["mesh2.rpc.1"]);
+            let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
+            assert_eq!(u.carriers(), "mesh2.rpc.1,mesh1.rpc.2", "the lead of another mesh first, then the first eligible peer of the node's mesh");
+            drop(u);
+            let leads_of = |name: &str| capture.named(name).iter().map(|s| s.attributes.get("leads").cloned().unwrap_or_default()).collect::<Vec<_>>();
+            assert_eq!(leads_of("rdm.node.tickle.resolve.via-direct"), ["mesh2.rpc.1"]);
+            assert_eq!(leads_of("rdm.node.tickle.returns-unknown.via-unreached"), ["mesh2.rpc.1"]);
+            let mut peers: Vec<(String, String)> = capture.named("rdm.node.tickle.resolve.via-peer").iter().map(|s| (s.attributes.get("carrier").cloned().unwrap_or_default(), s.attributes.get("lead").cloned().unwrap_or_default())).collect();
+            peers.sort();
+            assert_eq!(peers, [("mesh1.rpc.2".to_string(), "false".to_string()), ("mesh2.rpc.1".to_string(), "true".to_string())], "each carrier says whether it was a lead");
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&["mesh1.rpc.3"]);
+            let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
+            assert_eq!(u.carriers(), "mesh1.rpc.3,mesh1.rpc.2", "a lead that is an eligible peer is asked once, first");
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![]).leading(&["mesh2.rpc.1", "mesh1.rpc.3"]);
+            let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
+            assert_eq!(u.carriers(), "mesh2.rpc.1,mesh1.rpc.3", "two leads take the whole fan-out");
         }
 
         /// CONTRACT (node-tickle.md step 2, "Ends"): the birth's answer to the direct probe ends the

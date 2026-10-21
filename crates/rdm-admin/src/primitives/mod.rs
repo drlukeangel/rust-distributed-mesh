@@ -10,6 +10,7 @@ pub use crate::connections_writer;
 pub use crate::fetch_build;
 pub use crate::join;
 pub use crate::node_rows;
+pub use crate::node_investigation;
 pub use crate::node_self;
 pub use crate::offline;
 pub use crate::rafka_time;

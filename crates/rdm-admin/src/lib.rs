@@ -46,6 +46,7 @@ pub mod mesh_claims;
 pub mod mesh_delete;
 pub use rdm_core::model;
 pub mod node_commands;
+pub mod node_investigation;
 pub mod node_config;
 pub mod node_properties;
 pub mod node_name_update;

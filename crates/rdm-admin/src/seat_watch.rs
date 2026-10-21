@@ -138,61 +138,8 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said) -
     plan
 }
 
-/// What the look found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Finding {
-    /// The birth answered a direct ping.
-    Answered,
-    /// The birth answered the same kick through a live member of its mesh.
-    AnsweredViaPeer {
-        /// The mesh member that carried the kick.
-        carrier: String,
-    },
-    /// The provider inspected its exact runtime and it still runs.
-    Running,
-    /// The provider inspected its exact runtime and the operating system holds it suspended:
-    /// neither hung nor gone, so no hold opens and nothing is terminated (deployment-provider.md §2.5).
-    OsStopped,
-    /// The provider inspected its exact runtime and it exited: a verified loss, `exit-proven { code }`
-    /// (node-runtime-inspect.md "Result").
-    Exited {
-        /// The exit code, when one is provable.
-        code: Option<i32>,
-        /// Where the proof came from, the `proof` of the exit-proof row the caller writes
-        /// (node-runtime-inspect.md step 5): `provider` (the provider's own terminal status),
-        /// `exit-record` (the runtime's exit record in its data dir) or `none` (exited with no code).
-        proof: &'static str,
-    },
-    /// Nothing proves the birth gone or alive: named by what was missing.
-    Unproven {
-        /// What was missing.
-        reason: String,
-    },
-}
-
-impl Finding {
-    /// The finding's name as it appears in spans.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Answered => "answered",
-            Self::AnsweredViaPeer { .. } => "answered-via-peer",
-            Self::Running => "running",
-            Self::OsStopped => "os-stopped",
-            Self::Exited { .. } => "exit-proven",
-            Self::Unproven { .. } => "unproven",
-        }
-    }
-
-    /// What the finding names beyond its name: the carrier, the exit code or what was missing.
-    pub fn detail(&self) -> String {
-        match self {
-            Self::AnsweredViaPeer { carrier } => carrier.clone(),
-            Self::Exited { code, proof } => format!("{} ({proof})", code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into())),
-            Self::Unproven { reason } => reason.clone(),
-            _ => String::new(),
-        }
-    }
-}
+/// What the look found: node investigation's one verdict (rulings INDEX Q107 item 1).
+pub use crate::node_investigation::Finding;
 
 /// What the look needs of this admin.
 pub struct Looker {
@@ -210,16 +157,18 @@ pub struct Looker {
     pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
     /// A seat holder heard again is commanded back through this (Q87), once the admin holds it.
     pub heard_again: crate::heard_again::HeardAgainSlot,
+    /// Its connections store: the by-destination index names the leads of a look (Q107 item 1).
+    pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
 }
 
 impl Looker {
-    /// Look at `n`'s exact birth: the tickle ladder, and on `unreached` the provider's inspection
-    /// (node-tickle.md "What follows"; node-recovery.md step 2, run by the seat watch:
-    /// fabric-node-lifecycle-elections.md §4.1).
+    /// Look at `n`'s exact birth: node investigation (rulings INDEX Q107 item 1), the leads, the
+    /// tickle ladder and, on `unreached`, the provider's inspection (node-tickle.md "What follows";
+    /// node-recovery.md step 2, run by the seat watch: fabric-node-lifecycle-elections.md §4.1).
     pub async fn look(&self, view: &Topology, n: &Node) -> Finding {
-        let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me.to_string() };
-        let ladder = crate::offline::tickle(n, view, &calls).await;
-        if let Ok(crate::offline::Tickle::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. }) = &ladder {
+        let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me.to_string(), connections: self.connections.clone() };
+        let finding = crate::node_investigation::investigate(n, view, &calls, self.inspect(n)).await;
+        if let Finding::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. } = &finding {
             // A seat holder this admin holds off its mesh that answers Current is commanded back
             // through node.mesh.join (node-tickle.md "What follows", Q87) by the fabric-primary, the
             // authority above a mesh-primary: every admin looks, one commands (commands go down).
@@ -231,7 +180,7 @@ impl Looker {
                 heard_again.command(&held, incarnation).await;
             }
         }
-        finding_of(ladder, self.inspect(n)).await
+        finding
     }
 
     /// The provider's inspection of `n`'s exact runtime.
@@ -270,41 +219,7 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
     crate::deployment::provider::inspect_runtime(provider, &fact, data_dir.as_deref(), &inc.as_str()).await.into()
 }
 
-/// node.runtime.inspect's answer ([`crate::deployment::provider::inspect_runtime`]) as the look's
-/// finding: its `exit-proven` an `Exited` whose `proof` is the inspect's, its `unavailable` unproven.
-impl From<crate::deployment::provider::Inspected> for Finding {
-    fn from(inspected: crate::deployment::provider::Inspected) -> Self {
-        use crate::deployment::provider::Inspected;
-        match inspected {
-            Inspected::Exited(code, proof) => Finding::Exited { code, proof },
-            Inspected::Running => Finding::Running,
-            Inspected::OsStopped => Finding::OsStopped,
-            Inspected::Unavailable(reason) => Finding::Unproven { reason },
-        }
-    }
-}
-
 pub use crate::offline::birth_answered;
-
-/// What the look found, from the tickle's result (node-tickle.md "Result") and, only on `unreached`,
-/// the provider's inspection (the one rung that proves a loss; R-SW1). `reached` is the birth's
-/// answer, direct or through its carrier; a ladder that could not run (no exact birth) is unproven,
-/// by name.
-pub(crate) async fn finding_of<V>(ladder: Result<crate::offline::Tickle, String>, provider: V) -> Finding
-where
-    V: std::future::Future<Output = Finding>,
-{
-    match ladder {
-        Err(reason) => Finding::Unproven { reason },
-        Ok(crate::offline::Tickle::Reached { carrier: None, .. }) => Finding::Answered,
-        Ok(crate::offline::Tickle::Reached { carrier: Some(carrier), .. }) => Finding::AnsweredViaPeer { carrier },
-        Ok(crate::offline::Tickle::Unreached(unreached)) => {
-            unreached.next("inspect");
-            drop(unreached);
-            provider.await
-        }
-    }
-}
 
 /// What the watch drives.
 pub struct Watch {
@@ -416,7 +331,7 @@ pub async fn run(w: Watch) {
                 }
             }
             match &finding {
-                Finding::Answered | Finding::AnsweredViaPeer { .. } => {
+                Finding::Reached { .. } => {
                     w.records.clear_held_running(&node).await;
                 }
                 Finding::Running => {
@@ -637,57 +552,5 @@ mod tests {
         let successor = admin("mesh1.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
         let p = plan(&t, &successor.name, &me_of(&successor), &mut Said::default());
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)]);
-    }
-
-    mod finding {
-        //! What the look makes of the tickle's result (node-tickle.md "What follows"; R-SW1).
-        use super::super::*;
-        use crate::offline::{PeerProbe, ProbeEnd, Tickle, Unreached};
-        use rdm_core::status::{NodeState, StatusReply};
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        fn birth() -> (NodeId, IncarnationId) {
-            (NodeId::mint(), IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-the-holder")).unwrap())
-        }
-
-        fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
-            StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::ReadyForTraffic }
-        }
-
-        async fn provider_says(f: Finding, asked: &AtomicBool) -> Finding {
-            asked.store(true, Ordering::SeqCst);
-            f
-        }
-
-        /// The ladder ended with nobody reaching the birth: the direct probe and both carried ones
-        /// ended without its answer (a deadline, a carrier's `NotReady`).
-        fn unreached() -> Tickle {
-            Tickle::Unreached(Unreached::of(
-                ProbeEnd::Other { end: "NotSent", detail: "not sent: Deadline".into() },
-                vec![PeerProbe { carrier: "mesh1.rpc.1".into(), end: ProbeEnd::Other { end: "NotSent", detail: "not sent: Deadline".into() } }, PeerProbe { carrier: "mesh1.rpc.2".into(), end: ProbeEnd::Reply(StatusReply::NotReady { reason: "carrier not ready".into() }) }],
-            ))
-        }
-
-        /// CONTRACT (R-SW1 item 2; elections §4.1; node-tickle.md "Unreached is never death"): no
-        /// probe outcome proves a loss. With the ladder `unreached`, the finding is whatever the
-        /// provider proves: `Running` or `Unproven` leave the seat, only its `Exited` is a verified
-        /// loss. An answer, direct or through a carrier, settles it and the provider is never asked.
-        #[tokio::test]
-        async fn no_probe_outcome_proves_a_loss_without_the_provider() {
-            let b = birth();
-            for (said, expect_exit) in [(Finding::Running, false), (Finding::Unproven { reason: "its runtime is not proven exited".into() }, false), (Finding::Exited { code: Some(137), proof: "provider" }, true)] {
-                let asked = AtomicBool::new(false);
-                let found = finding_of(Ok(unreached()), provider_says(said.clone(), &asked)).await;
-                assert!(asked.load(Ordering::SeqCst), "the provider check is mandatory once no probe was answered");
-                assert_eq!(found, said);
-                assert_eq!(matches!(found, Finding::Exited { .. }), expect_exit, "only the provider's exit proof is a loss");
-            }
-            let asked = AtomicBool::new(false);
-            assert_eq!(finding_of(Ok(Tickle::Reached { answer: current(&b), carrier: None }), provider_says(Finding::Exited { code: Some(137), proof: "provider" }, &asked)).await, Finding::Answered);
-            assert_eq!(finding_of(Ok(Tickle::Reached { answer: current(&b), carrier: Some("mesh1.rpc.2".into()) }), provider_says(Finding::Exited { code: Some(137), proof: "provider" }, &asked)).await, Finding::AnsweredViaPeer { carrier: "mesh1.rpc.2".into() });
-            assert!(!asked.load(Ordering::SeqCst), "an answer settles it: no provider inspection");
-            assert_eq!(finding_of(Err("no exact birth".into()), provider_says(Finding::Running, &asked)).await, Finding::Unproven { reason: "no exact birth".into() });
-            assert!(!asked.load(Ordering::SeqCst), "a ladder that could not run is unproven by name, not inspected");
-        }
     }
 }
