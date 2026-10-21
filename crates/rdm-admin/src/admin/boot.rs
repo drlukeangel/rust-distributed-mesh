@@ -2132,8 +2132,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // ReadyForTraffic node-admin of its own (fabric-recovery.md "The loss of the
                                                 // fabric-primary while a node-admin lives" step 3): it watches them, tickles them and
                                                 // commands them back when heard again.
+                                                // Watched for the tickle and the command back only: their marks, their TRUE OFFLINE
+                                                // and their recovery are their own mesh's (node-recovery.md, the mesh-primary's), never
+                                                // this admin's writes on another mesh's rows.
+                                                let mut commanded_only: HashSet<String> = HashSet::new();
                                                 if view.holds_fabric_seat(&me_id) {
                                                     for n in crate::admin::recovery::admins_of_meshes_without_a_ready_admin(&view, &mesh) {
+                                                        commanded_only.insert(n.node_id.to_string());
                                                         watched.entry(n.node_id.to_string()).or_insert_with(|| n.clone());
                                                     }
                                                 }
@@ -2288,12 +2293,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 if holds_seat {
                                                     for (id, n) in &watched {
-                                                        if n.status == NodeStatus::PendingReconnect {
+                                                        if n.status == NodeStatus::PendingReconnect && !commanded_only.contains(id) {
                                                             write(id, Some(NodeStatus::PendingReconnect), &mut written).await;
                                                         }
                                                     }
                                                 }
-                                                for id in &report.offline {
+                                                for id in report.offline.iter().filter(|id| !commanded_only.contains(*id)) {
                                                     if let Some(n) = watched.get(id) {
                                                         if let Some(inc) = n.incarnation_id.clone() {
                                                             records.offline.lock().unwrap().insert((n.node_id.clone(), inc));
