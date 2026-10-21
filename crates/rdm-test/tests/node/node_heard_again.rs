@@ -22,7 +22,7 @@
 //! `node.create` for it, a start step missing, outside its root or out of order, or a ready-for-traffic
 //! with no hook attempt before it.
 use rdm_client::NodeStatus;
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::Value;
 use std::path::Path;
@@ -81,6 +81,13 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Du
     assert_eq!((&during.node_id, &during.incarnation_id), (&before.node_id, &before.incarnation_id), "{node} is the same birth while held: silence is not death");
     let release_at = now_nano();
     rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
+    // The released birth's first digest still says ReadyForTraffic (its own stale state): the re-entry
+    // is the mesh-primary's commanded join, which begins the birth's next cycle; wait for that, then
+    // for the birth ready again as the same birth.
+    wait_for(&format!("the mesh-primary begins {node}'s next cycle after the release"), floor * 8 + Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.status.update.via-cycle-begun").into_iter().any(|sp| s(&sp["attributes"]["node"]) == node && at(sp) >= release_at).then_some(())
+    })
+    .await;
     let back = estate
         .until_node(node, &format!("{node} is ready-for-traffic again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
             n.filter(|n| n.status == NodeStatus::ReadyForTraffic && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned()
