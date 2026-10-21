@@ -12,8 +12,10 @@
 //! - [`NodeAdminNotReady::UnreadableBuild`] (the entry's Build cannot be read locally) and
 //!   [`NodeAdminNotReady::BehindFloor`] (the local Build is behind the entry's attempt floor):
 //!   `FetchBuildFacts` for the entry's Build.
-//! - [`NodeAdminNotReady::NoCurrentBuild`] with nothing wanted: the control entry is retrieved again.
-//!   A Build that no entry reply identified is never fetched.
+//! - [`NodeAdminNotReady::NoCurrentBuild`] with nothing wanted (no-pointer: nothing names the Build):
+//!   `FetchCurrentBuild` (op `0x1F`). The responder selects its current accepted Build once for the
+//!   request and streams that Build's facts, every chunk and `End` naming its id, or answers
+//!   `NoCurrentBuild` and the blocker stays. No blocker is read by a second `JoinNode`.
 //!
 //! One request is outstanding at a time. Responders are asked in order: the current fabric-primary
 //! (resolved through the canonical leadership projection, `Topology::fabric_primary`), then every
@@ -21,7 +23,7 @@
 //! the blocker, is not asked again until its backoff has passed.
 
 use crate::build::BuildId;
-use crate::build_facts_read::fetch_build_facts;
+use crate::build_facts_read::{fetch_build_facts, fetch_current_build};
 use crate::build_state::LocalBuildLog;
 use crate::model::{NodeId, PathName};
 use rdm_transport::{NodeRpcClient, NodeTarget};
@@ -94,8 +96,8 @@ impl std::fmt::Display for NodeAdminNotReady {
 pub enum Need {
     /// The facts of this Build.
     BuildFacts(BuildId),
-    /// The control entry again: nothing identifies the Build yet.
-    Entry,
+    /// The facts of the responder's current accepted Build: nothing names the Build yet.
+    CurrentBuild,
     /// No request: the blocker is this admin's own store, named.
     Nothing,
 }
@@ -105,7 +107,7 @@ impl NodeAdminNotReady {
     pub fn need(&self) -> Need {
         match self {
             Self::NoCurrentBuild { wanted: Some(id), .. } => Need::BuildFacts(id.clone()),
-            Self::NoCurrentBuild { wanted: None, .. } => Need::Entry,
+            Self::NoCurrentBuild { wanted: None, .. } => Need::CurrentBuild,
             Self::UnreadableBuild { build_id, .. } | Self::BehindFloor { build_id, .. } => Need::BuildFacts(build_id.clone()),
             Self::BuildStoreUnreadable { .. } => Need::Nothing,
         }
@@ -135,9 +137,6 @@ pub struct Responder {
 /// The responders in the order they are asked: the fabric-primary first, then every other live
 /// node-admin. Read at each request, so the order follows the leadership projection.
 pub type Responders = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Vec<Responder>> + Send>> + Send + Sync>;
-
-/// The control entry retrieved again: the same retrieval that served the first one.
-pub type EntryRepeat = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 /// How long a target that failed is left alone: doubling per consecutive failure from `BACKOFF_BASE`
 /// to `BACKOFF_CAP`. Luke explicitly authorized this backoff (R-G6) as READ-ONLY recovery: it spaces
@@ -172,7 +171,6 @@ enum End {
     /// judged by the next floor check.
     Absorbed(NodeId),
     Failed(NodeId),
-    Entry(Result<(), String>),
 }
 
 /// What the Build-floor check drives: at most one outstanding request, per-target backoff.
@@ -181,19 +179,17 @@ pub struct FetchBuild {
     client: Arc<NodeRpcClient>,
     local: Arc<dyn LocalBuildLog>,
     responders: Responders,
-    entry: Option<EntryRepeat>,
     in_flight: Option<tokio::task::JoinHandle<End>>,
     backoff: BTreeMap<NodeId, Backoff>,
-    entry_backoff: Backoff,
     /// The responder whose complete stream was absorbed last: still owed a verdict.
     judging: Option<NodeId>,
 }
 
 impl FetchBuild {
-    /// A fetch_build for the admin `me` over its client, its local Build log, the `responders` it asks
-    /// and the entry repeat.
-    pub fn new(me: PathName, client: Arc<NodeRpcClient>, local: Arc<dyn LocalBuildLog>, responders: Responders, entry: Option<EntryRepeat>) -> Self {
-        Self { me, client, local, responders, entry, in_flight: None, backoff: BTreeMap::new(), entry_backoff: Backoff::default(), judging: None }
+    /// A fetch_build for the admin `me` over its client, its local Build log and the `responders` it
+    /// asks.
+    pub fn new(me: PathName, client: Arc<NodeRpcClient>, local: Arc<dyn LocalBuildLog>, responders: Responders) -> Self {
+        Self { me, client, local, responders, in_flight: None, backoff: BTreeMap::new(), judging: None }
     }
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
@@ -205,8 +201,6 @@ impl FetchBuild {
             match ended {
                 Ok(End::Absorbed(from)) => self.judging = Some(from),
                 Ok(End::Failed(from)) => self.backoff.entry(from).or_default().failed(now),
-                Ok(End::Entry(Err(_))) => self.entry_backoff.failed(now),
-                Ok(End::Entry(Ok(()))) => {}
                 Err(_) => {}
             }
         }
@@ -214,7 +208,6 @@ impl FetchBuild {
             if let Some(from) = self.judging.take() {
                 self.backoff.remove(&from);
             }
-            self.entry_backoff = Backoff::default();
             return;
         };
         // Absorbed a complete stream and still blocked: that responder's holdings were not enough.
@@ -225,8 +218,8 @@ impl FetchBuild {
             return;
         }
         match blocker.need() {
-            Need::Entry => self.repeat_entry(blocker, now),
-            Need::BuildFacts(id) => self.fetch(blocker, id, now).await,
+            Need::CurrentBuild => self.fetch(blocker, None, now).await,
+            Need::BuildFacts(id) => self.fetch(blocker, Some(id), now).await,
             Need::Nothing => {}
         }
     }
@@ -239,34 +232,15 @@ impl FetchBuild {
             match h.await {
                 Ok(End::Absorbed(from)) => self.judging = Some(from),
                 Ok(End::Failed(from)) => self.backoff.entry(from).or_default().failed(Instant::now()),
-                Ok(End::Entry(Err(_))) => self.entry_backoff.failed(Instant::now()),
-                Ok(End::Entry(Ok(()))) | Err(_) => {}
+                Err(_) => {}
             }
         }
     }
 
-    fn repeat_entry(&mut self, blocker: &NodeAdminNotReady, now: Instant) {
-        let Some(entry) = self.entry.clone() else { return };
-        if !self.entry_backoff.open(now) {
-            return;
-        }
-        let (me, kind) = (self.me.clone(), blocker.kind());
-        // The request is a step of the turn that started it: it runs under that turn's span and dispatcher.
-        let parent = tracing::Span::current();
-        self.in_flight = Some(tokio::spawn(
-            async move {
-                let span = tracing::info_span!("rdm.node_admin.fabric.update.via-entry-repeat", node = %me, blocker = kind, outcome = tracing::field::Empty);
-                let result = entry().instrument(span.clone()).await;
-                span.record("outcome", match &result { Ok(()) => "retrieved".to_string(), Err(e) => format!("failed: {e}") }.as_str());
-                span.in_scope(|| tracing::info!("no current Build and no Build identified: the control entry is retrieved again"));
-                End::Entry(result)
-            }
-            .instrument(parent)
-            .with_current_subscriber(),
-        ));
-    }
-
-    async fn fetch(&mut self, blocker: &NodeAdminNotReady, id: BuildId, now: Instant) {
+    /// One read of the blocker's Build from the first responder whose backoff has passed: the facts
+    /// of `id` (`FetchBuildFacts`), or with no Build named the responder's current accepted Build
+    /// (`FetchCurrentBuild`), whose id the read's `End` names.
+    async fn fetch(&mut self, blocker: &NodeAdminNotReady, id: Option<BuildId>, now: Instant) {
         let candidates = (self.responders)().await;
         let Some(target) = candidates.into_iter().filter(|r| r.name != self.me).find(|r| self.backoff.get(&r.node_id).is_none_or(|b| b.open(now))) else {
             return;
@@ -279,14 +253,29 @@ impl FetchBuild {
                 let span = tracing::info_span!(
                     "rdm.node_admin.build.update.via-fetch-facts",
                     node = %me,
-                    build_id = %id.log(),
+                    build_id = tracing::field::Empty,
                     target = %target.name,
                     blocker = kind,
                     facts = tracing::field::Empty,
                     chunks = tracing::field::Empty,
                     outcome = tracing::field::Empty,
                 );
-                let fetched = fetch_build_facts(&client, &NodeTarget::ExactNode(target.node_id.clone()), &id).instrument(span.clone()).await;
+                let to = NodeTarget::ExactNode(target.node_id.clone());
+                let fetched = match &id {
+                    Some(id) => {
+                        span.record("build_id", tracing::field::display(id.log()));
+                        fetch_build_facts(&client, &to, id).instrument(span.clone()).await
+                    }
+                    None => fetch_current_build(&client, &to).instrument(span.clone()).await,
+                };
+                // The Build read: the one named, or the one the current Build read's End named.
+                let read = match (&fetched, id) {
+                    (Ok(f), None) => {
+                        span.record("build_id", tracing::field::display(f.build_id.log()));
+                        Some(f.build_id.log().to_string())
+                    }
+                    (_, id) => id.map(|b| b.log().to_string()),
+                };
                 match fetched {
                     Ok(f) if f.complete => {
                         span.record("facts", f.facts.len() as u64);
@@ -299,13 +288,13 @@ impl FetchBuild {
                     Ok(f) => {
                         span.record("facts", f.facts.len() as u64);
                         span.record("outcome", "responder-incomplete");
-                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = %id.log(), target = %target.name)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = read.as_deref(), target = %target.name)
                             .in_scope(|| tracing::info!("the responder says its holdings of the Build are not whole: nothing is absorbed"));
                         End::Failed(target.node_id)
                     }
                     Err(e) => {
                         span.record("outcome", e.reason());
-                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = %id.log(), target = %target.name, reason = e.reason(), detail = %e)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = read.as_deref(), target = %target.name, reason = e.reason(), detail = %e)
                             .in_scope(|| tracing::info!("the Build-facts read produced nothing to absorb"));
                         End::Failed(target.node_id)
                     }

@@ -87,7 +87,7 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     drop(report_parent);
     reported.record("served_by", through.name.to_string().as_str());
     reported.record("endpoint", through.anchor.as_str());
-    // The name the answer hands (a join that hands none is refused, `crate::join::call_join`): the
+    // The name the answer hands (a join that hands none is refused, `crate::join::call_join_to_types`): the
     // birth holds it from the answer on, and every step from here is named by it.
     if let Some(handed) = &answer.control.name {
         name = handed.to_string();

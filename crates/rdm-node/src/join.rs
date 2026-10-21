@@ -28,16 +28,6 @@ impl std::fmt::Display for JoinFailure {
     }
 }
 
-/// `JoinNode` to `target` (the admin whose endpoint reads `anchor` in short form) with `digest`,
-/// within `attempts` of five seconds each. A refusal by name ends it at once.
-pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str, digest: &MeshDigest, attempts: u32) -> Result<JoinAnswer, JoinFailure> {
-    let next = || {
-        let to = Ok((target.clone(), anchor.to_string()));
-        async move { to }
-    };
-    call_join_to(client, next, digest, attempts).await.map(|(answer, _)| answer)
-}
-
 /// `JoinNode` with `digest`, within `attempts` of five seconds each, each attempt made to whom `next`
 /// names then (a target, and the short endpoint id the attempt's span names as its anchor): a start
 /// after a stop joins the call that commanded it last. A refusal by name ends it at once; an attempt

@@ -717,11 +717,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             Ok(crate::workflows::node_start::JoinTo::Launcher { target: rdm_transport::NodeTarget::ExactNode(launcher.node_id.clone()), endpoint: anchor.id, name: launcher.name.clone() })
         })
     };
-    // What a repeat of the control entry calls: the join to the launching admin, as first made.
-    let entry_retrieval: Option<(rdm_transport::NodeTarget, String, MeshDigest)> = match (&joins_through, &join_digest) {
-        (Some((anchor, launcher, _)), Some(digest)) => Some((rdm_transport::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), digest.clone())),
-        _ => None,
-    };
     // What the start brought up, once it did: handed to the caller.
     let out: Arc<Mutex<Option<Running>>> = Arc::default();
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.to_string(), path: name.clone(), node_id: node_id.clone(), client: node_rpc.client.clone(), rafka_time: rafka_time.clone() };
@@ -1726,13 +1721,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     me: name.clone(),
                                     builds: builds_dyn.clone(),
                                     floor: entry_floor.clone(),
-                                    fetch_build: crate::fetch_build::FetchBuild::new(
-                                        name.clone(),
-                                        node_rpc.client.clone(),
-                                        journal.clone(),
-                                        responders.clone(),
-                                        entry_retrieval.map(|(target, anchor, digest)| entry_repeat(node_rpc.client.clone(), target, anchor, digest, accepted.clone(), entry_floor.clone(), rafka_time.clone(), records.clone(), cfg.mesh.clone(), mesh_id.clone())),
-                                    ),
+                                    fetch_build: crate::fetch_build::FetchBuild::new(name.clone(), node_rpc.client.clone(), journal.clone(), responders.clone()),
                                     progress: Some(progress.clone()),
                                 },
                                 progress: progress.clone(),

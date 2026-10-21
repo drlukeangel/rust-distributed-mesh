@@ -1235,12 +1235,12 @@ and `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_fact
 ledger: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/catalog.rs::core_ledger`.
 Direction: peer read between node-admins. RDM owns this server stream; it is not
 forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes;
-reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 1; REPLY_VARIANTS is 10.
-Reply positions are fixed in the shown order (Facts=0 through Started=9).
+reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered.
 
 ```rust
 pub enum BuildFactsRequest {
     FetchBuildFacts { build_id: String },
+    FetchCurrentBuild,
 }
 
 pub enum BuildFactsReply {
@@ -1254,6 +1254,7 @@ pub enum BuildFactsReply {
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     Started,
+    NoCurrentBuild { reason: String },
 }
 ```
 
@@ -1265,7 +1266,7 @@ counts. Facts are absorbed through the existing Build log.
 
 The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
-unreadable-build, behind-floor. It asks the fabric-primary first, then other node-admins,
+unreadable-build, behind-floor. no-pointer, which names no Build, reads `FetchCurrentBuild`: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads `FetchBuildFacts` of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins,
 then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms
 doubling to 4 s. Source: `planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
 `planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
@@ -1273,7 +1274,7 @@ doubling to 4 s. Source: `planned:rust-distributed-mesh/crates/rdm-admin/src/fet
 Responder spans: `rdm.node_admin.build.serve.via-fetch-facts`,
 `rdm.node_admin.build.reject.via-unservable-fact`. Requester spans:
 `rdm.node_admin.build.update.via-fetch-facts`, `rdm.node_admin.build.reject.via-fetch-incomplete`,
-`rdm.node_admin.build.reject.via-fetch-failed`, `rdm.node_admin.fabric.update.via-entry-repeat`.
+`rdm.node_admin.build.reject.via-fetch-failed`.
 Generic RPC call/serve spans carry op=0x1F. Typed refusals are the reply variants above.
 
 ## Build, op `0x20`, rdm

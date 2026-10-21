@@ -17,16 +17,18 @@ fn requests_match_the_frozen_wire_schema() {
     let fixtures = [
         (BuildFactsRequest::FetchBuildFacts { build_id: "b".into() }, "00 01 62"),
         (BuildFactsRequest::FetchBuildFacts { build_id: "3qcfk1kq47m9".into() }, "00 0c 337163666b316b7134376d39"),
+        (BuildFactsRequest::FetchCurrentBuild, "01"),
     ];
     for (q, hex) in fixtures {
         assert_eq!(BuildFacts::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
         assert_eq!(BuildFacts::decode_request(&bytes(hex)).unwrap(), q);
     }
-    assert_eq!(BuildFacts::decode_request(&[1]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(BuildFacts::REQUEST_VARIANTS, 2);
+    assert_eq!(BuildFacts::decode_request(&[2]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
-fn replies_match_the_frozen_ten_variant_wire_schema() {
+fn replies_match_the_frozen_eleven_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use BuildFactsReply::*;
     let fixtures = [
@@ -41,6 +43,7 @@ fn replies_match_the_frozen_ten_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "07 02"),
         (Unauthorized { reason: "u".into() }, "08 01 75"),
         (Started, "09"),
+        (NoCurrentBuild { reason: "n".into() }, "0a 01 6e"),
     ];
     for (r, hex) in fixtures {
         variants.insert(BuildFacts::encode_reply(&r).unwrap()[0]);
@@ -48,8 +51,8 @@ fn replies_match_the_frozen_ten_variant_wire_schema() {
         assert_eq!(BuildFacts::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(BuildFacts::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(BuildFacts::REPLY_VARIANTS, 10);
-    assert_eq!(BuildFacts::decode_reply(&[10]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(BuildFacts::REPLY_VARIANTS, 11);
+    assert_eq!(BuildFacts::decode_reply(&[11]), Err(DecodeFailure::UnknownVariant));
     assert_eq!(variants.len(), BuildFacts::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<BuildFacts>();
 }
@@ -64,6 +67,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(BuildFacts::frame_kind(&End { build_id: "b".into(), facts: 0, chunks: 0, complete: false }), FrameKind::Terminal);
     assert_eq!(BuildFacts::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
     assert_eq!(BuildFacts::frame_kind(&UnknownBuild { build_id: "b".into() }), FrameKind::Refusal(ReplyKind::new(rdm_core::outcome::Code::NotFound)));
+    assert_eq!(BuildFacts::frame_kind(&NoCurrentBuild { reason: "n".into() }), FrameKind::Refusal(ReplyKind::new(rdm_core::outcome::Code::NotFound)));
 }
 
 #[test]
@@ -79,5 +83,5 @@ fn rafka_mesh_transport_bound() -> usize {
 
 #[test]
 fn every_reply_variant_of_build_facts_classifies_to_one_code() {
-    replies_match_the_frozen_ten_variant_wire_schema();
+    replies_match_the_frozen_eleven_variant_wire_schema();
 }

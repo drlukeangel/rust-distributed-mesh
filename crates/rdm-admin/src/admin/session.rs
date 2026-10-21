@@ -448,7 +448,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         Some(self.operation.operation.clone())
     }
 
-    async fn joined(&mut self, membership: &Membership, through: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
+    async fn joined(&mut self, membership: &Membership, _: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.digest.lock().unwrap().node.name.clone();
@@ -471,19 +471,11 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         if let Some(progress) = &self.progress {
             let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
         }
-        let presented = s.digest.lock().unwrap().clone();
         if let Some(held) = self.held_again.take() {
             let _ = held.send(());
         }
         // Its tasks run again, from where they were held.
         s.gate.resume();
-        // The control entry this start repeats when nothing names the Build it is missing: the join it
-        // made, to the admin that commanded the start, with the digest it presented.
-        let entry = through.map(|t| {
-            let mut digest = presented.clone();
-            digest.status = MemberStatus::Pending;
-            entry_repeat(s.client.clone(), t.target.clone(), t.anchor.clone(), digest, s.accepted.clone(), s.entry_floor.clone(), s.rafka_time.clone(), s.wake.clone(), s.membership.mesh_name().to_string(), s.mesh_id.clone())
-        });
         let after = AdminAfterStopTail {
             name: me.clone(),
             node_id: s.node_id.clone(),
@@ -495,7 +487,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 me: me.clone(),
                 builds: s.builds.clone(),
                 floor: s.entry_floor.clone(),
-                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone(), entry),
+                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone()),
                 progress: None,
             },
             leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { membership: s.membership.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
@@ -785,32 +777,6 @@ pub(crate) fn spawn_entry_sweep(
         // A node not reached is unheard, so the mesh-primary's tick watches it: its tickle, then
         // the provider's exact exit proof, then node recovery only on proof (mesh-recovery.md step 6).
         let _ = slot.set(report);
-    })
-}
-
-/// The control entry retrieved again ([`crate::fetch_build::EntryRepeat`]): the join a start made, to the
-/// same authority with the same digest, its answer taken as the start took the first one.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn entry_repeat(
-    client: Arc<rdm_transport::NodeRpcClient>,
-    target: rdm_transport::NodeTarget,
-    anchor: String,
-    digest: MeshDigest,
-    accepted: Arc<AcceptedStore>,
-    floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
-    rafka_time: rdm_transport::clock::RafkaTime,
-    records: Arc<Records>,
-    mesh: String,
-    mesh_id: MeshId,
-) -> crate::fetch_build::EntryRepeat {
-    Arc::new(move || {
-        let (client, target, anchor, digest, accepted, floor, rafka_time, records, mesh, mesh_id) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), floor.clone(), rafka_time.clone(), records.clone(), mesh.clone(), mesh_id.clone());
-        Box::pin(async move {
-            let answer = crate::join::call_join(&client, &target, &anchor, &digest, 1).await.map_err(|e| e.to_string())?;
-            crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &rafka_time, &digest.node.name.to_string(), &answer);
-            take_entry_control(&answer, &accepted, &floor, &records, &mesh, &mesh_id).await;
-            Ok(())
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
     })
 }
 

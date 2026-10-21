@@ -484,7 +484,7 @@ pub fn serve(b: ServerBuilder, slot: JoinSlot) -> ServerBuilder {
     })
 }
 
-pub use rdm_node::join::{call_join, call_join_to, JoinFailure};
+pub use rdm_node::join::{call_join_to, JoinFailure};
 
 #[cfg(test)]
 mod tests {

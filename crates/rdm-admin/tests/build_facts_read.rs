@@ -1,13 +1,14 @@
-//! `FetchBuildFacts` (op `0x1F`) and the Ready check's recovery of missing control facts (i143 R-G6),
-//! over real Node RPC between in-process node-admins: what a responder serves from its own Build log,
-//! what a caller counts as a fetched Build, and how the FetchBuild rotates, backs off and repeats.
+//! `FetchBuildFacts` and `FetchCurrentBuild` (op `0x1F`) and the Ready check's recovery of missing
+//! control facts (i143 R-G6), over real Node RPC between in-process node-admins: what a responder
+//! serves from its own Build log, what a caller counts as a fetched Build, and how the FetchBuild
+//! rotates, backs off and repeats.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::admin::node_admin_not_ready;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_facts_read::{fetch_build_facts, BuildFactsDoor, FetchFailure};
+use rdm_admin::build_facts_read::{fetch_build_facts, fetch_current_build, BuildFactsDoor, FetchFailure};
 use rdm_admin::build_state::{AttemptOpened, AttemptReason, AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
 use rdm_admin::fetch_build::{NodeAdminNotReady, FetchBuild, Responder, Responders};
 use rdm_admin::model::{FabricId, PathName};
@@ -112,8 +113,8 @@ async fn caller(name: &str, fabric: &FabricId, peers: &[&Node]) -> (Admin, Node)
     (a, n)
 }
 
-fn fetch_build(c: &(Admin, Node), responders: Responders, entry: Option<rdm_admin::fetch_build::EntryRepeat>) -> FetchBuild {
-    FetchBuild::new(c.0.name.clone(), c.1.client.clone(), c.0.log.clone() as Arc<dyn LocalBuildLog>, responders, entry)
+fn fetch_build(c: &(Admin, Node), responders: Responders) -> FetchBuild {
+    FetchBuild::new(c.0.name.clone(), c.1.client.clone(), c.0.log.clone() as Arc<dyn LocalBuildLog>, responders)
 }
 
 /// Drive the Ready check's turn until it finds no blocker, recording each distinct blocker kind.
@@ -143,7 +144,6 @@ async fn drive(a: &Admin, h: &mut FetchBuild, within: Duration) -> Result<Vec<&'
 const FETCH: &str = "rdm.node_admin.build.update.via-fetch-facts";
 const FETCH_INCOMPLETE: &str = "rdm.node_admin.build.reject.via-fetch-incomplete";
 const FETCH_FAILED: &str = "rdm.node_admin.build.reject.via-fetch-failed";
-const ENTRY_REPEAT: &str = "rdm.node_admin.fabric.update.via-entry-repeat";
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
 const DIAL: &str = "rdm.node_rpc.connection.create.via-dial";
 
@@ -366,7 +366,7 @@ fn a_build_the_entry_named_is_held_current_once_its_facts_are_fetched() {
         let b = node_admin_not_ready(&joiner.0.name, &*joiner.0.log, joiner.0.floor.lock().unwrap().clone()).await.unwrap();
         assert!(matches!(&b, NodeAdminNotReady::NoCurrentBuild { wanted: Some(w), .. } if *w == id), "{b:?}");
 
-        let mut h = fetch_build(&joiner, responders(vec![&responder]), None);
+        let mut h = fetch_build(&joiner, responders(vec![&responder]));
         let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(seen, vec!["no-current-build-wanted"], "the one blocker the joiner named");
         assert_eq!(joiner.0.log.current_build().await.unwrap().into_build_id(), Some(id.clone()), "the fetched Build is current");
@@ -441,7 +441,7 @@ fn an_incomplete_responder_is_passed_over_and_only_full_holdings_count() {
         assert!(!got.complete, "the first responder says its holdings are not whole");
         assert!(joiner.0.log.facts().await.unwrap().is_empty(), "a read alone absorbs nothing");
 
-        let mut h = fetch_build(&joiner, responders(vec![&first, &second]), None);
+        let mut h = fetch_build(&joiner, responders(vec![&first, &second]));
         drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches from the second");
         assert_eq!(first.calls.load(Ordering::SeqCst), 2, "the first responder was asked (once by the read above, once by the FetchBuild) and passed over");
         assert_eq!(second.calls.load(Ordering::SeqCst), 1, "the second responder's full holdings supplied it");
@@ -503,7 +503,7 @@ fn an_interrupted_stream_never_counts_and_the_read_is_made_again() {
         assert!(matches!(cut, FetchFailure::Interrupted(_)), "{cut}");
         assert!(joiner.0.log.facts().await.unwrap().is_empty(), "an interrupted stream absorbs nothing");
 
-        let mut h = fetch_build(&joiner, responders(vec![&responder]), None);
+        let mut h = fetch_build(&joiner, responders(vec![&responder]));
         drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("the repeated read fetches the Build");
         assert_eq!(asked.load(Ordering::SeqCst), 2, "the cut read, then the read made again");
         assert_eq!(joiner.0.log.current_build().await.unwrap().into_build_id(), Some(id.clone()));
@@ -524,8 +524,143 @@ async fn full_facts(door: &BuildFactsDoor) -> Vec<rdm_admin::build_state::BuildF
 }
 
 fn id_of(req: &rdm_core::build_facts::BuildFactsRequest) -> String {
-    let rdm_core::build_facts::BuildFactsRequest::FetchBuildFacts { build_id } = req;
-    build_id.clone()
+    match req {
+        rdm_core::build_facts::BuildFactsRequest::FetchBuildFacts { build_id } => build_id.clone(),
+        other => panic!("this responder is read by FetchBuildFacts only, asked {}", other.op()),
+    }
+}
+
+/// A responder's Build state whose current accepted Build moves once it has been read: the first
+/// `current_build` answers the store's current Build and then a newer Build, `newer`, is accepted
+/// into the store, so every read of the pointer after the first (between any two chunks of the
+/// stream it selected) finds `newer`.
+struct PointerMovesOnceRead {
+    inner: Arc<MemoryBuildStateAdapter>,
+    newer: BuildId,
+    moved: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for PointerMovesOnceRead {
+    async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.publish_accepted(a).await
+    }
+    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.open_attempt(o).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, rdm_admin::build_state::BuildStateError> {
+        self.inner.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, rdm_admin::build_state::BuildStateError> {
+        let current = self.inner.current_build().await?;
+        if !self.moved.swap(true, Ordering::SeqCst) {
+            let newer = BuildAccepted { build_id: self.newer.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 };
+            self.inner.publish_accepted(&newer).await?;
+        }
+        Ok(current)
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<rdm_admin::build_state::BuildProjection>, rdm_admin::build_state::BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, rdm_admin::build_state::BuildStateError> {
+        self.inner.claim_attempt(c).await
+    }
+    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.adopt_claim(c).await
+    }
+    async fn append_step_receipt(&self, r: &rdm_admin::build_state::BuildStepReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.append_step_receipt(r).await
+    }
+    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.append_attempt_receipt(r).await
+    }
+    async fn facts(&self) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.forget(id).await
+    }
+    async fn recovery_of(&self, path: &PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, rdm_admin::build_state::BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, rdm_admin::build_state::BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, rdm_admin::build_state::BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, rdm_admin::build_state::BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (node-rpc-envelope.md "Build-facts, op `0x1F`": "the responder selects its current
+/// accepted Build once for the request and streams that Build's facts, every chunk and End naming
+/// its id"): a `FetchCurrentBuild` whose responder's current accepted Build moves to a newer Build
+/// once the read has selected it streams the Build it selected to the end: more than one chunk,
+/// every chunk and the End naming that Build, only its facts, and the End complete. Must NOT
+/// happen: a chunk or the End naming the Build the pointer moved to, or facts of two Builds in one
+/// stream. Its trace: the read is one call span under the cell's root, and the responder's serve
+/// span names the request and the Build it selected.
+#[test]
+fn a_current_build_read_streams_the_build_it_selected_to_the_end() {
+    let cap = capture();
+    let (story, (selected, newer)) = story!(cap, "rdm.test.build.serve.via-current-build-selected-once", async {
+        let fabric = FabricId::mint();
+        let (selected, newer) = (BuildId::mint(), BuildId::mint());
+        let full = admin("mesh1.admin.1", &fabric).await;
+        holds(&full, &selected, 60).await;
+        let moving = Arc::new(PointerMovesOnceRead { inner: full.log.clone(), newer: newer.clone(), moved: std::sync::atomic::AtomicBool::new(false) });
+        let door = Arc::new(BuildFactsDoor { me: full.name.clone(), builds: moving.clone(), floor: full.floor.clone() });
+        let responder = node_serving("mesh1.admin.1", move |req, sink| {
+            let door = door.clone();
+            async move { Ok(door.serve(req, sink).await) }
+        })
+        .await;
+        let c = caller("mesh1.admin.2", &fabric, &[&responder]).await;
+        let t = NodeTarget::ExactNode(responder.resolved.node_id.clone());
+        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
+        let mut stream = match c.1.client.call_stream::<BuildFacts>(&t, &rdm_core::build_facts::BuildFactsRequest::FetchCurrentBuild, &opts).await {
+            Ok((s, _)) => s.read_only(),
+            Err((outcome, _)) => panic!("the FetchCurrentBuild read was not streamed: {outcome:?}"),
+        };
+        let (mut chunks, mut end, mut facts) = (Vec::new(), None, Vec::new());
+        while let Some(item) = stream.next().await {
+            match item {
+                rdm_transport::stream::StreamItem::Frame(_, BuildFactsReply::Started) => {}
+                rdm_transport::stream::StreamItem::Frame(_, BuildFactsReply::Facts { build_id, facts: bytes, .. }) => {
+                    chunks.push(build_id);
+                    facts.extend(rdm_admin::fabric_builds::BuildMessage::from_bytes(&bytes).expect("a chunk decodes").facts);
+                }
+                rdm_transport::stream::StreamItem::Frame(_, BuildFactsReply::End { build_id, complete, .. }) => end = Some((build_id, complete)),
+                rdm_transport::stream::StreamItem::Frame(_, other) => panic!("an unexpected frame in the stream: {other:?}"),
+                rdm_transport::stream::StreamItem::Failed(f) => panic!("the stream failed before its End: {f:?}"),
+            }
+        }
+        assert_eq!(full.log.current_build().await.unwrap().into_build_id(), Some(newer.clone()), "the responder's current accepted Build moved once the read selected its Build");
+        assert!(chunks.len() >= 2, "the selected Build's facts take more than one chunk: {} arrived", chunks.len());
+        let named: std::collections::BTreeSet<&String> = chunks.iter().collect();
+        assert_eq!(named.into_iter().cloned().collect::<Vec<_>>(), vec![selected.to_string()], "every chunk names the Build the read selected, never the Build the pointer moved to ({newer})");
+        assert_eq!(end, Some((selected.to_string(), true)), "the End names the Build the read selected, complete");
+        assert!(facts.iter().all(|f| *f.build_id() == selected), "only the selected Build's facts are streamed");
+        for n in [&responder, &c.1] {
+            n.ep.close().await;
+        }
+        (selected, newer)
+    });
+    let spans = cap.spans(story);
+    let serves = spans.named("rdm.node_admin.build.serve.via-fetch-facts");
+    assert_eq!(serves.len(), 1, "one serve;\n{}", spans.render());
+    assert_eq!(
+        (serves[0].attr("request"), serves[0].attr("build_id"), serves[0].attr("outcome")),
+        ("fetch-current-build", selected.to_string().as_str(), "served"),
+        "the serve span names the request and the Build it selected, never {newer};\n{}",
+        spans.render()
+    );
 }
 
 // @feature: node-lifecycle
@@ -546,7 +681,7 @@ fn an_unreachable_fabric_primary_rotates_to_another_node_admin() {
         let second = node_of(&other).await;
         let joiner = caller("mesh1.admin.3", &fabric, &[&not_ready, &second]).await;
         entry_named(&joiner.0, &id, 1);
-        let mut h = fetch_build(&joiner, responders(vec![&not_ready, &second]), None);
+        let mut h = fetch_build(&joiner, responders(vec![&not_ready, &second]));
         drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches from the second");
         assert_eq!(not_ready.calls.load(Ordering::SeqCst), 1, "the fabric-primary was asked first, once");
         assert_eq!(second.calls.load(Ordering::SeqCst), 1);
@@ -560,7 +695,7 @@ fn an_unreachable_fabric_primary_rotates_to_another_node_admin() {
             let list = list.clone();
             Box::pin(async move { list })
         });
-        let mut h2 = fetch_build(&joiner2, responders, None);
+        let mut h2 = fetch_build(&joiner2, responders);
         drive(&joiner2.0, &mut h2, Duration::from_secs(10)).await.expect("fetches past the unresolvable fabric-primary");
         for n in [&not_ready, &second, &joiner.1, &joiner2.1] {
             n.ep.close().await;
@@ -596,7 +731,7 @@ fn a_restart_that_lost_the_builds_facts_fetches_them() {
         let responder = node_of(&full).await;
         let restarted = caller("mesh1.admin.2", &fabric, &[&responder]).await;
         entry_named(&restarted.0, &id, 2);
-        let mut h = fetch_build(&restarted, responders(vec![&responder]), None);
+        let mut h = fetch_build(&restarted, responders(vec![&responder]));
         let seen = drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(seen, vec!["no-current-build-wanted"]);
         assert_eq!(restarted.0.log.read_build(&id).await.unwrap().attempt, 2);
@@ -631,7 +766,7 @@ fn a_fetch_spawned_onto_a_worker_that_holds_no_dispatcher_is_still_captured() {
         let responder = node_of(&full).await;
         let restarted = caller("mesh1.admin.2", &fabric, &[&responder]).await;
         entry_named(&restarted.0, &id, 2);
-        let mut h = fetch_build(&restarted, responders(vec![&responder]), None);
+        let mut h = fetch_build(&restarted, responders(vec![&responder]));
         drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(restarted.0.log.read_build(&id).await.unwrap().attempt, 2);
         for n in [&responder, &restarted.1] {
@@ -669,7 +804,7 @@ fn a_build_behind_the_entry_floor_is_fetched_up_to_it() {
         let joiner = caller("mesh1.admin.3", &fabric, &[&first, &second]).await;
         holds(&joiner.0, &id, 1).await;
         *joiner.0.floor.lock().unwrap() = Some((id.clone(), 3));
-        let mut h = fetch_build(&joiner, responders(vec![&first, &second]), None);
+        let mut h = fetch_build(&joiner, responders(vec![&first, &second]));
         let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(seen, vec!["behind-floor"]);
         assert_eq!(joiner.0.log.read_build(&id).await.unwrap().attempt, 3);
@@ -688,53 +823,120 @@ fn a_build_behind_the_entry_floor_is_fetched_up_to_it() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: with no current Build and no Build named by an entry, nothing is fetched: the control
-/// entry is retrieved again, and only once that names a Build is its facts read. Its trace: the entry
-/// retrievals are `via-entry-repeat` spans under the cell's root (the first three for
-/// `no-current-build`, each `retrieved`), then one fetch span for `no-current-build-wanted`.
+/// CONTRACT (node-rpc-envelope.md "Build-facts, op `0x1F`": "no-pointer, which names no Build, reads
+/// `FetchCurrentBuild` [...] or answers `NoCurrentBuild` and the blocker stays"): a joiner whose entry
+/// named no Build holds no current Build and names the no-pointer blocker (`no-current-build`). It
+/// reads it with `FetchCurrentBuild`: while the responder holds no current Build the read is answered
+/// `NoCurrentBuild`, nothing is absorbed and the blocker stays on the responder's backoff; once the
+/// responder holds one, the read streams that Build's facts, whose id the End names, they are
+/// absorbed and the blocker clears. Its trace: every read is a fetch span under the cell's root for
+/// `no-current-build`, the first ending `no-current-build` beside a `via-fetch-failed` rejection of
+/// that reason, the last ending `absorbed` and naming the Build and its three facts.
 #[test]
-fn an_unidentified_build_is_never_fetched_the_entry_is_retrieved_again() {
+fn a_build_no_entry_named_is_read_as_the_responders_current_build() {
     let cap = capture();
-    let (story, id) = story!(cap, "rdm.test.fabric.update.via-unidentified-build", async {
+    let (story, id) = story!(cap, "rdm.test.build.update.via-current-build-read", async {
         let fabric = FabricId::mint();
         let id = BuildId::mint();
         let full = admin("mesh1.admin.1", &fabric).await;
-        holds(&full, &id, 1).await;
         let responder = node_of(&full).await;
         let joiner = caller("mesh1.admin.2", &fabric, &[&responder]).await;
-        let entries = Arc::new(AtomicU32::new(0));
-        let entry: rdm_admin::fetch_build::EntryRepeat = {
-            let (entries, floor, id) = (entries.clone(), joiner.0.floor.clone(), id.clone());
-            Arc::new(move || {
-                let (entries, floor, id) = (entries.clone(), floor.clone(), id.clone());
-                Box::pin(async move {
-                    // The first retrievals find the maker without a current Build; the third names it.
-                    if entries.fetch_add(1, Ordering::SeqCst) >= 2 {
-                        *floor.lock().unwrap() = Some((id, 1));
-                    }
-                    Ok(())
-                })
-            })
-        };
-        let mut h = fetch_build(&joiner, responders(vec![&responder]), Some(entry));
-        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches once the entry names the Build");
-        assert_eq!(seen, vec!["no-current-build", "no-current-build-wanted"]);
-        assert!(entries.load(Ordering::SeqCst) >= 3, "the entry was retrieved until it named a Build");
-        assert_eq!(responder.calls.load(Ordering::SeqCst), 1, "nothing was fetched before the Build was identified");
+        let b = node_admin_not_ready(&joiner.0.name, &*joiner.0.log, None).await.unwrap();
+        assert!(matches!(&b, NodeAdminNotReady::NoCurrentBuild { wanted: None, .. }), "{b:?}");
+
+        let mut h = fetch_build(&joiner, responders(vec![&responder]));
+        let stays = drive(&joiner.0, &mut h, Duration::from_millis(600)).await;
+        assert_eq!(stays, Err(vec!["no-current-build"]), "the responder holds no current Build: the blocker stays");
+        assert!(joiner.0.log.facts().await.unwrap().is_empty(), "a NoCurrentBuild answer absorbs nothing");
+        let refused = responder.calls.load(Ordering::SeqCst);
+        assert!(refused >= 1, "the blocker was read while the responder held no current Build");
+
+        holds(&full, &id, 1).await;
+        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("reads the responder's current Build once it holds one");
+        assert_eq!(seen, vec!["no-current-build"], "the one blocker the joiner named");
+        assert_eq!(joiner.0.log.current_build().await.unwrap().into_build_id(), Some(id.clone()), "the Build read is current");
         for n in [&responder, &joiner.1] {
             n.ep.close().await;
         }
         id
     });
     let spans = cap.spans(story);
-    let repeats = spans.children(ENTRY_REPEAT);
-    assert!(repeats.len() >= 3, "the entry was retrieved at least three times;\n{}", spans.render());
-    for r in &repeats[..3] {
-        assert_eq!((r.attr("node"), r.attr("blocker"), r.attr("outcome")), ("mesh1.admin.2", "no-current-build", "retrieved"), "{}", spans.render());
-    }
     let fetches = spans.children(FETCH);
-    assert_eq!(fetches.len(), 1, "the Build was fetched once, after it was named;\n{}", spans.render());
-    assert_fetch(&spans, fetches[0], "mesh1.admin.2", &id, "no-current-build-wanted", "mesh1.admin.1", Some(3));
+    assert!(fetches.len() >= 2, "a refused read, then the read that streamed the Build;\n{}", spans.render());
+    let (first, last) = (fetches[0], fetches[fetches.len() - 1]);
+    assert_eq!((first.attr("blocker"), first.attr("outcome"), first.attr("build_id")), ("no-current-build", "no-current-build", "<absent>"), "{}", spans.render());
+    assert_fetch(&spans, last, "mesh1.admin.2", &id, "no-current-build", "mesh1.admin.1", Some(3));
+    assert_eq!(last.attr("outcome"), "absorbed", "{}", spans.render());
+    let failed = spans.children(FETCH_FAILED);
+    assert!(!failed.is_empty() && failed.iter().all(|f| (f.attr("target"), f.attr("reason")) == ("mesh1.admin.1", "no-current-build")), "{}", spans.render());
+}
+
+/// A responder whose `FetchCurrentBuild` stream names two Builds: `chunks` names the Build of each
+/// chunk in order, `end` the Build its End names. Each chunk carries real facts of the Build it names.
+async fn two_builds_responder(name: &str, chunks: Vec<BuildId>, end: BuildId) -> Node {
+    let mut frames: Vec<(String, Vec<u8>)> = Vec::new();
+    for b in &chunks {
+        let a = admin("mesh1.admin.9", &FabricId::mint()).await;
+        holds(&a, b, 1).await;
+        let (messages, _) = rdm_admin::fabric_builds::encode_chunks(a.log.facts().await.unwrap());
+        frames.push((b.to_string(), messages[0].to_vec()));
+    }
+    let frames = Arc::new(frames);
+    let end = end.to_string();
+    node_serving(name, move |_, sink| {
+        let (frames, end) = (frames.clone(), end.clone());
+        async move {
+            fn fault(e: impl std::fmt::Debug) -> rdm_transport::HandlerFault {
+                rdm_transport::HandlerFault::invariant_broken(format!("{e:?}"))
+            }
+            let mut sink = sink.started(BuildFactsReply::Started).await.map_err(fault)?;
+            let count = frames.len() as u32;
+            for (i, (b, facts)) in frames.iter().enumerate() {
+                sink.data(BuildFactsReply::Facts { build_id: b.clone(), chunk_index: i as u32, chunk_count: count, facts: facts.clone() }).await.map_err(fault)?;
+            }
+            Ok(BuildFactsReply::End { build_id: end, facts: 3 * count, chunks: count, complete: true })
+        }
+    })
+    .await
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (Q98: "the caller refuses a stream whose chunks name two Builds, as an incomplete
+/// fetch"): a `FetchCurrentBuild` stream whose chunks name two Builds, or whose End names a Build its
+/// chunks do not, is never a fetched Build: the read fails `incomplete`, nothing of either Build is
+/// absorbed and the no-pointer blocker stays on the responder's backoff. Must NOT happen: facts of
+/// two Builds absorbed from one stream. Its trace: every read of the blocker is a fetch span under
+/// the cell's root ending `incomplete`, beside a `via-fetch-failed` rejection of that reason.
+#[test]
+fn a_current_build_stream_naming_two_builds_is_refused_as_incomplete() {
+    let cap = capture();
+    let (story, ()) = story!(cap, "rdm.test.build.reject.via-two-builds-in-one-stream", async {
+        let fabric = FabricId::mint();
+        let (a, b) = (BuildId::mint(), BuildId::mint());
+        let mixed_chunks = two_builds_responder("mesh1.admin.1", vec![a.clone(), b.clone()], a.clone()).await;
+        let mixed_end = two_builds_responder("mesh1.admin.3", vec![a.clone()], b.clone()).await;
+        let joiner = caller("mesh1.admin.2", &fabric, &[&mixed_chunks, &mixed_end]).await;
+
+        for (n, how) in [(&mixed_chunks, "its chunks name two Builds"), (&mixed_end, "its End names a Build its chunks do not")] {
+            let read = fetch_current_build(&joiner.1.client, &NodeTarget::ExactNode(n.resolved.node_id.clone())).await;
+            assert!(matches!(&read, Err(FetchFailure::Incomplete(_))), "a stream where {how} is refused as incomplete: {read:?}");
+        }
+
+        let mut h = fetch_build(&joiner, responders(vec![&mixed_chunks, &mixed_end]));
+        let stays = drive(&joiner.0, &mut h, Duration::from_millis(600)).await;
+        assert_eq!(stays, Err(vec!["no-current-build"]), "the blocker stays");
+        assert!(joiner.0.log.facts().await.unwrap().is_empty(), "nothing of either Build is absorbed");
+        for n in [&mixed_chunks, &mixed_end, &joiner.1] {
+            n.ep.close().await;
+        }
+    });
+    let spans = cap.spans(story);
+    let fetches = spans.children(FETCH);
+    assert!(fetches.len() >= 2, "each responder was read;\n{}", spans.render());
+    assert!(fetches.iter().all(|f| (f.attr("blocker"), f.attr("outcome")) == ("no-current-build", "incomplete")), "{}", spans.render());
+    let failed = spans.children(FETCH_FAILED);
+    assert_eq!(failed.len(), fetches.len(), "{}", spans.render());
+    assert!(failed.iter().all(|f| f.attr("reason") == "incomplete"), "{}", spans.render());
 }
 
 #[test]

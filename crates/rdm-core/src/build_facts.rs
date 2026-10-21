@@ -6,8 +6,12 @@
 //!
 //! ```text
 //! Started  Facts*  End { complete }                      a stream
-//! NotReady | UnknownBuild                                one refusal, nothing started
+//! NotReady | UnknownBuild | NoCurrentBuild               one refusal, nothing started
 //! ```
+//!
+//! `FetchBuildFacts` names the Build. `FetchCurrentBuild` names none: the target streams the facts of
+//! its current accepted Build (its builds store read last in, first out, R-BI3), whose id `End`
+//! carries, or answers `NoCurrentBuild` when it holds none.
 //!
 //! A `Facts` chunk carries `facts`: one postcard frame of the Build topic's message
 //! (`rafka-node-admin-core` `fabric_builds::BuildMessage`, the Build facts in their wire shape),
@@ -40,6 +44,9 @@ pub enum BuildFactsRequest {
         /// The Build whose facts are fetched.
         build_id: String,
     },
+    /// Every fact the target holds for its current accepted Build, whose id the stream's `End`
+    /// carries.
+    FetchCurrentBuild,
 }
 
 impl BuildFactsRequest {
@@ -47,6 +54,7 @@ impl BuildFactsRequest {
     pub fn op(&self) -> &'static str {
         match self {
             Self::FetchBuildFacts { .. } => "fetch-build-facts",
+            Self::FetchCurrentBuild => "fetch-current-build",
         }
     }
 }
@@ -115,6 +123,12 @@ pub enum BuildFactsReply {
     },
     /// The stream begins: sent before the first chunk of an accepted read.
     Started,
+    /// `FetchCurrentBuild` found no current Build: no Build in the target's builds store is in
+    /// progress or completed.
+    NoCurrentBuild {
+        /// Why the target holds none.
+        reason: String,
+    },
 }
 
 impl BuildFactsReply {
@@ -131,6 +145,7 @@ impl BuildFactsReply {
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Started => "started",
+            Self::NoCurrentBuild { .. } => "no-current-build",
         }
     }
 }
@@ -143,8 +158,8 @@ impl NodeProtocol for BuildFacts {
     /// One chunk: the Build topic's message bound (`rafka-mesh-transport` chunking) plus the frame's own fields.
     const MAX_REPLY_FRAME_BYTES: usize = 8 * 1024;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 10;
+    const REQUEST_VARIANTS: u32 = 2;
+    const REPLY_VARIANTS: u32 = 11;
 
     type Request = BuildFactsRequest;
     type Reply = BuildFactsReply;
@@ -161,6 +176,7 @@ impl NodeProtocol for BuildFacts {
             BuildFactsReply::Malformed { .. } => "malformed",
             BuildFactsReply::Unauthorized { .. } => "unauthorized",
             BuildFactsReply::Started => "started",
+            BuildFactsReply::NoCurrentBuild { .. } => "no-current-build",
         }
     }
 
@@ -176,6 +192,7 @@ impl NodeProtocol for BuildFacts {
             BuildFactsReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildFactsReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             BuildFactsReply::Started  => ReplyKind::Success,
+            BuildFactsReply::NoCurrentBuild { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
         }
     }
 

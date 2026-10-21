@@ -1,10 +1,13 @@
-//! The Build-facts read (`FetchBuildFacts`, op `0x1F`; node-rpc-envelope.md "Build facts, op
-//! `0x1F`, rdm"; i143 R-G6).
+//! The Build-facts read (`FetchBuildFacts` and `FetchCurrentBuild`, op `0x1F`; node-rpc-envelope.md
+//! "Build-facts, op `0x1F`, rdm"; i143 R-G6).
 //!
 //! A node-admin that does not hold the facts of a Build asks another node-admin for them. The responder ([`BuildFactsDoor`]) reads its own local Build log
 //! once and streams the facts of the one Build, packed by the method the Build topic's catch-up
 //! uses ([`crate::fabric_builds::encode_chunks`]): it provides what it holds and decides nothing.
-//! The caller ([`fetch_build_facts`]) returns the facts only for a stream that ended with its `End`,
+//! `FetchBuildFacts` names the Build; `FetchCurrentBuild` names none, and the responder streams the
+//! facts of its current accepted Build (its builds store read last in, first out, R-BI3), whose id
+//! `End` carries, or answers `NoCurrentBuild`.
+//! The caller ([`fetch_build_facts`], [`fetch_current_build`]) returns the facts only for a stream that ended with its `End`,
 //! whose chunks all arrived and whose count agrees; the facts then go through the same absorption
 //! the Build topic's facts go through ([`crate::build_state::LocalBuildLog::absorb_facts`]).
 
@@ -36,15 +39,15 @@ pub struct BuildFactsDoor {
 pub type BuildFactsSlot = Arc<OnceLock<Arc<BuildFactsDoor>>>;
 
 impl BuildFactsDoor {
-    /// Answer a Build-facts read: stream the facts held for the requested Build in chunks and end
-    /// with whether the holdings are whole.
+    /// Answer a Build-facts read: stream the facts held for the requested Build (the one named, or
+    /// this admin's current accepted Build) in chunks and end with whether the holdings are whole.
     pub async fn serve(&self, req: BuildFactsRequest, sink: ReplySink<BuildFacts, NotStarted>) -> BuildFactsReply {
-        let BuildFactsRequest::FetchBuildFacts { build_id } = req;
         let me = self.builds.held_name().unwrap_or_else(|| self.me.clone());
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-fetch-facts",
             node = %me,
-            build_id = %build_id,
+            request = req.op(),
+            build_id = tracing::field::Empty,
             facts = tracing::field::Empty,
             chunks = tracing::field::Empty,
             complete = tracing::field::Empty,
@@ -52,14 +55,37 @@ impl BuildFactsDoor {
         );
         async move {
             let span = tracing::Span::current();
-            let id = match BuildId::parse(&build_id) {
-                Ok(id) => id,
-                Err(e) => {
-                    span.record("outcome", "malformed-build-id");
-                    tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the facts read is refused: its Build id is not a Crockford id"));
-                    return rdm_core::reply::build_facts::malformed(rdm_core::outcome::MalformedKind::Corrupt);
+            let (id, build_id) = match req {
+                BuildFactsRequest::FetchBuildFacts { build_id } => {
+                    span.record("build_id", build_id.as_str());
+                    match BuildId::parse(&build_id) {
+                        Ok(id) => (id, build_id),
+                        Err(e) => {
+                            span.record("outcome", "malformed-build-id");
+                            tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                                .in_scope(|| tracing::info!("the facts read is refused: its Build id is not a Crockford id"));
+                            return rdm_core::reply::build_facts::malformed(rdm_core::outcome::MalformedKind::Corrupt);
+                        }
+                    }
                 }
+                // The current accepted Build: this admin's builds store read last in, first out (R-BI3).
+                BuildFactsRequest::FetchCurrentBuild => match self.builds.current_build().await {
+                    Ok(current) => match current.into_build_id() {
+                        Some(id) => {
+                            let build_id = id.to_string();
+                            span.record("build_id", build_id.as_str());
+                            (id, build_id)
+                        }
+                        None => {
+                            span.record("outcome", "no-current-build");
+                            return rdm_core::reply::build_facts::no_current_build(format!("{me}: holds no current Build (no Build in its builds store is in progress or completed)"));
+                        }
+                    },
+                    Err(e) => {
+                        span.record("outcome", "not-ready");
+                        return rdm_core::reply::build_facts::not_ready(format!("{me}: its builds store could not be read for the current Build: {e}"));
+                    }
+                },
             };
             // One read of this admin's log: the stream is a snapshot of it.
             let held: Vec<BuildFact> = match self.builds.facts().await {
@@ -107,8 +133,8 @@ impl BuildFactsDoor {
     }
 }
 
-/// Serve `FetchBuildFacts` on this admin. Until `slot` is filled the admin holds no Build state and
-/// a read is `NotReady` by name.
+/// Serve the Build-facts read (`FetchBuildFacts`, `FetchCurrentBuild`) on this admin. Until `slot` is
+/// filled the admin holds no Build state and a read is `NotReady` by name.
 pub fn serve(b: ServerBuilder, slot: BuildFactsSlot) -> ServerBuilder {
     b.serve_stream::<BuildFacts, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: BuildFactsRequest, sink| {
         let slot = slot.clone();
@@ -141,6 +167,8 @@ pub enum FetchFailure {
     NotReady(String),
     /// The responder holds no fact of the Build.
     UnknownBuild(String),
+    /// The responder holds no current Build (`FetchCurrentBuild` answered `NoCurrentBuild`).
+    NoCurrentBuild(String),
     /// The responder refused by another name, or does not serve the op.
     Refused(String),
     /// The responder could not be reached.
@@ -156,6 +184,7 @@ impl std::fmt::Display for FetchFailure {
         match self {
             Self::NotReady(r) => write!(f, "not ready: {r}"),
             Self::UnknownBuild(r) => write!(f, "unknown build: {r}"),
+            Self::NoCurrentBuild(r) => write!(f, "no current build: {r}"),
             Self::Refused(r) => write!(f, "refused: {r}"),
             Self::Unreached(r) => write!(f, "unreached: {r}"),
             Self::Interrupted(r) => write!(f, "interrupted: {r}"),
@@ -170,6 +199,7 @@ impl FetchFailure {
         match self {
             Self::NotReady(_) => "not-ready",
             Self::UnknownBuild(_) => "unknown-build",
+            Self::NoCurrentBuild(_) => "no-current-build",
             Self::Refused(_) => "refused",
             Self::Unreached(_) => "unreached",
             Self::Interrupted(_) => "interrupted",
@@ -182,9 +212,20 @@ impl FetchFailure {
 /// arrived with every chunk `0..chunks` present once and a fact count that agrees; anything less is
 /// a failure that names what was missing, and the caller absorbs nothing from it.
 pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, build_id: &BuildId) -> Result<Fetched, FetchFailure> {
-    let req = BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() };
+    read_facts(client, target, &BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() }, Some(build_id)).await
+}
+
+/// `FetchCurrentBuild` to `target`: the facts of its current accepted Build, whose id the stream's
+/// `End` carries, counted as [`fetch_build_facts`] counts them; `NoCurrentBuild` when it holds none.
+pub async fn fetch_current_build(client: &NodeRpcClient, target: &NodeTarget) -> Result<Fetched, FetchFailure> {
+    read_facts(client, target, &BuildFactsRequest::FetchCurrentBuild, None).await
+}
+
+/// One Build-facts read of `req` to `target`. `asked` is the Build the request names; with none, the
+/// Build is the one the stream's frames name, and every frame names the same one.
+async fn read_facts(client: &NodeRpcClient, target: &NodeTarget, req: &BuildFactsRequest, asked: Option<&BuildId>) -> Result<Fetched, FetchFailure> {
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
-    let mut stream = match client.call_stream::<BuildFacts>(target, &req, &opts).await {
+    let mut stream = match client.call_stream::<BuildFacts>(target, req, &opts).await {
         // The facts are the responder's durable Build log, absorbed by the caller only from a whole
         // read and recovered by reading them again: reading a frame is its recovery (node-rpc.md §43).
         Ok((s, _)) => s.read_only(),
@@ -192,6 +233,8 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
         Err((RpcOutcome::Unserved(u), _)) => return Err(FetchFailure::Refused(format!("the node does not serve Build facts: {u:?}"))),
         Err((other, _)) => return Err(FetchFailure::Unreached(format!("the call ended {}", other.name()))),
     };
+    // The Build the read is of: the one asked, or the one the first frame names.
+    let mut build_id: Option<String> = asked.map(ToString::to_string);
     let mut chunks: Vec<Option<Vec<BuildFact>>> = Vec::new();
     let mut end = None;
     while let Some(item) = stream.next().await {
@@ -199,8 +242,9 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
             StreamItem::Frame(FrameKind::Refusal(_), r) => return Err(refusal_of(r)),
             StreamItem::Frame(_, BuildFactsReply::Started) => {}
             StreamItem::Frame(_, BuildFactsReply::Facts { build_id: b, chunk_index, chunk_count, facts }) => {
-                if b != build_id.as_str() {
-                    return Err(FetchFailure::Incomplete(format!("a chunk of Build {b} arrived in the read of {build_id}")));
+                let read = build_id.get_or_insert_with(|| b.clone());
+                if b != *read {
+                    return Err(FetchFailure::Incomplete(format!("a chunk of Build {b} arrived in the read of {read}")));
                 }
                 if chunks.is_empty() {
                     chunks = vec![None; chunk_count as usize];
@@ -221,9 +265,11 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
     let Some((b, facts, n, complete)) = end else {
         return Err(FetchFailure::Interrupted(format!("the stream ended after {} of {} chunks without its End frame", chunks.iter().flatten().count(), chunks.len())));
     };
-    if b != build_id.as_str() {
-        return Err(FetchFailure::Incomplete(format!("the End names Build {b}, the read was of {build_id}")));
+    let read = build_id.get_or_insert_with(|| b.clone());
+    if b != *read {
+        return Err(FetchFailure::Incomplete(format!("the End names Build {b}, the read was of {read}")));
     }
+    let build_id = BuildId::parse(&b).map_err(|e| FetchFailure::Incomplete(format!("the End names Build {b}, which is not a Build id: {e}")))?;
     if n as usize != chunks.len() || chunks.iter().any(Option::is_none) {
         return Err(FetchFailure::Incomplete(format!("the End counts {n} chunks, {} arrived of {} announced", chunks.iter().flatten().count(), chunks.len())));
     }
@@ -231,13 +277,14 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
     if all.len() as u32 != facts {
         return Err(FetchFailure::Incomplete(format!("the End counts {facts} facts, {} decoded", all.len())));
     }
-    Ok(Fetched { build_id: build_id.clone(), facts: all, chunks: n, complete })
+    Ok(Fetched { build_id, facts: all, chunks: n, complete })
 }
 
 fn refusal_of(r: BuildFactsReply) -> FetchFailure {
     match r {
         BuildFactsReply::NotReady { reason } => FetchFailure::NotReady(reason),
         BuildFactsReply::UnknownBuild { build_id } => FetchFailure::UnknownBuild(format!("the responder holds no fact of {build_id}")),
+        BuildFactsReply::NoCurrentBuild { reason } => FetchFailure::NoCurrentBuild(reason),
         BuildFactsReply::PeerUnresolved { reason } => FetchFailure::Unreached(format!("peer unresolved: {reason}")),
         other => FetchFailure::Refused(format!("{}: {other:?}", other.name())),
     }

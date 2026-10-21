@@ -224,6 +224,8 @@ use serde::{Deserialize, Serialize};
 pub fn not_ready(reason: String) -> BuildFactsReply { BuildFactsReply::NotReady { reason } }
 /// Construct the typed unknown-build outcome.
 pub fn unknown_build(build_id: String) -> BuildFactsReply { BuildFactsReply::UnknownBuild { build_id } }
+/// Construct the typed no-current-build outcome: `FetchCurrentBuild` found no current Build.
+pub fn no_current_build(reason: String) -> BuildFactsReply { BuildFactsReply::NoCurrentBuild { reason } }
 /// Construct the typed peer-unresolved outcome.
 pub fn peer_unresolved(reason: String) -> BuildFactsReply { BuildFactsReply::PeerUnresolved { reason } }
 /// Construct the typed busy outcome.
