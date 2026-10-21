@@ -224,6 +224,12 @@ fn join_issue(spans: &crate::common::Spans, node: &str) -> BTreeMap<String, Stri
 }
 
 /// Poll `f` until it answers, within `bound`; `what` names the fact on a timeout.
+/// `f`, within [`BOUND`]: a wait that outlasts it fails by name, so a hang is a red line and never a
+/// killed binary.
+async fn bounded<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(BOUND, f).await.unwrap_or_else(|_| panic!("{what}: not within {BOUND:?}"))
+}
+
 async fn until<T>(what: &str, bound: Duration, mut f: impl AsyncFnMut() -> Option<T>) -> T {
     let deadline = tokio::time::Instant::now() + bound;
     loop {
@@ -353,22 +359,39 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         let b = member(&root, &dir, "mesh1.rpc.2").await;
         let (opener, _) = a.connections(ALPN).unwrap().split();
         let (_, mut accepts) = b.connections(ALPN).unwrap().split();
-        let served = tokio::spawn(async move { accepts.accept().await });
-        let conn = until("mesh1.rpc.1 opens a Direct connection to mesh1.rpc.2", BOUND, async || opener.open(&birth_of(&b)).await.ok()).await;
-        let server = served.await.unwrap().expect("the acceptor serves the connection");
+        // One open, paired with its accept by the connection row's id (the same at both ends). An open
+        // that fails is named here, never retried blind: a retry would leave the acceptor holding the
+        // first connection while the echo writes to the second, and the echo would wait on a stream
+        // that never comes. Every wait is bounded, so a hang is a red line, never a killed binary.
+        let destination = birth_of(&b);
+        let (opened, accepted) = tokio::join!(
+            bounded("mesh1.rpc.1 opens a Direct connection to mesh1.rpc.2", opener.open(&destination)),
+            bounded("mesh1.rpc.2 accepts a connection", accepts.accept())
+        );
+        let conn = opened.unwrap_or_else(|e| panic!("mesh1.rpc.1's open of a Direct connection to mesh1.rpc.2 failed: {e} ({e:?})"));
+        let mut server = accepted.expect("the acceptor serves the connection");
+        // An accepted connection that is not the opened one is dropped (closed) before the echo, and
+        // the acceptor is read again for the opened one.
+        while server.id() != conn.id() {
+            drop(server);
+            server = bounded("mesh1.rpc.2 accepts the opened connection", accepts.accept()).await.expect("the acceptor serves the opened connection");
+        }
         let echo = async |label: &[u8]| {
-            let (mut send, mut recv) = conn.open_bi().await.unwrap();
-            send.write_all(label).await.unwrap();
-            send.finish().unwrap();
-            let (mut s_send, mut s_recv) = server.accept_bi().await.unwrap();
-            assert_eq!(s_recv.read_to_end(64).await.unwrap(), label);
-            s_send.write_all(label).await.unwrap();
-            s_send.finish().unwrap();
-            assert_eq!(recv.read_to_end(64).await.unwrap(), label);
+            bounded(&format!("the echo of {:?} over the one connection", String::from_utf8_lossy(label)), async {
+                let (mut send, mut recv) = conn.open_bi().await.unwrap();
+                send.write_all(label).await.unwrap();
+                send.finish().unwrap();
+                let (mut s_send, mut s_recv) = server.accept_bi().await.unwrap();
+                assert_eq!(s_recv.read_to_end(64).await.unwrap(), label);
+                s_send.write_all(label).await.unwrap();
+                s_send.finish().unwrap();
+                assert_eq!(recv.read_to_end(64).await.unwrap(), label);
+            })
+            .await;
         };
         echo(b"before").await;
-        let held_before = call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() }).await;
-        let view_before = node_get(&root, &a.digest.node.node_id).await.expect("mesh1.rpc.1 in the view");
+        let held_before = bounded("node.connections.get of mesh1.rpc.1 before the renewal", call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() })).await;
+        let view_before = bounded("node.get of mesh1.rpc.1 before the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         let (book_before, _) = b.membership.book.get(a.digest.node.node_id.as_str()).expect("mesh1.rpc.2 holds mesh1.rpc.1's digest");
         let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connections.")).count();
         let before = connection_spans(&spans);
@@ -382,9 +405,9 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         assert_eq!(connection_spans(&spans), before, "no connection was closed, refused or opened by the renewal");
         echo(b"after").await;
         assert_eq!(conn.id(), server.id(), "the same connection carries the stream after the install");
-        let held_after = call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() }).await;
+        let held_after = bounded("node.connections.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::GetConnections { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() })).await;
         assert_eq!(held_after, held_before, "what the member holds is unchanged");
-        let view_after = node_get(&root, &a.digest.node.node_id).await.expect("mesh1.rpc.1 in the view");
+        let view_after = bounded("node.get of mesh1.rpc.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         assert_eq!(
             (view_after.status, &view_after.incarnation_id, &view_after.name, &view_after.config, view_after.parked),
             (view_before.status, &view_before.incarnation_id, &view_before.name, &view_before.config, view_before.parked),
@@ -396,7 +419,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
             (book_before.status, &book_before.node.incarnation, &book_before.node.name, &book_before.config),
             "the renewal is invisible to the peer"
         );
-        stop_all(vec![a, b], vec![root]).await;
+        bounded("the members and the root admin stop", stop_all(vec![a, b], vec![root])).await;
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
