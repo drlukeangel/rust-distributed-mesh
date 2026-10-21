@@ -3222,9 +3222,9 @@ impl Membership {
         }
     }
 
-    /// Resolves once this node's mesh channel has a gossip neighbour (at once when it has one). A node
-    /// that rejoins waits here before it says it is back: what it says before it has a neighbour
-    /// reaches no one.
+    /// Resolves once this node's mesh channel has a gossip neighbour (at once when it has one). For a
+    /// test of gossip itself, which needs neighbours before it sends: no start or other step waits on
+    /// gossip, which is eventual and unordered.
     pub async fn wait_for_neighbour(&self) {
         let mut changed = self.mesh.neighbors_changed.subscribe();
         loop {
@@ -3232,31 +3232,10 @@ impl Membership {
             if !self.mesh.neighbors.lock().unwrap().is_empty() {
                 return;
             }
-            // A node alone in its mesh has no neighbour to wait for: the projection its authority handed
-            // it (gossip.md §3.1, the member record) names its mesh with no member but itself, and its book
-            // holds none either. Knowing nothing yet (an empty projection) is not being alone.
-            if self.alone_in_mesh() {
-                return;
-            }
             if changed.changed().await.is_err() {
                 return;
             }
         }
-    }
-
-    /// Is this node its mesh's only member, by the projection it installed of its own mesh (the member
-    /// record, gossip.md §3.1) and its book: the projection names the mesh and no member of it but this
-    /// node, and the book holds no other. With no projection of the mesh installed, the answer is no.
-    pub fn alone_in_mesh(&self) -> bool {
-        let me = self.view.current_name();
-        let own_mesh = self.view.mesh.clone();
-        // The projection of this node's own mesh: what its primary last put into the mesh, held in the
-        // forwarder when this node was that primary, in the mesh channel's sources otherwise.
-        let mut snapshots = self.view.forwarder.lock().unwrap().snapshots();
-        snapshots.extend(self.view.mesh_rx.lock().unwrap().snapshots());
-        let Some(snapshot) = snapshots.into_iter().find(|s| s.mesh == own_mesh) else { return false };
-        let other = |d: &MeshDigest| d.node.name.mesh == own_mesh && d.node.name.to_string() != me;
-        !snapshot.digests.iter().any(other) && !self.book.all().iter().any(other)
     }
 
     /// The active gossip neighbours on this node's mesh channel.

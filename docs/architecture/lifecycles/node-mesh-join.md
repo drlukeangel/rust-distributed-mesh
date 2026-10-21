@@ -64,10 +64,7 @@ Those pages link here and restate nothing.
 8. The node joins its mesh, `f(FabricId, MeshId)`; a node-admin joins the backbone too. Each one
    joined emits `via-joined`. A mesh with no live listener is created again under its own MeshId
    by this first listener.
-9. The node waits for a gossip neighbour on its mesh channel before it says anything: what it says
-   before it has one reaches no one. A node alone in its mesh, whose handed projection and book hold no
-   other member of it, does not wait (Q88); an empty projection is not being alone. Then
-   `node.mesh.joined`; the node's first `Digest` heartbeat follows, status `pending`.
+9. `node.mesh.joined`. The node's first `Digest` heartbeat follows.
 10. The node's mesh-primary (the fabric-primary for a mesh with no primary) records and publishes
     the node once as Pending when it accepts the node's join report, before it answers it. Every
     later report of that join, its retries and its `NodeJoined` included, belongs to that Pending

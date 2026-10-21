@@ -60,10 +60,10 @@
           "dir": "target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window"
         },
         {
-          "name": "restarted_member_joins_mesh_channel_within_gossip_interval",
+          "name": "restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once",
           "source": "crates/rdm-test/tests/node/restarted_member_rejoin.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval/estate cargo test -p rdm-test --test main restarted_member_rejoin::restarted_member_joins_mesh_channel_within_gossip_interval -- --exact",
-          "dir": "target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once/estate cargo test -p rdm-test --test main restarted_member_rejoin::restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once -- --exact",
+          "dir": "target/i143-acceptance/2941/process/restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once"
         }
       ]
     },

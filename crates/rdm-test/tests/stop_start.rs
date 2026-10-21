@@ -127,7 +127,6 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
         assert!(!running.own.is_parked(), "the birth is live again");
-        assert!(running.membership.neighbours() >= 1, "the node is a neighbour again");
         // The same start reissued by a later attempt of its Build (a successor executor whose
         // predecessor was lost after the node started) settles as AlreadyApplied: the command is
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a

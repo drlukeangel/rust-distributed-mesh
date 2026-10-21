@@ -464,10 +464,9 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &authority);
             }
         }
-        // Back on the topic means a neighbour: only then does this admin report NodeJoined and is it
-        // held again, as an rpc node is. It publishes no Pending of its own: its Digest heartbeat
-        // follows (node-mesh-join.md step 9), and its mesh-primary publishes it once as Pending (step 10).
-        membership.wait_for_neighbour().await;
+        // Back on its channels, this admin reports NodeJoined, as an rpc node does: the start finishes on
+        // its direct calls and the admin is back in gossip whenever gossip gets there. Its mesh-primary
+        // recorded its Pending at the accepted join report (node-mesh-join.md steps 9 and 10, Q97).
         if let Some(progress) = &self.progress {
             let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
         }

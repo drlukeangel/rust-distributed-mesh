@@ -114,15 +114,14 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The reborn birth's mesh channel reports a neighbour within one gossip interval of its join,
-/// then its entry completes; no pull of that birth fails.
+/// The reborn birth resubscribes its mesh channel and its entry pull completes once; no pull of that
+/// birth fails. When gossip brings it a neighbour is gossip's: the cell asserts no time for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
-    let cell = "restarted_member_joins_mesh_channel_within_gossip_interval";
+async fn restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once() {
+    let cell = "restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_once";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
-    let gossip_ms: u64 = std::env::var("RDM_GOSSIP_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
 
     // A restarted node rejoins on the process it parked on: its entry pull completes (`membership-joined`)
     // and its mesh channel is resubscribed at once after (the resubscribe span names no node: the first
@@ -134,14 +133,6 @@ async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
         .min_by_key(|sp| at(sp))
         .cloned()
         .expect("the restarted node resubscribed its mesh channel");
-    let up = named(&spans, "rdm.mesh.connection.update.via-neighbour-up")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) >= at(&joined))
-        .min_by_key(|sp| at(sp))
-        .cloned()
-        .expect("the reborn birth's mesh channel found a neighbour");
-    let join_to_neighbour_ms = (at(&up) - at(&joined)) / 1_000_000;
-    assert!(join_to_neighbour_ms <= gossip_ms, "a neighbour within one gossip interval of the join ({join_to_neighbour_ms} ms of {gossip_ms})");
     let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-membership-pulled").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
     assert_eq!(pulled.len(), 1, "the entry completed once after the restart: {pulled:?}");
     let failed: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-membership-pull-failed").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).collect();
@@ -152,10 +143,7 @@ async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
         "launching_admin": { "name": admin["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"] },
         "node": { "name": NODE, "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"] },
         "restart_at_unix_nano": restart_at,
-        "gossip_interval_ms": gossip_ms,
         "join": { "start_unix_nano": at(&joined), "peers": joined["attributes"]["peers"], "trace_id": joined["trace_id"], "span_id": joined["span_id"] },
-        "first_neighbour": { "start_unix_nano": at(&up), "peer": up["attributes"]["peer"], "neighbours": up["attributes"]["neighbours"], "trace_id": up["trace_id"], "span_id": up["span_id"] },
-        "join_to_neighbour_ms": join_to_neighbour_ms,
         "pulled": pulled.iter().map(|sp| json!({ "start_unix_nano": at(sp), "served_by": sp["attributes"]["served_by"], "attempt": sp["attributes"]["attempt"] })).collect::<Vec<_>>(),
         "failed_pulls": failed.len(),
         "spans_read": spans.len(),
