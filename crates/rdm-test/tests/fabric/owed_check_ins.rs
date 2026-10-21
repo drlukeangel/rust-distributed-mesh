@@ -260,18 +260,25 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     // The interim re-sent the current round as its new primary (states.md "The round checklist").
     let re_sent: Vec<Value> = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &interim, round).into_iter().filter(|sp| start(sp) >= start(takeovers[0])).collect();
     assert!(!re_sent.is_empty(), "{interim} ran mesh1's {round} round as the new primary after the takeover: {re_sent:#?}");
-    // Every round action ran once per round key across the seat's move (states.md "The round checklist":
-    // the key is the Build's attempt and the round; a new fabric-primary that claims the next attempt opens
-    // a new key): mesh1's own action (whichever holder ran it), mesh2's primary's and each member's, once
-    // per attempt that reached them.
+    // Every round action ran once per round key on each node across the seat's move (states.md "The round
+    // checklist": the key is the Build's attempt and the round; a new fabric-primary that claims the next
+    // attempt opens a new key; the record of what ran is each node's own, rdm_node::rounds::ActedRecord):
+    // a primary's own action is its own node's work (commit-state writes that node's scratchpad to the
+    // store root), so the held fabric-primary's action, finished once it continues, and the standby's as
+    // the new primary are two nodes' actions, each run once. mesh1 ran its round for every attempt that
+    // reached it; mesh2's primary's and each member's ran once per attempt.
     let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]);
     for r in ["commit-state", "open-traffic"] {
-        let mesh1_rounds: Vec<Value> = [Some(fp_s.clone()), standby.clone()].into_iter().flatten().flat_map(|admin| of_resize("rdm.node_admin.fabric.update.via-mesh-round", &admin, r)).collect();
+        let mesh1_admins: Vec<String> = [Some(fp_s.clone()), standby.clone()].into_iter().flatten().collect();
+        let mesh1_rounds: Vec<Value> = mesh1_admins.iter().flat_map(|admin| of_resize("rdm.node_admin.fabric.update.via-mesh-round", admin, r)).collect();
         let attempts: std::collections::BTreeSet<String> = mesh1_rounds.iter().map(attempt_of).collect();
         assert!(!attempts.is_empty(), "mesh1 ran its {r} round");
         for a in &attempts {
-            let ran = mesh1_rounds.iter().filter(|m| attempt_of(m) == *a && m["attributes"]["own_action"] == "run").count();
-            assert_eq!(ran, 1, "mesh1's own {r} action ran once for attempt {a}, across the seat's move");
+            assert!(mesh1_rounds.iter().any(|m| attempt_of(m) == *a && m["attributes"]["own_action"] == "run"), "mesh1's own {r} action ran for attempt {a}");
+            for admin in &mesh1_admins {
+                let ran = of_resize("rdm.node_admin.fabric.update.via-mesh-round", admin, r).iter().filter(|m| attempt_of(m) == *a && m["attributes"]["own_action"] == "run").count();
+                assert!(ran <= 1, "{admin}'s own {r} action ran once for attempt {a}, across the seat's move: {ran}");
+            }
         }
         let primary_rounds = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &primary_s, r);
         for a in primary_rounds.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
