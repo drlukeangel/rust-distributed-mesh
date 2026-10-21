@@ -578,7 +578,33 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let tags: Vec<String> = row.tags.into_iter().collect();
     assert_eq!((config, tags), (INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), INHERITED_TAGS.iter().map(|t| t.to_string()).collect()), "config and tags seeded from the Deleted row");
     assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth's contact is dropped: {contacts:?}");
+    // The inherited birth's exit-proof row is node.runtime.inspect's exit-proven, as the inspect found
+    // it: its proof names where the exit came from (`provider`, `exit-record` or `none`), observed when
+    // it was (node-delete.md; node-runtime-inspect.md step 5).
+    let exits: Vec<serde_json::Value> = exit_rows(&root.store).into_iter().filter(|v| v["record"]["node_id"].as_str() == Some(root.node_id.to_string().as_str())).collect();
+    assert_eq!(exits.len(), 1, "one exit-proof row of the inherited birth: {exits:?}");
+    let exit = &exits[0]["record"];
+    assert!(["provider", "exit-record", "none"].contains(&exit["proof"].as_str().unwrap_or_default()) && exit["observed_at_ms"].as_u64().unwrap_or(0) > 0, "the inherited birth's exit-proof row is the inspect's: {exit}");
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
+}
+
+/// Every exit-proof row under `store` (any `exits` directory), parsed.
+fn exit_rows(store: &std::path::Path) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let mut dirs = vec![store.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.parent().is_some_and(|d| d.ends_with("exits")) {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap_or_default()) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// CONTRACT (R-SB1: "a root holding ready-for-traffic history (the first-ready latch is set at boot)";

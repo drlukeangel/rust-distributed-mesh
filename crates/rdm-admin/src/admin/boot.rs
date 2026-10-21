@@ -439,6 +439,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // node over its inherited data dir"). A new node supersedes no birth (node-restart.md: a restart
     // alone keeps the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
+    // The inherited birth's exit as node.runtime.inspect proved it: its code and where the proof came
+    // from, kept for its exit-proof row once this admin's status store is open.
+    let mut inherited_exit: Option<(Option<i32>, &'static str)> = None;
     let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &inherited) {
         (Some(l), _) => {
             let control = cfg.api_bind;
@@ -467,10 +470,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 None => return Err(format!("refusing to start: {}: no deployment provider prepared for the inherited birth {} at {}", cfg.data_dir.display(), own.node_id, own.name)),
             };
             let own_runtime = nodes_storage.runtime(&own.node_id, &own.incarnation_id).await.map_err(storage_err)?;
-            exit_proof_of(provider, &None, own_runtime.as_ref())
-                .instrument(step.clone())
-                .await
-                .map_err(|e| format!("refusing to start: {}: {} cannot delete the inherited birth {} ({}) at {}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name))?;
+            inherited_exit = Some(
+                exit_proof_of(provider, &None, own_runtime.as_ref())
+                    .instrument(step.clone())
+                    .await
+                    .map_err(|e| format!("refusing to start: {}: {} cannot delete the inherited birth {} ({}) at {}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name))?,
+            );
             // The inherited birth's node.delete, then this node's claim of its path.name: the first writes
             // of this birth (`take_inherited_name`). A name another node holds refuses the start by name.
             crate::node_rows::take_inherited_name(&*nodes_storage, own, &node_id)
@@ -907,17 +912,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 }
                 // The status rows of this admin's mesh (`status.storage`): written by
                 // the mesh's seat holder, folded into what this admin applied when it takes the seat.
-                if let Some(own) = &inherited {
-                    let _ = status_storage
-                        .put_node_exit(&crate::status_storage::NodeExitRow {
-                            node_id: own.node_id.clone(),
-                            name: own.name.clone(),
-                            incarnation_id: own.incarnation_id.clone(),
-                            exit_code: None,
-                            proof: "inherited-root-provider-exit-proof".into(),
-                            observed_at_ms: 0,
-                        })
-                        .await;
+                // The inherited birth's exit-proof row is node.runtime.inspect's exit-proven, its code and
+                // proof as the inspect above found them (node-delete.md: the row only from the inspect).
+                if let (Some(own), Some((code, proof))) = (&inherited, inherited_exit) {
+                    let mut birth = crate::model::Node::allocated(own.name.clone());
+                    birth.node_id = own.node_id.clone();
+                    birth.incarnation_id = Some(own.incarnation_id.clone());
+                    if let Err(e) = crate::offline::put_exit_proof(&*status_storage, &birth, code, proof, local_now_ms()).await {
+                        tracing::warn!(node = %own.name, node_id = %own.node_id, error = %e, "the inherited birth's exit-proof row was not put");
+                    }
                 }
                 records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
                 // The ready-for-traffic event's row among this mesh's status rows is the durable fact that the fabric
