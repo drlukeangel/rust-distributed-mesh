@@ -537,7 +537,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     );
     rec.check("every birth is back, the same set the cut found", births(&nodes_after) == want_births, format!("{:?}", births(&nodes_after).symmetric_difference(&want_births).collect::<Vec<_>>()));
     rec.check("the value stored before the cut is served by the same birth after the heal", kept["reply"]["result"] == json!({"found": true, "value": "before-isolation"}) && kept["reply"]["incarnation_id"] == target_inc.as_str() && kept["reply"]["executing_node"] == target_id.as_str(), kept.to_string());
-    rec.check("the current build_id is the Build it was, and that Build gained no attempt", s(&fabric_after["build_id"]) == fabric_build && attempt_after == attempt_before, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}"));
+    rec.check("the current build_id is the Build it was", s(&fabric_after["build_id"]) == fabric_build, format!("{} after, {fabric_build} before", s(&fabric_after["build_id"])));
     rec.check("the fabric primary is the seat holder it was", fp_of(&nodes_after) == fabric_primary, fp_of(&nodes_after));
     rec.check("every admin's view agrees on the healed fabric", !agreeing.is_empty(), format!("{agreeing:?}"));
     rec.check("the advertised seats equal the public candidates' after the heal", seats_after, seats_detail_after.clone());
@@ -577,7 +577,12 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let moved: Vec<&&Value> = elections_after_cut.iter().filter(|sp| !isolated_set.contains(attr(sp, "observer")) && sp["attributes"]["winner_path"] != fabric_primary.as_str()).collect();
     let silenced_side_elections: Vec<&&Value> = elections_after_cut.iter().filter(|sp| isolated_set.contains(attr(sp, "observer"))).collect();
 
+    // Q96: the hand-back runs as an attempt of the current accepted Build, keyed `handback:<path.name>@<T>`
+    // (fabric-recovery.md step 4): it is the hand-back, never a death or a re-birth.
+    let handbacks = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == fabric_build.as_str() && start(sp) > cut_at && attr(sp, "scope").starts_with("handback:")).count() as u64;
+
     let mut rec2 = ev.reconciliation.take().unwrap();
+    rec2.check("the Build gained no attempt but the hand-back's", attempt_after == attempt_before + handbacks, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}, hand-back attempts {handbacks}"));
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
     rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
     // A silent ViaPeer leg never replies and ends `NotSent(CarrierEdgeLost)` naming the carrier's
