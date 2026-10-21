@@ -2133,8 +2133,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // and their recovery are their own mesh's (node-recovery.md, the mesh-primary's), never
                                                 // this admin's writes on another mesh's rows.
                                                 let mut commanded_only: HashSet<String> = HashSet::new();
+                                                let vacant = recovery.book.seats.vacant_meshes();
                                                 if view.holds_fabric_seat(&me_id) {
-                                                    for n in crate::admin::recovery::admins_of_meshes_without_a_ready_admin(&view, &mesh) {
+                                                    for n in crate::admin::recovery::admins_of_meshes_without_a_ready_admin(&view, &mesh, &vacant) {
                                                         commanded_only.insert(n.node_id.to_string());
                                                         watched.entry(n.node_id.to_string()).or_insert_with(|| n.clone());
                                                     }

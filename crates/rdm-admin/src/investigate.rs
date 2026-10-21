@@ -786,7 +786,14 @@ impl TickleCalls for WatchCalls<'_> {
     }
 
     async fn via_peer(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-        let opts = CallOptions { budget: carried_budget(self.0.round), ..CallOptions::default() };
+        // A carrier this admin cannot reach ends the kick within one direct probe's budget (the
+        // connect and send), as the probe's member Ping did; a carrier that took the kick has the whole
+        // carried budget for its answer, carrier-edge-lost included (mesh-investigation.md steps 1, 3).
+        let budget = match carried_budget(self.0.round) {
+            Budget::Overall(reply) => Budget::Split { send: direct_budget(self.0.round), reply },
+            other => other,
+        };
+        let opts = CallOptions { budget, ..CallOptions::default() };
         let (out, _) = self.0.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, req, &opts).await;
         ProbeEnd::of(out)
     }
