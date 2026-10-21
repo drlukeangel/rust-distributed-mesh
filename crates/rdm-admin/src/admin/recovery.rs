@@ -152,32 +152,13 @@ impl RecoverySubmitter {
         None
     }
 
-    /// The provider's exact-exit proof of `node`'s birth: the runtime fact the book's digest of that
-    /// birth carries, else the birth's own durable runtime row (a point read by its key). Beside it,
+    /// The provider's exact-exit proof of `node`'s birth: node.runtime.inspect over the one runtime
+    /// resolution (`node_investigation::birth_runtime`: the book's digest of that exact birth, heard,
+    /// projected by its mesh-primary or stopped, else the birth's own durable runtime row). Beside it,
     /// the exact runtime handle the provider was asked about (node-runtime-inspect.md Target), for the
     /// inspection's span.
     pub(crate) async fn inspect(&self, node: &Node) -> (Inspected, Option<DeploymentHandle>) {
-        let Some(incarnation) = node.incarnation_id.clone() else { return (Inspected::Unavailable(format!("{} holds no incarnation to inspect", node.name)), None) };
-        // The birth's own digest, else the birth as its mesh-primary's projection carried it to this
-        // admin (gossip.md §3: the projection preserves the RuntimeFact an authority-bearing admin
-        // needs to manage the birth).
-        let held_row = self.book.get(node.node_id.as_str()).or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now())).filter(|(dg, _)| dg.node.incarnation == incarnation);
-        let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
-            None
-        } else {
-            match self.nodes_storage.runtime(&node.node_id, &incarnation).await {
-                Ok(r) => r,
-                Err(e) => return (Inspected::Unavailable(format!("the durable runtime row of {} at {} could not be read: {e}", node.node_id, incarnation.as_str())), None),
-            }
-        };
-        let (answer, handle) = inspection_with_handle(&*self.provider, &held_row, row.as_ref()).await;
-        let outcome = match answer {
-            Ok((code, source)) => Inspected::Exited(code, source),
-            Err(NotProven::Running) => Inspected::Running,
-            Err(NotProven::OsStopped) => Inspected::OsStopped,
-            Err(NotProven::Unavailable(why)) => Inspected::Unavailable(why),
-        };
-        (outcome, handle)
+        crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.book, Some(&*self.nodes_storage), node).await
     }
 
     /// The durable runtime rows the tick watches births from, read once per tick. A refused read
