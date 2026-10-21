@@ -83,6 +83,13 @@ async fn command_mesh_join(
     if let Some(op) = book.in_flight().into_iter().find(|op| op.node_id == node.node_id && op.incarnation == *incarnation) {
         return format!("in-flight: {}", op.operation);
     }
+    // A birth whose node.create this admin runs is that create's (node-create.md step 3: the create
+    // composes the whole node.start; `node.created` follows it): never commanded back while it runs.
+    // The tickle lists it from the runtime row its admission kept before its digest was installed,
+    // and hears it again at the install: a look inside the create's first start, not a return.
+    if runner.joins.creating(&node.node_id) {
+        return format!("create-in-flight: node.create:{}", node.name);
+    }
     // Once per silence: a birth commanded back is commanded again only after a staleness floor, and
     // only once this process has heard it ready-for-traffic since (the admin looks at it every pass
     // while its view still holds it silent).

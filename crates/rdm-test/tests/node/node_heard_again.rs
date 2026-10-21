@@ -52,6 +52,10 @@ fn owner() -> Owner {
     }
 }
 
+fn owner_of(test: &str) -> Owner {
+    Owner { test: test.into(), ..owner() }
+}
+
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
@@ -207,4 +211,60 @@ async fn a_birth_restarted_by_a_build_and_held_later_is_still_commanded_back() {
 
 fn owner_restarted() -> Owner {
     Owner { test: "a_birth_restarted_by_a_build_and_held_later_is_still_commanded_back".into(), ..owner() }
+}
+
+/// The pid of the one process of this estate launched as `node` (its environment names the node
+/// and the estate), `None` while it is not yet launched.
+fn launched_pid(node: &str, root: &Path) -> Option<u32> {
+    let name = format!("RDM_NODE_NAME={node}");
+    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
+        let pid = e.file_name().to_str()?.parse::<u32>().ok()?;
+        let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+        (env.split(|b| *b == 0).any(|var| var == name.as_bytes()) && rdm_test::estate::environ_names_estate(&env, root)).then_some(pid)
+    })
+}
+
+/// CONTRACT (Q87: a birth with a lifecycle command of its authority in flight is that command's, never
+/// commanded back; node-create.md step 3: the create composes the whole node.start, and `node.created`
+/// follows it): a node being created is its create's. The mesh-primary's tickle lists a planned birth
+/// silent until its JoinNode is admitted; a launch held at its start (the provider's `Stop`, as a slow
+/// launch is) is planned and silent through several ticks, and its report, once released, is the
+/// heard change the tickle runs on. That birth is not commanded node.mesh.join while its first start
+/// runs, before its first `via-ready`: nothing is sent to it, and any look at it names the create in
+/// flight. Must NOT happen: a `via-mesh-join-commanded` for the birth before its first `via-ready` whose
+/// outcome is not the create named in flight (a join commanded to a birth whose first start is
+/// running, which then ends without node.started).
+// @feature: node-lifecycle
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_being_created_is_not_commanded_back_while_its_first_start_runs() {
+    let mut estate = Estate::bootstrap_with_env(owner_of("a_node_being_created_is_not_commanded_back_while_its_first_start_runs"), "fabric1", "mesh1", &[("RDM_GOSSIP_INTERVAL_MS", "200")]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settled_views(&[("mesh1", 2, 2)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let node = "mesh1.rpc.3";
+    let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the bootstrap admin's data dir").to_path_buf();
+    // The launch under test is held the instant it exists, before its JoinNode, through five ticks of
+    // the mesh-primary (200 ms each): a planned birth in its view, silent; then released.
+    let hold = async {
+        let pid = loop {
+            if let Some(pid) = launched_pid(node, &root) {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        };
+        let rt = ExactRuntime { deployment_id: String::new(), control_domain: rdm_test::process_faults::local_control_domain(), pid, start: rdm_test::process_faults::start_token(pid).expect("the launched process has a start token") };
+        rt.apply(Fault::Stop).expect("the hold is acknowledged by the provider");
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
+    };
+    let (_, ()) = tokio::join!(estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]), hold);
+    estate.until_node(node, &format!("{node} is ready-for-traffic"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let first_ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node).map(at).min().unwrap_or_else(|| panic!("{node}: its first start reached node.started (via-ready)"));
+    let looked: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && at(sp) < first_ready).map(|sp| s(&sp["attributes"]["outcome"])).collect();
+    let returned = named(&spans, "rdm.node_admin.node.update.via-offline-returned").len();
+    eprintln!("{node}: via-mesh-join-commanded before its first via-ready: {looked:?}; via-offline-returned spans in the run: {returned}");
+    let sent: Vec<&String> = looked.iter().filter(|outcome| !outcome.starts_with("create-in-flight")).collect();
+    assert!(sent.is_empty(), "{node}: no node.mesh.join is commanded to a birth whose first start is running (its create is in flight); commanded before its first via-ready with outcomes {sent:?}");
 }

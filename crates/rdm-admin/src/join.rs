@@ -188,6 +188,13 @@ impl Joins {
         runtimes.runtime(node_id, incarnation).await.map_err(|e| format!("the runtime row of {node_id} incarnation {}: {e}", incarnation.as_str()))
     }
 
+    /// A create of `node_id` is under way at this admin: it holds the deployment the create registered
+    /// (a first start, `held: false`), from before the runtime starts until the create ends
+    /// (`Joins::end`). A held deployment (a restart's, a heard-again's) is not a create.
+    pub fn creating(&self, node_id: &NodeId) -> bool {
+        self.slots.lock().unwrap().get(node_id).is_some_and(|s| !s.deployed.held)
+    }
+
     /// Register `deployed` before its runtime starts. The report arrives on the returned
     /// receiver. A registration of the same deployment keeps what it already heard: the report a
     /// deployment still held took, or the one an ended create of the same deployment was handed; a
@@ -631,6 +638,26 @@ mod tests {
     /// of the node (its restart, held) is handed nothing. Must NOT happen: the report dropped with
     /// the create, so the Build's next attempt waits for a JoinNode the admitted birth never sends
     /// again.
+    /// CONTRACT (Q87: a birth with a lifecycle command of its authority in flight is that command's,
+    /// never commanded back; node-create.md step 3: the create composes the whole node.start): a node
+    /// whose create this admin runs is creating from the deployment's registration until the create
+    /// ends, its report heard or not; a held deployment (a restart, a heard-again) is not a create.
+    // @feature: node-lifecycle
+    #[test]
+    fn a_node_is_creating_while_this_admin_holds_the_deployment_its_create_registered() {
+        let joins = Joins::default();
+        let dep = deployed();
+        assert!(!joins.creating(&dep.node_id), "no deployment registered: no create under way");
+        let _rx = joins.expect(dep.clone());
+        assert!(joins.creating(&dep.node_id), "the create registered its deployment: creating");
+        joins.report(&digest_of(&dep));
+        assert!(joins.creating(&dep.node_id), "its report heard, the create still runs: creating");
+        joins.end(&dep.node_id, "3qcfk1kq47m9", 1);
+        assert!(!joins.creating(&dep.node_id), "the create ended: not creating");
+        joins.expect(Deployed { held: true, last_accepted_name: Some(dep.name.clone()), ..dep.clone() });
+        assert!(!joins.creating(&dep.node_id), "a held deployment (a restart, a heard-again) is not a create");
+    }
+
     // @feature: node-lifecycle
     #[test]
     fn an_ended_create_keeps_the_admitted_report_for_the_same_deployments_next_registration() {
