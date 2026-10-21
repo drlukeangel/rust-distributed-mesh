@@ -659,11 +659,14 @@ pub async fn reconcile_drift(
     // input moving opens exactly one (lifecycles/node-status.md: "a failed Build ... gets its next
     // attempt", once per failure; R-S2: event-driven, never per pass). A key carrying the attempt
     // number never matches the next pass (every failed attempt raises it), which reopened a resume
-    // that failed fast on every pass.
+    // that failed fast on every pass. The hand-back is the exception (Q104): while it is owed it is
+    // planned again on every pass until its row commits, and a refusal or a failed attempt is never
+    // terminal for it; whether it is still owed is read from the store root on each pass (`taken`).
+    let hand_back = recover_admin.is_none() && first_exited.is_none() && surplus.is_empty() && handback.is_some();
     let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| recover_admin.is_none()).map(|(p, b)| (p, &b.incarnation)), recover_admin.map(|admin| (if crashed.is_some() { "fully-crashed" } else { "carrier-edge-lost" }, admin)), &surplus);
     let ident = key.join(" ");
     let opened_at = (current.build_id.clone(), 0u32, vec!["opened".to_string(), ident.clone(), inputs.clone()]);
-    if started.contains(&opened_at) {
+    if started.contains(&opened_at) && !hand_back {
         let unchanged = (current.build_id.clone(), 0u32, vec!["unchanged".to_string(), ident.clone(), inputs.clone(), current.attempt.to_string()]);
         if started.insert(unchanged) {
             tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id.log(), failed_attempt = current.attempt, scope = %scope, inputs = %inputs, exit_proof_rows = %exit_proof_rows.join(", "))

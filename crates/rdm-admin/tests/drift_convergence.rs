@@ -2373,3 +2373,166 @@ async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it()
     eprintln!("span rdm.node_admin.build.update.via-proven-drift trace_id={} {:?}", opening[0].0, opening[0].1);
     eprintln!("span rdm.node_admin.build.reject.via-drift-unchanged trace_id={} {:?}", unchanged[0].0, unchanged[0].1);
 }
+
+/// How one node.fabric-primary.update of a hand-back ends at the store root, in a [`HandBack`] cell.
+#[derive(Clone, Copy, Debug)]
+enum HandBackEnd {
+    /// The read of the update's seat move fails (`RejectedSourceFailed`): refused before its row,
+    /// nothing written.
+    ReadFails,
+    /// The row commits and the successor answers node.primary.updated: the seat is its.
+    Commits,
+    /// The row commits and its answer is lost: the store holds the hand-back's row, the holder hears
+    /// a failed write and its view still names it the fabric-primary.
+    CommitsAnswerLost,
+}
+
+/// The fabric seat as the fabric's store root holds it after a takeover (elections §5), for the
+/// hand-back cells: the takeover's lost birth while its row is the fabric seat's latest move, none once
+/// a hand-back's row commits ([`rdm_admin::fabric_storage::fabric_seat_taken_from`]). It is the
+/// fabric-primary's drive's departure proof (its `taken_from`, read each pass) and its gate, whose
+/// node.fabric-primary.update ends as the cell says, in order.
+struct HandBack {
+    view: Arc<RwLock<Topology>>,
+    /// The takeover the store's latest fabric seat move is; `None` once a hand-back's row commits.
+    taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth)>>,
+    /// How the next updates end, in order.
+    ends: Mutex<std::collections::VecDeque<HandBackEnd>>,
+    /// Every update asked: `(holder, successor, operation, end)`.
+    asked: Mutex<Vec<(String, String, String, String)>>,
+}
+
+impl HandBack {
+    fn taken(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+        self.taken.lock().unwrap().clone()
+    }
+    fn asked(&self) -> Vec<(String, String, String, String)> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::Gate for HandBack {
+    fn authorizes(&self) -> bool {
+        true
+    }
+    async fn move_seats(&self, m: &rdm_admin::executor::SeatMove, build_id: &BuildId, _attempt: u32, run: u32, operation: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+        let to = m.successor.as_ref().map(|p| p.to_string()).unwrap_or_default();
+        let update = rdm_admin::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, operation);
+        let end = self.ends.lock().unwrap().pop_front().unwrap_or_else(|| panic!("a hand-back the cell did not plan: {update}"));
+        self.asked.lock().unwrap().push((m.holder.name.to_string(), to.clone(), update.clone(), format!("{end:?}")));
+        // As `HandoverDoor::move_own_seats` renders a refusal before the row.
+        let refused = |r: rdm_core::handover::NodePrimaryUpdateReply| rdm_admin::build_drive::SeatMoveEnd::Refused(format!("{}: {r:?}", r.name()));
+        let source = format!("fabric.storage of {}, the seat move of {update}", m.holder.name);
+        match end {
+            HandBackEnd::ReadFails => Err(refused(rdm_core::reply::handover::bounded_source_failed(&source, &format!("read the seat move of {update}"), "planted: the disk refused"))),
+            HandBackEnd::Commits => {
+                *self.taken.lock().unwrap() = None;
+                // The holder took the seats the row moved: its view names the successor the fabric-primary.
+                for n in self.view.write().await.nodes.iter_mut() {
+                    n.is_fabric_primary = n.name.to_string() == to;
+                }
+                Ok(())
+            }
+            HandBackEnd::CommitsAnswerLost => {
+                *self.taken.lock().unwrap() = None;
+                Err(refused(rdm_core::reply::handover::bounded_source_failed(&source, &format!("commit the seat move of {update} moving 1 seat(s) to {to}"), "planted: the write's answer was lost")))
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::DepartureProof for HandBack {
+    async fn proven(&self, executor: &PathName) -> Result<(), String> {
+        Err(format!("{executor}'s runtime is not proven exited"))
+    }
+    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+        self.taken()
+    }
+}
+
+/// The estate after a takeover (elections §5): the fabric seat, held by the fabric-primary `lost` of
+/// one mesh, was taken by the other mesh's primary, the winner, which the view names the
+/// fabric-primary; `lost` itself is back and ReadyForTraffic at its path.name (Q89, fabric-recovery.md
+/// step 4). Returns the winner, the lost birth's path.name, the [`HandBack`] whose updates end as
+/// `ends`, and the winner's drive over it.
+async fn taken_over(e: &Estate, ends: &[HandBackEnd]) -> (PathName, PathName, Arc<HandBack>, Arc<DriveEnv>) {
+    let lost: PathName = e.fabric_primary().await.parse().unwrap();
+    let other = if lost.mesh == "mesh1" { "mesh2" } else { "mesh1" };
+    let winner = e.view.read().await.cohort_primary(other, NodeKind::NodeAdmin).map(|n| n.name.clone()).expect("the other mesh's primary");
+    for n in e.view.write().await.nodes.iter_mut() {
+        n.is_fabric_primary = n.name == winner;
+    }
+    let l = e.view.read().await.node(&lost).cloned().unwrap();
+    let birth = rdm_core::handover::HandoverBirth { mesh: l.mesh.clone(), node_id: l.node_id.clone(), incarnation: l.incarnation_id.clone().unwrap() };
+    let hb = Arc::new(HandBack { view: e.view.clone(), taken: Mutex::new(Some((5, birth))), ends: Mutex::new(ends.iter().copied().collect()), asked: Mutex::new(Vec::new()) });
+    let winner_id = own_id(&*e.view.read().await, &winner);
+    let env = Arc::new(DriveEnv {
+        me: winner.clone(),
+        topology: e.view.clone(),
+        builds: e.builds.clone(),
+        door: Arc::new(rdm_admin::build_claim::ClaimDoor { node_id: winner_id, me: winner.clone(), topology: e.view.clone(), builds: e.builds.clone(), contexts: Arc::new(rdm_admin::build_claim::AttemptContexts::in_memory()), claims: e.claims.clone() }),
+        dispatcher: e.dispatch.clone(),
+        gate: hb.clone(),
+        departure: hb.clone(),
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+        turns: rdm_admin::stop_gate::StopGate::new(),
+    });
+    (winner, lost, hb, env)
+}
+
+/// The winner's drift pass, as the admin's executor loop runs it: `taken` read from the store root
+/// each pass, and the pass's memory `started` kept across passes.
+async fn hand_back_pass(e: &Estate, me: &PathName, hb: &HandBack, started: &mut HashSet<(BuildId, u32, Vec<String>)>) -> Option<(BuildId, u32)> {
+    let t = e.view.read().await.clone();
+    let taken = hb.taken();
+    rdm_admin::admin::reconcile_drift(&crate::adopted_time(), me, &own_id(&t, me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &e.records, taken.as_ref(), None).await
+}
+
+/// The verdict of each attempt of `build_id` after `after`, in order.
+async fn verdicts_after(e: &Estate, build_id: &BuildId, after: u32) -> Vec<(u32, rdm_admin::build_state::AttemptOutcome)> {
+    e.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        rdm_admin::build_state::BuildFact::Attempt(a) if a.build_id == *build_id && a.attempt > after => Some((a.attempt, a.outcome)),
+        _ => None,
+    }).collect()
+}
+
+/// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4: once
+/// the node at the lost fabric-primary's path.name has been ReadyForTraffic for one staleness floor the
+/// holder hands every seat it took back to it; Q104: a hand-back that is owed is planned again on every
+/// drift pass until its row commits, and a refusal or a failed attempt is never terminal for it): after
+/// a takeover, the winner's drift opens the hand-back's attempt one floor after the lost fabric-primary
+/// is Ready again; its node.fabric-primary.update is refused before its row because the store's read of
+/// its seat move fails (`RejectedSourceFailed`), and the attempt ends Failed. The next pass, with
+/// nothing else moved, plans the hand-back again in the next attempt, whose update commits: that
+/// attempt ends HandedOff to the lost fabric-primary, which the view names the fabric-primary. What
+/// must NOT happen: the refused hand-back's attempt taken as the last word (`via-drift-unchanged`, no
+/// next attempt), which left the fabric seat on the winner after the heal (the container cell at
+/// ce251b3f).
+#[tokio::test]
+async fn an_owed_hand_back_refused_by_a_store_read_is_planned_again_on_the_next_pass_and_commits() {
+    let e = estate().await;
+    let before = e.builds.current().await.unwrap().unwrap();
+    let (winner, lost, hb, env) = taken_over(&e, &[HandBackEnd::ReadFails, HandBackEnd::Commits]).await;
+    let mut started = HashSet::new();
+    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, None, "the first pass that finds {lost} Ready starts the floor: nothing is owed yet");
+    tokio::time::sleep(rdm_core::cadence::staleness_floor() + std::time::Duration::from_millis(200)).await;
+    let first = hand_back_pass(&e, &winner, &hb, &mut started).await;
+    assert_eq!(first, Some((before.build_id.clone(), before.attempt + 1)), "one floor after {lost} is Ready the hand-back opens the next attempt");
+    let end = env.run(&Drive::detached(before.build_id.clone())).await;
+    assert_eq!(end, DriveEnd::Terminal, "the refused hand-back ends its attempt");
+    let failed = verdicts_after(&e, &before.build_id, before.attempt).await;
+    assert!(matches!(failed.as_slice(), [(a, rdm_admin::build_state::AttemptOutcome::Failed { reason, .. })] if *a == before.attempt + 1 && reason.contains("source-failed")), "the hand-back's attempt ended Failed, refused before its row: {failed:?}");
+    let second = hand_back_pass(&e, &winner, &hb, &mut started).await;
+    assert_eq!(second, Some((before.build_id.clone(), before.attempt + 2)), "the next pass plans the owed hand-back again: a refusal is never terminal for it");
+    let end = env.run(&Drive::detached(before.build_id.clone())).await;
+    assert!(matches!(end, DriveEnd::SeatLost(_)), "the winner's drive ends once its view no longer names it the fabric-primary: {end:?}");
+    let asked = hb.asked();
+    assert_eq!(asked.iter().map(|(h, to, _, end)| (h.as_str(), to.as_str(), end.as_str())).collect::<Vec<_>>(), vec![(winner.to_string().as_str(), lost.to_string().as_str(), "ReadFails"), (winner.to_string().as_str(), lost.to_string().as_str(), "Commits")], "two node.fabric-primary.updates of the hand-back, the second committed: {asked:?}");
+    let verdicts = verdicts_after(&e, &before.build_id, before.attempt + 1).await;
+    assert_eq!(verdicts, vec![(before.attempt + 2, rdm_admin::build_state::AttemptOutcome::HandedOff { to: lost.to_string() })], "the hand-back's attempt ends handed to the lost fabric-primary");
+    assert_eq!(e.fabric_primary().await, lost.to_string(), "the fabric seat is back at its lost holder's path.name");
+    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, None, "nothing is owed once the row committed");
+    assert_eq!(hb.asked().len(), 2, "no update after the row");
+}
