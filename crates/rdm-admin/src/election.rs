@@ -189,9 +189,10 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
         Holding::Unseen => return None,
         _ => {}
     }
-    // The holder yielded, or is no longer its mesh's primary. Its mesh keeps priority while any
-    // node-admin birth of it is not proven gone or departed.
-    let survives = |n: &Node| n.kind == NodeKind::NodeAdmin && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving && !(n.node_id == h.node_id && n.incarnation_id.as_ref() == Some(&h.incarnation));
+    // The holder yielded, or is no longer its mesh's primary here. Its mesh keeps priority while any
+    // node-admin birth of it, the living holder included, is not proven gone or Leaving: with only
+    // Pending admins left the seat waits (elections §4.3), and silence moves no seat (§5).
+    let survives = |n: &Node| n.kind == NodeKind::NodeAdmin && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving;
     if nodes.iter().any(survives) {
         return mesh_primary.get(&h.mesh).copied().filter(|&i| nodes[i].status == NodeStatus::ReadyForTraffic && !inc.is_lost(&nodes[i]) && !(nodes[i].node_id == h.node_id && nodes[i].incarnation_id.as_ref() == Some(&h.incarnation)));
     }
