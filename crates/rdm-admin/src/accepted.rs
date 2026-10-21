@@ -1019,6 +1019,40 @@ mod tests {
         assert_eq!(handback_due(&recreated, Some(&gone), None), None, "the standby itself is mesh1's primary: with no name, nothing is owed to it");
     }
 
+    /// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 3:
+    /// heard again, the lost birth "is commanded back through node.mesh.join and runs its start
+    /// sequence, hook, cert and rafka-time (Q87)"; step 4: "Once the node at the lost fabric-primary's
+    /// path.name, returned or re-created, has been ReadyForTraffic for one staleness floor, the holder
+    /// hands every seat it took back to it"; node-recovery.md step 1: "A birth heard again runs its
+    /// `before_ready` hook again before it is ready-for-traffic"): a lost fabric-primary heard again by
+    /// its digest has not returned while the command back is on its way; the ReadyForTraffic the view
+    /// holds of it then is its last word before the silence, and no floor runs on it. The floor runs
+    /// from its ReadyForTraffic after the return. At `b6695529` (seed 1431101) mesh2.admin.1 heard
+    /// mesh1.admin.1 again at 154.711, commanded it back at 154.726, owed the hand-back at 158.471 and
+    /// committed it at 158.720 with that command still on its way; it landed at 158.793 and the new
+    /// holder left its mesh to join back through the admin whose writes the hand-back had cut off.
+    #[test]
+    fn the_seats_go_home_one_floor_after_the_commanded_return_not_the_heard_digest() {
+        use NodeStatus::ReadyForTraffic as R;
+        let mut o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh2.admin.1", R, true)], &["mesh1", "mesh2"]);
+        o.nodes.iter_mut().for_each(|x| x.is_fabric_primary = x.name.to_string() == "mesh2.admin.1");
+        let birth = |name: &str| {
+            let x = o.node(&name.parse().unwrap()).unwrap();
+            rdm_core::handover::HandoverBirth { mesh: x.mesh.to_string(), node_id: x.node_id.clone(), incarnation: x.incarnation_id.clone().unwrap() }
+        };
+        let taken = (2u64, birth("mesh1.admin.1"), birth("mesh2.admin.1"));
+        assert_eq!(handback_due(&o, Some(&taken), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "the view holds the lost birth Ready at its path");
+        let dwell = std::time::Duration::from_millis(60);
+        let on_its_way = crate::heard_again::Returning::begin(taken.1.node_id.clone());
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell), None, "heard again and commanded back: not returned");
+        std::thread::sleep(dwell);
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell), None, "a floor of the heard digest's ReadyForTraffic, the command still on its way: nothing is owed");
+        drop(on_its_way);
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell), None, "returned: its floor starts now");
+        std::thread::sleep(dwell);
+        assert_eq!(handback_due_after_dwell(&o, Some(&taken), None, dwell).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "one floor after the return the seats go home");
+    }
+
     #[test]
     fn a_submitted_change_compiles_to_exact_paths_and_a_shrink_keeps_the_primary() {
         let cur = t(&[("mesh1", 2, 3)]);
