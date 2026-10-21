@@ -73,7 +73,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
-        let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
+        let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
 
         let book = &admin.observer.membership.book;
         let mut digests = book.digest_changes();
@@ -89,14 +89,18 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &delete).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
         let leave = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 1, operation: "node.mesh.leave:mesh1.rpc.1".into() };
         assert!(matches!(call(&admin, &target, &leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
-        let seq_at_leave = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
+        // What the node published is read from the node itself: its own book records every digest it
+        // publishes. Its admin hears a digest eventually, so its admin's book read at the leave can lack
+        // a heartbeat the node published just before it.
+        let published = || running.membership.book.get(launch.node_id.as_str()).expect("the node's own book records what it published").0.digest_seq;
+        let seq_at_leave = published();
         // Step 2: the name, live and off its mesh; then the stop.
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
         assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1.old".into() };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 2, operation: "node.start:mesh1.rpc.1.old".into() };
         assert!(matches!(call(&admin, &target, &stop).await, StatusReply::Stopped { .. }));
-        assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.digest_seq, seq_at_leave, "the node published nothing from its leave to its stop");
+        assert_eq!(published(), seq_at_leave, "the node published nothing from its leave to its stop");
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.
         admin.put_row(NodeRow { name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None });
