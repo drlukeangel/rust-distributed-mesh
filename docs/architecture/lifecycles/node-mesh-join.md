@@ -49,21 +49,25 @@ Those pages link here and restate nothing.
    and the node reports to the one named.
 4. On acceptance the authority installs the reported address for that exact birth and drops
    pooled connections and pending work aimed at the birth's old address.
-5. First start only: the authority completes the deployment's WaitForBind / WaitForMeshJoin from
-   the validated report and issues the birth's member cert (`node.cert.create`: signed for the exact
-   birth with the mesh's issuing key, 24 h, and its cert row written; a refused issuance refuses the
-   join by name, [fabric certs](../fabric-certs.md#when-a-cert-is-issued)). A restart or a standalone rejoin has
-   no deployment wait and the node keeps the cert it holds.
+5. At a first start the authority completes the deployment's WaitForBind / WaitForMeshJoin from the
+   validated report. At every join, a first start, a start after a stop and a commanded re-entry alike
+   (Q87), it issues the birth's member cert (`node.cert.create`: signed for the exact birth with the
+   mesh's issuing key, 24 h, and its cert row written; a refused issuance refuses the join by name,
+   [fabric certs](../fabric-certs.md#when-a-cert-is-issued)). A restart or a standalone rejoin has no
+   deployment wait.
 6. The authority answers `Joined`: who served it, the control snapshot (provider, fabric
    identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name,
    the row's config) and the statuses it holds with their original authors and instants. An
    authority that holds no rafka-time answers `NotReady` naming why and builds no answer.
 7. The node installs the handed name, the row's, at every join (R-JN1); adopts the rafka-time as it stands, at every join
-   (origin-ordering.md); and on a first start installs the member cert.
+   (origin-ordering.md); and installs the member cert, at every join (Q87).
 8. The node joins its mesh, `f(FabricId, MeshId)`; a node-admin joins the backbone too. Each one
    joined emits `via-joined`. A mesh with no live listener is created again under its own MeshId
    by this first listener.
-9. `node.mesh.joined`. The node's first `Digest` heartbeat follows, status `pending`.
+9. The node waits for a gossip neighbour on its mesh channel before it says anything: what it says
+   before it has one reaches no one. A node alone in its mesh, whose handed projection and book hold no
+   other member of it, does not wait (Q88); an empty projection is not being alone. Then
+   `node.mesh.joined`; the node's first `Digest` heartbeat follows, status `pending`.
 10. The mesh-primary, hearing the node as a neighbour, publishes it once as Pending so every node
     that held it stopped or restarting hears the rejoin. What follows, the hook, the topology
     read, the Build floor and rafka-time refreshed last, is
