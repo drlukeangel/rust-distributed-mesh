@@ -83,7 +83,7 @@ PY
 # The soaks' bar (Luke 2026-10-09): the fast gate and the release suite green at this HEAD.
 green_gate() {
     local suffix=$1 f
-    for f in "$HOME"/rust-distributed-mesh-deploy/gates-*.log; do
+    for f in "$HOME"/rust-distributed-mesh-deploy/gates-"$(basename "$PWD")"-*.log; do
         case "$f" in *release.log) [ "$suffix" = release ] || continue ;; *) [ "$suffix" = fast ] || continue ;; esac
         head -1 "$f" | grep -qx "\[gate\] head=$(git rev-parse HEAD) dirty=0" && grep -q '^DONE' "$f" && ! grep -q '^FAIL' "$f" && { echo "$f"; return 0; }
     done

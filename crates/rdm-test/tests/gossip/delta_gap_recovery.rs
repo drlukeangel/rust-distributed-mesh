@@ -343,7 +343,16 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let cut_at = now_ns();
     hold.signal("-STOP", true);
     let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
-    assert_eq!(delta_e.1, delta_c.2, "the delta follows the one the member applied");
+    // The held rpc node, released, re-entered through node.mesh.join (Q87): its Pending and its
+    // ReadyForTraffic were deltas of their own after the one the member applied at the baseline. The
+    // member applied every one of them (no gap) before the cut, and the delta heard during the cut
+    // follows the latest the member applied.
+    let member_latest = {
+        let spans = estate.spans();
+        spans_of(&spans, "rdm.mesh.membership.update.via-delta", MEMBER, t_resume).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").map(|sp| num(sp, "topology_version")).max().unwrap_or(delta_c.2)
+    };
+    assert!(member_latest >= delta_c.2, "the member applied the baseline's delta and every re-entry delta after it: {member_latest} >= {}", delta_c.2);
+    assert_eq!(delta_e.1, member_latest, "the delta follows the latest the member applied");
     // Past the idle timeout, so the member's connections are gone, not delayed.
     tokio::time::sleep(Duration::from_secs(5)).await;
     drop(cut);
@@ -385,12 +394,20 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The join was answered by mesh1's primary; the top-up is a topology read (op 0x1E) of the
     // desynchronized mesh from the same primary and from no other: mesh2's admin served no read
     // after the gap, and the member installed mesh2 at the version mesh1's primary last published.
+    // The member joined at its birth and, cut off and heard again, once more through the commanded
+    // node.mesh.join (node-recovery.md step 2, Q87); both joins were answered by mesh1's primary, and the
+    // top-up after the gap re-read nothing through a join (no join between the gap and the cut).
     let joins: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| attr(sp, "node") == MEMBER).collect();
-    assert_eq!(joins.len(), 1, "the member joined once and re-read nothing through the join: {joins:?}");
-    assert_eq!(attr(joins[0], "served_by"), "mesh1.admin.1");
+    assert!(joins.iter().all(|sp| attr(sp, "served_by") == "mesh1.admin.1"), "every join of the member was answered by mesh1's primary: {joins:?}");
+    assert!(!joins.iter().any(|sp| at(sp) >= t_gap && at(sp) < cut_at), "the top-up re-read nothing through a join: {joins:?}");
+    // Heard again after the cut, the member re-enters through a commanded join once its mesh-primary's
+    // tickle reaches it (node-recovery.md step 2): at most one join after the heal inside this cell's window.
+    assert!(joins.iter().filter(|sp| at(sp) >= healed_at).count() <= 1, "at most one commanded re-entry after the heal: {joins:?}");
     let reads_after_gap = |who: &str| -> Vec<&Value> { named(&spans, "rdm.mesh.topology.serve.via-read").into_iter().filter(|sp| attr(sp, "node") == who && at(sp) >= t_gap).collect() };
-    let by_mesh1 = reads_after_gap("mesh1.admin.1");
-    assert_eq!(by_mesh1.len(), 1, "one top-up, one topology read after the gap: {by_mesh1:?}");
+    // One top-up, one topology read of mesh2 alone after the gap; the re-entry after the heal reads the
+    // whole topology at its start (node-start.md step 3), from the same primary.
+    let by_mesh1: Vec<&Value> = reads_after_gap("mesh1.admin.1").into_iter().filter(|sp| at(sp) < cut_at).collect();
+    assert_eq!(by_mesh1.len(), 1, "one top-up, one topology read between the gap and the cut: {by_mesh1:?}");
     assert_eq!((attr(by_mesh1[0], "requested"), attr(by_mesh1[0], "snapshots")), ("mesh2".to_string(), "1".to_string()));
     // The member never queries the remote Mesh's primary: a read mesh2.admin.1 serves its own mesh's
     // members (a mesh2 node reading mesh2 after a re-feed) is theirs, not the member's top-up.
@@ -403,7 +420,9 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let admin_fulls: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-full").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1").collect();
     assert!(!admin_fulls.is_empty(), "mesh1's primary put forwarded fulls into its Mesh");
     let deltas_forwarded: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1" && attr(sp, "mesh") == "mesh2" && at(sp) >= t_change_a && at(sp) < t_stop).collect();
-    assert_eq!(deltas_forwarded.len(), 3, "three real changes in mesh2 (held, released, held again): three deltas from the forwarding primary");
+    // Five real changes in mesh2: held; released, at which the held node re-enters through node.mesh.join
+    // and is published Pending and then ReadyForTraffic (node-mesh-join.md step 10, Q87); held again.
+    assert_eq!(deltas_forwarded.len(), 5, "five real changes in mesh2 (held; released: Pending, ReadyForTraffic; held again): five deltas from the forwarding primary");
     let bumps = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| attr(sp, "node") == "mesh2.admin.1").count();
 
     let result = json!({
