@@ -773,6 +773,78 @@ fn fabric_primaries(nodes: &[Value]) -> String {
     crate::elections::advertised_fabric_primaries(nodes).join(",")
 }
 
+/// The fabric's committed seat moves on its store root, `seat-moves/<T>.json` (`seat-move/1`), in
+/// their order: the durable fact a hand-back being owed is read from (Q104: the committed seat move on
+/// the store root, never a view). A row that cannot be read is left out by name in `unread`.
+fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMove>, Vec<String>) {
+    let dir = root.join(rdm_admin::fabric_storage::SEAT_MOVES_DIR);
+    let mut files: Vec<(u64, std::path::PathBuf)> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter_map(|p| p.file_stem().and_then(|t| t.to_str()).and_then(|t| t.parse::<u64>().ok()).map(|t| (t, p.clone())))
+        .collect();
+    files.sort();
+    let (mut moves, mut unread) = (Vec::new(), Vec::new());
+    for (t, p) in files {
+        let row = std::fs::read(&p).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string())).and_then(|v| {
+            (v["format"] == rdm_admin::fabric_storage::SEAT_MOVE_FORMAT).then_some(()).ok_or_else(|| format!("format {}", v["format"]))?;
+            serde_json::from_value::<rdm_admin::fabric_storage::SeatMoveRow>(v["record"].clone()).map_err(|e| e.to_string())
+        });
+        match row {
+            Ok(row) => moves.push(rdm_admin::fabric_storage::SeatMove { t, row }),
+            Err(e) => unread.push(format!("{}: {e}", p.display())),
+        }
+    }
+    (moves, unread)
+}
+
+/// The path.name the fabric seat belongs to, read from the committed seat moves and named from the
+/// view's births: while the fabric seat's latest move is a takeover, its hand-back is owed and its home
+/// is the path.name of the birth it was taken from (fabric-recovery.md "The loss of the fabric-primary
+/// while a node-admin lives" step 4; Q107 (4): the seat is temporary, handed back to the node at the
+/// first primary's path.name); otherwise the holder that move seated. `None` when no move seated the
+/// fabric seat, or the view holds neither birth.
+fn fabric_home(moves: &[rdm_admin::fabric_storage::SeatMove], nodes: &[Value]) -> Option<String> {
+    let home = match rdm_admin::fabric_storage::fabric_seat_taken_from(moves) {
+        Some((_, lost, _)) => lost,
+        None => moves.iter().rev().find_map(|m| m.row.seats.iter().find(|st| st.seat == rdm_core::seat::transfer::Seat::FabricPrimary)).and_then(|st| st.holder.clone())?,
+    };
+    nodes.iter().find(|n| n["node_id"] == home.node_id.as_str()).map(|n| s(&n["name"]))
+}
+
+/// The Build attempts gained since `before` that acted on the birth at `path`, each with its
+/// receipts, keyed by lane (`fabric`, or the mesh of a drift lane, whose attempts it numbers itself:
+/// R-BI7) and attempt. An attempt acts on the birth when a receipt of it creates, deletes, restarts or
+/// stops the node at `path` (`node.create:<path>`, `node.delete:<path>` and its `TerminateRuntime`, ...):
+/// what a terminate or a replacement of the birth writes. A gained attempt with no such receipt did
+/// nothing to it: the hand-back of the fabric seat, an attempt of the current Build
+/// (fabric-recovery.md step 4, Q96), and the next attempt its returning holder claims after its
+/// HandedOff (build.md) among them.
+fn acted_on(before: &Value, after: &Value, path: &str) -> BTreeMap<(String, u64), Vec<String>> {
+    const ACTS: [&str; 4] = ["node.create", "node.delete", "node.restart", "node.stop"];
+    let mut out: BTreeMap<(String, u64), Vec<String>> = BTreeMap::new();
+    let mut scan = |lane: &str, steps: &Value, from: u64| {
+        for st in steps.as_array().into_iter().flatten() {
+            let acts = st["operation"].as_str().and_then(|o| o.split_once(':')).is_some_and(|(op, subject)| subject == path && ACTS.contains(&op));
+            if acts && num(&st["attempt"]) > from {
+                out.entry((lane.to_string(), num(&st["attempt"]))).or_default().push(format!("{} {} {}", s(&st["operation"]), s(&st["step"]), st["outcome"]));
+            }
+        }
+    };
+    scan("fabric", &after["steps"], num(&before["attempt"]));
+    for (mesh, lane) in after["lanes"].as_object().into_iter().flatten() {
+        scan(mesh, &lane["steps"], num(&before["lanes"][mesh.as_str()]["attempt"]));
+    }
+    out
+}
+
+/// [`acted_on`] as the evidence records it: `lane attempt N: receipts`.
+fn acted_rows(acted: &BTreeMap<(String, u64), Vec<String>>) -> Vec<String> {
+    acted.iter().map(|((lane, a), r)| format!("{lane} attempt {a}: {}", r.join("; "))).collect()
+}
+
 /// A mesh made unheard by every other mesh, until its Heal row.
 enum Cut {
     /// Container provider: a packet filter in the namespaces of the mesh's containers.
@@ -1344,7 +1416,7 @@ impl Driver {
             Action::Wedge { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
                 held = Some((node.clone(), s(&n["incarnation_id"])));
-                self.wedge(&n, round, attempt_before, entry).await?;
+                self.wedge(&n, round, &before, entry).await?;
             }
             Action::Unheard { mesh } => {
                 self.unheard(mesh, nodes, entry).await?;
@@ -1597,8 +1669,9 @@ impl Driver {
 
     /// Hold the node's exact runtime until the view stops calling it ready, judge the hold with
     /// the semantic wedge detector, release it. The same birth must come back.
-    async fn wedge(&mut self, n: &Value, round: usize, attempt_before: u64, entry: &mut Value) -> Result<(), Broken> {
+    async fn wedge(&mut self, n: &Value, round: usize, before: &Value, entry: &mut Value) -> Result<(), Broken> {
         let path = s(&n["name"]);
+        let attempt_before = num(&before["attempt"]);
         let container = self.estate.owner.provider == "container";
         let is_rpc = serves_proof(n);
         let exact = format!("exact:{}", s(&n["node_id"]));
@@ -1620,6 +1693,11 @@ impl Driver {
         let nodes0 = self.estate.node_values().await;
         let (seats_before, detail_before) = seats(&nodes0);
         let fp_before = fabric_primaries(&nodes0);
+        // Where the fabric seat belongs as the hold begins, from the committed seat moves: a hand-back
+        // owed then (fabric-recovery.md step 4) takes the seat home during the hold, which no stall did.
+        let (moves, unread) = seat_moves(&self.estate.fabric_store_root());
+        let home = fabric_home(&moves, &nodes0).unwrap_or_else(|| fp_before.clone());
+        entry["fabric_seat"] = json!({"advertised": fp_before, "home": home, "moves": moves.len(), "unread": unread});
         let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:{path}"));
         // The hold: SIGSTOP of the exact runtime, or `docker pause` of the exact container.
         let release: Box<dyn Fn() -> Result<Value, String> + Send>;
@@ -1714,7 +1792,12 @@ impl Driver {
         let nodes_during = self.estate.node_values().await;
         let (seats_during, detail_during) = seats(&nodes_during);
         let during = nodes_during.iter().find(|x| x["name"] == path.as_str()).cloned();
-        let attempt_during = num(&(self.read)(&self.estate, &self.build_id).await["attempt"]);
+        let build_during = (self.read)(&self.estate, &self.build_id).await;
+        let attempt_during = num(&build_during["attempt"]);
+        // What the gained attempts did to the held birth: only one that terminated, deleted, created
+        // or restarted it replaced it; a hand-back's attempts moved a seat (fabric-recovery.md step 4).
+        let acted_during = acted_on(before, &build_during, &path);
+        entry["attempts"] = json!({"build": [attempt_before, attempt_during], "acted_on_held": acted_rows(&acted_during)});
         let alive = hold_rt.as_ref().map(|r| r.check().is_ok()).unwrap_or(true);
         let replaced = during.as_ref().is_none_or(|x| x["node_id"] != n["node_id"]);
         let released = release();
@@ -1738,13 +1821,13 @@ impl Driver {
         let kept = if is_rpc { run(vec!["get".into(), "--target".into(), exact.clone(), "--key".into(), key.clone()]).await } else { Value::Null };
         ev.recovery = Some(Recovery { work_complete: if is_rpc { kept["outcome"] == "Reply" } else { true }, marker_after: json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "outcome": kept["outcome"]}).to_string() });
         // The seats go home one floor after the node at the lost path.name is Ready (Q89): the "after"
-        // read waits for that, bounded, before it judges the seat.
+        // read waits for that, bounded, before it judges the seat at its home.
         let nodes_after = {
             let est = &self.estate;
-            let fp_before = fp_before.clone();
+            let home = home.clone();
             let settled = wait_for_opt(&format!("{path}: the fabric seat home again after the release"), floor * 3 + Duration::from_secs(30), || async {
                 let ns = est.node_values().await;
-                (fabric_primaries(&ns) == fp_before).then_some(ns)
+                (fabric_primaries(&ns) == home).then_some(ns)
             })
             .await;
             match settled {
@@ -1757,9 +1840,11 @@ impl Driver {
             seats_as_expected: [seats_before, seats_during, seats_after],
             seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
             fabric_primary: [fp_before, fabric_primaries(&nodes_during), fabric_primaries(&nodes_after)],
+            fabric_home: home,
             authority_may_move: false,
             incarnation: [inc.clone(), during.as_ref().map(|x| s(&x["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
-            attempts: [attempt_before, attempt_during],
+            // The held birth's attempts: none before the hold, and the gained ones that acted on it.
+            attempts: [0, acted_during.len() as u64],
             exact_runtime_alive: alive,
             replaced_during: replaced,
         });
@@ -1768,7 +1853,13 @@ impl Driver {
             rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-hold"}), kept.to_string());
             rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == n["incarnation_id"] && kept["reply"]["executing_node"] == n["node_id"], kept.to_string());
         }
-        rec.check("the Build gained no attempt", num(&(self.read)(&self.estate, &self.build_id).await["attempt"]) == attempt_before, format!("attempt {attempt_before}"));
+        let build_after = (self.read)(&self.estate, &self.build_id).await;
+        let acted_after = acted_rows(&acted_on(before, &build_after, &path));
+        rec.check(
+            "no Build attempt gained since the hold began terminated, deleted, created or restarted the held birth",
+            acted_after.is_empty(),
+            format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])),
+        );
         rec.check("the seats equal the public candidates' after the release", seats_after, detail_after);
         ev.reconciliation = Some(rec);
         entry["wedge"] = json!({"released": released, "view_while_held": during.as_ref().map(|x| x["status"].clone())});
@@ -2212,5 +2303,121 @@ mod tests {
         let held = |now: u64| held_unheard_by(m1, "mesh1", FLOOR, now, &rows(now));
         assert!(held(1792624350 * S).is_some_and(|why| why.contains("\"unreachable\" at 10030 ms")), "{:?}", held(1792624350 * S));
         assert_eq!(held(1792624380 * S), None, "the seat taken again, the rows written before hold nothing");
+    }
+
+    /// One row of the fabric's seat-move sequence as the store root holds it (`seat-move/1`).
+    fn move_row(t: u64, record: Value) -> rdm_admin::fabric_storage::SeatMove {
+        rdm_admin::fabric_storage::SeatMove { t, row: serde_json::from_value(record).expect("a seat-move/1 record") }
+    }
+
+    /// The births of the 300 s floors soak on `0afae287` (lane e6s8, step 205) the moves below name.
+    const M1: (&str, &str, &str) = ("mesh1", "cf8c3c63sj5w", "yjcg5a1qdf0d");
+    const M2: (&str, &str, &str) = ("mesh2", "43z44439b7w8", "86myw0cv9vcs");
+
+    fn birth((mesh, node_id, incarnation): (&str, &str, &str)) -> Value {
+        json!({ "mesh": mesh, "node_id": node_id, "incarnation": incarnation })
+    }
+
+    /// The fabric seat's moves of that run, numbered among themselves: mesh1.admin.1 seated on day 0;
+    /// mesh2.admin.1's takeover past the floor (`rdm.node_admin.seat.update.via-takeover` committed at
+    /// revision 2, lost `mesh1:cf8c3c63sj5w:yjcg5a1qdf0d`); the hand-back, attempt 3 of the Build
+    /// (`via-seat-row-written`, revision 3, successor mesh1.admin.1).
+    fn e6s8_moves() -> Vec<rdm_admin::fabric_storage::SeatMove> {
+        vec![
+            move_row(1, json!({ "seats": [{ "seat": "FabricPrimary", "from_revision": 0, "revision": 1, "holder": birth(M1), "from": null }], "cause": "election", "by": birth(M1) })),
+            move_row(2, json!({ "seats": [{ "seat": "FabricPrimary", "from_revision": 1, "revision": 2, "holder": birth(M2), "from": birth(M1) }], "cause": "takeover", "by": birth(M2) })),
+            move_row(
+                3,
+                json!({ "seats": [{ "seat": "FabricPrimary", "from_revision": 2, "revision": 3, "holder": birth(M1), "from": birth(M2) }], "cause": { "handover": { "operation": "node.fabric-primary.update:sccfg43n86nq:3:node.fabric-primary.update:mesh1.admin.1", "build_id": "sccfg43n86nq", "attempt": 3 } }, "by": birth(M2) }),
+            ),
+        ]
+    }
+
+    /// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4:
+    /// once the node at the lost fabric-primary's path.name has been ReadyForTraffic for one floor, the
+    /// holder hands every seat back, "the seats return only that way"; Q107 (4): the fabric seat taken
+    /// is temporary; Q104: whether a hand-back is owed is read from the committed seat move on the store
+    /// root): the seat's home is the first fabric-primary's path.name while the takeover's hand-back is
+    /// owed, whoever is advertised. At `0afae287` (step 205) the hold of mesh1.broker.2 began with the
+    /// hand-back owed; the driver took mesh2.admin.1, the temporary holder, as home, and judged the
+    /// hand-back during the hold as the seat not coming home.
+    #[test]
+    fn the_fabric_seat_is_judged_at_its_home_while_a_hand_back_is_owed() {
+        let nodes = vec![json!({ "name": "mesh1.admin.1", "node_id": M1.1 }), json!({ "name": "mesh2.admin.1", "node_id": M2.1 })];
+        let moves = e6s8_moves();
+        assert_eq!(fabric_home(&moves[..1], &nodes).as_deref(), Some("mesh1.admin.1"), "day 0: its holder");
+        assert_eq!(fabric_home(&moves[..2], &nodes).as_deref(), Some("mesh1.admin.1"), "taken: owed back to the path.name it was taken from");
+        assert_eq!(fabric_home(&moves, &nodes).as_deref(), Some("mesh1.admin.1"), "handed back: its holder");
+        assert_eq!(fabric_home(&[], &nodes), None, "no move seated it: the driver keeps the advertised holder");
+    }
+
+    /// CONTRACT (the same pages): the reader takes the store root's `seat-moves/<T>.json` rows in their
+    /// order, the format the fabric's storage writes (`seat-move/1`), and names a row it cannot read.
+    #[test]
+    fn the_seat_moves_are_read_from_the_store_root_in_order() {
+        let root = std::env::temp_dir().join(format!("soak-seat-moves-{}", std::process::id()));
+        let dir = root.join(rdm_admin::fabric_storage::SEAT_MOVES_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        for m in e6s8_moves().into_iter().rev() {
+            let file = json!({ "format": rdm_admin::fabric_storage::SEAT_MOVE_FORMAT, "record": serde_json::to_value(&m.row).unwrap() });
+            std::fs::write(dir.join(format!("{:020}.json", m.t)), serde_json::to_vec(&file).unwrap()).unwrap();
+        }
+        std::fs::write(dir.join(format!("{:020}.json", 4)), b"{\"format\":\"seat-move/0\"}").unwrap();
+        let (moves, unread) = seat_moves(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(moves, e6s8_moves(), "every readable row, in order");
+        assert_eq!(unread.len(), 1, "the row of another format is named: {unread:?}");
+    }
+
+    /// The Build as the driver reads it in the floors soak on `b6695529` (seed 1431101, step 33):
+    /// mesh1.broker.2 born by attempt 1; attempt 5, the hand-back of the fabric seat to mesh1.admin.1
+    /// (`via-proven-drift` scope `handback: the fabric seat to mesh1.admin.1`), HandedOff; attempt 6,
+    /// mesh1.admin.1's claim after it (`via-claim-decision` won, `via-reconcile` converged with no
+    /// operation). Neither writes a receipt under an operation naming mesh1.broker.2.
+    fn b6695529_build(attempt: u64, lanes: Value) -> Value {
+        json!({
+            "attempt": attempt,
+            "steps": [
+                { "attempt": 1, "operation": "node.create:mesh1.broker.2", "step": "AllocateIdentity", "outcome": "complete", "output": { "node_id": "1hxvfd5ac3fb" } },
+                { "attempt": 1, "operation": "node.create:mesh1.broker.2", "step": "Complete", "outcome": "complete" },
+            ],
+            "lanes": lanes,
+        })
+    }
+
+    /// CONTRACT (fabric-recovery.md step 4 and Q96: "The hand-back runs as an attempt of the current
+    /// accepted Build ... it commits the seat transfer and does not declare the returning node lost";
+    /// build.md: "The next attempt is claimed after the running attempt's terminal receipt (Complete,
+    /// Failed or HandedOff)"; deployment-provider.md §2.5 and the S6 CONTRACT: nothing terminates a held
+    /// birth and nothing is born at its path): an attempt gained during a hold replaced the held birth
+    /// only when a receipt of it terminated, deleted, created, restarted or stopped the node at its path.
+    /// At `b6695529` (attempts 5 to 6) and `0afae287` (2 to 4) the driver counted the hand-back's
+    /// attempts as the control plane replacing mesh1.broker.2, which they never named.
+    #[test]
+    fn a_hand_back_attempt_does_nothing_to_a_held_birth() {
+        let before = b6695529_build(5, json!({ "mesh1": { "attempt": 2 } }));
+        assert!(acted_on(&before, &b6695529_build(6, json!({ "mesh1": { "attempt": 2 } })), "mesh1.broker.2").is_empty(), "the hand-back and its returning holder's attempt");
+        // A hand-back to a held node-admin names a seat move under its own key (build.rs
+        // `HandFabricSeat`), never the birth's own lifecycle.
+        let mut handed = b6695529_build(6, json!({}));
+        handed["steps"].as_array_mut().unwrap().push(json!({ "attempt": 6, "operation": "node.fabric-primary.update:mesh1.admin.1", "step": "Complete", "outcome": "complete" }));
+        assert!(acted_on(&before, &handed, "mesh1.admin.1").is_empty(), "a seat move is not the birth's terminate, create or replace");
+        // A recovery of the held birth in its mesh's drift lane (R-BI7, numbered by the lane): its
+        // terminate and its new birth at the path.
+        let recovered = b6695529_build(
+            6,
+            json!({ "mesh1": { "attempt": 3, "steps": [
+                { "attempt": 2, "operation": "node.delete:mesh1.broker.1", "step": "TerminateRuntime", "outcome": "complete" },
+                { "attempt": 3, "operation": "node.delete:mesh1.broker.2", "step": "TerminateRuntime", "outcome": "complete" },
+                { "attempt": 3, "operation": "node.create:mesh1.broker.2", "step": "AllocateIdentity", "outcome": "complete" },
+            ] } }),
+        );
+        let acted = acted_on(&before, &recovered, "mesh1.broker.2");
+        assert_eq!(acted.keys().cloned().collect::<Vec<_>>(), vec![("mesh1".to_string(), 3)], "the lane's attempt 3 acted on it: {acted:?}");
+        assert_eq!(acted[&("mesh1".to_string(), 3)].len(), 2, "its terminate and its create");
+        // A replacement in the fabric lane.
+        let mut replaced = b6695529_build(6, json!({}));
+        replaced["steps"].as_array_mut().unwrap().push(json!({ "attempt": 6, "operation": "node.delete:mesh1.broker.2", "step": "TerminateRuntime", "outcome": "complete" }));
+        assert_eq!(acted_rows(&acted_on(&before, &replaced, "mesh1.broker.2")), vec!["fabric attempt 6: node.delete:mesh1.broker.2 TerminateRuntime \"complete\"".to_string()]);
     }
 }

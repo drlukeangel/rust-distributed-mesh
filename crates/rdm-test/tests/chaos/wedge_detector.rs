@@ -103,6 +103,7 @@ fn healthy(family: Family) -> Evidence {
         seats_as_expected: [true; 3],
         seats_detail: String::new(),
         fabric_primary: ["mesh1.admin.1".into(), "mesh1.admin.1".into(), "mesh1.admin.1".into()],
+        fabric_home: "mesh1.admin.1".into(),
         authority_may_move: false,
         incarnation: ["inc-a".into(), "inc-a".into(), "inc-a".into()],
         attempts: [1, 1],
@@ -157,6 +158,11 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
             c.seats_detail = "fabric primary: advertised [\"mesh1.admin.2\"], expected Some(\"mesh1.admin.1\")".into();
         }),
         ("authority moves across a stall of a live admin", NO_CONTROL_CONSEQUENCE, |e| e.control.as_mut().unwrap().fabric_primary[2] = "mesh1.admin.2".into()),
+        // A hold that began while a takeover's hand-back was owed: the seat stays with its temporary
+        // holder after the stall instead of going home (fabric-recovery.md step 4).
+        ("the seat stays with its temporary holder across a stall", NO_CONTROL_CONSEQUENCE, |e| {
+            e.control.as_mut().unwrap().fabric_primary = ["mesh2.admin.1".into(), "mesh2.admin.1".into(), "mesh2.admin.1".into()];
+        }),
         ("a stalled membership change moves authority and the public candidates disagree", NO_CONTROL_CONSEQUENCE, |e| {
             let c = e.control.as_mut().unwrap();
             c.authority_may_move = true;
@@ -193,9 +199,11 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
 /// one consequence the detector refuses with exactly that invariant, by name, and no other: the
 /// injector's success alone, a missing or false active-fault acknowledgement, a false-positive fault
 /// report whose work advances or finishes while reported held, a wrong routing effect, diverging
-/// seats or a moved fabric primary, a running silent runtime judged dead, a missing release or
-/// recovery, a failed reconciliation (including the RPC ledger's lost applied mutation), and a
-/// dispatch to a superseded birth. What must NOT happen: a refusal that names another invariant, a
+/// seats or a moved fabric primary (judged at the seat's home: a hold begun while a takeover's
+/// hand-back is owed passes as the seat goes home, fabric-recovery.md "The loss of the fabric-primary
+/// while a node-admin lives" step 4, and is refused if it stays with its temporary holder), a running
+/// silent runtime judged dead, a missing release or recovery, a failed reconciliation (including the
+/// RPC ledger's lost applied mutation), and a dispatch to a superseded birth. What must NOT happen: a refusal that names another invariant, a
 /// pass over a missing consequence, or a verdict that depends on a duration.
 #[test]
 fn wedge_detector_rejects_fault_without_progress_consequence() {
@@ -224,6 +232,13 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
         }
     }
 
+    // A hold begun while a takeover's hand-back was owed (fabric-recovery.md step 4, Q107 (4)): the
+    // holder advertised before it is the temporary one, and the seat going home during the hold is the
+    // hand-back, never a consequence of the stall.
+    let mut owed = healthy(Family::SilentRuntime);
+    owed.control.as_mut().unwrap().fabric_primary[0] = "mesh2.admin.1".into();
+    judge(&owed).unwrap_or_else(|r| panic!("the seat going home across a stall was refused: {r}"));
+
     // A held proof mutation never reconciled: the RPC ledger's own algebra, inside the detector.
     let (ledger, state) = request_ledger(true);
     let mut e = healthy(Family::RequestPostApply);
@@ -251,7 +266,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
     let resolves = named("rdm.scenario.wedge.resolve.via-detector");
     let rejects = spans.iter().filter(|s| s["name"].as_str().unwrap().starts_with("rdm.scenario.wedge.reject.via-")).count();
     let planted = Family::ALL.len() * plants().len();
-    assert_eq!(resolves, Family::ALL.len(), "one resolve span per passing control");
+    assert_eq!(resolves, Family::ALL.len() + 1, "one resolve span per passing control, and the seat going home");
     assert_eq!(rejects, planted + 1 + all.rejections.len(), "one reject span per rejection");
     for s in &spans {
         let n = s["name"].as_str().unwrap();
@@ -650,7 +665,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [seats_detail_before, seats_detail_during, seats_detail_after].join(" | "),
-        fabric_primary: [fp_before, fp_during, fabric_primary(&nodes_after)],
+        fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
+        fabric_home: fp_before,
         authority_may_move: may_move,
         incarnation: [inc_before, inc_during, admin_view(&nodes_after)],
         attempts: [attempts[0], during_marker_attempt],
@@ -760,7 +776,8 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
-        fabric_primary: [fp_before, fp_during, fabric_primary(&nodes_after)],
+        fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
+        fabric_home: fp_before,
         authority_may_move: true,
         incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
         attempts,
@@ -857,7 +874,8 @@ async fn silent_case(run: &Run) {
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
-        fabric_primary: [fp_before, fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
+        fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
+        fabric_home: fp_before,
         authority_may_move: false,
         incarnation: [inc_before, inc_during, s(&back["incarnation_id"])],
         attempts: [attempt_before, attempt_during],

@@ -221,7 +221,8 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
-        fabric_primary: [fp_before, fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
+        fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
+        fabric_home: fp_before,
         authority_may_move: false,
         incarnation: [s(&hold_n["incarnation_id"]), during.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
         attempts: [attempt_before, attempt_during],

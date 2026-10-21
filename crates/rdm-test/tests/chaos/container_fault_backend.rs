@@ -520,6 +520,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [seats_detail_before.clone(), seats_detail_during.clone(), seats_detail_after.clone()].join(" | "),
         fabric_primary: [fabric_primary.clone(), fp_of(&nodes_during), fp_of(&nodes_after)],
+        fabric_home: fabric_primary.clone(),
         authority_may_move: false,
         incarnation: [target_inc.clone(), inc_during.clone(), node_in(&nodes_after, &target_name).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
         attempts: [attempt_before, attempt_during],
@@ -1226,7 +1227,8 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
-        fabric_primary: [fp_before, fabric_primary_of(&nodes_during), fabric_primary_of(&nodes_after)],
+        fabric_primary: [fp_before.clone(), fabric_primary_of(&nodes_during), fabric_primary_of(&nodes_after)],
+        fabric_home: fp_before,
         authority_may_move: false,
         incarnation: [s(&hold_n["incarnation_id"]), during.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
         attempts: [attempt_before, attempt_during],

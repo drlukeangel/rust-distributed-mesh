@@ -190,12 +190,18 @@ pub struct Control {
     /// The seats' detail when one diverges.
     pub seats_detail: String,
     pub fabric_primary: [String; 3],
+    /// Where the fabric seat belongs as the hold begins: its holder, or, while a takeover's hand-back
+    /// is owed, the path.name it is owed to (fabric-recovery.md "The loss of the fabric-primary while a
+    /// node-admin lives" step 4; Q107 (4): a seat taken is temporary). The seat is judged there after
+    /// the hold, not at the holder advertised before it.
+    pub fabric_home: String,
     /// The cut is a membership change (a join, a mesh birth): the fabric primary may legitimately
     /// move, and only the public candidates' computation judges it. For a stall of a live admin it
     /// may not move at all.
     pub authority_may_move: bool,
     pub incarnation: [String; 3],
-    /// The Build attempt (or the runtime's birth count) the work held, before and during.
+    /// The Build attempt (or the runtime's birth count) of the work held, before and during: for a held
+    /// birth among the Build's other work, the attempts whose receipts acted on that birth.
     pub attempts: [u64; 2],
     /// The exact runtime was alive, as the provider holds it, during the hold.
     pub exact_runtime_alive: bool,
@@ -423,9 +429,10 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
             // Across a stall the fabric seat may move (Q89, fabric-recovery.md "The loss of the
             // fabric-primary while a node-admin lives": unheard past the floor it is superseded, and one
             // floor after the node at its path.name is Ready the seats go home); what a stall of a live
-            // admin never does is leave the seat elsewhere once the stall ended.
-            if !c.authority_may_move && c.fabric_primary[0] != c.fabric_primary[2] {
-                out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary did not come home after a stall of a live admin: {:?}", c.fabric_primary)));
+            // admin never does is leave the seat elsewhere than its home once the stall ended: a
+            // hand-back owed as the hold began takes it home during the hold.
+            if !c.authority_may_move && c.fabric_home != c.fabric_primary[2] {
+                out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary did not come home to {} after a stall of a live admin: {:?}", c.fabric_home, c.fabric_primary)));
             }
             if out.len() == before {
                 proved.push("control");

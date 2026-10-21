@@ -7216,6 +7216,11 @@ async fn mock_soak_lifecycle_preserves_continuous_invariants() {
 /// birth at the path unheard, nothing terminates it and nothing is born there; released, the same
 /// birth comes back and serves the value stored before the hold. While cut, each admin holds its own
 /// mesh ready; healed, every birth that was ready at the cut is ready again as itself on both sides.
+/// A hold judges the held birth: a Build attempt replaced it only when a receipt of it terminated,
+/// deleted, created or restarted the node at its path; a hand-back of the fabric seat owed as the
+/// hold began is an attempt of the current Build that moves a seat (fabric-recovery.md "The loss of
+/// the fabric-primary while a node-admin lives" step 4, Q96), and the seat is judged at its home, the
+/// first fabric-primary's path.name the committed takeover owes it to (Q107 (4), Q104).
 /// A host that cannot drop UDP fails the cell by name. What must NOT happen: a terminate or a new
 /// birth at a held path, a birth lost across a cut, a death during a cut, a new Build for an
 /// unchanged topology, or an operation without an outcome.
