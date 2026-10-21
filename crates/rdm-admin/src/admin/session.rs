@@ -314,26 +314,7 @@ impl crate::node_self::Session for AdminSession {
             h.abort();
         }
         self.before_ready.gate().close();
-        self.membership.park().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-left",
-            node = %self.membership.node_name(),
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            which = rdm_core::status::WhichMesh::Own.name(),
-        )
-        .in_scope(|| tracing::info!("left the mesh channel"));
-        self.backbone.park().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-left",
-            node = %self.membership.node_name(),
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            which = rdm_core::status::WhichMesh::Backbone.name(),
-        )
-        .in_scope(|| tracing::info!("left the backbone channel"));
+        crate::node_self::leave_channels(&self.membership, Some(&self.backbone), &self.node_id).await;
     }
 
     async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
@@ -512,7 +493,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone(), entry),
                 progress: None,
             },
-            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { membership: s.membership.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), name: me.clone() }),
+            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { membership: s.membership.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::before_ready::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
@@ -527,7 +508,8 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
 }
 
 /// What a node-admin does to leave its channels from a task that is not the session's: the parts
-/// `Session::leave_channels` uses, cloned. A commanded `node.mesh.join` (Q87) whose start fails at a
+/// `Session::leave_channels` uses, cloned; the channel leave itself is the one
+/// `crate::node_self::leave_channels`. A commanded `node.mesh.join` (Q87) whose start fails at a
 /// step after its hook leaves the birth off its channels, Pending, for its authority's next command
 /// (node-recovery.md step 2), as a failure inside the start's own task does.
 pub(crate) struct AdminLeave {
@@ -535,6 +517,7 @@ pub(crate) struct AdminLeave {
     backbone: Backbone,
     before_ready: crate::before_ready::BeforeReadyHook,
     before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    node_id: NodeId,
     name: PathName,
 }
 
@@ -544,8 +527,7 @@ impl AdminLeave {
             h.abort();
         }
         self.before_ready.gate().close();
-        self.membership.park().await;
-        self.backbone.park().await;
+        crate::node_self::leave_channels(&self.membership, Some(&self.backbone), &self.node_id).await;
         tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));
     }

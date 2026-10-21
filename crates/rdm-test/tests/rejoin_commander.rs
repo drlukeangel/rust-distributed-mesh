@@ -24,9 +24,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// What a step that is immediate on a correct node is given before the cell fails by name.
-const NEVER: Duration = Duration::from_secs(20);
+pub(crate) const NEVER: Duration = Duration::from_secs(20);
 
-async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
+pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.membership.book)).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
@@ -39,19 +39,19 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
 /// primary); `commander` (`mesh1.admin.2`) never says anything on the mesh channel, so the node's
 /// heartbeat book holds no digest of it, while the primary carries it in the member projection the
 /// node installed (`_carried`). The commander reaches the node by its exact birth (`target`).
-struct Rig {
-    primary: crate::common::AdminSide,
-    commander: crate::common::AdminSide,
-    _carried: Option<crate::common::Carried>,
-    running: node::RunningNode,
-    launch: Launch,
-    key: iroh::SecretKey,
-    dir: std::path::PathBuf,
-    target: NodeTarget,
-    node_id: NodeId,
-    incarnation: IncarnationId,
-    commander_key: String,
-    commander_id: NodeId,
+pub(crate) struct Rig {
+    pub(crate) primary: crate::common::AdminSide,
+    pub(crate) commander: crate::common::AdminSide,
+    pub(crate) _carried: Option<crate::common::Carried>,
+    pub(crate) running: node::RunningNode,
+    pub(crate) launch: Launch,
+    pub(crate) key: iroh::SecretKey,
+    pub(crate) dir: std::path::PathBuf,
+    pub(crate) target: NodeTarget,
+    pub(crate) node_id: NodeId,
+    pub(crate) incarnation: IncarnationId,
+    pub(crate) commander_key: String,
+    pub(crate) commander_id: NodeId,
 }
 
 async fn rig(tag: &str) -> Rig {
@@ -65,7 +65,7 @@ async fn rig_carried(tag: &str, carry: bool) -> Rig {
 }
 
 /// [`rig_carried`], the node running `before_ready` as its `before_ready` hook when one is given.
-async fn rig_before_ready(tag: &str, carry: bool, before_ready: Option<std::sync::Arc<rdm_test::before_ready_probe::TestBeforeReady>>) -> Rig {
+pub(crate) async fn rig_before_ready(tag: &str, carry: bool, before_ready: Option<std::sync::Arc<rdm_test::before_ready_probe::TestBeforeReady>>) -> Rig {
     let fabric = rdm_core::FabricId::mint();
     let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
@@ -153,7 +153,7 @@ async fn rig_before_ready(tag: &str, carry: bool, before_ready: Option<std::sync
 }
 
 /// The fields of every span named `name` the node `node` emitted.
-fn spans_of(spans: &crate::common::Spans, name: &str, node: &str) -> Vec<BTreeMap<String, String>> {
+pub(crate) fn spans_of(spans: &crate::common::Spans, name: &str, node: &str) -> Vec<BTreeMap<String, String>> {
     spans.0.lock().unwrap().values().filter(|(n, _, fields)| n == name && fields.get("node").map(String::as_str) == Some(node)).map(|(_, _, fields)| fields.clone()).collect()
 }
 

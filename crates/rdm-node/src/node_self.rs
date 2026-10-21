@@ -176,13 +176,19 @@ pub type Declare = Arc<dyn Fn(NodeState, Option<rdm_core::status::DeclaredOperat
 /// The operation a stop by this process's own signal names on its leave step's spans.
 pub const SIGNAL_STOP: &str = "signal";
 
-/// Who a stop answers to (i146 Q55): the mesh-primary's `StopNode` on its command stream, or this
-/// process's own signal, the node its own subject. One workflow serves both ([`NodeSelf::stop_steps`]).
+/// Who a stop answers to (i146 Q55): the mesh-primary's `StopNode` on its command stream, this
+/// process's own signal, the node its own subject, or a commanded start that failed at a step. One
+/// workflow serves them all ([`NodeSelf::stop_steps`]).
 enum StopBy<'a> {
     /// The command: who commanded it, the connection its call rides, its operation and its stream.
     Command { commander: Option<&'a NodeId>, spare: Option<iroh::PublicKey>, op: &'a LifecycleOp, progress: Option<CommandProgress> },
     /// This process's own signal.
     Signal,
+    /// A commanded start that failed at a step (node-start.md: `CommandAccepted`, then `Failed { step,
+    /// reason, code }`, nothing downstream): the birth is stopped again, as it was, the stop naming the
+    /// start's operation. The start's stream carries only its `Failed`; `calls`, every call commanding
+    /// the start, are in flight and spared, so each is answered.
+    FailedStart { commander: Option<&'a NodeId>, calls: &'a [iroh::PublicKey], op: &'a LifecycleOp },
 }
 
 /// What a stop by this process's own signal leaves behind (i146 Q55): the receipt of its
@@ -987,28 +993,7 @@ impl NodeSelf {
             let report = match &session {
                 Some(session) => session.cut(spare).await,
                 None => {
-                    self.membership.park().await;
-                    tracing::info_span!(
-                        "rdm.node.mesh.update.via-left",
-                        node = %self.held_name(),
-                        node_id = %self.node_id,
-                        mesh = %self.membership.mesh_name(),
-                        mesh_id = %self.membership.mesh_id(),
-                        which = WhichMesh::Own.name(),
-                    )
-                    .in_scope(|| tracing::info!("left the mesh channel"));
-                    if let Some(backbone) = &self.backbone {
-                        backbone.park().await;
-                        tracing::info_span!(
-                            "rdm.node.mesh.update.via-left",
-                            node = %self.held_name(),
-                            node_id = %self.node_id,
-                            mesh = %self.membership.mesh_name(),
-                            mesh_id = %self.membership.mesh_id(),
-                            which = WhichMesh::Backbone.name(),
-                        )
-                        .in_scope(|| tracing::info!("left the backbone channel"));
-                    }
+                    leave_channels(&self.membership, self.backbone.as_ref(), &self.node_id).await;
                     CutReport::default()
                 }
             };
@@ -1161,18 +1146,23 @@ impl NodeSelf {
         StatusReply::Stopped { receipt }
     }
 
-    /// node.stop's steps (node-stop.md steps 2-4), one workflow over the primitives for both of its
-    /// subjects (i146 Q55): the mesh-primary's `StopNode` on its command stream, or this process's own
-    /// signal. The whole `node.connections.delete { All }`, the node's own tasks held, `node.mesh.leave`,
-    /// then `Stopped` to the mesh-primary. A command's stop answers on its stream and declares `Stopped`
-    /// naming its operation; a signal's stop owes connections-deleting at the block and `Stopped` after
-    /// the leave, waits on no answer, and hands each owed declaration back for the process's exit to
-    /// drop (node-rpc.md §34). The receipt is the All's.
+    /// node.stop's steps (node-stop.md steps 2-4), one workflow over the primitives for each of its
+    /// subjects (i146 Q55): the mesh-primary's `StopNode` on its command stream, this process's own
+    /// signal, or a commanded start that failed at a step. The whole `node.connections.delete { All }`,
+    /// the node's own tasks held, `node.mesh.leave`, then `Stopped` to the mesh-primary. A command's stop
+    /// answers on its stream and declares `Stopped` naming its operation; a signal's stop owes
+    /// connections-deleting at the block and `Stopped` after the leave, waits on no answer, and hands
+    /// each owed declaration back for the process's exit to drop (node-rpc.md §34); a failed start's
+    /// stop declares `Stopped` naming the start's operation and puts nothing on the start's stream. The
+    /// receipt is the All's.
     async fn stop_steps(&self, by: StopBy<'_>) -> (ConnectionsReceipt, Vec<tokio::task::JoinHandle<()>>) {
         use tracing::Instrument;
-        let (commander, spare, op, progress) = match by {
-            StopBy::Command { commander, spare, op, progress } => (commander, spare, Some(op), progress),
-            StopBy::Signal => (None, None, None, None),
+        // Who commanded it, the calls to spare, the operation, the stream, how many calls in flight are
+        // the asker's own (not eligible work), and whether a command's own delete runs (step 4's book).
+        let (commander, spare, op, progress, asking, by_command): (Option<&NodeId>, Vec<iroh::PublicKey>, Option<&LifecycleOp>, Option<CommandProgress>, u64, bool) = match by {
+            StopBy::Command { commander, spare, op, progress } => (commander, spare.into_iter().collect(), Some(op), progress, 1, true),
+            StopBy::Signal => (None, Vec::new(), None, None, 0, false),
+            StopBy::FailedStart { commander, calls, op } => (commander, calls.to_vec(), Some(op), None, calls.len() as u64, false),
         };
         let operation = op.map_or(SIGNAL_STOP, |o| o.operation.as_str());
         // A commanded stop parks its live process; a signal's process ends with its stop.
@@ -1186,10 +1176,11 @@ impl NodeSelf {
         // application work is blocked, the eligible work in flight finishes under the bound, and every
         // open Direct or Proxy entry is closed, its drop written under the name the birth holds. The
         // receipt never turns a deadline into zero. A command's own call is in flight and is not
-        // eligible work; a signal has none, and owes its connections-deleting once the block is in force.
+        // eligible work, nor are the calls commanding a failed start; a signal has none, and owes its
+        // connections-deleting once the block is in force.
         let deleting = Mutex::new(None);
         let deleted = self
-            .delete_connections_asked(&ConnectionScope::All, u64::from(op.is_some()), || {
+            .delete_connections_asked(&ConnectionScope::All, asking, || {
                 if op.is_none() {
                     *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting, None);
                 }
@@ -1218,16 +1209,19 @@ impl NodeSelf {
         // mesh's aggregate (the last admin of a deleted mesh, still its primary) publishes it once
         // more before the cut, itself Leaving: "Its last aggregate before a stop carries itself
         // Leaving." It follows the hold, so no gated turn publishes after it; after the cut it
-        // publishes nothing (node-stop.md step 4, R-ON1).
-        if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), op) {
+        // publishes nothing (node-stop.md step 4, R-ON1). A command's and a signal's stop alike; only
+        // a command's delete writes the mesh's deleting into the book.
+        if let Some(backbone) = self.backbone.as_ref().filter(|b| b.is_mesh_primary()) {
             let mesh_deleted = self.membership.book.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
-            if (!op.is_restart() && !op.is_stop()) || mesh_deleted {
-                let del_op = if op.is_stop() {
-                    LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() }
-                } else {
-                    op.clone()
-                };
-                self.membership.book.deleting(del_op);
+            if let Some(op) = op.filter(|_| by_command) {
+                if (!op.is_restart() && !op.is_stop()) || mesh_deleted {
+                    let del_op = if op.is_stop() {
+                        LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() }
+                    } else {
+                        op.clone()
+                    };
+                    self.membership.book.deleting(del_op);
+                }
             }
             let me = (self.set_status)(MemberStatus::Leaving);
             let mut members: Vec<MeshDigest> = backbone.own_members(&self.membership);
@@ -1242,7 +1236,7 @@ impl NodeSelf {
             if published == "true" && mesh_deleted {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %op.operation, status = "Leaving", members = count, published)
+            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
         }
         // 5. The stop's own step after its connections are deleted (node-stop.md step 3;
@@ -1307,14 +1301,13 @@ impl NodeSelf {
         );
         let reply = async {
             enum Next {
-                Run(tokio::sync::watch::Sender<Option<StatusReply>>, ConnectionsReceipt, Arc<dyn Session>, Option<tokio::sync::watch::Receiver<iroh::PublicKey>>),
+                Run(tokio::sync::watch::Sender<Option<StatusReply>>, Arc<dyn Session>, Option<tokio::sync::watch::Receiver<iroh::PublicKey>>),
                 Join(tokio::sync::watch::Receiver<Option<StatusReply>>),
             }
             let next = {
                 let mut cycle = self.cycle.lock().unwrap();
                 match &mut *cycle {
-                    Cycle::Stopped(r) => {
-                        let receipt = r.clone();
+                    Cycle::Stopped(_) => {
                         let Some(session) = self.session.lock().unwrap().clone() else {
                             return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to rejoin its mesh with", self.held_name()));
                         };
@@ -1327,7 +1320,7 @@ impl NodeSelf {
                             None => (None, None),
                         };
                         *cycle = Cycle::Starting { outcome: rx, commander, calls: spare.into_iter().collect() };
-                        Next::Run(tx, receipt, session, commanded)
+                        Next::Run(tx, session, commanded)
                     }
                     Cycle::Starting { outcome, commander, calls } => {
                         // This call commanded the start last: its join goes back over this call from
@@ -1345,7 +1338,7 @@ impl NodeSelf {
                     }
                 }
             };
-            let (outcome, receipt, session, commanded) = match next {
+            let (outcome, session, commanded) = match next {
                 Next::Join(mut rx) => {
                     tracing::Span::current().record("joined", true);
                     let reply = match rx.wait_for(|r| r.is_some()).await {
@@ -1357,7 +1350,7 @@ impl NodeSelf {
                     }
                     return reply;
                 }
-                Next::Run(tx, receipt, session, commanded) => (tx, receipt, session, commanded),
+                Next::Run(tx, session, commanded) => (tx, session, commanded),
             };
             let retire = match &self.retire {
                 Some(r) => r.renew(),
@@ -1389,18 +1382,17 @@ impl NodeSelf {
                     StatusReply::Started
                 }
                 Err(failed) => {
-                    // The start stopped at its step: the node is parked again, as it was, through the
-                    // stop's own primitives: its connections deleted (the calls commanding the start
-                    // are in flight and not eligible work), its tasks held (a turn its rejoin let begin
-                    // runs to its end), its mesh left, sparing every call commanding the start so each
-                    // is answered.
+                    // The start stopped at its step: the birth is stopped again, as it was, through
+                    // node.stop's own steps ([`Self::stop_steps`]), the stop naming the start's
+                    // operation: its connections deleted (the calls commanding the start are in flight
+                    // and not eligible work), its tasks held (a turn its rejoin let begin runs to its
+                    // end), its mesh left sparing every call commanding the start so each is answered,
+                    // its `Stopped` owed to the mesh-primary. The receipt it parks with is this stop's.
                     let calls = match &*self.cycle.lock().unwrap() {
                         Cycle::Starting { calls, .. } => calls.clone(),
                         _ => spare.into_iter().collect(),
                     };
-                    let _ = self.delete_connections_asked(&ConnectionScope::All, calls.len() as u64, || async {}).await;
-                    let _ = session.park_tasks().await;
-                    let _ = self.leave_mesh(&calls, &op.operation).await;
+                    let (receipt, _) = self.stop_steps(StopBy::FailedStart { commander: commander.as_ref(), calls: &calls, op: &op }).await;
                     *self.cycle.lock().unwrap() = Cycle::Stopped(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
                     rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason)
@@ -1414,6 +1406,35 @@ impl NodeSelf {
         span.record("node", self.held_name().to_string().as_str());
         span.record("outcome", reply.name());
         reply
+    }
+}
+
+/// Leave the channels a birth is on (node-mesh-leave.md step 3): its mesh channel, and the backbone
+/// when it is a node-admin's, each left emitting `rdm.node.mesh.update.via-left`. The one place the
+/// channel leave is written: each session's `leave_channels`, a birth that holds no session, and a
+/// commanded `node.mesh.join` whose start failed at a step call it.
+pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_transport::membership::Backbone>, node_id: &NodeId) {
+    membership.park().await;
+    tracing::info_span!(
+        "rdm.node.mesh.update.via-left",
+        node = %membership.node_name(),
+        node_id = %node_id,
+        mesh = %membership.mesh_name(),
+        mesh_id = %membership.mesh_id(),
+        which = WhichMesh::Own.name(),
+    )
+    .in_scope(|| tracing::info!("left the mesh channel"));
+    if let Some(backbone) = backbone {
+        backbone.park().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-left",
+            node = %membership.node_name(),
+            node_id = %node_id,
+            mesh = %membership.mesh_name(),
+            mesh_id = %membership.mesh_id(),
+            which = WhichMesh::Backbone.name(),
+        )
+        .in_scope(|| tracing::info!("left the backbone channel"));
     }
 }
 

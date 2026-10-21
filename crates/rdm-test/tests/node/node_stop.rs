@@ -9,7 +9,7 @@ use rdm_core::PathName;
 use crate::build_log;
 use rdm_client::{Frame, LaunchKind as NodeKind, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
 use rdm_core::status::StatusReply;
-use rdm_test::estate::{descends_from, named, Estate, Owner};
+use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::Value;
 use std::time::Duration;
@@ -1336,4 +1336,123 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     assert!(steps.iter().any(|s| s.starts_with("complete")), "a stop step of {node_s} completed: {steps:?}");
     estate.record_trace_url(&s(&owed[0]["trace_id"]));
     println!("{node_s} stopped under {build:?}; its stop steps: {steps:?}");
+}
+
+/// CONTRACT (node-stop.md steps 2-4; node-mesh-leave.md; i146 Q55: "a signal stop is node.stop's own
+/// steps"): a node-admin that is not its mesh's primary is sent SIGTERM. It runs node.stop's steps as
+/// its own subject, as an rpc node does: the whole `node.connections.delete { All }` under
+/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (`via-stop`, operation `signal`), its connections-deleting
+/// owed to its mesh-primary; `node.mesh.leave` (`via-leaving`), its own mesh and the backbone each
+/// left (`via-left` own and backbone), its Node RPC pool cut (`via-stop-transport-cut`); its `Stopped`
+/// owed to its mesh-primary (`via-owed-on-signal`); then its process ends, before the estate's bound.
+/// The mesh-primary admin, sent SIGTERM at the estate's stop, publishes its last aggregate before the
+/// cut carrying itself Leaving (`via-leaving-aggregate`, operation `signal`). Must NOT happen: a
+/// runtime the bound kills, a heartbeat of the stopping admin after it left its mesh, or a leave with
+/// no connections delete before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
+    let test = "a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1)]).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let primary = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh1's primary");
+    let member = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && !n.is_primary).map(|n| n.name.to_string()).expect("a node-admin that is not mesh1's primary");
+    let pid = estate.pid_of(&member).await;
+    assert!(alive(pid));
+
+    // The signal: the admin's own stop, then its process ends.
+    assert!(std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status().unwrap().success(), "kill -TERM {pid} ({member})");
+    wait_for(&format!("{member} ends by its own stop"), Duration::from_secs(60), || async { (!alive(pid)).then_some(()) }).await;
+    let ended = unix_nanos();
+    let killed = estate.stop().await;
+    assert_eq!(killed, Vec::<u32>::new(), "every runtime ended by its own stop before the bound's SIGKILL");
+
+    let spans = estate.spans();
+    // The signalled admin's spans are its birth's, before its process ended: a recovery at the same
+    // name is another birth.
+    let of = |name: &str, node: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == node && start_ns(sp) <= ended).collect() };
+    let deleted = of("rdm.node_admin.node.connections.delete.via-stop", &member);
+    assert_eq!(deleted.len(), 1, "{member}'s signal ran node.connections.delete {{ All }} once as the stop's: {deleted:#?}");
+    assert_eq!(attr(deleted[0], "operation"), "signal", "{:#?}", deleted[0]);
+    let owed = of("rdm.node_rpc.status.update.via-owed-on-signal", &member);
+    let owed_state = |state: &str| owed.iter().find(|sp| attr(sp, "state") == state).copied();
+    let deleting = owed_state("ConnectionsDeleting").unwrap_or_else(|| panic!("{member} owed its connections-deleting to its mesh-primary: {owed:#?}"));
+    let stopped = owed_state("Stopped").unwrap_or_else(|| panic!("{member} owed its stopped state to its mesh-primary: {owed:#?}"));
+    let leaving = of("rdm.node.mesh.update.via-leaving", &member);
+    assert_eq!(leaving.len(), 1, "{member} left its mesh once: {leaving:#?}");
+    assert_eq!(attr(leaving[0], "operation"), "signal", "{member}'s leave is its own stop's: {leaving:#?}");
+    let left = of("rdm.node.mesh.update.via-left", &member);
+    for which in ["own", "backbone"] {
+        assert!(left.iter().any(|sp| attr(sp, "which") == which), "{member} left its {which} channel: {left:#?}");
+    }
+    let cut = of("rdm.node_admin.node.update.via-stop-transport-cut", &member);
+    assert_eq!(cut.len(), 1, "{member}'s stop cut its transport once: {cut:#?}");
+    assert_eq!(attr(cut[0], "operation"), "signal", "{:#?}", cut[0]);
+    assert!(end_ns(deleted[0]) <= start_ns(leaving[0]), "the connections are deleted before the leave (node-mesh-leave.md step 1)");
+    assert!(start_ns(deleting) <= start_ns(leaving[0]) && start_ns(leaving[0]) <= start_ns(stopped), "{member}: connections-deleting owed, then the leave, then stopped owed");
+    let last_left = left.iter().map(|sp| start_ns(sp)).max().unwrap_or(0);
+    let published_after: Vec<&Value> = of("rdm.mesh.node.update.via-heartbeat", &member).into_iter().filter(|h| start_ns(h) > last_left).collect();
+    assert!(published_after.is_empty(), "{member} published nothing after it left its mesh: {published_after:#?}");
+    // The mesh-primary's signal, at the estate's stop: its last aggregate before the cut carries itself Leaving.
+    let aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| attr(sp, "node") == primary && attr(sp, "operation") == "signal").collect();
+    assert_eq!(aggregate.len(), 1, "{primary}'s signal stop published its last aggregate once, itself Leaving: {aggregate:#?}");
+    assert_eq!(attr(aggregate[0], "status"), "Leaving", "{:#?}", aggregate[0]);
+    estate.artifact("admin-signal-stop.json", &serde_json::json!({"member": member, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"], "primary": primary, "leaving_aggregate": aggregate[0]["trace_id"]}));
+    estate.record_trace_url(leaving[0]["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (node-start.md "If join fails after start": `CommandAccepted`, then `Failed { step, reason,
+/// code }`, nothing downstream; node-stop.md steps 2-4; node-mesh-leave.md): a stopped rpc node's
+/// commanded start fails at a step (its `before_ready` hook answers Failed). The birth is stopped again,
+/// as it was, through node.stop's own steps, each naming the start's operation: the whole
+/// `node.connections.delete { All }` (`via-stop`), its tasks held, `node.mesh.leave` (`via-leaving`,
+/// `via-stop-transport-cut`), and `Stopped` owed to its mesh-primary (`via-owed-on-stop`); the start is
+/// answered `StartFailed` at `node.before-ready`, and the birth is parked. Must NOT happen: the birth
+/// left with its connections deleted and its mesh left but no `Stopped` owed, a stop step naming no
+/// operation, or the start answered Started. In its own process: the cell holds process-wide state
+/// (the parking flag).
+#[test]
+fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps() {
+    let cell = "a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        use crate::rejoin_commander::{call, rig_before_ready, spans_of, Rig};
+        use rdm_admin::before_ready::HookOutcome;
+        use rdm_core::status::StatusRequest;
+        use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+        const NODE_START: &str = "node.start:mesh1.rpc.1";
+        let before_ready = TestBeforeReady::new(Mode::Local);
+        let Rig { primary: _primary, commander, _carried, running: _running, launch, key, dir, target, node_id, incarnation, .. } = rig_before_ready("start-failed-stop", false, Some(before_ready.clone())).await;
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), attempt: 1, operation: format!("node.stop:{NODE}") };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), attempt: 2, operation: NODE_START.into() };
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
+        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        // The start joins the commander back over its call; its hook then fails the start.
+        before_ready.set_mode(Mode::Fixed(HookOutcome::Failed { reason: "the rows of orders cannot be read".into() }));
+        let reply = call(&commander, &target, &start).await;
+        assert!(matches!(&reply, StatusReply::StartFailed { step, .. } if step == "node.before-ready"), "the start is answered Failed at its hook: {reply:?}");
+        // The failed start left the birth parked, as it was.
+        let probed = call(&commander, &target, &probe).await;
+        assert!(matches!(probed, StatusReply::CurrentParked { .. }), "the birth is parked again: {probed:?}");
+
+        // The flame: the stop's steps, each naming the start's operation.
+        let of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans_of(&spans, name, NODE).into_iter().filter(|f| f.get("operation").map(String::as_str) == Some(NODE_START)).collect() };
+        let served = spans_of(&spans, "rdm.node_admin.status.update.via-start-node", NODE);
+        assert!(served.iter().any(|f| f.get("outcome").map(String::as_str) == Some("start-failed") && f.get("failed_step").map(String::as_str) == Some("node.before-ready")), "the start is served once, failed at node.before-ready: {served:#?}");
+        let deleted = of("rdm.node_admin.node.connections.delete.via-stop");
+        assert_eq!(deleted.len(), 1, "the failed start ran node.connections.delete {{ All }} as the stop's, naming the start: {deleted:#?}");
+        let leaving = of("rdm.node.mesh.update.via-leaving");
+        assert_eq!(leaving.len(), 1, "the failed start left the mesh once, naming the start: {leaving:#?}");
+        let cut = of("rdm.node_admin.node.update.via-stop-transport-cut");
+        assert_eq!(cut.len(), 1, "the failed start cut the transport as the stop's step, naming the start: {cut:#?}");
+        let owed: Vec<_> = of("rdm.node_rpc.status.update.via-owed-on-stop").into_iter().filter(|f| f.get("state").map(String::as_str) == Some("Stopped")).collect();
+        assert_eq!(owed.len(), 1, "the failed start owed Stopped to the mesh-primary, naming the start: {owed:#?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
 }

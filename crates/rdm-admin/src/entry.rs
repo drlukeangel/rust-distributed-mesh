@@ -118,14 +118,15 @@ pub async fn run_on(service: &str, storage: impl FnOnce(&AdminConfig) -> std::sy
             rdm_core::runtime::exit_transport_stopped(&reason);
         }
     }
-    // A parked admin (stopped, its process alive) that is told to end has nothing to drain and no
-    // departure to announce: it closes at once.
-    if crate::node_self::parking().is_parked() {
+    // A birth whose stop was admitted (stopped, its process alive, or a start of it under way) runs no
+    // second stop on its signal (node-stop.md step 6): it closes at once.
+    if running.node_self().stop_admitted() {
         let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", parked = true);
         running.leave_after_stop().instrument(span).await;
         return;
     }
-    // Instrumented, never entered across the await: the span's busy and idle time are real.
+    // A live admin's signal is node.stop's own steps, this admin its own subject (i146 Q55), then the
+    // process end. Instrumented, never entered across the await: the span's busy and idle time are real.
     let span = tracing::info_span!("rdm.mesh.node.delete.via-signal");
     running.leave().instrument(span).await;
 }

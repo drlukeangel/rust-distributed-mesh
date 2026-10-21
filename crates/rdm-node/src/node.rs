@@ -847,16 +847,7 @@ impl crate::node_self::Session for NodeSession {
         }
         // A birth off its channels serves no app op until a start's hook has passed again.
         self.before_ready.gate().close();
-        self.membership.park().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-left",
-            node = %self.membership.node_name(),
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            which = rdm_core::status::WhichMesh::Own.name(),
-        )
-        .in_scope(|| tracing::info!("left the mesh channel"));
+        crate::node_self::leave_channels(&self.membership, None, &self.node_id).await;
     }
 
     async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
@@ -1020,7 +1011,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
                 becoming,
                 ends: None,
                 knob: None,
-                leave: self.operation.operation.starts_with("node.mesh.join:").then(|| Leave { membership: membership.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), publisher: s.publisher.clone(), name: me.to_string() }),
+                leave: self.operation.operation.starts_with("node.mesh.join:").then(|| Leave { membership: membership.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), publisher: s.publisher.clone(), node_id: s.node_id.clone(), name: me.to_string() }),
             }),
         })
     }
@@ -1047,12 +1038,14 @@ struct RpcAfterHook {
 }
 
 /// What a birth does to leave its channels from a task that is not the session's: the parts
-/// `Session::leave_channels` uses, cloned.
+/// `Session::leave_channels` uses, cloned; the channel leave itself is the one
+/// `crate::node_self::leave_channels`.
 struct Leave {
     membership: Membership,
     before_ready: crate::before_ready::BeforeReadyHook,
     before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    node_id: NodeId,
     name: String,
 }
 
@@ -1065,7 +1058,7 @@ impl Leave {
             h.abort();
         }
         self.before_ready.gate().close();
-        self.membership.park().await;
+        crate::node_self::leave_channels(&self.membership, None, &self.node_id).await;
         tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the birth leaves its channels for its authority's next command"));
     }

@@ -128,12 +128,24 @@ impl Running {
         self.executor.abort();
     }
 
-    /// Leave on this process's signal: stop taking Build work and every task, settle each call this
-    /// node answered with its caller, then close. Nothing is announced; an attempt the executor was
-    /// running is continued by the Build's next attempt.
+    /// Stop on this process's signal (i146 Q55; node-stop.md steps 2-4), this admin its own subject: the
+    /// one stop sequence an rpc node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
+    /// Build executor stops first (an attempt it was running is continued by the Build's next attempt).
+    /// Then the whole `node.connections.delete { All }` under the birth's bound, its connections-deleting
+    /// owed to its mesh-primary; its tasks held; its last aggregate before the cut carrying itself
+    /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
+    /// its Node RPC pool cut; its `Stopped` owed to its mesh-primary (node-rpc.md §43), waited on by
+    /// nothing. Then the process end ([`Self::leave_with`]): every task aborted, each call this node
+    /// answered settled with its caller, the transport closed; the owed declarations end with the
+    /// process (node-rpc.md §34).
     pub async fn leave(self) {
         self.before_ready_cancel.cancel();
-        self.leave_with(false).await
+        self.executor.abort();
+        let stopped = self.node_self.stop_on_signal().await;
+        self.leave_with(false).await;
+        for owed in stopped.declarations {
+            owed.abort();
+        }
     }
 
     /// End a parked birth (a `stop-node` completed): it says nothing and closes. Its stop already
