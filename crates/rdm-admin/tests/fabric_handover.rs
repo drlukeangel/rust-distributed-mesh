@@ -17,7 +17,7 @@ use rdm_admin::build_facts_read::{BuildFactsDoor, BuildFactsSlot};
 use rdm_admin::build_op::{BuildDoor, BuildSlot};
 use rdm_admin::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView, WriteCutOff};
 use rdm_admin::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricStorage, FabricStorageError, FileFabricStorage, MemoryFabricStorage, MoveCause, MoveCommit, MovedSeat, SeatMove, SeatMoveRow, SeatTransferRow};
-use rdm_admin::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
+use rdm_admin::model::{EndpointId, Fabric, Mesh, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::status_storage::MemoryStatusStorage;
 use rdm_admin::storage::MemoryNodesStorage;
@@ -2419,6 +2419,47 @@ fn the_holder_and_successor_decide_ready_for_traffic_on_the_fabric_primarys_row_
         let ready: Vec<String> = spans.named("rdm.node_admin.fabric.update.via-first-ready").iter().map(|f| f["reason"].clone()).collect();
         assert_eq!(ready, vec!["ready-for-traffic-row-of-the-fabric-primary-on-store-root".to_string(); 2], "P and N decided on the fabric-primary's row");
         let _ = &f.m;
+    });
+}
+
+/// CONTRACT (states.md "The initial fabric before ready-for-traffic": no seat moves before the initial
+/// fabric first reaches ready-for-traffic; node-primary-update.md's precondition; fabric-recovery.md
+/// step 4, the hand-back; Q104: the first-ready check reads the durable ready-for-traffic row among the
+/// status rows of every mesh on the store root): the fabric first reached ready-for-traffic under
+/// mesh1's fabric-primary P, which put its ready-for-traffic row among mesh1's status rows; the fabric
+/// seat then moved to X, so the seat book names mesh2, whose status rows hold no ready row, and neither
+/// X nor P has heard the fabric ready by gossip (their views hold state-commit). X's hand-back of the
+/// fabric seat to P is answered node.primary.updated: X, the holder, and P, the successor, each find
+/// mesh1's row (`rdm.node_admin.fabric.update.via-first-ready`) and P holds the seat from the row. What
+/// must NOT happen: `fabric-not-ready` for a fabric whose first fabric-primary's ready row stands on the
+/// root (the container cell's hand-back at ce251b3f, refused after the seat moved to mesh2).
+#[test]
+fn after_the_fabric_seat_moved_to_another_mesh_the_first_ready_check_finds_the_first_holders_row() {
+    use rdm_admin::status_storage::{FabricEventRow, StatusStorage};
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let f = commanded_fabric().await;
+        // One fabric of two meshes in every admin's view, which holds it in state-commit.
+        let fabric_id = f.x.door.topology.read().await.fabric.id.clone();
+        for a in [&f.p, &f.n, &f.m, &f.x] {
+            let mut t = a.door.topology.write().await;
+            t.fabric.id = fabric_id.clone();
+            t.fabric.status = ScopeStatus::StateCommit;
+            t.meshes = ["mesh1", "mesh2"].iter().map(|m| Mesh { id: None, name: m.to_string(), status: ScopeStatus::ReadyForTraffic }).collect();
+        }
+        let rows = status_rows_of(&f.p, false).await;
+        rows.put_fabric_event_of("mesh1", &FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() });
+        assert!(rows.fabric_events().await.unwrap().is_empty() && rows.fabric_events_of("mesh2").await.unwrap().is_empty(), "only mesh1's status rows hold the ready-for-traffic row");
+        assert_eq!(f.x.door.membership.seats().fabric().map(|h| h.mesh), Some("mesh2".to_string()), "the seat book names the fabric-primary in mesh2");
+        let to: rdm_admin::model::PathName = "mesh1.admin.1".parse().unwrap();
+        let op = update_operation(Seat::FabricPrimary, "b1", 1, &format!("node.fabric-primary.update:{to}"));
+        let r = f.x.door.update_primary(Moving::FabricSeatOutside, None, "b1", 1, &op, Some(&to)).await;
+        assert!(refusals(&spans).is_empty(), "nothing is refused fabric-not-ready: {:?}", refusals(&spans));
+        assert_eq!(r, Ok(committed_fabric(&f.p, 8)), "the hand-back commits and P answers node.primary.updated");
+        assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 8)), "P holds the fabric seat from the row");
+        assert_eq!(spans.named("rdm.node_admin.fabric.update.via-first-ready").len(), 2, "X and P each decided on mesh1's ready-for-traffic row: {:?}", spans.names());
+        let _ = (&f.n, &f.m);
     });
 }
 

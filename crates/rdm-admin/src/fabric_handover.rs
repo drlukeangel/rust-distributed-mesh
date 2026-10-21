@@ -475,7 +475,21 @@ impl HandoverDoor {
         // The fabric-primary's mesh, from the seat book: its row there is the fact the fabric-primary put as
         // it entered ready-for-traffic, before it admitted the workflow that commands this update.
         let fabric_primary_mesh = self.membership.seats().fabric().map(|h| h.mesh);
-        match self.records.first_ready_on_root(&fabric_id, status, fabric_primary_mesh.as_deref()).await {
+        // The row stands among the status rows of the mesh that held the fabric seat when the fabric first
+        // reached ready-for-traffic: after a takeover or a hand-over the seat book names another mesh, so
+        // each mesh this admin's view holds is read too, the seat book's first.
+        let meshes: Vec<String> = {
+            let view = self.topology.read().await;
+            fabric_primary_mesh.iter().cloned().chain(view.meshes.iter().map(|m| m.name.to_string()).filter(|m| Some(m) != fabric_primary_mesh.as_ref())).collect()
+        };
+        let mut first_ready = self.records.first_ready_on_root(&fabric_id, status, fabric_primary_mesh.as_deref()).await;
+        for mesh in meshes.iter().skip(1) {
+            if !matches!(first_ready, Ok(false)) {
+                break;
+            }
+            first_ready = self.records.first_ready_on_root(&fabric_id, status, Some(mesh)).await;
+        }
+        match first_ready {
             Ok(true) => None,
             Ok(false) => {
                 let fabric_primary = fabric_primary_mesh.as_deref().map(|m| format!(", nor do those of the fabric-primary's mesh {m}")).unwrap_or_else(|| ", and the seat book names no fabric-primary whose mesh's rows it could read".into());
