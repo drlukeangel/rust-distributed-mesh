@@ -652,12 +652,7 @@ async fn start_booted(
                             let owed_state: Arc<Mutex<OwedDeclaration>> = Arc::default();
                             let own = {
                                 let (set_digest, set_status_cell, now_status) = (digest.clone(), status.clone(), status.clone());
-                                let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| {
-                                    *set_status_cell.lock().unwrap() = st;
-                                    let mut d = set_digest.clone();
-                                    d.status = st;
-                                    d
-                                });
+                                let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| set_own_status(&set_status_cell, &set_digest, st));
                                 let current: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || *now_status.lock().unwrap());
                                 let declare: crate::node_self::Declare = {
                                     let (node, membership, client, owed, held) = (digest.node.clone(), membership.clone(), client.clone(), owed_state.clone(), connections.held());
@@ -809,6 +804,17 @@ async fn start_booted(
     crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::FirstStart).await?;
     let running = out.lock().unwrap().take();
     running.ok_or_else(|| anyhow!("{name}: the start ended without the node it brought up"))
+}
+
+/// Set this birth's own status, the one cell its digest cadence, its topology door and its answers
+/// read, to `to`, and hand back `digest` carrying it: the one place an rpc or role node sets its own
+/// status (every status its `NodeSelf` sets, and its ReadyForTraffic at node.started). The rule a set
+/// applies before it is made is its caller's.
+fn set_own_status(status: &Mutex<MemberStatus>, digest: &MeshDigest, to: MemberStatus) -> MeshDigest {
+    *status.lock().unwrap() = to;
+    let mut d = digest.clone();
+    d.status = to;
+    d
 }
 
 /// The digest cadence of a node: its digest as it stands, its status and its in-flight count.
@@ -1162,15 +1168,13 @@ impl Becoming {
             source = "self-published-membership"
         )
         .in_scope(|| tracing::info!("ready for traffic"));
-        *self.status.lock().unwrap() = MemberStatus::ReadyForTraffic;
+        let d = set_own_status(&self.status, &self.digest, MemberStatus::ReadyForTraffic);
         if self.progress.is_none() {
             self.owed.lock().unwrap().owe((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
         } else {
             // The open start stream reports readiness; keep the declaration for a future seat move.
             self.owed.lock().unwrap().last = Some((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
         }
-        let mut d = self.digest.clone();
-        d.status = MemberStatus::ReadyForTraffic;
         let _ = self.membership.publish(&d).await;
         let (node, membership, client, owed, held) = (self.digest.node.clone(), self.membership.clone(), self.client.clone(), self.owed.clone(), self.held.clone());
         tokio::spawn(async move {

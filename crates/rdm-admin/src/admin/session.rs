@@ -577,16 +577,27 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
     }
 
     async fn report(self: Box<Self>) {
-        let mut d = self.digest.lock().unwrap();
-        if d.status == MemberStatus::Pending {
-            d.status = MemberStatus::ReadyForTraffic;
+        let (set, d) = set_own_status(&self.digest, Some(MemberStatus::Pending), MemberStatus::ReadyForTraffic);
+        if set {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
-            drop(d);
             self.wake.wake.poke();
             tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-membership").in_scope(|| tracing::info!("ready for traffic"));
         }
     }
+}
+
+/// Set this node-admin's own status in `digest`, the digest it publishes, to `to` when it holds `from`
+/// (whatever it holds when `from` is `None`), under one hold of the digest: the one place a node-admin
+/// sets its own status (every status its `NodeSelf` sets, and its ReadyForTraffic, from Pending only,
+/// at its Ready gate and at a start's report). Answers whether it was set, and the digest as it stands.
+pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, from: Option<MemberStatus>, to: MemberStatus) -> (bool, MeshDigest) {
+    let mut d = digest.lock().unwrap();
+    if from.is_some_and(|from| d.status != from) {
+        return (false, d.clone());
+    }
+    d.status = to;
+    (true, d.clone())
 }
 
 /// How often a start below its Build floor checks the floor again and hands its blocker to the

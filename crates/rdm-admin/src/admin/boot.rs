@@ -1816,14 +1816,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     },
                                                 }
                                                 if blocked.is_empty() {
-                                                    let d_ready = {
-                                                        let mut d = digest.lock().unwrap();
-                                                        if d.status != MemberStatus::Pending {
-                                                            break;
-                                                        }
-                                                        d.status = MemberStatus::ReadyForTraffic;
-                                                        d.clone()
-                                                    };
+                                                    let (set, d_ready) = super::session::set_own_status(&digest, Some(MemberStatus::Pending), MemberStatus::ReadyForTraffic);
+                                                    if !set {
+                                                        break;
+                                                    }
                                                     let _ = membership.publish(&d_ready).await;
                                                     let reads = ViewReads::read(&me, &book, &records, &fabric_id).await;
                                                     let decided = incumbency_of(&book, &records);
@@ -1945,11 +1941,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let digest_for_status = digest.clone();
                                         let digest_now = digest.clone();
-                                        let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| {
-                                            let mut d = digest_for_status.lock().unwrap();
-                                            d.status = st;
-                                            d.clone()
-                                        });
+                                        let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| super::session::set_own_status(&digest_for_status, None, st).1);
                                         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
                                         // Its stop's Stopped names the stop, as every node's does (node-status.md "Status
                                         // report", node-stop.md step 4; i146 Q37): owed in its declarer and sent from this
