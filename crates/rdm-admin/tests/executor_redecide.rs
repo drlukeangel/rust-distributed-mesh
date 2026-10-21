@@ -89,7 +89,10 @@ impl Capture {
 enum Dies {
     /// Never: the run completes.
     Not,
-    /// Waiting for the birth to join the mesh: the runtime is spawned, no join receipt.
+    /// Waiting for the birth's report, which does not come while the executor lives: the runtime is
+    /// spawned, no join is admitted, no bind or join receipt (node-create.md step 5: the waits complete
+    /// from the validated report alone). The birth keeps offering its report, as a real node retries
+    /// its `JoinNode` until an admin answers it.
     BeforeJoin,
     /// Waiting for Ready: the birth has joined.
     AfterJoin,
@@ -98,7 +101,7 @@ enum Dies {
 /// One host's runtimes, shared by every executor of the cell: what is launched with which seeds,
 /// what is terminated, what still runs.
 struct Fleet {
-    dies: Mutex<Dies>,
+    dies: Arc<Mutex<Dies>>,
     reached: Notify,
     next_pid: AtomicU32,
     spawned: Mutex<Vec<Spawn>>,
@@ -119,7 +122,7 @@ struct Spawn {
 
 impl Fleet {
     fn new() -> Arc<Self> {
-        Arc::new(Self { dies: Mutex::new(Dies::Not), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]), executors: Mutex::new(BTreeMap::new()) })
+        Arc::new(Self { dies: Arc::new(Mutex::new(Dies::Not)), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]), executors: Mutex::new(BTreeMap::new()) })
     }
     fn spawns(&self) -> Vec<Spawn> {
         self.spawned.lock().unwrap().clone()
@@ -180,12 +183,16 @@ impl DeploymentProvider for Fleet {
             domain: Some(DOMAIN.into()),
         };
         // The birth reports where it bound to the executor that launched it, as a real node does at
-        // its join, once that executor has registered the deployment (after `DeployRuntime`).
+        // its join, once that executor has registered the deployment (after `DeployRuntime`). While
+        // the executor is to die before the join, the report does not come; the birth keeps offering it
+        // and is heard by whichever registration of its deployment stands once the executor is gone.
         if let Some(joins) = spec.env.get("RDM_SEEDS").and_then(|s| s.split('@').next()).and_then(|k| self.executors.lock().unwrap().get(k).cloned()) {
             let digest = fake_node_digest(spec, handle.fact());
+            let dies = self.dies.clone();
             tokio::spawn(async move {
                 for _ in 0..500 {
-                    if matches!(joins.standing(&digest), rdm_admin::join::Standing::Deployed { .. }) {
+                    let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
+                    if !withheld && matches!(joins.standing(&digest), rdm_admin::join::Standing::Deployed { .. }) {
                         joins.report(&digest);
                         return;
                     }
@@ -207,6 +214,11 @@ impl DeploymentProvider for Fleet {
         Ok(())
     }
     async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+        // The executor waiting for a report that never comes dies at its wait's inspection of the runtime.
+        if *self.dies.lock().unwrap() == Dies::BeforeJoin {
+            self.reached.notify_one();
+            std::future::pending::<()>().await;
+        }
         if self.running(h.pid.unwrap()) {
             DeploymentStatus::Running
         } else {
@@ -229,10 +241,6 @@ impl DeploymentProvider for Fleet {
 #[async_trait::async_trait]
 impl NodeObserver for Fleet {
     async fn joined(&self, node_id: &NodeId, _: &IncarnationId) -> Option<Publication> {
-        if *self.dies.lock().unwrap() == Dies::BeforeJoin {
-            self.reached.notify_one();
-            std::future::pending::<()>().await;
-        }
         let s = self.spawned.lock().unwrap().iter().rev().find(|s| &s.node_id == node_id)?.clone();
         Some(Publication { runtime: s.handle.fact(), data_dir: Some(s.data_dir.display().to_string()) })
     }
