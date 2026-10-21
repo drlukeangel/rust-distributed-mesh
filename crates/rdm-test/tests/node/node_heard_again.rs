@@ -170,20 +170,37 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         // The authority's record of the birth's own ready-for-traffic declaration (its `sender`).
         let ready_at = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == node && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since).map(at).min();
         assert!(ready_at.is_some_and(|r| r > pending_at.unwrap()), "{node}: ready-for-traffic is declared only after the Pending publish: pending {pending_at:?}, ready {ready_at:?}");
-        // The node: after its join it says NodeJoined and heartbeats; the Pending publish is the
-        // mesh-primary's, never the node's (node-mesh-join.md step 10). An rpc node's heartbeat
-        // publisher begins again at its re-entry, and its first heartbeat names the sequence of the
-        // first digest it published: every digest a peer installs of the birth from its channel step
-        // on is that publisher's (its sequence at or past the heartbeat's). A digest below it is one
-        // the node published itself inside its start, before its publisher: the one that said Pending.
+        // What a peer holds of the birth never goes back. Gossip is eventual and unordered (a cell never
+        // asserts when a copy arrives, c6a8211f), so a copy of an older digest of the birth can reach a
+        // peer late, before or after the re-entry: the receive rule refuses it (`via-stale` below the
+        // held digest_seq, `via-duplicate` at it) and installs only a newer one. At each peer, for the
+        // birth's incarnation, the digest_seq of every digest it installed rises in the order it
+        // installed them, and every late copy it refused names an offered sequence below the one it held.
         if node == "mesh1.rpc.2" {
-            let channel_at = steps.iter().find(|(n, _, _)| n == "rdm.mesh.node.update.via-membership-joined").map(|(_, start, _)| *start).unwrap_or_else(|| panic!("{node}: the heard-again start enters its mesh channel (via-membership-joined): {names:?}"));
-            let seq = |sp: &Value| s(&sp["attributes"]["digest_seq"]).parse::<u64>().unwrap_or(0);
-            let heartbeat = named(&spans, "rdm.mesh.node.update.via-heartbeat").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && at(sp) >= channel_at).map(seq).min().unwrap_or_else(|| panic!("{node}: its heartbeat publisher runs again after its re-entry (via-heartbeat after {channel_at})"));
-            let installed: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-digest").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == rpc_node_id && at(sp) >= channel_at).map(|sp| (s(&sp["attributes"]["node"]), seq(sp))).collect();
-            assert!(!installed.is_empty(), "{node}: its peers install its digests after its re-entry (via-digest after {channel_at})");
-            let before_publisher: Vec<&(String, u64)> = installed.iter().filter(|(_, seq)| *seq < heartbeat).collect();
-            assert!(before_publisher.is_empty(), "{node}: no digest of its own precedes its heartbeat publisher's first ({heartbeat}) after its re-entry: the node says NodeJoined and heartbeats, the Pending publish is the mesh-primary's (node-mesh-join.md step 10); installed by its peers (receiver, digest_seq): {before_publisher:?} of {installed:?}");
+            let seq_of = |v: &str| v.rsplit('=').next().unwrap_or_default().parse::<u64>().unwrap_or(0);
+            let mut installed: std::collections::BTreeMap<(String, String), Vec<(u64, u64)>> = Default::default();
+            for sp in named(&spans, "rdm.mesh.membership.update.via-digest").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == rpc_node_id) {
+                let seq = s(&sp["attributes"]["digest_seq"]).parse::<u64>().unwrap_or(0);
+                installed.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["incarnation_id"]))).or_default().push((at(sp), seq));
+            }
+            assert!(!installed.is_empty(), "{node}: its peers installed its digests (via-digest naming node_id {rpc_node_id})");
+            let back: Vec<String> = installed
+                .iter_mut()
+                .flat_map(|((peer, incarnation), seqs)| {
+                    seqs.sort();
+                    seqs.windows(2).filter(|w| w[1].1 <= w[0].1).map(|w| format!("{peer} ({incarnation}): digest_seq {} installed after {}", w[1].1, w[0].1)).collect::<Vec<_>>()
+                })
+                .collect();
+            assert!(back.is_empty(), "{node}: a late copy of an older digest never takes back what a peer holds: {back:?}");
+            let subject = format!("{rpc_node_id}/");
+            let refused: Vec<(String, u64, u64)> = named(&spans, "rdm.mesh.membership.reject.via-stale")
+                .into_iter()
+                .filter(|sp| s(&sp["attributes"]["frame"]) == "digest" && s(&sp["attributes"]["subject"]).starts_with(&subject))
+                .map(|sp| (s(&sp["attributes"]["node"]), seq_of(&s(&sp["attributes"]["held_key"])), seq_of(&s(&sp["attributes"]["frame_key"]))))
+                .collect();
+            assert!(refused.iter().all(|(_, held, offered)| offered < held), "{node}: each late copy a peer refused as stale offered a digest_seq below the one it held: {refused:?}");
+            let copies = named(&spans, "rdm.mesh.membership.update.via-duplicate").into_iter().filter(|sp| s(&sp["attributes"]["frame"]) == "digest" && s(&sp["attributes"]["identity"]).starts_with(&subject)).count();
+            eprintln!("{node}: late copies refused, stale {} and duplicate {copies}; installed per (peer, incarnation): {:?}", refused.len(), installed.iter().map(|(k, v)| (k.clone(), v.len())).collect::<Vec<_>>());
         }
         // The cert: issued again for the same birth at the heard-again join.
         let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
