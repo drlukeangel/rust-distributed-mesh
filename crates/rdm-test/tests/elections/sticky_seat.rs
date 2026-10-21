@@ -511,7 +511,6 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     estate.enter(&n_path).await;
     // P's "primary updated" never leaves it, on either channel.
     Door::at(&estate, &p).await.arm("primary-updated", serde_json::json!({"kind": "announcement", "announcement": "primary-updated", "channel": "any"})).await;
-    let replaced_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let (build, outer) = replace_by_recipe(&estate, &n_path, &p).await;
     // Sampled while the hand-over runs: no admin's view ever shows two fabric primaries.
     let mut worst = 0usize;
@@ -535,7 +534,6 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     // The fabric is ready-for-traffic once its planned births are all ready and the state-sync,
     // state-commit and open-traffic rounds have run under the new fabric-primary.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let ready_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     // The caller's stream ended with the seat move and the caller followed the recipe to the new
     // seat the moment it was named (node-rpc-envelope.md TakeSeats): the same build id resubmitted
     // at H, read to its terminal. The recipe is complete when that terminal is `Complete` and
@@ -613,15 +611,10 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
         assert_eq!(num(sp, "attempt"), Some(transfer_attempt + 1), "step {} on P ran in H's attempt: {sp:#?}", attr(sp, "step"));
         assert!(at_ns(sp) >= sp_end(&p_said), "no step on P ran before P said primary updated: {sp:#?}");
     }
-    // No seatless window: from the replace until the fabric is ready again (the fabric's own
-    // shutdown after that is not this cell's story), no observer resolves P's mesh or the fabric
-    // with nobody.
-    let vacant: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
-        .into_iter()
-        .filter(|sp| attr(sp, "mesh") == mesh && attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && (replaced_at..ready_at).contains(&at_ns(sp)))
-        .chain(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").into_iter().filter(|sp| attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && (replaced_at..ready_at).contains(&at_ns(sp))))
-        .collect();
-    assert!(vacant.is_empty(), "a seat was vacant during the hand-over: {vacant:#?}");
+    // An observer's view resolves the seats from what gossip has brought it, eventually: one whose
+    // view lost P before the committed row naming H arrived resolves nobody until it does. The cell
+    // asserts no moment of that (Q90's row, c6a8211f: a cell never asserts when gossip arrives); the
+    // property is the eventual one below, every node holding the committed seats naming H.
     // Every other node holds the committed seats naming H though P's frame never left it: through the
     // replay or the surviving publisher (each node's seat record, whichever path brought it).
     for other in names().into_iter().filter(|x| *x != p && *x != h_name) {
