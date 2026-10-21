@@ -45,7 +45,8 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets
    ReadyForTraffic on that exact birth through the [node status](node-status.md) apply,
-   not a caller op. The node sends no separate status report after node.started. A typed
+   not a caller op. The node also declares ReadyForTraffic to its mesh-primary as an owed message, as it declares
+   Stopped (Q36, Q87); frame and declaration apply once (Q49). A typed
    refusal of that apply completes no readiness.
 6. Start ends with `node.started`. Create ends with `node.created` after the
    start it contains.

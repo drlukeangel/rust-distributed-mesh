@@ -34,9 +34,10 @@ on the backbone.
    one holder: a fabric-primary is a mesh-primary. Any other admin that notices tells the successor; the
    successor acts only when its own view agrees; repeats answer `AlreadyApplied`; the fence lets one row
    commit.
-   - *Its own mesh*: the standby's seat watch wakes at the first tick after the mark and writes. It needs
-     no probe to know it is alive, and it publishes the mesh's aggregate as its primary within one
-     backbone interval.
+   - *Its own mesh*: the standby's seat watch writes at the first tick after the mark, once its seat record
+     has named that holder for one staleness floor: a record learned after a heal names a holder whose
+     silence in this admin's book began before the record did. It needs no probe to know it is alive, and it
+     publishes the mesh's aggregate as its primary within one backbone interval.
    - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its aggregate stops, so it runs
      [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
      node-admins. An answer from any of them ends the investigation and the seats stay in that mesh. No
