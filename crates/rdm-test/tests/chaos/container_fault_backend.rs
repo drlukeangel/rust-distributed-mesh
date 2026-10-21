@@ -346,6 +346,11 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let hold = Duration::from_millis(u64::try_from(floor.as_millis()).expect("the declared floor fits milliseconds").saturating_mul(hold_floors));
     let planned_silence = floor + Duration::from_secs(20);
     assert!(planned_silence < hold, "planned silence {planned_silence:?} must be under the declared hold {hold_floors} × {floor:?} = {hold:?}");
+    // The cut is of a fabric that has first reached ready-for-traffic (states.md, "The initial fabric
+    // before ready-for-traffic": before it no seat moves, the takeover and the hand-back included), read
+    // where the fabric's state is decided: fabric.get answered by the fabric-primary, never a FabricStatus
+    // another admin heard by gossip (Q104). The cell's setup, not a check of the product's paths.
+    estate.until_fabric_ready_at(&Estate::path(&fabric_primary), Duration::from_secs(120)).await;
     let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).await.expect("the exact containers and addresses are resolved before the cut");
     let silence_started = std::time::Instant::now();
     let release_at = silence_started + planned_silence;
@@ -585,17 +590,23 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // (build.md: "The next attempt is claimed after the running attempt's terminal receipt (Complete,
     // Failed or HandedOff)"): both are the hand-back's.
     let handback_spans: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == fabric_build.as_str() && start(sp) > cut_at && attr(sp, "scope").starts_with("handback:")).collect();
-    let continued = handback_spans
+    let handback_attempts: BTreeSet<u64> = handback_spans.iter().map(|h| attr(h, "attempt").parse::<u64>().unwrap_or(0)).collect();
+    let continued: BTreeSet<u64> = handback_spans
         .iter()
-        .filter(|h| {
+        .filter_map(|h| {
             let (next, to) = (attr(h, "attempt").parse::<u64>().unwrap_or(0) + 1, attr(h, "scope").rsplit(' ').next().unwrap_or_default().to_string());
-            named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|c| c["attributes"]["build_id"] == fabric_build.as_str() && attr(c, "attempt").parse::<u64>().ok() == Some(next) && attr(c, "executor") == to && attr(c, "outcome") == "won")
+            named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|c| c["attributes"]["build_id"] == fabric_build.as_str() && attr(c, "attempt").parse::<u64>().ok() == Some(next) && attr(c, "executor") == to && attr(c, "outcome") == "won").then_some(next)
         })
-        .count() as u64;
-    let handbacks = handback_spans.len() as u64 + continued;
+        .collect();
+    // Like with like: the spans cover the whole run, the build.get read (`attempt_after`) one moment of
+    // it, so only the attempts that read saw are counted; an attempt opened or claimed after it is the
+    // next read's. Every attempt the Build gained after the cut, up to that read, is a hand-back's or
+    // the returning holder's continuation of one.
+    let gained: BTreeSet<u64> = (attempt_before + 1..=attempt_after).collect();
+    let explained: BTreeSet<u64> = handback_attempts.union(&continued).copied().filter(|a| *a > attempt_before && *a <= attempt_after).collect();
 
     let mut rec2 = ev.reconciliation.take().unwrap();
-    rec2.check("the Build gained no attempt but the hand-back's and the returning holder's after it", attempt_after == attempt_before + handbacks, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}, hand-back attempts {} and their continuations {continued}", handback_spans.len()));
+    rec2.check("the Build gained no attempt but the hand-back's and the returning holder's after it", gained == explained, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}: gained {gained:?}, hand-back attempts {handback_attempts:?} and their continuations {continued:?}"));
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
     rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
     // A silent ViaPeer leg never replies and ends `NotSent(CarrierEdgeLost)` naming the carrier's

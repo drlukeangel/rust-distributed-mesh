@@ -324,6 +324,18 @@ impl Estate {
         let _ = self.ready.set(crate::estate::FabricReady(()));
     }
 
+    /// [`Self::until_fabric_ready`] read where the fabric's state is decided: `fabric.get` answered by
+    /// `fabric_primary`, the admin whose view names itself the fabric-primary, ready-for-traffic. Another
+    /// admin's answer carries the FabricStatus it heard by gossip, which can lag the fabric-primary's own
+    /// state. The wait records that the fabric has started, as [`Self::until_fabric_ready`] does.
+    pub async fn until_fabric_ready_at(&self, fabric_primary: &PathName, within: std::time::Duration) {
+        crate::estate::wait_for(&format!("{fabric_primary}, the fabric-primary, answers fabric.get ready-for-traffic"), within, || async {
+            self.fabric_view_at(fabric_primary).await.filter(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic && f.fabric_primary.as_ref() == Some(fabric_primary)).map(|_| ())
+        })
+        .await;
+        let _ = self.ready.set(crate::estate::FabricReady(()));
+    }
+
     /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `node.get` per
     /// mesh reads it.
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<String>) -> Vec<NodeView> {
