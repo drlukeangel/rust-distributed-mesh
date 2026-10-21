@@ -196,13 +196,16 @@ impl Joins {
     }
 
     /// Register `deployed` before its runtime starts. The report arrives on the returned
-    /// receiver. A registration of the same deployment keeps what it already heard: the report a
-    /// deployment still held took, or the one an ended create of the same deployment was handed; a
-    /// held deployment (a restart's, a heard-again's) is handed nothing it did not hear itself.
+    /// receiver. A registration of the same create's deployment keeps what it already heard: the
+    /// report the deployment still held took, or the one an ended create of the same deployment was
+    /// handed. A held deployment's registration (a start's, a restart's, a heard-again's) is its
+    /// command's own and waits for that command's join: it is handed nothing, not even what an earlier
+    /// registration of the same held deployment heard, so the report of the birth's next commanded
+    /// join is a join of its own, never a retry of the last one (Q99: one Pending per join).
     pub fn expect(&self, deployed: Deployed) -> watch::Receiver<Option<MeshDigest>> {
         let mut slots = self.slots.lock().unwrap();
         if let Some(s) = slots.get(&deployed.node_id) {
-            if s.deployed == deployed {
+            if s.deployed == deployed && !deployed.held {
                 return s.reported.subscribe();
             }
         }
@@ -256,6 +259,13 @@ impl Joins {
         }
     }
 
+    /// Whether the registration `d` reports to already heard a report of this exact birth (node id
+    /// and incarnation): then `d` is a later report of that join, a retry, never a join of its own
+    /// (node-mesh-join.md step 10). Read before [`Self::report`] fills the registration.
+    pub fn heard(&self, d: &MeshDigest) -> bool {
+        self.slots.lock().unwrap().get(&d.node.node_id).is_some_and(|s| s.reported.borrow().as_ref().is_some_and(|r| r.node.node_id == d.node.node_id && r.node.incarnation == d.node.incarnation))
+    }
+
     /// The node's own report, verified: what `WaitForBind` waits for.
     pub fn report(&self, d: &MeshDigest) {
         if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
@@ -281,12 +291,13 @@ pub struct JoinDoor {
     /// admitted birth is in that view when the join is answered: its first declaration finds its
     /// subject held.
     pub known: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
-    /// Record and publish the admitted birth once as Pending, at every accepted join report and before
-    /// the join is answered (node-mesh-join.md step 10): this admin's status authority begins the
-    /// birth's next cycle there, at a first start, a start after a stop and a commanded join alike,
-    /// so nothing the birth says after its answer precedes it; a later report of that join applies as
-    /// already applied.
-    pub pending: Arc<dyn Fn(MeshDigest) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    /// Record and publish the admitted birth once as Pending per join, at its accepted join report and
+    /// before the join is answered (node-mesh-join.md step 10): this admin's status authority begins
+    /// the birth's next cycle there, at a first start, a start after a stop and a commanded join alike,
+    /// so nothing the birth says after its answer precedes it. The second argument is `true` for a new
+    /// join and `false` for a retry, a report its registration already heard ([`Joins::heard`]), which
+    /// applies as already applied (Q99: per join, not per birth).
+    pub pending: Arc<dyn Fn(MeshDigest, bool) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     /// The mesh primary this admin sees, by path.name.
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
@@ -429,7 +440,10 @@ impl JoinDoor {
                 }
                 (self.install)(&d);
                 (self.known)().await;
-                (self.pending)(d.clone()).await;
+                // A report its registration already heard is a retry of that join; any other accepted
+                // report is a new join, whose Pending is its own (Q99).
+                let new_join = !self.joins.heard(&d);
+                (self.pending)(d.clone(), new_join).await;
                 self.joins.report(&d);
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");

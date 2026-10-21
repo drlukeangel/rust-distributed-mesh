@@ -149,7 +149,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
-            pending: Arc::new(|_| Box::pin(async {})),
+            pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
             row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
@@ -224,7 +224,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
         types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
         install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
         known: Arc::new(|| Box::pin(async {})),
-        pending: Arc::new(|_| Box::pin(async {})),
+        pending: Arc::new(|_, _| Box::pin(async {})),
         primary: Arc::new(|| Some("mesh1.admin.2".into())),
         row: Arc::new(move |_| {
             let row = row.clone();
@@ -366,7 +366,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
-            pending: Arc::new(|_| Box::pin(async {})),
+            pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
             row: Arc::new(move |_| {
                 let row = row.clone();
@@ -502,7 +502,7 @@ fn the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no
         let order: Arc<Mutex<Vec<String>>> = Arc::default();
         door.pending = {
             let order = order.clone();
-            Arc::new(move |d| {
+            Arc::new(move |d, _| {
                 order.lock().unwrap().push(format!("pending {} {}", d.node.name, d.node.incarnation.as_str()));
                 Box::pin(async {})
             })

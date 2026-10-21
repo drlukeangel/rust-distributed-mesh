@@ -192,7 +192,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
             known: Arc::new(|| Box::pin(async {})),
-            pending: Arc::new(|_| Box::pin(async {})),
+            pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.1".into())),
             row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({

@@ -463,7 +463,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             // authority does, before the join is answered (node-mesh-join.md step 10).
             pending: {
                 let book = membership.book.clone();
-                Arc::new(move |d| {
+                Arc::new(move |d, _| {
                     book.reported(&d.node.node_id, &d.node.incarnation, rdm_core::MemberStatus::Pending);
                     Box::pin(async {})
                 })

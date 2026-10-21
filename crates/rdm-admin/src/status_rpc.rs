@@ -1042,17 +1042,19 @@ impl StatusAuthority {
     /// The node's join report, accepted at this admin's join door (node-mesh-join.md step 10: the
     /// node's mesh-primary "records and publishes the node once as Pending when it accepts the node's
     /// join report, before it answers it"): at a first start, a start after a stop and a commanded join
-    /// alike, the birth's next cycle begins here, at its join and never before the command reached it
-    /// (node-start.md step 2), and it is recorded and published Pending; it is published
+    /// alike, a new join (`new_join`) begins the birth's next cycle here, at its join and never before
+    /// the command reached it (node-start.md step 2), and it is recorded and published Pending, even
+    /// while the birth is still Pending from its last join (a birth cut off before its hook passed and
+    /// commanded back, Q87): one Pending per join, not per birth (Q99). It is published
     /// ready-for-traffic only when its hook has passed and it declares so. One hold of
     /// `operation_effects`, so a declaration of the birth is committed before the begin or against the
-    /// Pending, never between them. A later report of that join (a retry) finds the birth Pending and
-    /// applies as already applied: it starts no other. One
+    /// Pending, never between them. A later report of that join (a retry, `new_join` false) finds the
+    /// birth Pending and applies as already applied: it starts no other. One
     /// `rdm.node_admin.status.update.via-mesh-join-admitted` span with the outcome.
-    pub async fn joined_pending(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId) -> StatusReply {
+    pub async fn joined_pending(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId, new_join: bool) -> StatusReply {
         let reply = {
             let _operation = self.operation_effects.write().await;
-            self.pending_held(node_id, name, birth).await
+            self.pending_held(node_id, name, birth, new_join).await
         };
         tracing::info_span!("rdm.node_admin.status.update.via-mesh-join-admitted", node = %name, node_id = %node_id, incarnation_id = %birth.as_str(), outcome = reply.name(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the join report was accepted: the birth's next cycle begins and it is published Pending before the join is answered"));
@@ -1060,10 +1062,11 @@ impl StatusAuthority {
     }
 
     /// The birth's Pending at its accepted join report, under a hold of `operation_effects` its caller
-    /// took: already applied while the birth is Pending, else its next cycle begins and Pending is
-    /// recorded.
-    async fn pending_held(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId) -> StatusReply {
-        if self.declared.lock().unwrap().node(node_id, birth) == Some(NodeState::Pending) {
+    /// took: a later report of the join (`new_join` false) is already applied while the birth is
+    /// Pending; a new join, and a later report that finds the birth not Pending, begins its next cycle
+    /// and records Pending.
+    async fn pending_held(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId, new_join: bool) -> StatusReply {
+        if !new_join && self.declared.lock().unwrap().node(node_id, birth) == Some(NodeState::Pending) {
             return rdm_core::reply::already_applied();
         }
         self.begin_cycle_held(node_id, name, birth).await;
@@ -1091,7 +1094,8 @@ impl StatusAuthority {
         if let Some(book) = &self.book {
             let _ = set_member_status(book, MemberStatusReceipt::NodeJoined { op, already: None });
         }
-        self.pending_held(&node.node_id, &node.name, birth).await
+        // The frame is a later report of the start's join, never a join of its own.
+        self.pending_held(&node.node_id, &node.name, birth, false).await
     }
 
     /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
@@ -2152,7 +2156,7 @@ mod tests {
         let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1", Arc::new(crate::fabric_handover::SeatCutOff::default())));
         let authority = authority_with_store(&admin, topology, fabric_id, status.clone());
         for n in [&own, &other] {
-            assert_eq!(authority.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap()).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
+            assert_eq!(authority.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
         }
         let births = |rows: Vec<crate::status_storage::NodeDeclaredRow>| rows.into_iter().map(|r| (r.node_id, r.state)).collect::<Vec<_>>();
         let own_rows = crate::status_storage::StatusStorage::node_declared(&*status).await.unwrap();
@@ -2163,6 +2167,151 @@ mod tests {
         }
         assert!(crate::status_storage::StatusStorage::node_declared(&*status).await.unwrap().is_empty(), "the own birth's begun cycle tombstones its row among mesh1's rows");
         assert!(status.node_declared_of("mesh2").is_empty(), "mesh2's birth's begun cycle tombstones its row among mesh2's rows");
+    }
+
+    /// CONTRACT (Q99, Q97; node-mesh-join.md step 10: the mesh-primary "records and publishes the node
+    /// once as Pending when it accepts the node's join report, before it answers it. Every later report
+    /// of that join, its retries and its `NodeJoined` included, belongs to that Pending and starts no
+    /// other"; states.md, the node pending row: "once per join"): one Pending per accepted join, not
+    /// per birth. A birth accepted once and still Pending (cut off before its hook passed, Q87) is
+    /// commanded back: the held deployment its commanded join registers at the join door, and the same
+    /// held deployment registered again by its next commanded join, each begin the birth's next cycle
+    /// at their accepted report (its last cycle's cut forgotten) and record its Pending again, applied.
+    /// A retry of a report a registration already heard applies as already applied and begins nothing.
+    /// Must NOT happen: the same birth's next commanded join answered already applied because the birth
+    /// is still Pending from its last join, its cycle never begun.
+    #[tokio::test]
+    async fn every_accepted_join_of_a_pending_birth_records_its_own_pending_and_a_retry_of_a_join_records_none() {
+        use rdm_core::join::{JoinReply, JoinRequest};
+        let mut admin = node("mesh1.admin.1");
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        let mut rpc = node("mesh1.rpc.1");
+        rpc.kind = NodeKind::RpcNode;
+        let birth = rpc.incarnation_id.clone().unwrap();
+        let fabric_id = FabricId::mint();
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
+        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1", Arc::new(crate::fabric_handover::SeatCutOff::default())));
+        let authority = Arc::new(authority_with_store(&admin, topology, fabric_id.clone(), status.clone()));
+        // The join door, its accepted report's Pending recorded by this authority as boot wires it.
+        let replies: Arc<Mutex<Vec<R>>> = Arc::default();
+        let joins = Arc::new(crate::join::Joins::default());
+        let door = crate::join::JoinDoor {
+            status_storage: None,
+            me: admin.name.clone(),
+            joins: joins.clone(),
+            answer: Arc::new(|| {
+                Box::pin(async {
+                    Ok(crate::wire::JoinAnswer {
+                        served_by: "mesh1.admin.1".into(),
+                        control: crate::wire::JoinControl { cert_policy: None, provider: crate::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        statuses: vec![],
+                    })
+                })
+            }),
+            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            install: Arc::new(|_| {}),
+            known: Arc::new(|| Box::pin(async {})),
+            pending: Arc::new({
+                let (authority, replies) = (authority.clone(), replies.clone());
+                move |d: rdm_core::MeshDigest, new_join: bool| {
+                    let (authority, replies) = (authority.clone(), replies.clone());
+                    Box::pin(async move {
+                        let reply = authority.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation, new_join).await;
+                        replies.lock().unwrap().push(reply);
+                    })
+                }
+            }),
+            primary: Arc::new(|| None),
+            row: Arc::new(|_| Box::pin(async { Ok(None) })),
+            issuer: Arc::new(crate::certs::CertIssuer::no_certs({
+                let t = rdm_transport::clock::RafkaTime::unadopted();
+                t.adopt(1_000);
+                t
+            })),
+        };
+        let first = crate::join::Deployed {
+            name: rpc.name.clone(),
+            node_id: rpc.node_id.clone(),
+            incarnation: birth.clone(),
+            supersedes: None,
+            endpoint_id: EndpointId("rpc-endpoint".into()),
+            runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
+            data_dir: "/data/mesh1.rpc.1".into(),
+            last_accepted_name: None,
+            held: false,
+        };
+        let report = rdm_core::MeshDigest {
+            held_hash: Default::default(),
+            fabric_id,
+            node: rdm_core::MeshNode {
+                node_id: rpc.node_id.clone(),
+                name: rpc.name.clone(),
+                endpoint_id: first.endpoint_id.clone(),
+                transport_addr: "127.0.0.1:34567".parse().unwrap(),
+                incarnation: birth.clone(),
+                supersedes: None,
+                runtime: Some(first.runtime.clone()),
+            },
+            status: rdm_core::MemberStatus::Pending,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 0,
+            emitted_at_rafka_ms: 0,
+            data_dir: Some(first.data_dir.clone()),
+            mesh_id: None,
+            in_flight: None,
+            config: Default::default(),
+            load: None,
+            gossip: None,
+        };
+        // The birth's last cycle's cut, as this mesh-primary holds it: a begun cycle forgets it.
+        let cut = || { authority.declared.lock().unwrap().meshes_left.insert((rpc.node_id.clone(), birth.clone())); };
+        let cut_held = || authority.declared.lock().unwrap().meshes_left.contains(&(rpc.node_id.clone(), birth.clone()));
+        let door = &door;
+        let serve = move |what: &'static str| {
+            let (report, replies) = (report.clone(), replies.clone());
+            async move {
+                let answered = door.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { types: Vec::new(), digest: (&report).into() }).await;
+                assert!(matches!(answered, JoinReply::Joined { .. }), "{what}: {answered:?}");
+                replies.lock().unwrap().pop().unwrap_or_else(|| panic!("{what}: the accepted report recorded no Pending"))
+            }
+        };
+        let pending_rows = || {
+            let status = status.clone();
+            async move {
+                let rows = crate::status_storage::StatusStorage::node_declared(&*status).await.unwrap();
+                rows.into_iter().map(|r| (r.node_id, r.incarnation_id, r.state)).collect::<Vec<_>>()
+            }
+        };
+        let one_pending = vec![(rpc.node_id.clone(), birth.clone(), NodeState::Pending)];
+
+        // The first start's join (its create's registration).
+        let _create = joins.expect(first.clone());
+        assert_eq!(serve("the first join").await, R::Applied, "the first accepted join report records the birth's Pending");
+        cut();
+        assert_eq!(serve("a retry of the first join").await, R::AlreadyApplied, "a retry of the first join belongs to its Pending");
+        assert!(cut_held(), "a retry begins no cycle");
+
+        // Cut off before its hook passed, still Pending, and commanded back: its commanded join's
+        // registration (heard_again's, a held deployment).
+        let commanded = crate::join::Deployed { held: true, last_accepted_name: Some(rpc.name.clone()), ..first.clone() };
+        let _commanded = joins.expect(commanded.clone());
+        assert_eq!(serve("the commanded join").await, R::Applied, "the same birth's commanded join, while it is still Pending from its last join, records its own Pending");
+        assert!(!cut_held(), "the commanded join's accepted report begins the birth's next cycle");
+        assert_eq!(pending_rows().await, one_pending, "one Pending row of the birth, its new cycle's");
+        cut();
+        assert_eq!(serve("a retry of the commanded join").await, R::AlreadyApplied, "a retry of the commanded join belongs to its Pending");
+        assert!(cut_held(), "a retry begins no cycle");
+
+        // Cut off again before its hook passed, and commanded back again: the same held deployment
+        // registered again is this commanded join's own registration.
+        let _again = joins.expect(commanded);
+        assert_eq!(serve("the next commanded join").await, R::Applied, "the next commanded join of the still-Pending birth records its own Pending");
+        assert!(!cut_held(), "the next commanded join's accepted report begins the birth's next cycle");
+        assert_eq!(pending_rows().await, one_pending, "one Pending row of the birth, its new cycle's");
+        assert_eq!(serve("a retry of the next commanded join").await, R::AlreadyApplied, "a retry of the next commanded join belongs to its Pending");
     }
 
     /// CONTRACT (i146 Q39, Luke 2026-10-17: a late delivery to the old holder is refused by its store

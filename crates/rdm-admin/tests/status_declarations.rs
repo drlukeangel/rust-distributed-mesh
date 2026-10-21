@@ -2555,10 +2555,10 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         assert!(book.stopped(stop), "the book holds the birth's stop");
         // The start's join report, accepted at the door: the birth's next cycle begins and its Pending
         // is recorded there, before the join is answered.
-        assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation).await, StatusReply::Applied, "the join report's Pending is recorded");
+        assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation, true).await, StatusReply::Applied, "the join report's Pending is recorded");
         assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(NodeState::Pending));
         // A later report of that join (a retry of the same report) belongs to that Pending and starts no other.
-        assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation).await, StatusReply::AlreadyApplied, "a retried join report applies as already applied");
+        assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation, false).await, StatusReply::AlreadyApplied, "a retried join report applies as already applied");
         if ready_first {
             // Answered, the node runs its start and declares ReadyForTraffic before its NodeJoined frame is taken.
             assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::ReadyForTraffic)).await), StatusReply::Applied, "the node's ReadyForTraffic, declared after its join was answered, applies over the join's Pending");

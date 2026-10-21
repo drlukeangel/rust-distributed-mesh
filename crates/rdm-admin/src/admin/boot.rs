@@ -1485,15 +1485,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }
                                     }),
                                     known: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-                                    // The accepted join report's one Pending, recorded and published by this admin's
-                                    // status authority before the join is answered (node-mesh-join.md step 10).
+                                    // The accepted join report's one Pending per join, recorded and published by this
+                                    // admin's status authority before the join is answered (node-mesh-join.md step 10);
+                                    // a retry the door tells apart applies as already applied (Q99).
                                     pending: Arc::new({
                                         let authority = authority.clone();
-                                        move |d: MeshDigest| {
+                                        move |d: MeshDigest, new_join: bool| {
                                             let authority = authority.get().cloned();
                                             Box::pin(async move {
                                                 if let Some(authority) = authority {
-                                                    authority.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation).await;
+                                                    authority.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation, new_join).await;
                                                 }
                                             })
                                         }
