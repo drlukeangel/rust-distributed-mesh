@@ -6,7 +6,7 @@
 //! admin answers them over Node RPC, the entry protocol and its provider, a functional test
 //! answers them from a fixture. The spans are the same either way.
 
-use crate::deployment::provider::DeploymentStatus;
+use crate::deployment::provider::{DeploymentStatus, Inspected};
 use crate::model::{Node, PathName};
 
 /// What fencing a path's previous birth found.
@@ -39,8 +39,9 @@ pub enum FenceOutcome {
 pub trait PathProbe: Send + Sync {
     /// Does this birth answer directly (Node RPC Ping for an rpc node, an entry pull for an admin)?
     async fn answers(&self, node: &Node) -> bool;
-    /// The provider's inspection of this birth's exact runtime; `Err` names why it has none.
-    async fn inspect(&self, node: &Node) -> Result<DeploymentStatus, String>;
+    /// node.runtime.inspect of this birth's exact runtime (node-runtime-inspect.md "Result"): its
+    /// `unavailable` names why nothing could be told.
+    async fn inspect(&self, node: &Node) -> Inspected;
     /// Every runtime recorded at `path` in this provider's domain, as `(where, inspection)`;
     /// `Err` names the directory or record that could not be read.
     async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String>;
@@ -95,22 +96,22 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
         return FenceOutcome::Alive;
     }
     let (outcome, proven) = match probe.inspect(&prev).await {
-        Err(e) => (format!("not-found: {e}"), false),
-        Ok(DeploymentStatus::Running) => {
+        Inspected::Running => {
             tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-running")
                 .in_scope(|| tracing::info!("the previous birth is unheard but its exact runtime still runs: held, never replaced on silence"));
             return FenceOutcome::Held;
         }
         // Suspended by the operating system: neither hung nor gone (deployment-provider.md §2.5).
-        Ok(DeploymentStatus::OsStopped) => {
+        Inspected::OsStopped => {
             tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-os-stopped")
                 .in_scope(|| tracing::info!("the previous birth is unheard and the operating system holds its exact runtime suspended: held, never replaced on silence"));
             return FenceOutcome::Held;
         }
-        // Only an inspection that says the runtime exited is proof; `Unknown` fences the path
-        // (nothing answers there) but publishes no departure.
-        Ok(DeploymentStatus::Exited { code }) => (format!("not-running: Exited {{ code: {code:?} }}"), true),
-        Ok(DeploymentStatus::Unknown) => ("not-running: Unknown".to_string(), false),
+        // Only an inspection that says the runtime exited is proof; `unavailable` (no runtime fact,
+        // a refused adoption, the provider's `Unknown`) fences the path (nothing answers there) but
+        // publishes no departure.
+        Inspected::Exited(code, _) => (format!("not-running: Exited {{ code: {code:?} }}"), true),
+        Inspected::Unavailable(why) => (format!("unavailable: {why}"), false),
     };
     tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
         .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
@@ -203,8 +204,8 @@ mod tests {
         async fn answers(&self, _: &Node) -> bool {
             false
         }
-        async fn inspect(&self, _: &Node) -> Result<DeploymentStatus, String> {
-            Err("none".into())
+        async fn inspect(&self, _: &Node) -> Inspected {
+            Inspected::Unavailable("none".into())
         }
         async fn recorded(&self, _: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
             Err("/data/mesh1.rpc.1-n1/runtime.json: Is a directory".into())

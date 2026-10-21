@@ -981,9 +981,9 @@ impl crate::seat_revision::PathProbe for AdminRunner {
     async fn answers(&self, node: &Node) -> bool {
         AdminRunner::answers(self, node).await
     }
-    async fn inspect(&self, node: &Node) -> Result<crate::deployment::provider::DeploymentStatus, String> {
-        let (_, h) = self.handle_for(node).await?;
-        Ok(self.provider.inspect(&h).await)
+    /// node.runtime.inspect over the one runtime resolution (`node_investigation::birth_runtime`).
+    async fn inspect(&self, node: &Node) -> crate::deployment::provider::Inspected {
+        crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.book, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await.0
     }
     async fn recorded(&self, path: &PathName) -> Result<Vec<(String, crate::deployment::provider::DeploymentStatus)>, String> {
         // A data dir a birth this view holds under another name is that birth's: a node renamed live

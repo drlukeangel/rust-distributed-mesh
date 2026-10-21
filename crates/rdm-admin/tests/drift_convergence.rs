@@ -27,7 +27,7 @@ use rdm_transport::membership::DigestBook;
 use rdm_admin::accepted::{AcceptedStore, FabricTopology, MeshTopology};
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_state::{BuildState, BuildStateAdapter as _, MemoryBuildStateAdapter};
-use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Inspected, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::build_drive::{Drive, DriveEnd, DriveEnv, OpenGate};
 use rdm_admin::executor::OperationRunner;
 use rdm_admin::seat_revision::{fence, FenceOutcome, PathProbe};
@@ -155,8 +155,14 @@ impl PathProbe for Probe {
     async fn answers(&self, node: &Node) -> bool {
         self.0.of(node.node_id.as_str()).is_some_and(|r| r.answers)
     }
-    async fn inspect(&self, node: &Node) -> Result<DeploymentStatus, String> {
-        self.0.of(node.node_id.as_str()).map(|r| r.status).ok_or_else(|| format!("{} has no runtime in this world", node.name))
+    async fn inspect(&self, node: &Node) -> Inspected {
+        match self.0.of(node.node_id.as_str()).map(|r| r.status) {
+            None => Inspected::Unavailable(format!("{} has no runtime in this world", node.name)),
+            Some(DeploymentStatus::Running) => Inspected::Running,
+            Some(DeploymentStatus::OsStopped) => Inspected::OsStopped,
+            Some(DeploymentStatus::Exited { code }) => Inspected::Exited(code, "provider"),
+            Some(DeploymentStatus::Unknown) => Inspected::Unavailable("its runtime is not proven exited: Unknown".into()),
+        }
     }
     async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
         if let Some(why) = self.0.unreadable.lock().unwrap().clone() {
