@@ -480,11 +480,36 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 pub fn handback_due(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>) -> Option<PathName> {
     let (_, lost) = taken?;
     let holder = observed.fabric_primary()?;
-    if holder.mesh == lost.mesh {
+    if holder.node_id == lost.node_id {
         return None;
     }
-    let recreated = observed.cohort_primary(&lost.mesh, NodeKind::NodeAdmin)?;
-    (recreated.node_id != lost.node_id && recreated.status == NodeStatus::ReadyForTraffic).then(|| recreated.name.clone())
+    // The node at the lost fabric-primary's path.name (Q89): the lost birth itself, heard again and
+    // ready; or, when its name was released (the whole-mesh arm), the node-admin re-created at it,
+    // its mesh's primary by the ordinary rule.
+    let at_path = observed.members().find(|n| n.node_id == lost.node_id).map(|n| n.name.clone()).and_then(|name| observed.node(&name).cloned());
+    let candidate = match at_path {
+        Some(n) => n,
+        None => observed.cohort_primary(&lost.mesh, NodeKind::NodeAdmin)?.clone(),
+    };
+    (candidate.kind == NodeKind::NodeAdmin && candidate.node_id != holder.node_id && candidate.status == NodeStatus::ReadyForTraffic).then(|| candidate.name.clone())
+}
+
+/// When this process first saw the node a hand-back is owed to ready-for-traffic, by node id: the
+/// seats go back one staleness floor after (Q89), so a holder slow for one floor costs one re-entry,
+/// not two seat moves per blip. Read by the drift pass that opens the attempt and by the plan that
+/// carries the operation, so the attempt opens only when the plan will carry it.
+fn handback_ready() -> &'static std::sync::Mutex<std::collections::HashMap<rdm_core::NodeId, std::time::Instant>> {
+    static READY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<rdm_core::NodeId, std::time::Instant>>> = std::sync::OnceLock::new();
+    READY.get_or_init(Default::default)
+}
+
+/// [`handback_due`] once the node it names has been ready-for-traffic for `dwell` (Q89): `None` before.
+pub fn handback_due_after_dwell(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>, dwell: std::time::Duration) -> Option<PathName> {
+    let due = handback_due(observed, taken)?;
+    let id = observed.node(&due)?.node_id.clone();
+    let mut ready = handback_ready().lock().unwrap();
+    let since = *ready.entry(id).or_insert_with(std::time::Instant::now);
+    (since.elapsed() >= dwell).then_some(due)
 }
 
 /// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped

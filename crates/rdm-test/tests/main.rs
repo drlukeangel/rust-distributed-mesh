@@ -126,6 +126,8 @@ mod cohort_election;
 mod fabric_primary;
 #[path = "elections/fabric_takeover.rs"]
 mod fabric_takeover;
+#[path = "elections/fabric_primary_loss.rs"]
+mod fabric_primary_loss;
 #[path = "elections/late_authority.rs"]
 mod late_authority;
 #[path = "elections/role_cohort.rs"]

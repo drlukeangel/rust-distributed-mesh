@@ -1459,22 +1459,29 @@ impl HandoverDoor {
         if expected.checked_add(1).is_none() {
             return rdm_core::reply::handover::rejected_revision_overflow(wire, expected);
         }
-        // The winner, from this admin's own view: the backbone rule with the lost mesh excluded.
+        // The winner, from this admin's own view: the lost fabric-primary's own mesh first, else the
+        // backbone rule with the lost mesh excluded (Q89, elections §4.3).
         let view = self.topology.read().await.clone();
         let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
-        match crate::election::fabric_successor_excluding(&nodes, &self.incumbency(), &lost.mesh) {
+        match crate::election::fabric_successor_after(&nodes, &self.incumbency(), lost) {
             Some(w) if w.node_id == self.node_id => {}
-            other => return rdm_core::reply::handover::bounded_not_authority(&format!("in {me_name}'s view the backbone rule with mesh {} excluded seats {}", lost.mesh, other.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin".into()))),
+            other => return rdm_core::reply::handover::bounded_not_authority(&format!("in {me_name}'s view the leadership rule after the loss of {} seats {}", births(lost), other.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin".into()))),
         }
         // One row moves both seats the lost birth holds (i144 Q51): the fabric seat to this admin, and
-        // the lost mesh's primary seat, when its record names the same birth, to no holder. The
-        // lost mesh's next admin fills it by the ordinary rule, and this fabric-primary writes that
-        // mesh's rows until it does.
+        // the lost mesh's primary seat, when its record names the same birth, to this admin when it is
+        // of that mesh (node-primary-update.md "Both seats"), else to no holder: the lost mesh's next
+        // admin fills it by the ordinary rule, and this fabric-primary writes that mesh's rows until it does.
         let mesh_seat = book.mesh(&lost.mesh).filter(|h| h.is_birth(&lost.node_id, &lost.incarnation));
+        let same_mesh = me.mesh == lost.mesh;
         let mut seats = vec![crate::fabric_storage::MovedSeat { seat: wire.clone(), from_revision: expected, revision: expected + 1, holder: Some(me.clone()), from: Some(lost.clone()) }];
         if let Some(h) = &mesh_seat {
-            seats.push(crate::fabric_storage::MovedSeat { seat: WireSeat::MeshPrimary { mesh: lost.mesh.clone() }, from_revision: h.revision, revision: h.revision + 1, holder: None, from: Some(lost.clone()) });
+            seats.push(crate::fabric_storage::MovedSeat { seat: WireSeat::MeshPrimary { mesh: lost.mesh.clone() }, from_revision: h.revision, revision: h.revision + 1, holder: same_mesh.then(|| me.clone()), from: Some(lost.clone()) });
         }
+        // The whole-mesh arm (Q24): no Ready node-admin of the lost mesh is left to look at the lost birth,
+        // so its name is released and its row written Deleted with the takeover as its proof. A lost
+        // fabric-primary whose mesh still has a Ready node-admin stays a member of the view: heard
+        // again it is commanded back (Q87); proven gone, node recovery runs (Q89).
+        let whole_mesh_lost = !nodes.iter().any(|n| n.mesh == lost.mesh && n.kind == crate::model::NodeKind::NodeAdmin && n.node_id != lost.node_id && n.status == crate::model::NodeStatus::ReadyForTraffic);
         let row = crate::fabric_storage::SeatMoveRow { seats, cause: crate::fabric_storage::MoveCause::Takeover, by: me.clone() };
         // The fence: the takeover's row, then the seal of the lost authority's revision. Nothing of
         // the lost authority commits past either, and recovery begins only once both stand.
@@ -1502,10 +1509,16 @@ impl HandoverDoor {
         let record = rdm_core::SeatHolder { mesh: me.mesh.clone(), node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), revision: expected + 1 };
         book.take(Seat::FabricPrimary, &record);
         if let Some(h) = &mesh_seat {
-            book.vacate(Seat::MeshPrimary, &lost.mesh, h.revision + 1);
+            if same_mesh {
+                book.take(Seat::MeshPrimary, &rdm_core::SeatHolder { mesh: lost.mesh.clone(), node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), revision: h.revision + 1 });
+            } else {
+                book.vacate(Seat::MeshPrimary, &lost.mesh, h.revision + 1);
+            }
         }
         (self.project_view)().await;
-        self.release_lost_admin(me_name, lost, moved.t).await;
+        if whole_mesh_lost {
+            self.release_lost_admin(me_name, lost, moved.t).await;
+        }
         self.backbone.announce_seat(Seat::FabricPrimary, record).await;
         Reply::PrimaryUpdated { revisions: taken(expected + 1) }
     }
@@ -1551,8 +1564,9 @@ impl HandoverDoor {
     pub async fn propose_take_over(self: &Arc<Self>, lost: &rdm_core::SeatHolder) -> Option<Reply> {
         let view = self.topology.read().await.clone();
         let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
-        let winner = crate::election::fabric_successor_excluding(&nodes, &self.incumbency(), &lost.mesh)?;
         let lost_birth = HandoverBirth { mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), incarnation: lost.incarnation.clone() };
+        // The successor its own mesh first (Q89, elections §4.3), else the backbone rule.
+        let winner = crate::election::fabric_successor_after(&nodes, &self.incumbency(), &lost_birth)?;
         let to = birth_of(&winner)?;
         if winner.node_id == self.node_id {
             return Some(self.take_over(lost_birth, lost.revision, to, None).await);

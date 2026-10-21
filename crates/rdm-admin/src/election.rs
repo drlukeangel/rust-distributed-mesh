@@ -209,21 +209,32 @@ pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) 
     hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
 
+/// The fabric-primary's successor after a fabric-primary is lost (Q89, elections §4.3: "the lowest
+/// ReadyForTraffic node-admin of the fabric-primary's own mesh while it has one, else the lowest
+/// ReadyForTraffic mesh-primary on the backbone"): the lowest Ready node-admin of `lost`'s mesh other than
+/// `lost`, not proven gone; else [`fabric_successor_excluding`] with `lost`'s mesh excluded.
+pub fn fabric_successor_after(nodes: &[Node], inc: &Incumbency, lost: &rdm_core::handover::HandoverBirth) -> Option<Node> {
+    let own: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == lost.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != lost.node_id).map(|(i, _)| i).collect();
+    if let Some(i) = lowest_ready(nodes, &own, inc) {
+        return Some(nodes[i].clone());
+    }
+    fabric_successor_excluding(nodes, inc, &lost.mesh)
+}
+
 /// The fabric seat's successor its holder names (elections §4.4: "or the successor the holder names
 /// (the re-created node-admin of the mesh that lost the seat, §4.3)"): `named`, when the fabric-successor
 /// resolution with the holder's mesh excluded holds it as a ReadyForTraffic node-admin that holds its own
 /// mesh's primary seat. Refused by name otherwise: in the holder's own mesh, unknown to the view, not
 /// Ready, or holding no mesh-primary seat.
 pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, named: &PathName) -> Result<Node, String> {
-    if named.mesh == holder.mesh {
-        return Err(format!("cannot hand the fabric seat to {named}: it is in {}'s own mesh {}", holder.name, holder.mesh));
-    }
-    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != holder.mesh).cloned().collect();
+    // The named successor may be in the holder's own mesh (Q89: the hand-back to the node at the lost
+    // fabric-primary's path.name): a ReadyForTraffic node-admin there is the one the row makes primary.
+    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| named.mesh == holder.mesh || n.mesh != holder.mesh).cloned().collect();
     let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone(), vacant: inc.vacant.clone() };
     resolve_with(&mut hypothetical, &vacated);
     match hypothetical.into_iter().find(|n| n.name == *named) {
-        Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic && n.is_primary => Ok(n),
-        Some(n) => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds it {:?}{}", holder.name, n.status, if n.is_primary { "" } else { ", holding no mesh-primary seat" })),
+        Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic => Ok(n),
+        Some(n) => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds it {:?}", holder.name, n.status)),
         None => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds no such node-admin", holder.name)),
     }
 }

@@ -374,7 +374,7 @@ impl Drive {
 
     /// The node-admin the fabric seat is owed back to in view `t`, from the takeover this pass read.
     fn handback(&self, t: &Topology) -> Option<PathName> {
-        crate::accepted::handback_due(t, self.taken.lock().unwrap().as_ref())
+        crate::accepted::handback_due_after_dwell(t, self.taken.lock().unwrap().as_ref(), rdm_transport::membership::staleness_floor())
     }
 
     /// Make a progress frame readable. A frame whose receipt key is already held is dropped, so a

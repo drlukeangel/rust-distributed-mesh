@@ -508,8 +508,11 @@ pub async fn run(w: Watch) {
         if let Some(door) = w.handover.get() {
             door.release_held_takeover();
         }
-        // A mesh-primary whose hold on the fabric-primary's whole mesh expired proposes the takeover.
-        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric(), &said.unreachable, std::time::Duration::from_millis(crate::admin::hung_hold_ms())) {
+        // The fabric-primary unheard past the staleness floor is superseded (Q89, elections §4.3): its own
+        // mesh's standby proposes at the first tick after the mark; outside its mesh, an admin proposes once
+        // the whole mesh is held past the hold (the lost-mesh arm). An admin whose view is cut off or
+        // healing acts on nothing (gossip.md §6).
+        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric(), &said.unreachable, std::time::Duration::from_millis(crate::admin::hung_hold_ms())).filter(|_| w.membership.authorizes()) {
             if let Some(door) = w.handover.get().cloned() {
                 drop(turn.take());
                 let _ = door.propose_take_over(&lost).await;
@@ -532,7 +535,16 @@ pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHo
         return None;
     }
     let mine = view.members().find(|n| n.node_id == me.0)?;
-    if !view.holds_mesh_seat(&mine.mesh, &me.0) || mine.mesh == record.mesh {
+    if mine.kind != NodeKind::NodeAdmin || mine.status != NodeStatus::ReadyForTraffic {
+        return None;
+    }
+    // Its own mesh (Q89): the fabric-primary held off ready-for-traffic in this admin's view, at the mark,
+    // whatever the provider says of its runtime; the standby that the leadership rule names writes the row.
+    if mine.mesh == record.mesh {
+        let held = view.members().any(|n| n.node_id == record.node_id && n.incarnation_id.as_ref() == Some(&record.incarnation) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
+        return held.then_some(record);
+    }
+    if !view.holds_mesh_seat(&mine.mesh, &me.0) {
         return None;
     }
     let expired = |b: &Birth| unreachable.get(b).is_some_and(|since| since.elapsed() >= hold);

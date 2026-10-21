@@ -600,7 +600,7 @@ pub async fn reconcile_drift(
     // The handback (elections §4.3, §4.4): the fabric seat a takeover moved is owed back to the lost
     // mesh's re-created node-admin once it is Ready and seated there. Its attempt carries no action: the
     // plan holds the handback, and the drive moves the seat, naming that admin, as its preceding update.
-    let handback = crate::accepted::handback_due(t, taken);
+    let handback = crate::accepted::handback_due_after_dwell(t, taken, rdm_transport::membership::staleness_floor());
     if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() && handback.is_none() {
         return None;
     }

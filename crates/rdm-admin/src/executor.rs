@@ -241,11 +241,14 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// refuses it first, `control_plane::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     use rdm_core::build::RecipeStep;
-    // The handback: the fabric seat moves out of its holder's mesh to the re-created node-admin named
-    // (elections §4.3, §4.4), until it is back in that admin's mesh.
+    // The hand-back (Q89, elections §4.3, §4.4): the seats the takeover took go back to the node at the
+    // lost fabric-primary's path.name, the one named. From a holder of another mesh the fabric seat
+    // alone moves; from the lost mesh's own standby, which holds the mesh seat too, both seats move in
+    // one row (node-primary-update.md "Both seats").
     if let BuildOperation::HandFabricSeat { to } = op {
-        let holder = t.fabric_primary().filter(|fp| fp.mesh != to.mesh)?.clone();
-        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: Some(to.clone()) });
+        let holder = t.fabric_primary().filter(|fp| fp.name != *to)?.clone();
+        let mesh_seat = holder.mesh == to.mesh && t.cohort_primary(&holder.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == holder.node_id);
+        return Some(SeatMove { holder, mesh_seat, fabric_seat: true, cohort_seat: false, successor: Some(to.clone()) });
     }
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         if !t.meshes.iter().any(|m| m.name != *mesh && m.status != crate::model::ScopeStatus::Dead) {
