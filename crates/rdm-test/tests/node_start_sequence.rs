@@ -37,6 +37,10 @@ use rdm_admin::join::Deployed;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{StatusReply, StatusRequest};
 use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+use rdm_admin::build::BuildId;
+use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// What a step that ends at once on a correct node is given before the cell fails by name.
@@ -229,6 +233,175 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         }
 
         drop(rpc);
+        admin.leave().await;
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(&base);
+    })
+}
+
+/// The Day-0 admin's Build state, except that while `held` is set its current Build reads as none
+/// (R-BI3: no Build in its store is in progress or completed), so a join it answers names no Build
+/// floor. Every other call passes straight through.
+struct NoCurrentWhileHeld {
+    inner: Arc<dyn BuildStateAdapter>,
+    held: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for NoCurrentWhileHeld {
+    async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(a).await
+    }
+    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
+        self.inner.open_attempt(o).await
+    }
+    async fn publish_fabric(&self, record: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
+        self.inner.publish_fabric(record).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        self.inner.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        if self.held.load(Ordering::SeqCst) {
+            return Ok(CurrentBuild::None);
+        }
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+        self.inner.claim_attempt(c).await
+    }
+    async fn seal_moved(&self, moved: &rdm_admin::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+        self.inner.seal_moved(moved, by).await
+    }
+    async fn in_flight_live(&self, held: &rdm_admin::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
+        self.inner.in_flight_live(held).await
+    }
+    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn rdm_admin::storage::MeshStorage, mesh: &str, row: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::build_state::InFlightClaim, BuildStateError> {
+        self.inner.claim_in_flight(claim, claims, mesh, row).await
+    }
+    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.inner.adopt_claim(c).await
+    }
+    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_step_receipt(r).await
+    }
+    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_attempt_receipt(r).await
+    }
+    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(id).await
+    }
+    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
+    }
+    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+    fn held_name(&self) -> Option<rdm_admin::model::PathName> {
+        self.inner.held_name()
+    }
+}
+
+/// The Day-0 admin's Build-topic catch-up, withheld from every neighbour while `held` is set.
+struct CatchUpWhileHeld(Arc<AtomicBool>);
+
+impl rdm_admin::wiring::CatchUpSeam for CatchUpWhileHeld {
+    fn withholds(&self, _node: &str, _neighbour: &str) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+const ENTRY_REPEAT: &str = "rdm.node_admin.fabric.update.via-entry-repeat";
+const JOIN_SERVED: &str = "rdm.node_admin.node.update.via-join";
+const FETCH_FACTS: &str = "rdm.node_admin.build.update.via-fetch-facts";
+
+// @feature: node-lifecycle
+/// CONTRACT (node-start.md step 4; node-rpc-envelope.md "Build facts, op `0x1F`": "The Ready check
+/// drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build,
+/// behind-floor"): a launched node-admin whose join was answered with no Build (its authority holds
+/// no current Build, and the Build topic's catch-up does not reach it) reports the no-pointer
+/// blocker at its Build floor and reads it through `FetchBuildFacts` (op `0x1F`), under its
+/// `via-entry-repeat` span. Its join is made once: the authority serves exactly one `JoinNode` for
+/// the birth. Must NOT happen: the repeat made as a second `JoinNode`, which re-runs the authority's
+/// join steps for a birth already joined.
+#[test]
+fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_build_facts() {
+    let cell = "a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_build_facts";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let base = std::env::temp_dir().join(format!("start-no-pointer-{}", NodeId::mint()));
+        let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
+        std::fs::create_dir_all(&root_dir).unwrap();
+
+        // The authority: a Day-0 node-admin whose current Build reads as none and whose Build-topic
+        // catch-up is withheld while `held` is set.
+        let held = Arc::new(AtomicBool::new(false));
+        let wrap = {
+            let held = held.clone();
+            move |inner: Arc<dyn BuildStateAdapter>| -> Arc<dyn BuildStateAdapter> { Arc::new(NoCurrentWhileHeld { inner, held }) }
+        };
+        let wiring = Wiring {
+            before_ready: BeforeReadyHook::none(),
+            fabric_hooks: FabricHooks::no_app_work(),
+            builds: Some(Box::new(wrap)),
+            catch_up_seam: Some(Arc::new(CatchUpWhileHeld(held.clone()))),
+            ..Wiring::no_certs()
+        };
+        let root = start_with(day0_config(&root_dir), wiring).await.expect("the Day-0 admin comes up");
+        root.stop_reconciling();
+        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+        held.store(true, Ordering::SeqCst);
+
+        // A node-admin's first start, launched by the root: its join is answered with no Build.
+        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let _ = root.runner.joins.expect(deployed(&admin_launch, None));
+        let env = admin_launch.to_env();
+        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
+        let admin = start_with(admin_cfg, Wiring { before_ready: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+
+        // Its Build floor reports the no-pointer blocker: the first repeat for it has ended.
+        let repeated = spans.recorded(ENTRY_REPEAT, |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.contains_key("outcome"));
+        tokio::time::timeout(WRONG, repeated).await.expect("mesh1.admin.2 never reported the no-pointer blocker at its Build floor");
+
+        let (joins, under_repeat) = {
+            let all = spans.0.lock().unwrap();
+            let joins: Vec<String> = all
+                .values()
+                .filter(|(n, _, f)| n == JOIN_SERVED && f.get("node").map(String::as_str) == Some("mesh1.admin.2"))
+                .map(|(_, _, f)| f.get("outcome").cloned().unwrap_or_default())
+                .collect();
+            let under_repeat = all.values().filter(|(n, parent, f)| n == FETCH_FACTS && parent.as_deref() == Some(ENTRY_REPEAT) && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).count();
+            (joins, under_repeat)
+        };
+        assert_eq!(joins.len(), 1, "the authority serves exactly one JoinNode for mesh1.admin.2; the no-pointer blocker is read, never joined again; served joins by outcome: {joins:?}");
+        assert!(under_repeat >= 1, "the no-pointer blocker is read through FetchBuildFacts (0x1F) under {ENTRY_REPEAT}");
+
+        // The authority's current Build is readable again: the start completes.
+        held.store(false, Ordering::SeqCst);
+        until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
+
         admin.leave().await;
         root.leave().await;
         let _ = std::fs::remove_dir_all(&base);
