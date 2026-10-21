@@ -36,14 +36,14 @@ fn acceptance_dir(layer: &str, cell: &str) -> PathBuf {
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher, so the spans are
 /// exactly the ones the detector emitted for this cell.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let service = format!("i143-2782-{cell}");
     let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }

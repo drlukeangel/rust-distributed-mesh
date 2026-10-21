@@ -80,7 +80,7 @@ const HELD: Duration = Duration::from_millis(400);
 /// its trace cannot say whether the pool or the disk took the time.
 #[test]
 fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_their_work() {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("pipeline-step-io", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let _guard = tracing::dispatcher::set_default(&dispatch);
@@ -185,7 +185,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("pipeline-step-io-s83", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let _guard = tracing::dispatcher::set_default(&dispatch);
@@ -286,7 +286,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
 
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
     let finished = exporter.get_finished_spans().unwrap();
-    let attrs_of = |s: &opentelemetry_sdk::export::trace::SpanData| -> std::collections::BTreeMap<String, String> {
+    let attrs_of = |s: &opentelemetry_sdk::trace::SpanData| -> std::collections::BTreeMap<String, String> {
         s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()
     };
 

@@ -1816,7 +1816,7 @@ mod tests {
     #[tokio::test]
     async fn a_later_delete_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt() {
         use tracing_subscriber::layer::SubscriberExt;
-        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let (capture, layer) = rdm_transport::span_capture("i143-s48-leave-admission", exporter.clone());
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 

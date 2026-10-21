@@ -153,7 +153,7 @@ impl TopologySink for Discard {
 /// provider terminate, a `NodeDeleting`/`NodeDeleted`.
 #[tokio::test]
 async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process() {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("i143-3093-restart-one-op", exporter.clone());
     let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
@@ -240,10 +240,10 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
     let spans = exporter.get_finished_spans().unwrap();
     crate::assert_own_story(spans.iter().map(|s| s.name.as_ref()));
-    let attr = |s: &opentelemetry_sdk::export::trace::SpanData, k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string()).unwrap_or_default();
-    let pipelines: Vec<&opentelemetry_sdk::export::trace::SpanData> = spans.iter().filter(|s| s.name == "rdm.node_admin.deployment.update.via-pipeline").collect();
+    let attr = |s: &opentelemetry_sdk::trace::SpanData, k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string()).unwrap_or_default();
+    let pipelines: Vec<&opentelemetry_sdk::trace::SpanData> = spans.iter().filter(|s| s.name == "rdm.node_admin.deployment.update.via-pipeline").collect();
     assert_eq!(pipelines.iter().map(|s| attr(s, "pipeline")).collect::<Vec<_>>(), ["restart"], "one pipeline span: the restart");
-    let steps: Vec<&opentelemetry_sdk::export::trace::SpanData> = spans.iter().filter(|s| s.name == "rdm.node_admin.deployment.update.via-step").collect();
+    let steps: Vec<&opentelemetry_sdk::trace::SpanData> = spans.iter().filter(|s| s.name == "rdm.node_admin.deployment.update.via-step").collect();
     for s in &steps {
         eprintln!("span {} trace_id={} parent={} step={} outcome={}", s.name, s.span_context.trace_id(), s.parent_span_id, attr(s, "step"), attr(s, "outcome"));
     }

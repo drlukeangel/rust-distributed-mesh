@@ -5,7 +5,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::stream::{SinkError, StreamFailure, StreamItem};
-use opentelemetry_sdk::export::trace::SpanData;
+use opentelemetry_sdk::trace::SpanData;
 use rdm_transport::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::context::CallContext;
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};

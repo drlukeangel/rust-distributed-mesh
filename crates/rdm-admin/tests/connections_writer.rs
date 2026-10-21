@@ -694,7 +694,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 #[test]
 fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter.clone());
     let open_dials = OpenDials::default();
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(open_dials.clone()));

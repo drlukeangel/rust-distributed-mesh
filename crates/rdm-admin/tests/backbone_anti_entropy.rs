@@ -127,14 +127,14 @@ impl BuildStateAdapter for HeldBuilds {
 /// The cell's own span capture: the product span pipeline in front of an in-memory exporter, behind
 /// a dispatcher installed on every thread of the cell's runtime.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("mesh1.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }

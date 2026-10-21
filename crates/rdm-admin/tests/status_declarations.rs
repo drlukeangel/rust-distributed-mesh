@@ -918,14 +918,14 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
 /// The spans a cell's own run exported through the product span pipeline
 /// (`rdm_transport::span_capture`), with their trace ids.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("status-declarations", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }

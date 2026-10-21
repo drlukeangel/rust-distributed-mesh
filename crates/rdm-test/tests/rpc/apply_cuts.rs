@@ -62,14 +62,14 @@ fn acceptance_dir(cell: &str) -> PathBuf {
 /// a [`SinkStall`] a cell can arm to hold the next export inside the sink.
 #[derive(Debug, Clone)]
 struct GatedExporter {
-    inner: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    inner: opentelemetry_sdk::trace::InMemorySpanExporter,
     stall: Arc<SinkStall>,
 }
 
-impl opentelemetry_sdk::export::trace::SpanExporter for GatedExporter {
-    fn export(&mut self, batch: Vec<opentelemetry_sdk::export::trace::SpanData>) -> std::pin::Pin<Box<dyn std::future::Future<Output = opentelemetry_sdk::export::trace::ExportResult> + Send + 'static>> {
+impl opentelemetry_sdk::trace::SpanExporter for GatedExporter {
+    async fn export(&self, batch: Vec<opentelemetry_sdk::trace::SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
         self.stall.hold_if_armed();
-        self.inner.export(batch)
+        self.inner.export(batch).await
     }
 }
 
@@ -116,7 +116,7 @@ impl SinkStall {
 /// runs on the export thread) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     stall: Arc<SinkStall>,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
@@ -125,7 +125,7 @@ struct Capture {
 
 fn capture(cell: &str) -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let stall = Arc::new(SinkStall::default());
     let service = format!("i143-2780-{cell}");
     let (capture, layer) = rdm_transport::span_capture(&service, GatedExporter { inner: exporter.clone(), stall: stall.clone() });

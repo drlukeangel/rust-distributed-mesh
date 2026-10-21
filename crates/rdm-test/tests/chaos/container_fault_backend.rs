@@ -1073,13 +1073,13 @@ fn num(v: &Value) -> u64 {
 /// `BatchSpanProcessor`) in front of an in-memory exporter behind the global subscriber, so the
 /// fault backend's and the detector's spans are exactly what this cell emitted.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let service = format!("i143-2784-{cell}");
     let capture = rdm_transport::install_span_capture(&service, exporter.clone()).expect("one global subscriber per cell process");
     Capture { exporter, capture, service }

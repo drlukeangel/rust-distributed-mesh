@@ -50,7 +50,7 @@ fn view(fabric: &str) -> Topology {
 }
 
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     pipeline: rdm_transport::SpanCapture,
 }
 
@@ -66,7 +66,7 @@ impl Capture {
 }
 
 fn capture(cell: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rdm_transport::span_capture(cell, exporter.clone());
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     (Capture { exporter, pipeline }, guard)

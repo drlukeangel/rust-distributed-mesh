@@ -12,7 +12,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use opentelemetry::trace::TraceContextExt;
-use opentelemetry_sdk::export::trace::SpanData;
+use opentelemetry_sdk::trace::SpanData;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::catalog::OpOwner;

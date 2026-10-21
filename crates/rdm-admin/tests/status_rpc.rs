@@ -39,7 +39,7 @@ fn acceptance_dir(cell: &str) -> PathBuf {
 /// When it drops, whether the cell passed or panicked, every span it holds goes to the cell's
 /// `spans.json`, so a red is read from its own trace and never from a rerun.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     /// The resource's `service.name` this capture exports under.
@@ -50,7 +50,7 @@ struct Capture {
 
 fn capture(cell: &str) -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let service = format!("i143-2805-{cell}");
     let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service, dir: acceptance_dir(cell) }

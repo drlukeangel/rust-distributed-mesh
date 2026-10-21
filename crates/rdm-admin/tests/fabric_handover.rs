@@ -511,14 +511,14 @@ struct Traced {
 /// the runtime [`TraceCapture::run`] builds for the cell, so two cells of one process never see each
 /// other's spans.
 struct TraceCapture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     spans: Spans,
 }
 
 fn trace_capture(service: &'static str) -> TraceCapture {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let spans = Spans::default();
     let (capture, layer) = rdm_transport::span_capture(service, exporter.clone());
     TraceCapture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(spans.clone()).with(layer)), spans }
@@ -1387,7 +1387,7 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
         drop(story);
         cap.capture.flush(std::time::Duration::from_secs(10)).expect("the cell's spans reach its exporter");
         let finished = cap.exporter.get_finished_spans().unwrap();
-        let attr = |s: &opentelemetry_sdk::export::trace::SpanData, k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string());
+        let attr = |s: &opentelemetry_sdk::trace::SpanData, k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string());
         println!("trace_id={trace_id}");
         for s in finished.iter().filter(|s| s.span_context.trace_id().to_string() == trace_id) {
             println!("span {} {:?} {:?}", s.name, attr(s, "outcome").or_else(|| attr(s, "reason")), attr(s, "operation"));

@@ -11,7 +11,8 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_http::hyper::HyperClient;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, TracerProvider};
+use opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor;
+use opentelemetry_sdk::trace::{BatchConfigBuilder, SdkTracerProvider};
 use tracing_subscriber::filter::{filter_fn, FilterExt};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -27,16 +28,16 @@ use export::{ExportRuntime, WatchedLogs, WatchedSpans};
 /// [`flush_before_exit`] comes first.
 #[derive(Clone)]
 struct Exporters {
-    provider: TracerProvider,
+    provider: SdkTracerProvider,
     /// The OTLP log provider the log adapter emits through, when a collector is configured.
-    logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
+    logs: Option<opentelemetry_sdk::logs::SdkLoggerProvider>,
     /// The evidence file's processor, when the process writes one: flushed first and on its own.
     evidence: Option<crate::evidence_capture::SharedEvidence>,
     flushed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Exporters {
-    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> Self {
+    fn new(provider: SdkTracerProvider, logs: Option<opentelemetry_sdk::logs::SdkLoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> Self {
         Self { provider, logs, evidence, flushed: Default::default() }
     }
 
@@ -88,6 +89,12 @@ impl Exporters {
         })];
         if let Some(logs) = self.logs.clone() {
             jobs.push(Box::new(move || {
+                // Flushed first: opentelemetry_sdk 0.31's async-runtime BatchLogProcessor implements
+                // `shutdown` but not `shutdown_with_timeout`, which the provider's shutdown calls, so a
+                // shutdown alone exports nothing still queued.
+                if let Err(e) = logs.force_flush() {
+                    eprintln!("telemetry log flush error: {e}");
+                }
                 if let Err(e) = logs.shutdown() {
                     eprintln!("telemetry log shutdown error: {e}");
                 }
@@ -143,7 +150,7 @@ impl Drop for TelemetryGuard {
     }
 }
 
-fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> TelemetryGuard {
+fn guard(provider: SdkTracerProvider, logs: Option<opentelemetry_sdk::logs::SdkLoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> TelemetryGuard {
     let exporters = Exporters::new(provider, logs, evidence);
     let _ = EXIT_FLUSH.set(exporters.clone());
     TelemetryGuard { exporters }
@@ -197,6 +204,11 @@ fn resolve_endpoint_and_service(service_name: &str) -> (String, String) {
 /// launcher set them, the node it runs as, its birth's data directory and its estate's evidence
 /// directory.
 pub(crate) fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource {
+    build_resource_with(service_name, Vec::new())
+}
+
+/// [`build_resource`] with `extra` attributes beside its own.
+pub(crate) fn build_resource_with(service_name: &str, extra: Vec<opentelemetry::KeyValue>) -> opentelemetry_sdk::Resource {
     let mut attrs = vec![
         opentelemetry::KeyValue::new(opentelemetry_semantic_conventions::resource::SERVICE_NAME, service_name.to_string()),
         opentelemetry::KeyValue::new("process.pid", std::process::id() as i64),
@@ -208,7 +220,8 @@ pub(crate) fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource 
             }
         }
     }
-    opentelemetry_sdk::Resource::new(attrs)
+    attrs.extend(extra);
+    opentelemetry_sdk::Resource::builder_empty().with_attributes(attrs).build()
 }
 
 /// Where the collector takes one signal over OTLP/HTTP: the signal's own path under its base URL.
@@ -229,9 +242,9 @@ struct ExportClient {
 
 #[async_trait::async_trait]
 impl opentelemetry_http::HttpClient for ExportClient {
-    async fn send(&self, mut request: http::Request<Vec<u8>>) -> Result<http::Response<opentelemetry_http::Bytes>, opentelemetry_http::HttpError> {
+    async fn send_bytes(&self, mut request: http::Request<opentelemetry_http::Bytes>) -> Result<http::Response<opentelemetry_http::Bytes>, opentelemetry_http::HttpError> {
         *request.uri_mut() = self.uri.clone();
-        self.inner.send(request).await
+        self.inner.send_bytes(request).await
     }
 }
 
@@ -258,7 +271,7 @@ pub(crate) fn build_exporter(endpoint: String) -> WatchedSpans<SpanExporter> {
 
 fn build_batch_provider(
     service_name: &str,
-) -> (TracerProvider, opentelemetry_sdk::trace::Tracer) {
+) -> (SdkTracerProvider, opentelemetry_sdk::trace::SdkTracer) {
     let (endpoint, resolved) = resolve_endpoint_and_service(service_name);
     let exporter = build_exporter(endpoint);
     let resource = build_resource(&resolved);
@@ -268,7 +281,7 @@ fn build_batch_provider(
         BatchSpanProcessor::builder(exporter, ExportRuntime::get().clone()).with_batch_config(batch_config()).build()
     };
 
-    let provider = TracerProvider::builder()
+    let provider = SdkTracerProvider::builder()
         .with_span_processor(processor)
         .with_resource(resource)
         .build();
@@ -366,7 +379,14 @@ pub fn set_remote_parent(span: &tracing::Span, traceparent: &str, tracestate: Op
         .unwrap_or_default();
     let sc = SpanContext::new(t, s, TraceFlags::new(f), true, state);
     if sc.is_valid() {
-        span.set_parent(opentelemetry::Context::new().with_remote_span_context(sc));
+        if let Err(e) = span.set_parent(opentelemetry::Context::new().with_remote_span_context(sc)) {
+            // The span keeps a trace of its own: the remote parent is lost, which joins nothing
+            // across the call. Named once per process on stderr, never in the pipeline it concerns.
+            static NAMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !NAMED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("telemetry: a span's remote parent {traceparent} could not be set ({e}); the span starts its own trace");
+            }
+        }
     }
 }
 
@@ -399,7 +419,7 @@ pub(crate) fn process_tag() -> String {
 #[derive(Debug)]
 pub(crate) struct JsonlSpanExporter {
     service: String,
-    file: EvidenceFile,
+    file: std::sync::Mutex<EvidenceFile>,
 }
 
 /// Where an exporter's evidence file stands.
@@ -417,7 +437,7 @@ impl JsonlSpanExporter {
     /// created and opened by its first export on the export thread: the caller (telemetry init, inside
     /// every node's start) never waits on a disk (i146 Q33).
     pub fn on_first_export(dir: &std::path::Path, service: &str) -> Self {
-        Self { service: service.to_string(), file: EvidenceFile::OnFirstExport(dir.join(format!("{service}.{}.spans.jsonl", process_tag()))) }
+        Self { service: service.to_string(), file: std::sync::Mutex::new(EvidenceFile::OnFirstExport(dir.join(format!("{service}.{}.spans.jsonl", process_tag())))) }
     }
 
     pub fn create(dir: &std::path::Path, service: &str) -> std::io::Result<Self> {
@@ -431,15 +451,15 @@ impl JsonlSpanExporter {
             std::fs::create_dir_all(dir)?;
         }
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { service: service.to_string(), file: EvidenceFile::Open(file) })
+        Ok(Self { service: service.to_string(), file: std::sync::Mutex::new(EvidenceFile::Open(file)) })
     }
 
     /// The open file, opening it now when its first export is this one; an open that fails is named
     /// once on stderr and every export after fails with it.
-    fn file(&mut self) -> Result<&mut std::fs::File, String> {
-        if let EvidenceFile::OnFirstExport(path) = &self.file {
+    fn file(file: &mut EvidenceFile) -> Result<&mut std::fs::File, String> {
+        if let EvidenceFile::OnFirstExport(path) = &*file {
             let opened = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(path));
-            self.file = match opened {
+            *file = match opened {
                 Ok(f) => EvidenceFile::Open(f),
                 Err(e) => {
                     let why = format!("the evidence file {} could not be opened: {e}", path.display());
@@ -448,14 +468,14 @@ impl JsonlSpanExporter {
                 }
             };
         }
-        match &mut self.file {
+        match file {
             EvidenceFile::Open(f) => Ok(f),
             EvidenceFile::Unusable(why) => Err(why.clone()),
             EvidenceFile::OnFirstExport(_) => unreachable!("opened above"),
         }
     }
 
-    fn line(&self, s: &opentelemetry_sdk::export::trace::SpanData) -> String {
+    fn line(&self, s: &opentelemetry_sdk::trace::SpanData) -> String {
         let nanos = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
         let parent = if s.parent_span_id == opentelemetry::trace::SpanId::INVALID { String::new() } else { s.parent_span_id.to_string() };
         let attrs: serde_json::Map<String, serde_json::Value> =
@@ -480,13 +500,10 @@ impl JsonlSpanExporter {
     }
 }
 
-impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
+impl opentelemetry_sdk::trace::SpanExporter for JsonlSpanExporter {
     /// Runs on the evidence thread of [`CountingBatchProcessor`]: formats the batch and appends
     /// it at once, so a killed process loses only what was queued behind the write in flight.
-    fn export(
-        &mut self,
-        batch: Vec<opentelemetry_sdk::export::trace::SpanData>,
-    ) -> futures_util::future::BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult> {
+    async fn export(&self, batch: Vec<opentelemetry_sdk::trace::SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
         use std::io::Write;
         let mut out = String::new();
         for s in &batch {
@@ -494,7 +511,8 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
             out.push('\n');
         }
         let started = std::time::Instant::now();
-        let file = self.file();
+        let mut held = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        let file = Self::file(&mut held);
         let opened = started.elapsed();
         let r = match file {
             Ok(f) => f.write_all(out.as_bytes()).map_err(|e| format!("evidence write failed: {e}")),
@@ -504,14 +522,14 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
         if took >= EVIDENCE_WRITE_STALL {
             eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread; open={} ms, write={} ms", took.as_millis(), out.len(), opened.as_millis(), took.saturating_sub(opened).as_millis());
         }
-        Box::pin(async move { r.map_err(|why| opentelemetry::trace::TraceError::Other(why.into())) })
+        r.map_err(opentelemetry_sdk::error::OTelSdkError::InternalFailure)
     }
 }
 
 /// The JSONL evidence exporter [`init_evidence_telemetry`] writes with, for a consumer that builds
 /// its own pipeline ([`span_capture`]): one line per span to
 /// `<dir>/<service>.<pid>-<pid namespace inode>.spans.jsonl`, appended on the export thread.
-pub fn jsonl_span_exporter(dir: &std::path::Path, service: &str) -> std::io::Result<impl opentelemetry_sdk::export::trace::SpanExporter + 'static> {
+pub fn jsonl_span_exporter(dir: &std::path::Path, service: &str) -> std::io::Result<impl opentelemetry_sdk::trace::SpanExporter + 'static> {
     JsonlSpanExporter::create(dir, service)
 }
 
@@ -597,7 +615,7 @@ fn init_evidence(service_name: &str, report_now: bool) -> Option<TelemetryGuard>
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     install_propagator();
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
-    let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
+    let mut builder = SdkTracerProvider::builder().with_resource(build_resource(&service));
     let mut any = false;
     let mut steps = InitSteps::default();
     // The export runtime's first start, its own step: every processor below runs on it.
@@ -625,9 +643,9 @@ fn init_evidence(service_name: &str, report_now: bool) -> Option<TelemetryGuard>
         match opentelemetry_otlp::LogExporter::builder().with_http().with_http_client(export_client(&logs_url)).with_protocol(Protocol::HttpBinary).with_endpoint(logs_url.clone()).build() {
             Ok(exporter) => {
                 logs = Some(
-                    opentelemetry_sdk::logs::LoggerProvider::builder()
+                    opentelemetry_sdk::logs::SdkLoggerProvider::builder()
                         .with_resource(build_resource(&service))
-                        .with_batch_exporter(WatchedLogs::new(exporter, &logs_url), export_rt.clone())
+                        .with_log_processor(opentelemetry_sdk::logs::log_processor_with_async_runtime::BatchLogProcessor::builder(WatchedLogs::new(exporter, &logs_url), export_rt.clone()).build())
                         .build(),
                 );
             }
@@ -758,7 +776,7 @@ mod evidence_tests {
                 line.write_all(b"a held log line\n").unwrap();
             }
             writing.recv_timeout(Duration::from_secs(10)).expect("the writer entered before the exit flush's clock starts");
-            let provider = opentelemetry_sdk::trace::TracerProvider::builder().build();
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
             let exporters = super::Exporters::new(provider, None, None);
             println!("FLUSH_STARTED");
             let started = Instant::now();
@@ -819,7 +837,7 @@ mod evidence_tests {
         let exporter = super::JsonlSpanExporter::create(&dir, "evidence-complete").unwrap();
         let processor = super::span_processor("evidence", exporter);
         let loss = processor.loss();
-        let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_span_processor(processor).build();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().with_span_processor(processor).build();
         let tracer = provider.tracer("t");
         let read = || {
             let file = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
@@ -828,9 +846,7 @@ mod evidence_tests {
         for i in 0..300 {
             drop(tracer.start(format!("s{i}")));
         }
-        for r in provider.force_flush() {
-            r.expect("the flush returned an error");
-        }
+        provider.force_flush().expect("the flush returned an error");
         assert_eq!(read().lines().count(), 300, "a flush returned with spans still queued");
         for i in 300..600 {
             drop(tracer.start(format!("s{i}")));

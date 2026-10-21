@@ -1,8 +1,8 @@
 //! Ending a span never blocks the thread that ended it, whatever the sink behind it is doing.
 
 use opentelemetry::trace::{Tracer, TracerProvider as _};
-use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::error::OTelSdkResult;
+use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -14,10 +14,10 @@ struct Stalled {
 }
 
 impl SpanExporter for Stalled {
-    fn export(&mut self, _batch: Vec<SpanData>) -> futures_util::future::BoxFuture<'static, ExportResult> {
+    async fn export(&self, _batch: Vec<SpanData>) -> OTelSdkResult {
         let _ = self.entered.send(());
         let _ = self.release.lock().unwrap().recv();
-        Box::pin(async { Ok(()) })
+        Ok(())
     }
 }
 
@@ -28,7 +28,7 @@ fn span_end_returns_while_the_sink_is_stalled() {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let exporter = Stalled { entered: entered_tx, release: std::sync::Arc::new(std::sync::Mutex::new(release_rx)) };
-    let provider = TracerProvider::builder().with_span_processor(rdm_transport::span_processor("stalled", exporter)).build();
+    let provider = SdkTracerProvider::builder().with_span_processor(rdm_transport::span_processor("stalled", exporter)).build();
     let tracer = provider.tracer("span-end-nonblocking");
     let (done_tx, done_rx) = mpsc::channel();
     let t = tracer.clone();
@@ -68,7 +68,7 @@ fn a_flush_on_an_overflowed_queue_is_an_error_never_ok() {
     let exporter = Stalled { entered: entered_tx, release: std::sync::Arc::new(std::sync::Mutex::new(release_rx)) };
     let processor = rdm_transport::span_processor("overflow", exporter);
     let loss = processor.loss();
-    let provider = TracerProvider::builder().with_span_processor(processor).build();
+    let provider = SdkTracerProvider::builder().with_span_processor(processor).build();
     let tracer = provider.tracer("overflow");
     drop(tracer.start("first"));
     entered_rx.recv_timeout(Duration::from_secs(10)).expect("the first export never started");
@@ -80,6 +80,6 @@ fn a_flush_on_an_overflowed_queue_is_an_error_never_ok() {
         let _ = release_tx.send(());
     }
     assert_eq!(loss.handed(), 70_001);
-    assert!(flushed.iter().any(|r| r.is_err()), "a flush on a full queue answered Ok: {flushed:?}");
+    assert!(flushed.is_err(), "a flush on a full queue answered Ok: {flushed:?}");
     drop(release_tx);
 }

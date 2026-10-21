@@ -1280,7 +1280,7 @@ async fn a_not_sent_direct_on_a_forwardable_alpn_goes_once_through_the_hashed_ca
 #[test]
 fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and_only_then_writes_proxy_connected() {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("rdm-evidence", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let d_rt = dispatch.clone();

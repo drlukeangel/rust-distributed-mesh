@@ -18,9 +18,9 @@
 //! the traces it keeps reach the file and the collector.
 
 use crate::pipeline::{span_export_layer, span_processor, CountingBatchProcessor, SpanLoss};
-use opentelemetry::trace::{TraceId, TraceResult};
-use opentelemetry_sdk::export::trace::SpanData;
-use opentelemetry_sdk::trace::{Span, SpanProcessor, TracerProvider};
+use opentelemetry::trace::TraceId;
+use opentelemetry_sdk::error::OTelSdkResult;
+use opentelemetry_sdk::trace::{SdkTracerProvider, Span, SpanData, SpanProcessor};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -44,12 +44,12 @@ impl SpanProcessor for SharedEvidence {
         self.0.on_end(span);
     }
 
-    fn force_flush(&self) -> TraceResult<()> {
+    fn force_flush(&self) -> OTelSdkResult {
         self.0.force_flush()
     }
 
-    fn shutdown(&self) -> TraceResult<()> {
-        self.0.shutdown()
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        self.0.shutdown_with_timeout(timeout)
     }
 }
 
@@ -115,18 +115,18 @@ impl SpanProcessor for HeldTraces {
         }
     }
 
-    fn force_flush(&self) -> TraceResult<()> {
+    fn force_flush(&self) -> OTelSdkResult {
         self.sinks.iter().map(|sink| sink.force_flush()).fold(Ok(()), |all, r| all.and(r))
     }
 
-    fn shutdown(&self) -> TraceResult<()> {
-        self.sinks.iter().map(|sink| sink.shutdown()).fold(Ok(()), |all, r| all.and(r))
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        self.sinks.iter().map(|sink| sink.shutdown_with_timeout(timeout)).fold(Ok(()), |all, r| all.and(r))
     }
 }
 
 /// A test cell's span capture; see the module docs.
 pub struct EvidenceCapture {
-    provider: TracerProvider,
+    provider: SdkTracerProvider,
     evidence: SharedEvidence,
     loss: SpanLoss,
     path: PathBuf,
@@ -166,10 +166,9 @@ impl EvidenceCapture {
         let path = dir.join(format!("{service}.{}.{n}.spans.jsonl", crate::process_tag()));
         let evidence = SharedEvidence(Arc::new(span_processor("evidence", crate::JsonlSpanExporter::create_at(&path, service)?)));
         let loss = evidence.0.loss();
-        let mut resource = crate::build_resource(service);
-        resource = resource.merge(&opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("rafka.evidence_file", path.display().to_string())]));
+        let resource = crate::build_resource_with(service, vec![opentelemetry::KeyValue::new("rafka.evidence_file", path.display().to_string())]);
         let otlp = otlp_endpoint.map(|endpoint| span_processor("otlp", crate::build_exporter(endpoint.to_string())));
-        let mut builder = TracerProvider::builder().with_resource(resource.clone());
+        let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
         let held = if held {
             // The held processor owns its sinks, so the provider's resource reaches the collector's
             // exporter here rather than through the provider.
@@ -267,10 +266,8 @@ impl Drop for EvidenceCapture {
         crate::export::bounded(
             "the evidence capture's shutdown",
             vec![Box::new(move || {
-                for r in provider.force_flush() {
-                    if let Err(e) = r {
-                        eprintln!("telemetry: the capture writing {path} failed to flush: {e}");
-                    }
+                if let Err(e) = provider.force_flush() {
+                    eprintln!("telemetry: the capture writing {path} failed to flush: {e}");
                 }
                 if let Err(e) = provider.shutdown() {
                     eprintln!("telemetry: the capture writing {path} failed to shut down: {e}");

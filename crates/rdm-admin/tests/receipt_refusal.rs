@@ -174,7 +174,7 @@ impl BuildStateAdapter for Refuses {
 /// `Complete` as if the step were committed.
 #[tokio::test]
 async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (spans_pipeline, layer) = rdm_transport::span_capture("i143-3051-receipt-refusal", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
@@ -313,13 +313,13 @@ async fn a_standalone_connections_delete_or_stop_whose_command_is_never_sent_fai
 
 /// A capture of every finished span, by name.
 pub(crate) struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     pipeline: rdm_transport::SpanCapture,
 }
 
 impl Capture {
     pub(crate) fn new(service: &'static str) -> (Self, tracing::subscriber::DefaultGuard) {
-        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let (pipeline, layer) = rdm_transport::span_capture(service, exporter.clone());
         let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
         (Self { exporter, pipeline }, guard)

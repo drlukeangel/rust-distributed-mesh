@@ -218,14 +218,14 @@ pub fn held_for(own: &PathName) -> ConnectionsHeld {
 /// which flushes first (bounded) and so cannot be called without the flush.
 #[derive(Clone)]
 pub struct Spans {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: std::sync::Arc<rdm_transport::SpanCapture>,
 }
 
 impl Spans {
     /// Every span ended before this call, whichever thread ended it. Panics, naming why, when the
     /// flush does not return in time, errors, or leaves a span behind.
-    pub fn get_finished_spans(&self) -> opentelemetry::trace::TraceResult<Vec<opentelemetry_sdk::export::trace::SpanData>> {
+    pub fn get_finished_spans(&self) -> Result<Vec<opentelemetry_sdk::trace::SpanData>, opentelemetry_sdk::InMemoryExporterError> {
         if let Err(e) = self.capture.flush(std::time::Duration::from_secs(10)) {
             panic!("reading spans: {e}");
         }
@@ -237,7 +237,7 @@ pub fn spans_exporter() -> Spans {
     static SPANS: std::sync::OnceLock<Spans> = std::sync::OnceLock::new();
     SPANS
         .get_or_init(|| {
-            let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+            let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
             let capture = rdm_transport::install_span_capture("node-rpc-tests", exporter.clone()).expect("the test executable's span capture");
             Spans { exporter, capture: std::sync::Arc::new(capture) }
         })

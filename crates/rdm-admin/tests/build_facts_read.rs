@@ -179,7 +179,7 @@ fn story_of(root: &tracing::Span) -> Story {
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on every thread of the cell's
 /// own runtime, so two cells in one test process never share spans.
 struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     /// True when the runtime's worker threads hold no dispatcher: only the thread that runs the story does.
@@ -188,7 +188,7 @@ struct Capture {
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("build-facts-read", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), bare_workers: false }
 }

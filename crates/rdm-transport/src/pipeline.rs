@@ -11,9 +11,9 @@
 //! handed to the processor is counted, and so is every span that reached the exporter; the
 //! difference is reported by name when the processor shuts down and is readable as [`SpanLoss`].
 
-use opentelemetry::trace::{TraceError, TraceResult};
-use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
-use opentelemetry_sdk::trace::{BatchSpanProcessor, Span, SpanProcessor, TracerProvider};
+use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
+use opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor;
+use opentelemetry_sdk::trace::{SdkTracerProvider, Span, SpanData, SpanExporter, SpanProcessor};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,19 +39,15 @@ impl<E: std::fmt::Debug> std::fmt::Debug for CountedExporter<E> {
 }
 
 impl<E: SpanExporter> SpanExporter for CountedExporter<E> {
-    fn export(&mut self, batch: Vec<SpanData>) -> futures_util::future::BoxFuture<'static, ExportResult> {
+    async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         let n = batch.len() as u64;
-        let fut = self.inner.export(batch);
-        let tally = self.tally.clone();
-        Box::pin(async move {
-            let r = fut.await;
-            tally.reached.fetch_add(n, Ordering::SeqCst);
-            r
-        })
+        let r = self.inner.export(batch).await;
+        self.tally.reached.fetch_add(n, Ordering::SeqCst);
+        r
     }
 
-    fn shutdown(&mut self) {
-        self.inner.shutdown();
+    fn shutdown_with_timeout(&mut self, timeout: Duration) -> OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
     }
 
     fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
@@ -117,12 +113,12 @@ impl SpanProcessor for CountingBatchProcessor {
 
     /// Blocks until the queue has emptied into the exporter and returns the SDK's answer. It has
     /// no timeout of its own: call it on a path that has a deadline.
-    fn force_flush(&self) -> TraceResult<()> {
+    fn force_flush(&self) -> OTelSdkResult {
         self.inner.force_flush()
     }
 
-    fn shutdown(&self) -> TraceResult<()> {
-        let r = self.inner.shutdown();
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        let r = self.inner.shutdown_with_timeout(timeout);
         let lost = self.loss.lost();
         if lost > 0 {
             eprintln!("telemetry: {lost} of {} spans handed to the {} sink never reached its exporter (queue full or export timed out)", self.loss.handed(), self.loss.name);
@@ -147,7 +143,7 @@ pub fn span_processor<E: SpanExporter + 'static>(name: &str, exporter: E) -> Cou
 }
 
 /// The product `tracing` layer that feeds `provider`, behind product's span filter.
-pub fn span_export_layer<S>(provider: &TracerProvider, service: &str) -> impl tracing_subscriber::Layer<S>
+pub fn span_export_layer<S>(provider: &SdkTracerProvider, service: &str) -> impl tracing_subscriber::Layer<S>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
@@ -161,7 +157,7 @@ where
 /// Spans captured into a test's exporter through the product pipeline, installed as the process's
 /// global subscriber.
 pub struct SpanCapture {
-    provider: TracerProvider,
+    provider: SdkTracerProvider,
     loss: SpanLoss,
 }
 
@@ -205,7 +201,7 @@ where
     enable_callsites();
     let processor = span_processor("capture", exporter);
     let loss = processor.loss();
-    let provider = TracerProvider::builder().with_span_processor(processor).build();
+    let provider = SdkTracerProvider::builder().with_span_processor(processor).build();
     let layer = span_export_layer(&provider, service);
     (SpanCapture { provider, loss }, layer)
 }
@@ -228,10 +224,8 @@ impl SpanCapture {
                 let _ = tx.send(provider.force_flush());
             })
             .map_err(|e| format!("the flush thread could not be spawned: {e}"))?;
-        let results = rx.recv_timeout(bound).map_err(|_| format!("the span flush did not return within {} ms", bound.as_millis()))?;
-        for r in results {
-            r.map_err(|e: TraceError| format!("the span flush failed: {e}"))?;
-        }
+        let result = rx.recv_timeout(bound).map_err(|_| format!("the span flush did not return within {} ms", bound.as_millis()))?;
+        result.map_err(|e: OTelSdkError| format!("the span flush failed: {e}"))?;
         match owed.saturating_sub(self.loss.reached()) {
             0 => Ok(()),
             n => Err(format!("{n} of the {owed} spans ended before the flush never reached the exporter")),
@@ -265,12 +259,12 @@ mod tests {
             self.inner.on_end(span);
         }
 
-        fn force_flush(&self) -> TraceResult<()> {
+        fn force_flush(&self) -> OTelSdkResult {
             self.inner.force_flush()
         }
 
-        fn shutdown(&self) -> TraceResult<()> {
-            self.inner.shutdown()
+        fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+            self.inner.shutdown_with_timeout(timeout)
         }
     }
 
@@ -282,7 +276,7 @@ mod tests {
     /// (the node-rpc gate's "1 of the 4286 spans ended before the flush never reached the exporter").
     #[test]
     fn a_span_still_ending_when_a_flush_begins_is_not_owed_by_that_flush() {
-        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let tally = Arc::new(Tally::default());
         let rt = crate::export::ExportRuntime::get();
         let batch = {
@@ -294,7 +288,7 @@ mod tests {
         let held = HeldEnd { inner: batch, entered: Mutex::new(entered_tx), release: Mutex::new(release_rx) };
         let processor = CountingBatchProcessor { inner: Box::new(held), loss: SpanLoss { name: "held".into(), tally } };
         let loss = processor.loss();
-        let provider = TracerProvider::builder().with_span_processor(processor).build();
+        let provider = SdkTracerProvider::builder().with_span_processor(processor).build();
         let capture = SpanCapture { provider: provider.clone(), loss: loss.clone() };
         let tracer = provider.tracer("held-end");
         let ending = std::thread::spawn(move || drop(tracer.start("rdm.test.span.end.held")));

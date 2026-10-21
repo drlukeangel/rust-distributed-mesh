@@ -7,11 +7,10 @@
 //! name each outage once, when it starts and when it ends. A caller that must wait for the
 //! queue to empty (a guard dropping, a process about to exit) waits at most [`EXIT_FLUSH_BOUND`].
 
-use futures_util::future::BoxFuture;
-use opentelemetry_sdk::export::logs::{LogBatch, LogExporter};
-use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
-use opentelemetry_sdk::logs::{LogError, LogResult};
+use opentelemetry_sdk::error::OTelSdkResult;
+use opentelemetry_sdk::logs::{LogBatch, LogExporter};
 use opentelemetry_sdk::runtime::{Runtime, RuntimeChannel};
+use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -86,21 +85,16 @@ impl ExportRuntime {
 }
 
 impl Runtime for ExportRuntime {
-    type Interval = tokio_stream::wrappers::IntervalStream;
-    type Delay = std::pin::Pin<Box<tokio::time::Sleep>>;
-
-    fn interval(&self, duration: Duration) -> Self::Interval {
-        let _g = self.handle.enter();
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(duration))
-    }
-
-    fn spawn(&self, future: BoxFuture<'static, ()>) {
+    fn spawn<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
         drop(self.handle.spawn(future));
     }
 
-    fn delay(&self, duration: Duration) -> Self::Delay {
+    fn delay(&self, duration: Duration) -> impl std::future::Future<Output = ()> + Send + 'static {
         let _g = self.handle.enter();
-        Box::pin(tokio::time::sleep(duration))
+        tokio::time::sleep(duration)
     }
 }
 
@@ -163,22 +157,18 @@ impl<E> WatchedSpans<E> {
 }
 
 impl<E: SpanExporter> SpanExporter for WatchedSpans<E> {
-    fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
+    async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         let count = batch.len();
-        let sent = self.inner.export(batch);
-        let outage = self.outage.clone();
-        Box::pin(async move {
-            let result = sent.await;
-            outage.observe(count, result.as_ref().err().map(|e| e.to_string()));
-            result
-        })
+        let result = self.inner.export(batch).await;
+        self.outage.observe(count, result.as_ref().err().map(|e| e.to_string()));
+        result
     }
 
-    fn shutdown(&mut self) {
-        self.inner.shutdown();
+    fn shutdown_with_timeout(&mut self, timeout: Duration) -> OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
     }
 
-    fn force_flush(&mut self) -> BoxFuture<'static, ExportResult> {
+    fn force_flush(&mut self) -> OTelSdkResult {
         self.inner.force_flush()
     }
 
@@ -200,17 +190,16 @@ impl<E> WatchedLogs<E> {
     }
 }
 
-#[async_trait::async_trait]
 impl<E: LogExporter> LogExporter for WatchedLogs<E> {
-    async fn export(&mut self, batch: LogBatch<'_>) -> LogResult<()> {
+    async fn export(&self, batch: LogBatch<'_>) -> OTelSdkResult {
         let count = batch.iter().count();
         let result = self.inner.export(batch).await;
-        self.outage.observe(count, result.as_ref().err().map(|e: &LogError| e.to_string()));
+        self.outage.observe(count, result.as_ref().err().map(|e| e.to_string()));
         result
     }
 
-    fn shutdown(&mut self) {
-        self.inner.shutdown();
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
     }
 
     fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {

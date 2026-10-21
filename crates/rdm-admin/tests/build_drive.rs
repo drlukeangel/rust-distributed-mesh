@@ -2179,7 +2179,7 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
 #[test]
 fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_its_boot_name() {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("renamed-admin-held-name", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let d = dispatch.clone();
@@ -2329,7 +2329,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
 #[test]
 fn a_drive_paused_while_its_build_completes_is_picked_up_again_and_ends_its_stream_complete() {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("paused-drive-picked-up", exporter.clone());
     let _g = tracing::dispatcher::set_default(&tracing::Dispatch::new(tracing_subscriber::registry().with(layer)));
     let drive_outcomes = || -> Vec<String> {
@@ -2388,7 +2388,7 @@ fn a_drive_paused_while_its_build_completes_is_picked_up_again_and_ends_its_stre
 fn a_held_drive_of_a_build_whose_later_attempt_failed_claims_no_next_attempt() {
     use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, CurrentBuild};
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("failed-attempt-no-next", exporter.clone());
     let _g = tracing::dispatcher::set_default(&tracing::Dispatch::new(tracing_subscriber::registry().with(layer)));
     let drive_outcomes = || -> Vec<String> {

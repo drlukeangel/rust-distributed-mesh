@@ -41,14 +41,14 @@ const FINAL: &str = "mesh2.admin.1";
 /// span filter and `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher
 /// installed on every thread of the cell's own runtime.
 pub(crate) struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 pub(crate) fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("mesh2.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }

@@ -19,7 +19,7 @@ pub(crate) struct Captured {
 
 /// The capture and the dispatcher that feeds it.
 pub(crate) struct Capture {
-    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    exporter: opentelemetry_sdk::trace::InMemorySpanExporter,
     capture: rdm_transport::SpanCapture,
     /// Install with `tracing::dispatcher::set_default` for the cell's span of work.
     pub dispatch: tracing::Dispatch,
@@ -28,7 +28,7 @@ pub(crate) struct Capture {
 impl Capture {
     /// A capture exporting under `service.name = cell`.
     pub(crate) fn new(cell: &str) -> Self {
-        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let (capture, layer) = rdm_transport::span_capture(cell, exporter.clone());
         Self { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
     }

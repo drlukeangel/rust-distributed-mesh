@@ -6,7 +6,7 @@
 //! line in the collector's log store with its trace context.
 
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, Severity};
-use opentelemetry::trace::TraceContextExt;
+
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_opentelemetry::OtelData;
@@ -16,11 +16,11 @@ use tracing_subscriber::Layer;
 
 /// Hands each event to an OTLP logger (see the module doc).
 pub(crate) struct LogAdapter {
-    logger: opentelemetry_sdk::logs::Logger,
+    logger: opentelemetry_sdk::logs::SdkLogger,
 }
 
 impl LogAdapter {
-    pub fn new(logger: opentelemetry_sdk::logs::Logger) -> Self {
+    pub fn new(logger: opentelemetry_sdk::logs::SdkLogger) -> Self {
         Self { logger }
     }
 }
@@ -104,8 +104,7 @@ where
             for span in scope {
                 let ext = span.extensions();
                 if let Some(otel) = ext.get::<OtelData>() {
-                    let trace_id = otel.builder.trace_id.unwrap_or_else(|| otel.parent_cx.span().span_context().trace_id());
-                    if let Some(span_id) = otel.builder.span_id {
+                    if let (Some(trace_id), Some(span_id)) = (otel.trace_id(), otel.span_id()) {
                         record.add_attribute("span.name", span.name().to_string());
                         record.set_trace_context(trace_id, span_id, None);
                     }
@@ -122,7 +121,7 @@ mod tests {
     use super::*;
     use opentelemetry::logs::LoggerProvider as _;
     use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_sdk::testing::logs::InMemoryLogExporter;
+    use opentelemetry_sdk::logs::InMemoryLogExporter;
     use tracing_subscriber::layer::SubscriberExt;
 
     /// CONTRACT: an event inside a span reaches the log exporter with that span's trace id and
@@ -131,9 +130,9 @@ mod tests {
     #[test]
     fn an_event_inside_a_span_carries_that_spans_ids_and_one_outside_carries_none() {
         let logs = InMemoryLogExporter::default();
-        let log_provider = opentelemetry_sdk::logs::LoggerProvider::builder().with_simple_exporter(logs.clone()).build();
-        let spans = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-        let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(spans.clone()).build();
+        let log_provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder().with_simple_exporter(logs.clone()).build();
+        let spans = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
         let subscriber = tracing_subscriber::registry()
             .with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer_provider.tracer("t")))
             .with(LogAdapter::new(log_provider.logger("t")));
@@ -148,14 +147,14 @@ mod tests {
         let span = finished.iter().find(|s| s.name == "rdm.test.span.update.via-cell").expect("the span was exported");
         let records = logs.get_emitted_logs().unwrap();
         assert_eq!(records.len(), 2, "both events became log records");
-        let inside = records.iter().find(|r| matches!(&r.record.body, Some(AnyValue::String(s)) if s.as_str() == "inside the span")).expect("the inside event");
-        let tc = inside.record.trace_context.as_ref().expect("the inside event carries trace context");
+        let inside = records.iter().find(|r| matches!(r.record.body(), Some(AnyValue::String(s)) if s.as_str() == "inside the span")).expect("the inside event");
+        let tc = inside.record.trace_context().expect("the inside event carries trace context");
         assert_eq!(tc.trace_id, span.span_context.trace_id());
         assert_eq!(tc.span_id, span.span_context.span_id());
         assert!(inside.record.attributes_iter().any(|(k, v)| k.as_str() == "node" && matches!(v, AnyValue::String(s) if s.as_str() == "mesh1.admin.1")));
-        let outside = records.iter().find(|r| matches!(&r.record.body, Some(AnyValue::String(s)) if s.as_str() == "outside every span")).expect("the outside event");
-        assert!(outside.record.trace_context.is_none());
-        assert_eq!(outside.record.severity_number, Some(Severity::Warn));
+        let outside = records.iter().find(|r| matches!(r.record.body(), Some(AnyValue::String(s)) if s.as_str() == "outside every span")).expect("the outside event");
+        assert!(outside.record.trace_context().is_none());
+        assert_eq!(outside.record.severity_number(), Some(Severity::Warn));
     }
 
     /// CONTRACT: the OTLP log bridge exports WARN and above by default, from every crate, as
@@ -165,7 +164,7 @@ mod tests {
     fn the_log_bridge_exports_warn_and_above_only() {
         use tracing_subscriber::Layer as _;
         let logs = InMemoryLogExporter::default();
-        let log_provider = opentelemetry_sdk::logs::LoggerProvider::builder().with_simple_exporter(logs.clone()).build();
+        let log_provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder().with_simple_exporter(logs.clone()).build();
         let level = tracing_subscriber::filter::LevelFilter::from_level(crate::otlp_log_export_level());
         let subscriber = tracing_subscriber::registry().with(LogAdapter::new(log_provider.logger("t")).with_filter(level));
         tracing::subscriber::with_default(subscriber, || {
@@ -174,7 +173,7 @@ mod tests {
             tracing::warn!(target: "iroh_gossip::net", "gossip warn");
             tracing::error!(target: "rafka_node_admin_core::admin", "rdm error");
         });
-        let bodies: Vec<String> = logs.get_emitted_logs().unwrap().iter().filter_map(|r| match &r.record.body { Some(AnyValue::String(s)) => Some(s.as_str().to_string()), _ => None }).collect();
+        let bodies: Vec<String> = logs.get_emitted_logs().unwrap().iter().filter_map(|r| match r.record.body() { Some(AnyValue::String(s)) => Some(s.as_str().to_string()), _ => None }).collect();
         assert_eq!(bodies, ["gossip warn", "rdm error"], "{bodies:?}");
     }
 
@@ -182,8 +181,8 @@ mod tests {
     #[test]
     fn span_export_carries_rdm_spans_and_no_third_party() {
         use tracing_subscriber::Layer as _;
-        let spans = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-        let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(spans.clone()).build();
+        let spans = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
         let subscriber = tracing_subscriber::registry().with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer_provider.tracer("t")).with_filter(crate::span_export_filter()));
         tracing::subscriber::with_default(subscriber, || {
             drop(tracing::info_span!(target: "rdm_transport::client", "rdm.node_rpc.request.update.via-call").entered());
