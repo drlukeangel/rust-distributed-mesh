@@ -309,22 +309,39 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: HandoverSlot = Arc::new(OnceLock::new());
     let (facts_slot, build_slot): (BuildFactsSlot, BuildSlot) = (Arc::new(OnceLock::new()), Arc::new(OnceLock::new()));
-    // Ping, the core family every node built on Node RPC serves: the tickle ladder's direct rung. A door
-    // left in `ready_on_ping` fills the handover slot as the ping is answered: an admin whose door held
-    // no view at one call and holds it by the next.
+    // The tickle's probe, `ProbeNodeState` of this exact birth on 0x1B (node-tickle.md "Probe"): the
+    // ladder's direct rung, answered `Current` by the live birth. A door left in `ready_on_ping` fills
+    // the handover slot as the probe is answered: an admin whose door held no view at one call and holds
+    // it by the next. Ping, the core family every node built on Node RPC serves, is answered as ever.
     let ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>> = Arc::new(OnceLock::new());
     let pinged = {
         let (slot, ready) = (slot.clone(), ready_on_ping.clone());
-        ServerBuilder::new().serve::<Ping, _, _>(OpOwner::Core, move |_peer: rdm_transport::PeerContext, req: PingRequest| {
-            let (slot, ready) = (slot.clone(), ready.clone());
-            async move {
-                if let Some(door) = ready.get() {
-                    let _ = slot.set(door.clone());
+        let (probe_slot, probe_ready, me, born) = (slot.clone(), ready_on_ping.clone(), node_id.clone(), incarnation.clone());
+        ServerBuilder::new()
+            .serve::<Ping, _, _>(OpOwner::Core, move |_peer: rdm_transport::PeerContext, req: PingRequest| {
+                let (slot, ready) = (slot.clone(), ready.clone());
+                async move {
+                    if let Some(door) = ready.get() {
+                        let _ = slot.set(door.clone());
+                    }
+                    let PingRequest::Ping { payload } = req;
+                    Ok(PingReply::Pong { payload })
                 }
-                let PingRequest::Ping { payload } = req;
-                Ok(PingReply::Pong { payload })
-            }
-        })
+            })
+            .serve::<rdm_core::status::Status, _, _>(OpOwner::Product("rdm".into()), move |_peer: rdm_transport::PeerContext, req: rdm_core::status::StatusRequest| {
+                let (slot, ready, me, born) = (probe_slot.clone(), probe_ready.clone(), me.clone(), born.clone());
+                async move {
+                    Ok(match req {
+                        rdm_core::status::StatusRequest::ProbeNodeState { node_id, incarnation } if node_id == me && incarnation == born => {
+                            if let Some(door) = ready.get() {
+                                let _ = slot.set(door.clone());
+                            }
+                            rdm_core::status::StatusReply::Current { node_id, incarnation, state: rdm_core::status::NodeState::ReadyForTraffic }
+                        }
+                        other => rdm_core::reply::status::not_ready(format!("this cell's admin answers only the tickle's probe of its own birth, not {}", other.op())),
+                    })
+                }
+            })
     };
     let served = rdm_admin::build_facts_read::serve(rdm_admin::fabric_handover::serve(pinged, slot.clone()), facts_slot.clone());
     let server = rdm_admin::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");

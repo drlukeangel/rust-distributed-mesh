@@ -707,8 +707,8 @@ mod tests {
                 assert_eq!(matches!(found, Finding::Exited { .. }), expect_exit, "only the provider's exit proof is a loss");
             }
             let asked = AtomicBool::new(false);
-            assert_eq!(finding_of(Ok(Tickle::Reached { answer: current(&b), carrier: None }), provider_says(Finding::Exited { code: Some(137) }, &asked)).await, Finding::Answered);
-            assert_eq!(finding_of(Ok(Tickle::Reached { answer: current(&b), carrier: Some("mesh1.rpc.2".into()) }), provider_says(Finding::Exited { code: Some(137) }, &asked)).await, Finding::AnsweredViaPeer { carrier: "mesh1.rpc.2".into() });
+            assert_eq!(finding_of(Ok(Tickle::Reached { answer: current(&b), carrier: None }), provider_says(Finding::Exited { code: Some(137), proof: "provider" }, &asked)).await, Finding::Answered);
+            assert_eq!(finding_of(Ok(Tickle::Reached { answer: current(&b), carrier: Some("mesh1.rpc.2".into()) }), provider_says(Finding::Exited { code: Some(137), proof: "provider" }, &asked)).await, Finding::AnsweredViaPeer { carrier: "mesh1.rpc.2".into() });
             assert!(!asked.load(Ordering::SeqCst), "an answer settles it: no provider inspection");
             assert_eq!(finding_of(Err("no exact birth".into()), provider_says(Finding::Running, &asked)).await, Finding::Unproven { reason: "no exact birth".into() });
             assert!(!asked.load(Ordering::SeqCst), "a ladder that could not run is unproven by name, not inspected");
