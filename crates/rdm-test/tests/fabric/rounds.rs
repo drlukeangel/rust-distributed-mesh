@@ -369,7 +369,12 @@ async fn ready_under(estate: &Estate, build: &str) {
 /// the fabric is held in state-sync, every node of a two-mesh fabric up and ready (the fabric-primary,
 /// the other mesh's primary and a member in each mesh), the fabric's store root holds only the
 /// acknowledged declared-state rows (Q54) and the Build's committed facts, its lanes' keys and the
-/// meshes' attempt claims (Q61, build.md §5.2); every other row stays in its writer's scratchpad. The state-commit round publishes it: each node's
+/// meshes' attempt claims (Q61, build.md §5.2); every other row stays in its writer's scratchpad. The
+/// declared-state rows are each birth's ReadyForTraffic and, for every birth that made a join (every
+/// birth but the Day-0 root, mesh1.admin.1, which joins nobody), the Pending its mesh-primary (the
+/// fabric-primary for a mesh with no primary) recorded when it accepted the birth's join report (Q97,
+/// node-mesh-join.md step 10): an applied declared-state row, durable before state-commit (Q54), and
+/// each among the status rows of the birth's own mesh, whichever admin accepted the join. The state-commit round publishes it: each node's
 /// commit-state action writes what it holds before its check-in (the fabric-primary the Fabric row,
 /// each mesh primary its Mesh row and its members' Node rows, a node the connections rows it holds). After
 /// that first state-commit the store exists: a node born later writes straight to it, and the next
@@ -412,17 +417,21 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert_eq!(held["call_outcome"].as_str(), Some("reply"), "mesh1.rpc.1 originated its connection to mesh2.rpc.1 during state-sync: {held}");
     let before = rows_on(&root);
     estate.artifact("rows-before-state-commit.json", &json!(before));
-    let mut declarations: Vec<String> = nodes.iter().map(|n| {
+    // Q97: every birth that made a join holds the Pending its join report's acceptance recorded beside
+    // its ReadyForTraffic; the Day-0 root joined nobody. Each is among its own mesh's status rows.
+    let mut declarations: Vec<String> = nodes.iter().flat_map(|n| {
         let name = s(&n["name"]);
-        let mesh = name.split('.').next().unwrap();
-        format!("status/{mesh}/declared/{}--{}--ReadyForTraffic.json", s(&n["node_id"]), s(&n["incarnation_id"]))
+        let mesh = name.split('.').next().unwrap().to_string();
+        let joined = name != "mesh1.admin.1";
+        let states: &[&str] = if joined { &["Pending", "ReadyForTraffic"] } else { &["ReadyForTraffic"] };
+        states.iter().map(|state| format!("status/{mesh}/declared/{}--{}--{state}.json", s(&n["node_id"]), s(&n["incarnation_id"]))).collect::<Vec<_>>()
     }).collect();
     declarations.sort();
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
     // meshes' attempt claims are there before state-commit, beside the declarations.
     let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("fabric/builds/") || (r.starts_with("meshes/") && (r.contains("/builds/") || r.contains("/claims/"))));
     assert!(build_facts.iter().any(|r| r.starts_with("fabric/builds/")), "Q61: the two-mesh Build's committed facts stand on {} before state-commit: {before:#?}", root.display());
-    assert_eq!(rows, declarations, "Q54: of every other row, only the four exact births' acknowledged declarations reach {} before state-commit; the rest stay held", root.display());
+    assert_eq!(rows, declarations, "Q54, Q97: of every other row, only the four exact births' acknowledged declarations (each joined birth's Pending and every birth's ReadyForTraffic, under the birth's own mesh) reach {} before state-commit; the rest stay held", root.display());
     // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
     // `<store_dir>/fabrics/fabric1`, and is held in the fabric-primary's scratchpad like every row.
     let name_claim = root.parent().expect("the store root sits under the store_dir").join(rdm_admin::store_root::FABRIC_NAMES).join("fabric1.json");
