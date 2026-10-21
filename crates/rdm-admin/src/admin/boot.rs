@@ -1490,6 +1490,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }
                                     }),
                                     known: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
+                                    // The accepted join report's one Pending, recorded and published by this admin's
+                                    // status authority before the join is answered (node-mesh-join.md step 10).
+                                    pending: Arc::new({
+                                        let authority = authority.clone();
+                                        move |d: MeshDigest| {
+                                            let authority = authority.get().cloned();
+                                            Box::pin(async move {
+                                                if let Some(authority) = authority {
+                                                    authority.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation).await;
+                                                }
+                                            })
+                                        }
+                                    }),
                                     primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
                                     issuer: issuer.clone(),
                                     status_storage: Some(status_storage.clone()),

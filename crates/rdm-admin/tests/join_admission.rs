@@ -149,6 +149,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
+            pending: Arc::new(|_| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
             row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
@@ -223,6 +224,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
         types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
         install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
         known: Arc::new(|| Box::pin(async {})),
+        pending: Arc::new(|_| Box::pin(async {})),
         primary: Arc::new(|| Some("mesh1.admin.2".into())),
         row: Arc::new(move |_| {
             let row = row.clone();
@@ -364,6 +366,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
+            pending: Arc::new(|_| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
             row: Arc::new(move |_| {
                 let row = row.clone();
@@ -476,5 +479,55 @@ fn an_exact_birth_cannot_change_its_declared_types_on_a_repeated_join() {
         assert!(matches!(changed,JoinReply::JoinMismatch{field,..}if field=="types"));assert!(installed.lock().unwrap().is_empty());assert!(reported.borrow().is_none());
         let same=door.serve(dep.endpoint_id,JoinRequest::JoinNode{digest:(&digest).into(),types:vec!["app.one".into()]}).await;
         assert!(matches!(same,JoinReply::Joined{..}));assert_eq!(installed.lock().unwrap().len(),1);
+    });
+}
+
+/// CONTRACT (node-mesh-join.md step 10: the node's mesh-primary "records and publishes the node once
+/// as Pending when it accepts the node's join report, before it answers it. Every later report of
+/// that join, its retries and its `NodeJoined` included, belongs to that Pending and starts no
+/// other"): the door hands every accepted join report, under the row's name it admits it as, to its
+/// status authority's Pending before it answers `Joined`, a retry of the same report included (the
+/// authority applies that one as already applied); a refused report reaches no Pending. Must NOT
+/// happen: the answer built before the Pending, or a refused join recording one.
+#[test]
+fn the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no_refused_ones() {
+    let cell = "the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no_refused_ones";
+    let cap = capture(cell);
+    let dep = Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() };
+    cap.run(async {
+        let joins = Arc::new(Joins::default());
+        let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        let mut door = door_over(joins.clone(), installed.clone(), row);
+        let order: Arc<Mutex<Vec<String>>> = Arc::default();
+        door.pending = {
+            let order = order.clone();
+            Arc::new(move |d| {
+                order.lock().unwrap().push(format!("pending {} {}", d.node.name, d.node.incarnation.as_str()));
+                Box::pin(async {})
+            })
+        };
+        let answer = door.answer.clone();
+        door.answer = {
+            let order = order.clone();
+            Arc::new(move || {
+                order.lock().unwrap().push("answer".into());
+                answer()
+            })
+        };
+        let _reported = joins.expect(dep.clone());
+        let mut third = digest_of(&dep, "127.0.0.1:34571");
+        third.node.name = "mesh1.rpc.7".parse().unwrap();
+        let refused = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&third).into() }).await;
+        assert!(matches!(refused, JoinReply::JoinMismatch { .. }), "{refused:?}");
+        assert!(order.lock().unwrap().is_empty(), "a refused report records no Pending: {:?}", order.lock().unwrap());
+        let mut report = digest_of(&dep, "127.0.0.1:34571");
+        report.node.name = "mesh1.rpc.1".parse().unwrap();
+        for _ in 0..2 {
+            let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&report).into() }).await;
+            assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
+        }
+        let pending = format!("pending mesh1.rpc.1.old {}", dep.incarnation.as_str());
+        assert_eq!(*order.lock().unwrap(), vec![pending.clone(), "answer".to_string(), pending, "answer".to_string()], "each accepted report's Pending, under the row's name, precedes its answer");
     });
 }

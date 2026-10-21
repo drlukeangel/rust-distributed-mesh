@@ -65,7 +65,9 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// overlay. `node.start` makes the same process rejoin through the mesh primary: the stream carries
 /// `node.joined`, `node.started` and ends `Complete`, `node.get` shows the same birth
 /// `ready-for-traffic`, and every other node reports it holds that birth again with the overlay gone.
-/// No runtime exits, no node is created, nothing is repaired.
+/// The mesh primary records the start's Pending once, while it accepts the start's join report and
+/// before it answers it, and takes the start's `NodeJoined` as already applied (node-mesh-join.md
+/// step 10). No runtime exits, no node is created, nothing is repaired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_parks_the_process_and_a_start_rejoins_it_as_the_same_birth() {
     stop_then_start("a_stop_parks_the_process_and_a_start_rejoins_it_as_the_same_birth", NODE).await;
@@ -161,6 +163,16 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
+    // node-mesh-join.md step 10: the start's Pending is recorded and published once, by the mesh
+    // primary, when it accepts the start's join report and before it answers it; the start's
+    // NodeJoined frame belongs to that Pending and applies as already applied.
+    let cut = start_ns(of_stop("rdm.node_admin.node.update.via-stop-transport-cut")[0]);
+    let join = of_node("rdm.node_admin.node.update.via-join").into_iter().find(|sp| attr(sp, "outcome") == "installed" && start_ns(sp) > cut).unwrap_or_else(|| panic!("{node}: the start's join report is accepted after the stop's transport cut"));
+    let admitted: Vec<&Value> = of_node("rdm.node_admin.status.update.via-mesh-join-admitted").into_iter().filter(|sp| start_ns(sp) > cut && attr(sp, "outcome") == "applied").collect();
+    assert_eq!(admitted.len(), 1, "{node}: the start's Pending is recorded once, at its accepted join report: {admitted:#?}");
+    assert!(start_ns(admitted[0]) >= start_ns(join) && end_ns(admitted[0]) <= end_ns(join), "{node}: the Pending is recorded while the join report is accepted, before it is answered: pending {}, join {join}", admitted[0]);
+    let joined_frames: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "frame") == "node-joined" && attr(sp, "operation").starts_with("node.start:")).map(|sp| attr(sp, "outcome")).collect();
+    assert_eq!(joined_frames, vec!["already-applied".to_string()], "{node}: the start's NodeJoined belongs to the join report's Pending and starts no other");
     // The start's node.started names the start (node-status.md "Status report": "a start's Pending and
     // ReadyForTraffic"), applied by the mesh primary.
     let ready: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "frame") == "node-started" && attr(sp, "operation").starts_with("node.start:")).collect();

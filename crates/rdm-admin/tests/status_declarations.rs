@@ -2521,6 +2521,144 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
     assert_eq!(records[0].1.get("seq").map(String::as_str), Some("1"), "the progress position: {records:?}");
 }
 
+/// A start after a stop of mesh1.rpc.2 at its mesh-primary, carried on a real command stream: the
+/// birth's stop is recorded (its Stopped row, the book's stop), the start's join report is accepted
+/// and its Pending recorded there, before the join is answered (node-mesh-join.md step 10). With
+/// `ready_first`, the node's own ReadyForTraffic declaration is decided before its mesh-primary takes
+/// the start's `NodeJoined` frame; otherwise after it. What the mesh-primary holds of the birth once
+/// it took `NodeJoined` is checked by `joined`, before `NodeStarted` is sent; the spans the run
+/// exported are returned.
+fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_transport::membership::DigestBook) + Send + Sync + 'static) -> Capture {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
+    let cap = capture();
+    cap.run(async move {
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _gossip_router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let fabric = FabricId::mint();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        membership.set_mesh_primary(true);
+        let book = membership.book.clone();
+        let (rig, b) = rig_with_book(Some(book.clone())).await;
+        let rpc = &b["rpc2"];
+        let incarnation = rpc.node.incarnation_id.clone().unwrap();
+        assert!(book.record(rdm_core::MeshDigest { held_hash: Default::default(),
+            fabric_id: fabric,
+            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
+            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
+        }));
+        // The birth's stop: its Stopped row, and the book's stop of it.
+        let stop = rdm_core::LifecycleOp { node_id: rpc.node.node_id.clone(), incarnation: incarnation.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: format!("node.stop:{}", rpc.node.name), event_at_rafka_ms: 1 };
+        assert_eq!(rig.authority.stop_received(&stop).await, StatusReply::Applied);
+        assert!(book.stopped(stop), "the book holds the birth's stop");
+        // The start's join report, accepted at the door: the birth's next cycle begins and its Pending
+        // is recorded there, before the join is answered.
+        assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation).await, StatusReply::Applied, "the join report's Pending is recorded");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(NodeState::Pending));
+        // A later report of that join (a retry of the same report) belongs to that Pending and starts no other.
+        assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation).await, StatusReply::AlreadyApplied, "a retried join report applies as already applied");
+        if ready_first {
+            // Answered, the node runs its start and declares ReadyForTraffic before its NodeJoined frame is taken.
+            assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::ReadyForTraffic)).await), StatusReply::Applied, "the node's ReadyForTraffic, declared after its join was answered, applies over the join's Pending");
+        }
+        let server_delivery = Arc::new(OnceLock::<rdm_transport::Delivery>::new());
+        let (taken, release) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let (sd, t, r) = (server_delivery.clone(), taken.clone(), release.clone());
+        let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: NodeCommandRequest, sink| {
+            let (sd, t, r) = (sd.clone(), t.clone(), r.clone());
+            async move {
+                let NodeCommandRequest::StartNode { node_id, incarnation, .. } = req else { panic!("expected StartNode") };
+                let mut sink = sink.started(N::CommandAccepted { node_id, incarnation }).await.unwrap();
+                sink.data(N::NodeJoined).await.unwrap();
+                // The mesh-primary acknowledges a frame only once it recorded it: NodeJoined is taken.
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while rdm_transport::DeliveryStats::get(&sd.get().unwrap().stats().acks_received) < 2 { tokio::task::yield_now().await; }
+                }).await.expect("CommandAccepted and NodeJoined are recorded and acknowledged");
+                t.notify_one();
+                r.notified().await;
+                Ok(N::NodeStarted)
+            }
+        }).seal(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
+        server_delivery.set(server.delivery().clone()).unwrap_or_else(|_| panic!("one responder"));
+        let node_ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = node_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = Router::builder(node_ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: incarnation.clone() });
+        let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
+        assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, rig.authority.configure.clone(), Default::default()))).is_ok());
+        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b-start".into(), attempt: 1, operation: format!("node.start:{}", rpc.node.name) };
+        let (authority, target) = (rig.authority.clone(), rpc.node.clone());
+        let start = tokio::spawn(async move { authority.carry_lifecycle(&target, true, &context).await });
+        tokio::time::timeout(Duration::from_secs(10), taken.notified()).await.expect("the mesh-primary took the start's NodeJoined");
+        joined(&rig, rpc, &book);
+        if !ready_first {
+            assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::ReadyForTraffic)).await), StatusReply::Applied, "the node's ReadyForTraffic applies over the join's Pending");
+        }
+        release.notify_one();
+        let answer = tokio::time::timeout(Duration::from_secs(10), start).await.unwrap().unwrap();
+        assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(NodeState::ReadyForTraffic));
+        assert_eq!(book.member_status(&rpc.node.node_id, &incarnation), Some(rdm_core::MemberStatus::ReadyForTraffic));
+    });
+    cap
+}
+
+/// What the mesh-primary holds of mesh1.rpc.2's birth once it took the start's `NodeJoined`: the
+/// declared `state`, the member status `status`, its stop over and the birth held again.
+fn held_after_node_joined(rig: &Rig, rpc: &Birth, book: &rdm_transport::membership::DigestBook, state: NodeState, status: rdm_core::MemberStatus) {
+    let incarnation = rpc.node.incarnation_id.clone().unwrap();
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(state), "the start's NodeJoined belongs to the Pending its join report recorded: it applies as already applied and the birth stays declared {state:?}");
+    assert_eq!(book.member_status(&rpc.node.node_id, &incarnation), Some(status), "the book holds the birth {status:?}: NodeJoined sets nothing back");
+    assert!(book.get(rpc.node.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == incarnation), "the birth is held again from node.mesh.joined");
+    assert!(!book.in_flight().into_iter().any(|op| op.node_id == rpc.node.node_id && op.is_stop()), "its stop is cleared at node.mesh.joined");
+}
+
+/// The spans of `name` the cell's run exported for mesh1.rpc.2.
+fn of_rpc2(cap: &Capture, name: &str) -> Vec<BTreeMap<String, String>> {
+    cap.spans(name).into_iter().map(|(_, a)| a).filter(|a| a.get("node").map(String::as_str) == Some("mesh1.rpc.2") || a.get("member").map(String::as_str) == Some("mesh1.rpc.2")).collect()
+}
+
+/// CONTRACT (node-mesh-join.md step 10: the mesh-primary "records and publishes the node once as
+/// Pending when it accepts the node's join report, before it answers it. Every later report of that
+/// join, its retries and its `NodeJoined` included, belongs to that Pending and starts no other"): a
+/// start after a stop whose node declared ReadyForTraffic, once answered, before its mesh-primary
+/// took its `NodeJoined` frame stays ReadyForTraffic through that frame: declared ReadyForTraffic,
+/// its member status ReadyForTraffic, its stop cleared at node.mesh.joined and the birth held again;
+/// the birth's cycle begun once, at its join report. Must NOT happen: `NodeJoined` beginning another
+/// cycle and recording Pending again, or the book setting the ready birth back to Pending.
+#[test]
+fn a_starts_node_joined_taken_after_the_births_ready_declaration_leaves_it_ready_for_traffic() {
+    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(true, |rig, rpc, book| held_after_node_joined(rig, rpc, book, NodeState::ReadyForTraffic, rdm_core::MemberStatus::ReadyForTraffic));
+    let begun = of_rpc2(&cap, "rdm.node_admin.status.update.via-cycle-begun");
+    assert_eq!(begun.len(), 1, "the birth's cycle begins once, at its join report: {begun:?}");
+    let admitted = of_rpc2(&cap, "rdm.node_admin.status.update.via-mesh-join-admitted");
+    assert_eq!(admitted.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["applied".to_string(), "already-applied".to_string()], "the join report's Pending is recorded once; its retry applies as already applied: {admitted:?}");
+    let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.membership.update.via-node-joined");
+    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "ReadyForTraffic".to_string())], "the book took node.mesh.joined as already applied, holding the ready birth ready: {joined:?}");
+    let frames: Vec<_> = of_rpc2(&cap, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|a| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
+    assert_eq!(frames.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["already-applied".to_string()], "{frames:?}");
+}
+
+/// CONTRACT (node-mesh-join.md step 10, as above): a start after a stop whose mesh-primary takes its
+/// `NodeJoined` frame while the birth is still Pending from its join report records nothing again:
+/// declared Pending, its member status Pending, its stop cleared at node.mesh.joined and the birth
+/// held again; the birth's cycle begun once, at its join report; its ReadyForTraffic then applies.
+/// Must NOT happen: `NodeJoined` beginning a second cycle and putting a second Pending row.
+#[test]
+fn a_starts_node_joined_taken_while_the_birth_is_pending_from_its_join_report_begins_no_second_cycle() {
+    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(false, |rig, rpc, book| held_after_node_joined(rig, rpc, book, NodeState::Pending, rdm_core::MemberStatus::Pending));
+    let begun = of_rpc2(&cap, "rdm.node_admin.status.update.via-cycle-begun");
+    assert_eq!(begun.len(), 1, "the birth's cycle begins once, at its join report: {begun:?}");
+    let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.membership.update.via-node-joined");
+    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "Pending".to_string())], "the book took node.mesh.joined as already applied: {joined:?}");
+    let frames: Vec<_> = of_rpc2(&cap, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|a| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
+    assert_eq!(frames.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["already-applied".to_string()], "{frames:?}");
+}
+
 /// Q47/Q49: the stop's physical stream is cut after its closure report. The live responder sends
 /// the operation-named Q36 declaration on its endpoint, then its recovered terminal is AlreadyApplied.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

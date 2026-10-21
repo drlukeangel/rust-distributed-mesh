@@ -147,25 +147,11 @@ async fn command_mesh_join(
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
         // stop registers a parked one, from its runtime handle and its admitted digest.
-        // Its report, when the door admits it, is where the birth's next cycle begins and it is
-        // published Pending (node-mesh-join.md step 10): nothing is written before the command
-        // reached it (node-start.md step 2).
-        // The door runs it before it answers the join, so the birth's hook and its ready follow it.
-        let admitted: crate::join::OnAdmitted = {
-            let (authority, node, incarnation) = (authority.clone(), node.clone(), incarnation.clone());
-            Arc::new(move |d: rdm_core::MeshDigest| {
-                let (authority, node, incarnation) = (authority.clone(), node.clone(), incarnation.clone());
-                Box::pin(async move {
-                    if d.node.node_id != node.node_id || d.node.incarnation != incarnation {
-                        return;
-                    }
-                    let outcome = authority.commanded_join_admitted(&node, &incarnation).await;
-                    tracing::info_span!("rdm.node_admin.status.update.via-mesh-join-admitted", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), outcome = outcome.name(), "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the commanded join was admitted: the birth's next cycle begins and it is published Pending before the join is answered"));
-                })
-            })
-        };
-        if let Err(why) = runner.stopped_birth_or_live("node.mesh.join", &node.name).await.map(|(_, _, deployed)| runner.joins.expect_then(deployed, Some(admitted))) {
+        // Its report, when the door accepts it, is where the birth's next cycle begins and it is
+        // published Pending, before the join is answered (node-mesh-join.md step 10), as every
+        // accepted join report is: nothing is written before the command reached it (node-start.md
+        // step 2), and the birth's hook and its ready follow it.
+        if let Err(why) = runner.stopped_birth_or_live("node.mesh.join", &node.name).await.map(|(_, _, deployed)| runner.joins.expect(deployed)) {
             return format!("join-not-registered: {why}");
         }
         let req = StatusRequest::JoinMesh {

@@ -924,49 +924,86 @@ impl StatusAuthority {
     /// is held, as every applied state is.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
         let _operation = self.operation_effects.write().await;
-        self.begin_cycle_held(node, birth).await;
+        self.begin_cycle_held(&node.node_id, &node.name, birth).await;
     }
 
     /// `begin_cycle` under a hold of `operation_effects` its caller took.
-    async fn begin_cycle_held(&self, node: &crate::model::Node, birth: &IncarnationId) {
+    async fn begin_cycle_held(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId) {
         // The cut of its last cycle is not its next cycle's: a started birth holds connections again,
         // and is on its mesh again.
         {
             let mut declared = self.declared.lock().unwrap();
-            declared.connections_deleted.remove(&(node.node_id.clone(), birth.clone()));
-            declared.meshes_left.remove(&(node.node_id.clone(), birth.clone()));
+            declared.connections_deleted.remove(&(node_id.clone(), birth.clone()));
+            declared.meshes_left.remove(&(node_id.clone(), birth.clone()));
         }
-        let held = self.declared.lock().unwrap().node(&node.node_id, birth);
+        let held = self.declared.lock().unwrap().node(node_id, birth);
         let Some(state) = held else { return };
-        let outcome = match self.status_storage.remove_node_declared(&node.node_id, birth).await {
+        let outcome = match self.status_storage.remove_node_declared(node_id, birth).await {
             Ok(()) => {
                 let mut declared = self.declared.lock().unwrap();
-                declared.nodes.remove(&(node.node_id.clone(), birth.clone()));
-                declared.names.remove(&(node.node_id.clone(), birth.clone()));
+                declared.nodes.remove(&(node_id.clone(), birth.clone()));
+                declared.names.remove(&(node_id.clone(), birth.clone()));
                 "begun"
             }
             Err(_) => "refused",
         };
-        tracing::info_span!("rdm.node_admin.status.update.via-cycle-begun", node = %node.name, node_id = %node.node_id, incarnation_id = %birth.as_str(), held = ?state, outcome, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.status.update.via-cycle-begun", node = %name, node_id = %node_id, incarnation_id = %birth.as_str(), held = ?state, outcome, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
-    /// A commanded `node.mesh.join` admitted at this admin's join door (node-mesh-join.md step 10,
-    /// Q87): the birth's next cycle begins now, at its join and never before the command reached it
-    /// (node-start.md step 2), and it is published Pending once, as the Build path does on
-    /// `NodeJoined`; it is published ready-for-traffic only when its hook has passed and it declares so.
-    pub async fn commanded_join_admitted(&self, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
-        self.joined_pending(node, birth).await
+    /// The node's join report, accepted at this admin's join door (node-mesh-join.md step 10: the
+    /// node's mesh-primary "records and publishes the node once as Pending when it accepts the node's
+    /// join report, before it answers it"): at a first start, a start after a stop and a commanded join
+    /// alike, the birth's next cycle begins here, at its join and never before the command reached it
+    /// (node-start.md step 2), and it is recorded and published Pending; it is published
+    /// ready-for-traffic only when its hook has passed and it declares so. One hold of
+    /// `operation_effects`, so a declaration of the birth is committed before the begin or against the
+    /// Pending, never between them. A later report of that join (a retry) finds the birth Pending and
+    /// applies as already applied: it starts no other. One
+    /// `rdm.node_admin.status.update.via-mesh-join-admitted` span with the outcome.
+    pub async fn joined_pending(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId) -> StatusReply {
+        let reply = {
+            let _operation = self.operation_effects.write().await;
+            self.pending_held(node_id, name, birth).await
+        };
+        tracing::info_span!("rdm.node_admin.status.update.via-mesh-join-admitted", node = %name, node_id = %node_id, incarnation_id = %birth.as_str(), outcome = reply.name(), "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the join report was accepted: the birth's next cycle begins and it is published Pending before the join is answered"));
+        reply
     }
 
-    /// A start's join, commanded or inside a start (`NodeJoined`): the birth's next cycle begins and
-    /// it is published Pending under one hold of `operation_effects`, so a declaration of the birth is
-    /// committed before the begin or against the Pending, never between them.
-    pub async fn joined_pending(&self, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
-        let _operation = self.operation_effects.write().await;
-        self.begin_cycle_held(node, birth).await;
-        let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: birth.clone(), name: node.name.clone(), state: NodeState::Pending };
+    /// The birth's Pending at its accepted join report, under a hold of `operation_effects` its caller
+    /// took: already applied while the birth is Pending, else its next cycle begins and Pending is
+    /// recorded.
+    async fn pending_held(&self, node_id: &NodeId, name: &crate::model::PathName, birth: &IncarnationId) -> StatusReply {
+        if self.declared.lock().unwrap().node(node_id, birth) == Some(NodeState::Pending) {
+            return rdm_core::reply::already_applied();
+        }
+        self.begin_cycle_held(node_id, name, birth).await;
+        let row = crate::status_storage::NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: birth.clone(), name: name.clone(), state: NodeState::Pending };
         self.commit_held(Effect::Node(row, NodeState::Pending, None)).await
+    }
+
+    /// A start's `NodeJoined` frame (`node.mesh.joined`, `op` its exact birth): it belongs to the
+    /// Pending the birth's accepted join report recorded and starts no other (node-mesh-join.md step
+    /// 10). Under one hold of `operation_effects`: while the birth's declared state is in its new cycle
+    /// already (that Pending, or the ReadyForTraffic it declared since), the frame applies as already
+    /// applied: no new cycle and no second Pending row; its stop, if the book holds one, ends here all
+    /// the same, and the book holds the birth again with that state, never set back to Pending. A birth
+    /// whose join report this admin did not record is held Pending as before: its stop ends, its next
+    /// cycle begins and Pending is recorded.
+    pub async fn node_joined(&self, op: &rdm_core::LifecycleOp, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
+        let _operation = self.operation_effects.write().await;
+        let held = self.declared.lock().unwrap().node(&node.node_id, birth);
+        if let Some(state @ (NodeState::Pending | NodeState::ReadyForTraffic)) = held {
+            if let Some(book) = &self.book {
+                book.joined_already_applied(op, member_of_declared(state));
+            }
+            return rdm_core::reply::already_applied();
+        }
+        if let Some(book) = &self.book {
+            book.joined(op);
+        }
+        self.pending_held(&node.node_id, &node.name, birth).await
     }
 
     /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
@@ -1069,6 +1106,7 @@ impl StatusAuthority {
         let mut accepted = false;
         let mut closure = None;
         while let Some(item) = frames.next().await {
+            let mut joined_outcome: Option<&'static str> = None;
             let frame = match item {
                 Ok(frame) => frame,
                 Err(f) => return A::Indeterminate { code: match &f { rdm_transport::stream::StreamFailure::Indeterminate(c) => c.code(), _ => Code::Internal }, reason: format!("{} stream: {f:?}", request_name(start)) },
@@ -1091,9 +1129,9 @@ impl StatusAuthority {
                 }
                 R::StopConnectionsDeleted { receipt } if !start => { closure = Some(receipt.clone()); None }
                 R::NodeJoined if start => {
-                    if let Some(book) = &self.book { book.joined(&op); }
-                    let applied = self.joined_pending(node, &incarnation).await;
+                    let applied = self.node_joined(&op, node, &incarnation).await;
                     if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
+                    joined_outcome = Some(applied.name());
                     None
                 }
                 R::NodeStopped if !start => {
@@ -1111,8 +1149,9 @@ impl StatusAuthority {
                 R::Failed { step, reason, code } => Some(A::StartFailed { step: step.clone(), reason: reason.clone(), code: *code }),
                 _ => Some(if accepted { A::Indeterminate { code: Code::Internal, reason: format!("unexpected {} after acceptance", frame.name()) } } else { A::Refused { code: NodeCommand::classify_reply(&frame).code(), reply: format!("{}: {frame:?}", frame.name()) } }),
             };
-            let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder = %self.me, node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), operation = %ctx.operation, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame));
+            let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder = %self.me, node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), operation = %ctx.operation, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame), outcome = tracing::field::Empty);
             if let Some((invocation, seq)) = position { span.record("invocation_id", invocation.to_string()).record("seq", seq); }
+            if let Some(outcome) = joined_outcome { span.record("outcome", outcome); }
             span.in_scope(|| tracing::info!("the mesh-primary recorded the node's command frame before acknowledging its recovery"));
             frames.accepted().await;
             if let Some(result) = result {

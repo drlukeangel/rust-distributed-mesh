@@ -29,7 +29,7 @@ Those pages link here and restate nothing.
 | Progress | `joining` from the report until the mesh holds, and the backbone too for a node-admin; the node publishes nothing in that state |
 | Completion | `node.mesh.joined` on the commanding stream once the report is accepted and the mesh holds (and the backbone, a node-admin): the first `Digest` heartbeat follows it, and the mesh-primary's one Pending publish for the birth |
 | Refusals | The report's: `JoinMismatch { field, deployed, reported }`, `NotAuthority { primary }`, `DeploymentAbandoned { build_id, attempt, node_id, incarnation }`, `CertRefused { name, detail }`, `NotReady`, `Busy`, `ConnectionsDeleting`, `Malformed`; a refused report fails the primitive by that name and the node joins nothing. `PeerUnresolved` and `Unauthorized` are codec positions only: a mesh receiver never sends either ([node-rpc.md](../node-rpc.md#40-error-truth-table) refusal table) |
-| Gossip | No new frame. The join's visible effect is the node's first Digest and, from the mesh-primary, the one Pending publish once it hears the node as a neighbour; NodeStopped or NodeRestarting for that birth is cleared at `node.mesh.joined` |
+| Gossip | No new frame. The join's visible effect is the node's first Digest and, from the mesh-primary, the one Pending publish when it accepts the node's join report, before it answers it; NodeStopped or NodeRestarting for that birth is cleared at `node.mesh.joined` |
 | Wire | The report is [Join, op `0x1D`](../node-rpc-envelope.md#join-op-0x1d-rdm). The standalone command is `JoinMesh { node_id, incarnation, build_id, attempt, operation }` on 0x1B, answered `MeshJoined` on completion; an appended variant pair, `durable format moved`, retiring the legacy `Rejoin` control frame |
 | Spans | `rdm.node.mesh.update.via-joining` at the report, `via-joined` once per mesh joined, each naming mesh, MeshId and which (`own` or `backbone`); the authority's `rdm.node_admin.node.update.via-join` on acceptance |
 
@@ -68,8 +68,10 @@ Those pages link here and restate nothing.
    before it has one reaches no one. A node alone in its mesh, whose handed projection and book hold no
    other member of it, does not wait (Q88); an empty projection is not being alone. Then
    `node.mesh.joined`; the node's first `Digest` heartbeat follows, status `pending`.
-10. The mesh-primary, hearing the node as a neighbour, publishes it once as Pending so every node
-    that held it stopped or restarting hears the rejoin. What follows, the hook, the topology
+10. The node's mesh-primary (the fabric-primary for a mesh with no primary) records and publishes
+    the node once as Pending when it accepts the node's join report, before it answers it. Every
+    later report of that join, its retries and its `NodeJoined` included, belongs to that Pending
+    and starts no other; the node publishes no Pending of its own. What follows, the hook, the topology
     read, the Build floor and rafka-time refreshed last, is
     [node.start](node-start.md#end-to-end-sequence) steps 3 to 5, inside a start and on the
     standalone command alike: a birth commanded back leaves its channels, runs the whole sequence
@@ -247,7 +249,7 @@ sequenceDiagram
         Note over N: 7. install the row's name, adopt rafka-time, install the cert (first start)
         Note over N: 8. join the mesh f(FabricId, MeshId), via-joined, a node-admin also the backbone
         Note over N: 9. node.mesh.joined, first Digest heartbeat on the mesh
-        Note over M: 10. hears the node as a neighbour, publishes it once as Pending
+        Note over M: 10. records and publishes the node once as Pending when it accepts the node's join report, before it answers it
         opt standalone
             N-->>M: MeshJoined { joined }
         end

@@ -3020,7 +3020,8 @@ impl Membership {
 
     /// Hold the digest a birth presented at its join (`JoinNode`), and register where it is. A join
     /// digest carries no status: an own-mesh member is held as heard, with the status this book holds
-    /// for it ([`DigestBook::record_joined`]); a peer mesh's member is topology, its held status kept.
+    /// for it and none authored from the digest ([`DigestBook::record_joined`]); a peer mesh's member
+    /// is topology, its held status kept.
     pub fn learn(&self, d: MeshDigest, via: &'static str) {
         if d.fabric_id != self.fabric {
             return;
@@ -5059,6 +5060,24 @@ impl DigestBook {
     /// node.started. `false` when this book holds no stop of that birth and no digest of it of its own
     /// mesh.
     pub fn joined(&self, op: &LifecycleOp) -> bool {
+        self.take_joined(op, None)
+    }
+
+    /// [`Self::joined`] of a birth whose Pending its mesh-primary recorded when it accepted the
+    /// birth's join report (node-mesh-join.md step 10: "Every later report of that join, its retries
+    /// and its `NodeJoined` included, belongs to that Pending and starts no other"): `node.mesh.joined`
+    /// applies as already applied. A stop of that exact birth ends here all the same ("NodeStopped or
+    /// NodeRestarting for that birth is cleared at `node.mesh.joined`"), and the birth is held again with
+    /// `status`, the state its mesh-primary holds for it: Pending, or the ReadyForTraffic it declared
+    /// since. Never set back to Pending.
+    pub fn joined_already_applied(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
+        self.take_joined(op, Some(status))
+    }
+
+    /// `node.mesh.joined` of the birth `op` names: held `Pending` ([`Self::joined`]), or with the status
+    /// its mesh-primary already holds for it (`already`, [`Self::joined_already_applied`]).
+    fn take_joined(&self, op: &LifecycleOp, already: Option<rdm_core::MemberStatus>) -> bool {
+        let status = already.unwrap_or(rdm_core::MemberStatus::Pending);
         let mark = self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).cloned().filter(|m| m.incarnation == op.incarnation);
         let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| mark.is_some() && o.is_stop() && o.node_id == op.node_id).map(|o| o.operation).collect();
         let (held_again, held_digest_seq) = match &mark {
@@ -5072,7 +5091,7 @@ impl DigestBook {
                 });
                 if let Some(d) = &again {
                     self.inner.lock().unwrap().insert(op.node_id.to_string(), (d.clone(), Instant::now(), Heard::Direct));
-                    self.author_status(op.node_id.as_str(), &op.incarnation, rdm_core::MemberStatus::Pending);
+                    self.author_status(op.node_id.as_str(), &op.incarnation, status);
                     self.heard.send_modify(|v| *v += 1);
                     self.births.send_modify(|v| *v += 1);
                     self.digests.send_modify(|v| *v += 1);
@@ -5083,7 +5102,7 @@ impl DigestBook {
                 let own_mesh = self.own_mesh.lock().unwrap().clone();
                 let held = self.inner.lock().unwrap().get(op.node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == op.incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.digest_seq);
                 let Some(seq) = held else { return false };
-                self.author_status(op.node_id.as_str(), &op.incarnation, rdm_core::MemberStatus::Pending);
+                self.author_status(op.node_id.as_str(), &op.incarnation, status);
                 (true, seq)
             }
         };
@@ -5097,11 +5116,12 @@ impl DigestBook {
             attempt = op.attempt,
             operation = %op.operation,
             stops_cleared = %cleared.join(","),
-            status = "Pending",
+            status = ?status,
+            outcome = if already.is_some() { "already-applied" } else { "applied" },
             held_again,
             held_digest_seq,
         )
-        .in_scope(|| tracing::info!("the mesh-primary took node.joined: the birth is held Pending, its stop, if one was held, is over; its projection says so"));
+        .in_scope(|| tracing::info!("the mesh-primary took node.joined: the birth is held with the status its mesh-primary holds, its stop, if one was held, is over; its projection says so"));
         true
     }
 
@@ -5736,9 +5756,9 @@ impl DigestBook {
 
     /// Hold the digest a birth presented at its join (`JoinNode`, at the admin that deployed it or
     /// commanded its start), as forwarded: its address and liveness, and no status, for a join digest
-    /// carries none. An own-mesh birth keeps the status this book holds for it; a first start's, which
-    /// it holds none for, is `Pending` (states.md "Who sets each state": node pending, from the node's
-    /// node.joined report).
+    /// carries none. An own-mesh birth keeps the status this book holds for it, and the join digest
+    /// authors none: its Pending is its mesh-primary's, recorded once when it accepts the join report
+    /// (node-mesh-join.md step 10), through its status authority ([`Self::reported`]).
     pub fn record_joined(&self, d: MeshDigest) -> bool {
         self.record_forwarded_inner(d, Instant::now(), Carried::NoStatus)
     }
@@ -5773,27 +5793,12 @@ impl DigestBook {
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
-        // status): that status is held. A join digest carries none: the held status stands, and a
-        // first start's, which this book holds none for, is set Pending by its mesh-primary from that
-        // node.joined report.
+        // status): that status is held. A join digest carries none: the held status stands, and the
+        // birth's Pending is its mesh-primary's, recorded when it accepted the join report
+        // (node-mesh-join.md step 10), never this digest's.
         if own_mesh && carried == Carried::Status {
             let prior = self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status)).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| s);
             heard_changed |= prior != Some(d.status);
-        }
-        let first = carried == Carried::NoStatus && own_mesh && self.primary.load(Ordering::Relaxed) && !self.member_statuses.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(inc, _)| *inc == d.node.incarnation);
-        if first {
-            self.author_status(d.node.node_id.as_str(), &d.node.incarnation, rdm_core::MemberStatus::Pending);
-            tracing::info_span!(
-                "rdm.mesh.membership.update.from-join-report",
-                node = %self.holder.lock().unwrap(),
-                member = %d.node.name,
-                node_id = %d.node.node_id,
-                incarnation_id = %d.node.incarnation.as_str(),
-                node_state = ?d.node_state,
-                digest_seq = d.digest_seq,
-                status = "Pending",
-            )
-            .in_scope(|| tracing::info!("the mesh-primary took a first start's join report: the birth is held Pending; its projection says so"));
         }
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
@@ -6846,7 +6851,9 @@ mod tests {
         hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "the join report");
-        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::Pending), "held Pending from node.joined");
+        assert_eq!(book.member_status(&id, &inc), None, "a join digest authors no status");
+        assert!(book.reported(&id, &inc, MemberStatus::Pending), "its mesh-primary records the accepted join report's Pending");
+        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::Pending), "held Pending from the join report");
         assert!(book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
         // The digest the intake read the status for before node.started, written after it.
         let since = Instant::now();
@@ -6866,7 +6873,7 @@ mod tests {
     /// mesh-primary that takes the node.started of a birth of its own mesh it holds no digest of yet (a
     /// primary born while the member was silent decides its declaration from durable rows, Q11) holds the
     /// birth ready-for-traffic and spans `from-node-started`. The birth's digest, arriving after, finds
-    /// its status held: a join digest seeds nothing (no `from-join-report`), a heartbeat moves nothing,
+    /// its status held: a join digest authors nothing, a heartbeat moves nothing,
     /// and every read hands the birth out ready-for-traffic. Must NOT happen: the re-born primary applying
     /// a resumed member's ReadyForTraffic, authoring nothing, then publishing the member Pending for good
     /// (kept/e6s7-i144-e4-re-born-admin-start-unheld, traces 8e6533b70a42c1e26c5786b9de02718a and
@@ -6887,7 +6894,7 @@ mod tests {
         let started = spans.named("rdm.mesh.membership.update.from-node-started");
         assert_eq!(started.iter().map(|f| f["member"].clone()).collect::<Vec<_>>(), vec!["mesh1.rpc.1".to_string()], "from-node-started names the birth: {started:#?}");
         assert!(book.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "its digest arrives with no status");
-        assert!(spans.named("rdm.mesh.membership.update.from-join-report").is_empty(), "nothing is seeded Pending");
+        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "nothing is seeded Pending");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 101)), "a heartbeat");
         let ready = Some(MemberStatus::ReadyForTraffic);
         assert_eq!(book.member_status(&id, &inc), ready, "the held status stands");

@@ -459,6 +459,15 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             }}),
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
             known: Arc::new(|| Box::pin(async {})),
+            // The admin side records the accepted join report's Pending as a node-admin's status
+            // authority does, before the join is answered (node-mesh-join.md step 10).
+            pending: {
+                let book = membership.book.clone();
+                Arc::new(move |d| {
+                    book.reported(&d.node.node_id, &d.node.incarnation, rdm_core::MemberStatus::Pending);
+                    Box::pin(async {})
+                })
+            },
             primary: {
                 let membership = membership.clone();
                 Arc::new(move || membership.mesh_primary().ok().map(|p| p.node.name.to_string()))
