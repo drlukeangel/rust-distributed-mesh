@@ -271,6 +271,9 @@ impl ConnectionsStorage for FaultedConnectionsStorage {
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         self.inner.connections().await
     }
+    async fn connections_to(&self, destination: &rdm_core::NodeId) -> Result<Vec<NodeConnection>, StorageError> {
+        self.inner.connections_to(destination).await
+    }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.inner.remove_connection(index).await
     }

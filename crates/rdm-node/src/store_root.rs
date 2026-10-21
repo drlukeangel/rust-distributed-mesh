@@ -159,6 +159,13 @@ impl StoreRoot {
         self.dir.join("connections").join(node.to_string())
     }
 
+    /// `connections-by-destination/<node id>/`: the by-destination index of the connections rows
+    /// (connections.md §3.1), one member per (source, destination, alpn, kind) whose destination is
+    /// that node, written by each source beside its own row.
+    pub fn connections_to(&self, destination: &crate::model::NodeId) -> PathBuf {
+        self.dir.join("connections-by-destination").join(destination.as_str())
+    }
+
     /// `status/<mesh>/`.
     pub fn status(&self, mesh: &str) -> PathBuf {
         self.dir.join("status").join(mesh)

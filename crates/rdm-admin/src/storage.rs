@@ -1483,12 +1483,55 @@ mod tests {
         assert_eq!(writer.connections().await.unwrap(), [down.clone()], "the writer reads the rows it holds");
         assert_eq!(writer.history().await.unwrap(), [up.clone()], "the writer reads the log lines it holds");
         let published = root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
-        assert_eq!(published.summary(), "connections/mesh1.admin.1=1,connections/mesh1.admin.1/history=1", "{published:?}");
+        // The by-destination index's members are held and published with the rows (connections.md
+        // §3.1): the later row names another birth at the destination's path, so the first birth's
+        // index holds its removal and the second's the member.
+        let index = |c: &NodeConnection| format!("connections-by-destination/{}=1", c.destination.node_id);
+        assert_eq!(published.summary(), format!("connections/mesh1.admin.1=1,connections/mesh1.admin.1/history=1,{},{}", index(&up), index(&down)), "{published:?}");
         assert_eq!(keys(&dir).len(), 1, "one row per (source, destination, kind): {}", dir.display());
         assert!(dir.join("history.jsonl").exists());
         let reader = FileConnectionsStorage::open(&root, &node, &IncarnationId::mint()).await.unwrap();
         assert_eq!(reader.connections().await.unwrap(), [down]);
         assert_eq!(reader.history().await.unwrap(), [up]);
+    }
+
+    /// CONTRACT (connections.md §3.1: "by-destination prefix = hash(destination)", one latest member
+    /// per (source, destination, alpn, kind)): the store's by-destination index names every current
+    /// row whose destination is one node, whichever source wrote it and in whichever mesh, read by any
+    /// process on the root; a removed row leaves it, and a row whose destination is re-born at its
+    /// path.name under a new node id leaves the old node's index for the new one's. Memory and file
+    /// alike; on the file root a read of a node nobody connects to makes no directory.
+    #[tokio::test]
+    async fn the_by_destination_index_names_every_source_holding_a_row_to_one_node_in_any_mesh() {
+        let d = crate::test_support::tempdir("by-destination");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
+        let destination = end("mesh1.rpc.1");
+        let row = |source: &str, destination: &ConnectionEnd| NodeConnection { source: end(source), destination: destination.clone(), ..fact(ConnectionState::Connected) };
+        let (a, b) = (row("mesh1.rpc.2", &destination), row("mesh2.rpc.1", &destination));
+        let reborn = ConnectionEnd { node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()), ..destination.clone() };
+        let again = NodeConnection { id: rdm_core::ConnectionId::mint(), destination: reborn.clone(), ..a.clone() };
+        let check = async |sa: &dyn ConnectionsStorage, sb: &dyn ConnectionsStorage, reader: &dyn ConnectionsStorage, backend: &str| {
+            sa.put_connection(&a).await.unwrap();
+            sb.put_connection(&b).await.unwrap();
+            let mut held = reader.connections_to(&destination.node_id).await.unwrap();
+            held.sort_by_key(|r| r.source.name.to_string());
+            assert_eq!(held, [a.clone(), b.clone()], "{backend}: both sources, in two meshes, hold a row to the node");
+            assert!(reader.connections_to(&a.source.node_id).await.unwrap().is_empty(), "{backend}: a source is no destination");
+            sb.remove_connection(&b.index()).await.unwrap();
+            assert_eq!(reader.connections_to(&destination.node_id).await.unwrap(), [a.clone()], "{backend}: a removed row leaves the index");
+            sa.put_connection(&again).await.unwrap();
+            assert!(reader.connections_to(&destination.node_id).await.unwrap().is_empty(), "{backend}: the row now names the birth re-born at the path: the old node's index holds no member of it");
+            assert_eq!(reader.connections_to(&reborn.node_id).await.unwrap(), [again.clone()], "{backend}: the new node's index holds it");
+        };
+        let mem = MemoryConnectionsStorage::default();
+        check(&mem, &mem, &mem, "memory").await;
+        let open = async |name: &str| FileConnectionsStorage::open(&root, &name.parse().unwrap(), &IncarnationId::mint()).await.unwrap();
+        let (fa, fb, reader) = (open("mesh1.rpc.2").await, open("mesh2.rpc.1").await, open("mesh1.admin.1").await);
+        check(&fa, &fb, &reader, "file").await;
+        assert!(!root.connections_to(&a.source.node_id).exists(), "a read of a node nobody connects to makes no directory on the root");
     }
 
     /// CONTRACT (R14 item 4 on the shared root): the fabric-primary seat also authorizes rows of

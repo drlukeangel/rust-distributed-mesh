@@ -29,6 +29,11 @@ pub trait ConnectionsStorage: Send + Sync {
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError>;
     /// The raw log, oldest first.
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError>;
+    /// Every current connection row, in any mesh and of any source, whose destination is the node
+    /// `destination` (every incarnation of it): one read of the store's by-destination index
+    /// (connections.md §3.1). Who holds a connection to a node, never whether it is reachable: a
+    /// row nobody marked dropped survives a cut or a crashed source.
+    async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<NodeConnection>, StorageError>;
     /// Every resident Direct connection fact across the shared connections store (`connections.md`
     /// §3.2, §4.1: each source writes under `connections/<node>/`; carrier discovery reads the
     /// fleet-wide active Direct graph from the store).
@@ -54,6 +59,9 @@ impl ConnectionsStorage for MemoryConnectionsStorage {
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         Ok(self.0.lock().unwrap().values().cloned().collect())
+    }
+    async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<NodeConnection>, StorageError> {
+        Ok(self.0.lock().unwrap().values().filter(|r| &r.destination.node_id == destination).cloned().collect())
     }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.lock().unwrap().remove(index);
@@ -82,9 +90,55 @@ fn connection_key(i: &ConnectionIndex) -> String {
 
 #[cfg(feature = "file-backend")]
 /// `<store root>/connections/<node>/<source>--<destination>--<kind>.json` and its raw log
-/// `history.jsonl`: the node's own connections rows, written by the node itself.
+/// `history.jsonl`: the node's own connections rows, written by the node itself; and each row's
+/// member of the by-destination index under `connections-by-destination/<destination node id>/`.
 #[derive(Debug)]
-pub struct FileConnectionsStorage(FileRecords, std::sync::Arc<HistoryLog>, std::path::PathBuf);
+pub struct FileConnectionsStorage(FileRecords, std::sync::Arc<HistoryLog>, std::path::PathBuf, ByDestination);
+
+#[cfg(feature = "file-backend")]
+/// The by-destination index's stores (connections.md §3.1), one per destination node id, opened on
+/// first use on the same store root and by the same writer as the node's own rows.
+struct ByDestination {
+    root: crate::store_root::StoreRoot,
+    writer: IncarnationId,
+    stores: tokio::sync::Mutex<std::collections::HashMap<crate::model::NodeId, FileRecords>>,
+}
+
+#[cfg(feature = "file-backend")]
+impl std::fmt::Debug for ByDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByDestination").field("writer", &self.writer).finish()
+    }
+}
+
+#[cfg(feature = "file-backend")]
+impl ByDestination {
+    /// The index's store for `destination`, opened (its directory made) on first use.
+    async fn store(&self, destination: &crate::model::NodeId) -> Result<FileRecords, StorageError> {
+        let mut stores = self.stores.lock().await;
+        if let Some(store) = stores.get(destination) {
+            return Ok(store.clone());
+        }
+        let store = self.root.records(&self.root.connections_to(destination), "", &self.writer).await?;
+        stores.insert(destination.clone(), store.clone());
+        Ok(store)
+    }
+
+    /// The index's store for `destination` when one is held here or its directory stands on the root:
+    /// a read of a node nobody holds a connection to makes no directory.
+    async fn existing(&self, destination: &crate::model::NodeId) -> Result<Option<FileRecords>, StorageError> {
+        if self.stores.lock().await.contains_key(destination) {
+            return self.store(destination).await.map(Some);
+        }
+        let dir = self.root.connections_to(destination);
+        let at = dir.clone();
+        match crate::blocking::blocking_io(move || std::fs::metadata(&at)).await {
+            Ok(_) => self.store(destination).await.map(Some),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
+        }
+    }
+}
 
 #[cfg(feature = "file-backend")]
 /// A node's raw connection log, `history.jsonl`: appended one line per fact, one appender at a
@@ -149,7 +203,8 @@ impl FileConnectionsStorage {
         if !root.scratchpad().is_some_and(|s| s.enrol(log.clone())) {
             *log.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
-        Ok(Self(records, log, connections_root))
+        let by_destination = ByDestination { root: root.clone(), writer: writer.clone(), stores: tokio::sync::Mutex::new(Default::default()) };
+        Ok(Self(records, log, connections_root, by_destination))
     }
 
     /// Append `fact` to the raw log, one appender at a time: held while the log holds its lines,
@@ -170,14 +225,38 @@ impl FileConnectionsStorage {
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl ConnectionsStorage for FileConnectionsStorage {
+    /// The row, then its member of the by-destination index: the row is the source's own truth, the
+    /// member only says who holds a connection to its destination. The key names the destination by
+    /// path.name, so a row it replaces may name an earlier birth at that path under another node id
+    /// (re-born there): that birth's member leaves its index, one member per key (connections.md §3.1).
     async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
-        self.0.write(&connection_key(&fact.index()), CONNECTION_FORMAT, fact).await
+        let key = connection_key(&fact.index());
+        let replaced: Option<NodeConnection> = self.0.read(&key, CONNECTION_FORMAT).await?;
+        self.0.write(&key, CONNECTION_FORMAT, fact).await?;
+        if let Some(earlier) = replaced.filter(|r| r.destination.node_id != fact.destination.node_id) {
+            self.3.store(&earlier.destination.node_id).await?.remove(&key).await?;
+        }
+        self.3.store(&fact.destination.node_id).await?.write(&key, CONNECTION_FORMAT, fact).await
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         self.0.list(CONNECTION_FORMAT).await
     }
+    async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<NodeConnection>, StorageError> {
+        match self.3.existing(destination).await? {
+            Some(store) => store.list(CONNECTION_FORMAT).await,
+            None => Ok(Vec::new()),
+        }
+    }
+    /// The row's index member is removed with it, read from the row (the index names the
+    /// destination's node id, which the row's index key does not carry).
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
-        self.0.remove(&connection_key(index)).await.map(|_| ())
+        let key = connection_key(index);
+        let row: Option<NodeConnection> = self.0.read(&key, CONNECTION_FORMAT).await?;
+        self.0.remove(&key).await?;
+        if let Some(row) = row {
+            self.3.store(&row.destination.node_id).await?.remove(&key).await?;
+        }
+        Ok(())
     }
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
         self.append_history_line(fact).await

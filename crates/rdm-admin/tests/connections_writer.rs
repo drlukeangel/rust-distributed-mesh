@@ -322,6 +322,9 @@ impl ConnectionsStorage for RefusingIndex {
     async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.inner.connections().await
     }
+    async fn connections_to(&self, destination: &rdm_core::NodeId) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
+        self.inner.connections_to(destination).await
+    }
     async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.remove_connection(index).await
     }
@@ -410,6 +413,9 @@ impl ConnectionsStorage for SlowIndex {
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.0.connections().await
+    }
+    async fn connections_to(&self, destination: &rdm_core::NodeId) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
+        self.0.connections_to(destination).await
     }
     async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.remove_connection(index).await
@@ -518,6 +524,9 @@ impl ConnectionsStorage for SlowFirstPut {
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.0.connections().await
+    }
+    async fn connections_to(&self, destination: &rdm_core::NodeId) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
+        self.0.connections_to(destination).await
     }
     async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.remove_connection(index).await
