@@ -2066,9 +2066,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
 
                                     // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
                                     // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
-                                    // topology shows PendingReconnect, half a floor after the mark: a ping (op 1), and when it
-                                    // answers the status kick (op 27); when it does not, the same kick through a live node of its
-                                    // mesh on the ViaPeer route. The node's status lands on its row in nodes.storage and in the view.
+                                    // topology shows PendingReconnect, half a floor after the mark, with the one ladder
+                                    // (node-tickle.md, `offline::tickle`): the probe (op 27) direct, and when it does not answer,
+                                    // the same probe through up to two live nodes of its mesh at once on the ViaPeer route. The
+                                    // node's status lands on its row in nodes.storage and in the view.
                                     let recovery = RecoverySubmitter {
                                         me: name.clone(),
                                         topology: control.topology.clone(),
@@ -2096,10 +2097,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
                                             let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
                                             let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
-                                            // The births whose kick answered `Current`: a round ends in a later tick than the
-                                            // one that began it, so the set outlives the tick; an entry is taken when its
-                                            // birth is folded as reached (node-recovery.md step 2; Q87).
-                                            let answered_current: Arc<Mutex<HashSet<String>>> = Arc::default();
                                             let floor = rdm_transport::membership::staleness_floor();
                                             let mut written: WrittenSilence = HashMap::new();
                                             let mut heard_changes = recovery.book.heard_changes();
@@ -2170,10 +2167,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 .map(|s| crate::offline::marked_from(s, &marks))
                                                 .collect();
                                                 let client = Some(runner.node_rpc.client.clone());
-                                                // The tickle: ask the exact birth to reassert itself.
-                                                // Protocol name: ProbeNodeState.
-                                                let kick_of = |n: &Node, incarnation: &crate::model::IncarnationId| rdm_core::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
-                                                let own_id = me_id.clone();
+                                                // The one ladder's view of the carriers: this tick's, shared by its rounds.
+                                                let ladder_view = Arc::new(view.clone());
                                                 // What the tick watches decides "heard again" (`heard_against`, R-FM1).
                                                 let in_view: HashSet<String> = heard_against(&view, &watched);
                                                 for ((nid, _), v) in verdicts.lock().unwrap().iter() {
@@ -2190,77 +2185,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         floor.as_millis() as u64 / 2,
                                                         floor.as_millis() as u64,
                                                         |id| {
-                                                            let (client, node) = (client.clone(), watched.get(&id).cloned());
-                                                            let answered_current = answered_current.clone();
+                                                            // The one ladder over the birth (node-tickle.md): the probe direct, then
+                                                            // through up to two ready members of its mesh at once, this admin never
+                                                            // one of them. A birth the tick does not hold, or an admin without a Node
+                                                            // RPC client, runs no ladder, by name.
+                                                            let (client, node, view) = (client.clone(), watched.get(&id).cloned(), ladder_view.clone());
+                                                            let (me_id, me) = (me_id.clone(), me.to_string());
                                                             async move {
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
-                                                                let target = rdm_transport::NodeTarget::ExactNode(node.node_id.clone());
-                                                                // One QUIC connect, direct (node-recovery.md step 2): asked once, never
-                                                                // resent; the ladder, not this call, goes on to the peers.
-                                                                let once = rdm_transport::CallOptions { once: true, ..rdm_transport::CallOptions::default() };
-                                                                let ping = rdm_core::ping::PingRequest::Ping { payload: b"tickle".to_vec() };
-                                                                let (out, _) = client.call::<rdm_core::ping::Ping>(&target, &ping, &once).await;
-                                                                if out.reply().is_none() {
-                                                                    return Err(format!("{} did not answer the ping: {}", node.name, out.name()));
-                                                                }
-                                                                // The ping answered: the status kick. The node answers its status, and a
-                                                                // birth this admin holds off its mesh (the ladder tickles no other) that
-                                                                // answers Current is commanded back through node.mesh.join (node-tickle.md
-                                                                // "What follows", node-recovery.md step 2, Q87).
-                                                                let Some(incarnation) = node.incarnation_id.clone() else { return Err(format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id)) };
-                                                                let birth = rdm_client::ExactBirth { target: target.clone(), node_id: node.node_id.clone(), incarnation };
-                                                                let kick = match rdm_client::NodeRpc::new(&client).get(&birth, &once).await {
-                                                                    Ok(reply) => {
-                                                                        let name = reply.name();
-                                                                        if matches!(reply, rdm_core::status::StatusReply::Current { .. }) {
-                                                                            answered_current.lock().unwrap().insert(node.node_id.to_string());
-                                                                        }
-                                                                        name
-                                                                    }
-                                                                    Err(end) => end.rpc_name(),
-                                                                };
-                                                                tracing::info!(node = %node.name, kick, "status kick after an answered ping");
-                                                                Ok(())
-                                                            }
-                                                        },
-                                                        |id| {
-                                                            let (client, node) = (client.clone(), watched.get(&id).cloned());
-                                                            let answered_current = answered_current.clone();
-                                                            // Carriers from the topology: every ready member of the target's mesh
-                                                            // other than the target and this admin, whatever its kind (every node
-                                                            // serves the core Forward op).
-                                                            let carriers: Vec<Node> = view
-                                                                .members()
-                                                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.node_id != own_id && c.status == NodeStatus::ReadyForTraffic)
-                                                                .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
-                                                                .cloned()
-                                                                .collect();
-                                                            async move {
-                                                                let (Some(node), Some(client)) = (node, client) else { return crate::offline::ViaPeerVerdict::CandidatesUnreadable(format!("{id} is not in the topology, or this admin has no Node RPC client")) };
-                                                                let Some(incarnation) = node.incarnation_id.clone() else {
-                                                                    return crate::offline::ViaPeerVerdict::CandidatesUnreadable(format!("{} ({}) holds no recorded birth: there is no exact birth to probe", node.name, node.node_id));
-                                                                };
-                                                                // Every probe names the same exact birth: one kick, by node id and incarnation.
-                                                                let kick = kick_of(&node, &incarnation);
-                                                                let (node, client, kick) = (&node, &client, &kick);
-                                                                let peers: Vec<_> = carriers
-                                                                    .iter()
-                                                                    .map(|c| {
-                                                                        let route = rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
-                                                                        let answered_current = answered_current.clone();
-                                                                        let probe = async move {
-                                                                            let (out, _, _) = client.call_routed::<rdm_core::status::Status>(&node.node_id, &route, kick, &rdm_transport::CallOptions::default()).await;
-                                                                            let reply = out.reply().map(|r| r.value().clone());
-                                                                            if matches!(reply, Some(rdm_core::status::StatusReply::Current { .. })) {
-                                                                                answered_current.lock().unwrap().insert(node.node_id.to_string());
-                                                                            }
-                                                                            reply
-                                                                        };
-                                                                        (c.name.to_string(), probe)
-                                                                    })
-                                                                    .collect();
-                                                                crate::offline::via_peer_verdict(&node.node_id, &incarnation, peers).await
+                                                                crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me }).await
                                                             }
                                                         },
                                                         |id| {
@@ -2315,7 +2249,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // A held birth heard again by its digest is commanded back through node.mesh.join
                                                     // too (Q87: the view returns on the bare digest, its cert, time and cache do not):
                                                     // by the mesh-primary, on its own task.
-                                                    answered_current.lock().unwrap().remove(id);
                                                     if holds_seat {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             // The tick held this birth off its mesh (it was tickled and returned): the view's
@@ -2345,11 +2278,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 for id in &report.reachable_silent {
-                                                    // A held birth that answered its kick `Current` is commanded back through
-                                                    // node.mesh.join (Q87): its commanded start runs on its own task, after the ladder's fold.
-                                                    // Only the mesh-primary commands its members (commands go down); every admin
-                                                    // keeps the bookkeeping.
-                                                    if answered_current.lock().unwrap().remove(id) && holds_seat {
+                                                    // A held birth that answered its probe `Current` (`report.answered_current`) is
+                                                    // commanded back through node.mesh.join (Q87): its commanded start runs on its own
+                                                    // task, after the ladder's fold. Only the mesh-primary commands its members
+                                                    // (commands go down); every admin keeps the bookkeeping.
+                                                    if report.answered_current.contains(id) && holds_seat {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
                                                             // ready-for-traffic is its last word before the silence (Q87).

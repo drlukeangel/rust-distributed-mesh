@@ -1,7 +1,8 @@
 //! Node tickle primitive (`docs/architecture/lifecycles/node-tickle.md`).
 //!
-//! Probes whether a node is reachable: one probe direct, and if that fails, probes
-//! through up to two live peers of the node's mesh sent concurrently.
+//! The one reach ladder over one exact birth: one probe direct, and if that fails the same probe
+//! through up to two live peers of the node's mesh, sent at once; `reached` with what the node said,
+//! or `unreached`, never dead. Run by node recovery, mesh investigation, the seat watch and the
+//! successor ladder of node.primary.update, each over its own [`TickleCalls`].
 
-pub use crate::offline::{tickle_round, tickle_round_at_default_budget, VIA_PEER_TICKLE_FANOUT};
-pub use crate::seat_watch::birth_answered;
+pub use crate::offline::{birth_answered, eligible_carriers, tickle, tickle_round, tickle_round_at_default_budget, PeerProbe, ProbeEnd, Tickle, TickleCalls, TickleClient, Unreached, VIA_PEER_TICKLE_FANOUT};

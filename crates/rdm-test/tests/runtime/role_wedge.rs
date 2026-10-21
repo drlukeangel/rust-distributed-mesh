@@ -3,8 +3,8 @@
 //! - Born, the broker declared `ReadyForTraffic` to its mesh primary over the status op: the
 //!   view shows it `declared` before anything asks.
 //! - Silent, it is marked `pending-reconnect` at the staleness floor, tickled by its mesh's
-//!   primary (one QUIC connect, direct then via a peer: `via-offline-tickle-failed`), the hold-down
-//!   opens, and a floor later it is `dead`.
+//!   primary (the one ladder: direct, then via up to two peers at once), the hold-down opens, and a
+//!   floor later it is `dead` (`via-true-offline`).
 //! - Its runtime still exists (the operating system holds it suspended: `os-stopped`, never exit
 //!   proof), so it is held, never replaced: no Build removes it and no other birth
 //!   takes its path. Thawed, the same birth is back `ready-for-traffic` (`via-offline-returned`).
@@ -65,7 +65,7 @@ async fn a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth() 
 
     let spans = estate.spans();
     let node_id = s(&target["node_id"]);
-    let tickled = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id.as_str()).cloned().unwrap_or_else(|| panic!("{path} was never tickled"));
+    let tickled = named(&spans, "rdm.node_admin.node.update.via-true-offline").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id.as_str()).cloned().unwrap_or_else(|| panic!("{path} was never TRUE OFFLINE"));
     assert!(named(&spans, "rdm.node_admin.node.update.via-offline-hold-down-opened").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "the hold-down opened for {path}");
     assert!(named(&spans, "rdm.node_admin.node.update.via-offline-returned").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "{path} returned");
     assert!(!named(&spans, "rdm.node_admin.node.delete.via-build").iter().any(|sp| sp["attributes"]["node"] == path.as_str()), "silence removed nothing");

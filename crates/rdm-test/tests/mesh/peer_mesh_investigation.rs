@@ -581,7 +581,7 @@ async fn a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_
     // One investigation reaches the peer mesh's node-admins: no other mesh's primary tickles them on a
     // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1). The peer mesh's own primary
     // tickling its own node-admin once continued is its node recovery, untouched.
-    let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed")
+    let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.update.via-true-offline")
         .into_iter()
         .filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost)) && !attr(sp, "observer").starts_with(&format!("{}.", f.lost)))
         .collect();

@@ -5,10 +5,11 @@
 //! `PendingReconnect` at the staleness floor. Every node-admin keeps the silence bookkeeping
 //! (`first_seen`), so a node-admin that takes the seat mid-window tickles on the window already
 //! running; only the node-admin holding its mesh's primary seat tickles. Half a floor after the
-//! mark (floor + half a floor in all) it makes one QUIC connect, direct then via a peer. Each round
-//! runs beside the loop, one per exact birth, and the first tick after it ends folds what it found
-//! (node-recovery.md: one loop, on every gossip interval). An answer is `reachable-silent`: recorded,
-//! no action. No path on round 1 opens the hold-down at the instant that no path is known, when
+//! mark (floor + half a floor in all) it runs the one reach ladder, `node.tickle` ([`tickle`],
+//! node-tickle.md: direct, then through up to two live peers at once), which this module holds for
+//! every caller of it. Each round runs beside the loop, one per exact birth, and the first tick
+//! after it ends folds what it found (node-recovery.md: one loop, on every gossip interval). An
+//! answer is `reachable-silent`: recorded, no action. No path on round 1 opens the hold-down at the instant that no path is known, when
 //! round 1's probes ended; no path again at least one staleness floor after that instant is TRUE
 //! OFFLINE. A node that leaves the silent set has
 //! returned. The `Dead` status is observer-inferred, never sent, never a reason to restart or delete.
@@ -116,9 +117,8 @@ pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<c
 /// How many live peers the via-peer step asks.
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
-/// The longest one offline-tickle round takes when each call waits `per_call`: the direct connect
-/// (a ping that fails, or a ping that answers and the status kick after it), then one via-peer rung
-/// with every carrier probed at once (node-recovery.md step 2). The fan-out adds no wait.
+/// The longest one tickle takes when each probe waits `per_call`: the direct probe, then one via-peer
+/// rung with every carrier probed at once (node-tickle.md steps 2-3). The fan-out adds no wait.
 pub fn tickle_round(per_call: std::time::Duration) -> std::time::Duration {
     per_call * 2
 }
@@ -165,36 +165,263 @@ impl Cadence {
     }
 }
 
-/// Verdict of asking live peer nodes to tickle a target node.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ViaPeerVerdict {
-    /// A peer answered the tickle: reachable via that peer, unreachable from this observer.
-    Answered { via: String },
-    /// No candidate path answered: either no candidates, or every asked peer failed or refused.
-    NoPath { asked: Vec<String> },
-    /// The candidates could not be read: no status change.
-    CandidatesUnreadable(String),
+// ---- node.tickle (node-tickle.md): the one reach ladder ----
+
+/// The birth's own answer on the probe (node-tickle.md "Probe"): `Current`, `CurrentParked` while it
+/// is parked, or `Blocked` while its hook is Blocked, naming the exact birth probed. A carrier's
+/// `InnerNotSent` (no reply reaches the ladder), a `NotReady` and any refusal are not answers.
+pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> bool {
+    use rdm_core::status::StatusReply;
+    match reply {
+        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentParked { node_id: n, incarnation: i } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
+        _ => false,
+    }
 }
 
-/// The via-peer rung over one exact birth (node-recovery.md step 2, ruling R-SW1), run by the
-/// mesh-primary's tickle and by the seat watch's ladder alike: the kick through every carrier in
-/// `peers` at once, each probe naming the same `(node_id, incarnation)`. The first answer from the
-/// exact birth (`seat_watch::birth_answered`) is `Answered` by its carrier and drops the probes still
-/// running; a failed probe cancels none of the others; with every probe ended unanswered it is
-/// `NoPath`, naming every carrier asked. A failure, a deadline included, proves nothing.
-pub(crate) async fn via_peer_verdict<P>(node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId, peers: Vec<(String, P)>) -> ViaPeerVerdict
-where
-    P: std::future::Future<Output = Option<rdm_core::status::StatusReply>>,
-{
-    use futures_util::StreamExt as _;
-    let asked = peers.iter().map(|(carrier, _)| carrier.clone()).collect();
-    let mut running: futures_util::stream::FuturesUnordered<_> = peers.into_iter().map(|(carrier, probe)| async move { (carrier, probe.await) }).collect();
-    while let Some((carrier, reply)) = running.next().await {
-        if crate::seat_watch::birth_answered(reply.as_ref(), node_id, incarnation) {
-            return ViaPeerVerdict::Answered { via: carrier };
+/// How one probe of the ladder ended: what the caller reads in the Node RPC outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeEnd {
+    /// A status reply came back (the node's own, or the carrier's `Forwarded { inner }`);
+    /// [`birth_answered`] says whether it is the probed birth's.
+    Reply(rdm_core::status::StatusReply),
+    /// The carrier could not carry the probe: its own edge to the node is not Active
+    /// (`InnerNotSent`, node-tickle.md step 3), with the carrier's account of that edge.
+    CarrierEdgeLost(String),
+    /// Any other end: the Node RPC outcome's name (`NotSent`, `Indeterminate`, `Unserved`,
+    /// `RejectedStale`) and what it says.
+    Other {
+        /// The outcome's variant name.
+        end: &'static str,
+        /// What the outcome says.
+        detail: String,
+    },
+}
+
+impl ProbeEnd {
+    /// What `out`, one probe's Node RPC outcome, says.
+    pub fn of(out: rdm_core::outcome::RpcOutcome<rdm_core::status::StatusReply>) -> Self {
+        use rdm_core::outcome::{NotSentReason, RpcOutcome};
+        let (end, detail_name) = (out.name(), out.detail_name());
+        match out {
+            RpcOutcome::Reply(r) => Self::Reply(r.into_value()),
+            RpcOutcome::NotSent(ns) => match ns.reason() {
+                NotSentReason::CarrierEdgeLost(edge) => Self::CarrierEdgeLost(edge.clone()),
+                other => Self::Other { end, detail: format!("not sent: {other:?}") },
+            },
+            _ => Self::Other { end, detail: detail_name.to_string() },
         }
     }
-    ViaPeerVerdict::NoPath { asked }
+
+    /// The end as a span names it: the reply's name, or the failure.
+    pub fn name(&self) -> String {
+        match self {
+            Self::Reply(r) => r.name().to_string(),
+            Self::CarrierEdgeLost(edge) => format!("carrier-edge-lost: {edge}"),
+            Self::Other { end, detail } => format!("{end}: {detail}"),
+        }
+    }
+
+    /// Whether the probe reached a process that answered anything at all (a reply, or a carrier's own
+    /// account of its edge): a `NotSent` or `RejectedStale` reached none.
+    pub fn reached_a_process(&self) -> bool {
+        match self {
+            Self::Reply(_) | Self::CarrierEdgeLost(_) => true,
+            Self::Other { end, .. } => !matches!(*end, "NotSent" | "RejectedStale"),
+        }
+    }
+}
+
+/// One via-peer probe of the ladder, by its carrier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerProbe {
+    /// The carrier's path.name.
+    pub carrier: String,
+    /// How the carried probe ended.
+    pub end: ProbeEnd,
+}
+
+/// The ladder ended with no answer from the birth (node-tickle.md step 4): `unreached`, never death.
+/// It holds the ladder's result span until the caller says what it does next (`next`), the span's
+/// last field; the span ends with it.
+#[derive(Debug)]
+pub struct Unreached {
+    /// How the direct probe ended.
+    pub direct: ProbeEnd,
+    /// Every via-peer probe, in the order the carriers were asked.
+    pub peers: Vec<PeerProbe>,
+    span: tracing::Span,
+}
+
+impl Unreached {
+    /// An `unreached` a cell states, with no span of its own.
+    #[cfg(test)]
+    pub(crate) fn of(direct: ProbeEnd, peers: Vec<PeerProbe>) -> Self {
+        Self { direct, peers, span: tracing::Span::none() }
+    }
+
+    /// The carriers asked, in order, joined by `,`.
+    pub fn carriers(&self) -> String {
+        self.peers.iter().map(|p| p.carrier.as_str()).collect::<Vec<_>>().join(",")
+    }
+
+    /// Record what the caller does next on the ladder's result span (node-tickle.md "Observability
+    /// contract": `rdm.node.tickle.returns-unknown.via-unreached`, "what the caller does next").
+    pub fn next(&self, what: &str) {
+        self.span.record("next", what);
+    }
+}
+
+/// What the ladder found (node-tickle.md "Result").
+#[derive(Debug)]
+pub enum Tickle {
+    /// The birth is alive and said what it is: its answer, and the carrier that carried it (`None`:
+    /// it answered the direct probe).
+    Reached {
+        /// The birth's own answer.
+        answer: rdm_core::status::StatusReply,
+        /// The carrier's path.name, when the answer came through a peer.
+        carrier: Option<String>,
+    },
+    /// Nobody reached the birth within the ladder.
+    Unreached(Unreached),
+}
+
+/// The eligible live peers of `node`'s mesh (node-tickle.md step 3), in path order: every member of
+/// its mesh the view holds ready-for-traffic, other than the node and `me` (the caller is never its
+/// own carrier).
+pub fn eligible_carriers<'a>(view: &'a crate::topology::Topology, node: &'a crate::model::Node, me: Option<&'a crate::model::NodeId>) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
+    view.members().filter(move |c| c.mesh == node.mesh && c.node_id != node.node_id && Some(&c.node_id) != me && c.status == crate::model::NodeStatus::ReadyForTraffic)
+}
+
+/// What the caller probes with: its Node RPC client under its own call deadline, the carriers it holds
+/// eligible, and its name. One ladder ([`tickle`]) runs over it for every caller.
+#[async_trait::async_trait]
+pub trait TickleCalls: Send + Sync {
+    /// The caller's path.name, named on every span of the ladder.
+    fn caller(&self) -> String;
+    /// The deadline of one probe.
+    fn deadline(&self) -> std::time::Duration;
+    /// `probe`, the `ProbeNodeState` naming `node`'s exact birth, direct to `node`: one bounded call.
+    async fn direct(&self, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd;
+    /// The same probe carried by `carrier` as `Forward`, whose inner op is the probe.
+    async fn via_peer(&self, carrier: &crate::model::Node, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd;
+    /// The eligible live peers of `node`'s mesh, in the order asked, the caller never among them;
+    /// the ladder takes the first [`VIA_PEER_TICKLE_FANOUT`] ([`eligible_carriers`] is the page's
+    /// eligibility).
+    fn carriers(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Vec<crate::model::Node>;
+}
+
+/// The caller's Node RPC client at the default call budget: the mesh-primary's recovery tick and the
+/// seat watch probe with it. Its own node id is never a carrier.
+pub struct TickleClient {
+    /// The caller's Node RPC client.
+    pub client: std::sync::Arc<rdm_transport::NodeRpcClient>,
+    /// The caller's node id.
+    pub me_id: crate::model::NodeId,
+    /// The caller's path.name.
+    pub me: String,
+}
+
+#[async_trait::async_trait]
+impl TickleCalls for TickleClient {
+    fn caller(&self) -> String {
+        self.me.clone()
+    }
+
+    fn deadline(&self) -> std::time::Duration {
+        match rdm_transport::CallOptions::default().budget {
+            rdm_transport::Budget::Overall(d) => d,
+            other => panic!("the default call budget is not one overall deadline: {other:?}"),
+        }
+    }
+
+    async fn direct(&self, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd {
+        // One connect, direct (node-recovery.md step 2): asked once, never resent; the ladder, not
+        // this call, goes on to the peers.
+        let once = rdm_transport::CallOptions { once: true, ..rdm_transport::CallOptions::default() };
+        let (out, _) = self.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), probe, &once).await;
+        ProbeEnd::of(out)
+    }
+
+    async fn via_peer(&self, carrier: &crate::model::Node, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd {
+        let route = rdm_transport::RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() };
+        let (out, _, _) = self.client.call_routed::<rdm_core::status::Status>(&node.node_id, &route, probe, &rdm_transport::CallOptions::default()).await;
+        ProbeEnd::of(out)
+    }
+
+    fn carriers(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Vec<crate::model::Node> {
+        eligible_carriers(view, node, Some(&self.me_id)).cloned().collect()
+    }
+}
+
+/// `node.tickle` (node-tickle.md): ask `node`'s exact birth, by node id and incarnation, whether anyone
+/// can reach it. Direct first (step 2); on no answer the same probe through up to two eligible live
+/// peers of the node's mesh, both sent at once (step 3), each a `Forward` whose inner op is the
+/// probe. The first answer from the birth, under the probed incarnation, ends the ladder and cancels
+/// the probes still running; one failed peer probe does not cancel the other (step 4). It answers
+/// `reached` with what the node said, or `unreached`: never dead, a failure, a deadline included,
+/// proves nothing. A node the view holds no incarnation for names no exact birth to probe: refused
+/// by name, no ladder runs. Run by the mesh-primary in node recovery, the fabric-primary in mesh
+/// investigation, the seat watch and the successor ladder of node.primary.update, over `calls`, the
+/// caller's own client, deadline and eligible carriers.
+pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &crate::topology::Topology, calls: &C) -> Result<Tickle, String> {
+    use futures_util::StreamExt as _;
+    use tracing::Instrument as _;
+    let Some(incarnation) = node.incarnation_id.clone() else {
+        return Err(format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id));
+    };
+    let caller = calls.caller();
+    let deadline_ms = calls.deadline().as_millis() as i64;
+    // Every probe names the same exact birth (node-tickle.md "Target").
+    let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    // The probe's span carries its answer or its failure (node-tickle.md "Observability contract").
+    let said = |span: &tracing::Span, end: &ProbeEnd| {
+        match end {
+            ProbeEnd::Reply(r) => span.record("answer", r.name()),
+            other => span.record("failure", other.name().as_str()),
+        };
+    };
+    let span = tracing::info_span!("rdm.node.tickle.resolve.via-direct", caller = %caller, node = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), deadline_ms, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
+    let direct = calls.direct(node, &probe).instrument(span.clone()).await;
+    said(&span, &direct);
+    if let ProbeEnd::Reply(answer) = &direct {
+        if birth_answered(Some(answer), &node.node_id, &incarnation) {
+            span.in_scope(|| tracing::info!("the birth answered the direct probe: reached"));
+            return Ok(Tickle::Reached { answer: answer.clone(), carrier: None });
+        }
+    }
+    drop(span);
+    let carriers: Vec<crate::model::Node> = calls.carriers(view, node).into_iter().take(VIA_PEER_TICKLE_FANOUT).collect();
+    let (node_id, probe, caller, said) = (&node.node_id, &probe, &caller, &said);
+    let mut running: futures_util::stream::FuturesUnordered<_> = carriers
+        .iter()
+        .enumerate()
+        .map(|(i, carrier)| async move {
+            let span = tracing::info_span!("rdm.node.tickle.resolve.via-peer", caller = %caller, node = %node.name, node_id = %node.node_id, carrier = %carrier.name, answer = tracing::field::Empty, failure = tracing::field::Empty, "otel.kind" = "internal");
+            let end = calls.via_peer(carrier, node, probe).instrument(span.clone()).await;
+            said(&span, &end);
+            (i, carrier.name.to_string(), end, span)
+        })
+        .collect();
+    let mut peers: Vec<(usize, PeerProbe)> = Vec::new();
+    while let Some((i, carrier, end, span)) = running.next().await {
+        if let ProbeEnd::Reply(answer) = &end {
+            if birth_answered(Some(answer), node_id, &incarnation) {
+                span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier: reached, the other probes cancelled"));
+                // Dropping `running` cancels the probes still running (step 4).
+                return Ok(Tickle::Reached { answer: answer.clone(), carrier: Some(carrier) });
+            }
+        }
+        peers.push((i, PeerProbe { carrier, end }));
+    }
+    peers.sort_by_key(|(i, _)| *i);
+    let peers: Vec<PeerProbe> = peers.into_iter().map(|(_, p)| p).collect();
+    let asked = peers.iter().map(|p| p.carrier.as_str()).collect::<Vec<_>>().join(",");
+    // The ladder's result when none of its probes carried the answer; the caller records what it
+    // does next on it (`Unreached::next`), and it ends with the result.
+    let span = tracing::info_span!("rdm.node.tickle.returns-unknown.via-unreached", caller = %caller, node = %node.name, node_id = %node.node_id, incarnation = %incarnation.as_str(), direct = %direct.name(), carriers = %asked, next = tracing::field::Empty, "otel.kind" = "internal");
+    span.in_scope(|| tracing::info!("nobody reached the birth within the ladder: unreached, never death"));
+    Ok(Tickle::Unreached(Unreached { direct, peers, span }))
 }
 
 /// What one [`OfflineTickle::tick`] did.
@@ -202,6 +429,9 @@ where
 pub(crate) struct OfflineTickReport {
     pub tickled: Vec<String>,
     pub reachable_silent: Vec<String>,
+    /// Of `reachable_silent`, the births whose answer was `Current`: held off their mesh, they are
+    /// commanded back through node.mesh.join by their authority (node-tickle.md "What follows", Q87).
+    pub answered_current: Vec<String>,
     pub offline: Vec<String>,
     /// Silent nodes heard again: the view holds them live.
     pub returned: Vec<String>,
@@ -210,22 +440,24 @@ pub(crate) struct OfflineTickReport {
     pub gone: Vec<String>,
 }
 
-/// How one round of the ladder ended (node-recovery.md step 2): the direct connect answered, or it
-/// failed and the via-peer rung gave its verdict.
+/// How one round of the ladder ended (node-recovery.md step 2): the tickle's result, or no ladder run.
 #[derive(Debug)]
 enum RoundEnd {
-    /// The exact birth answered the direct connect.
-    Direct,
-    /// The direct connect failed with `error`; `verdict` is the via-peer rung's, given at
-    /// `verdict_at_ms` on the tick clock (the instant the round's probes ended).
-    ViaPeer { error: String, verdict: ViaPeerVerdict, verdict_at_ms: u64 },
+    /// The exact birth answered the tickle (`reached`): its answer's name, whether it was `Current`,
+    /// and the carrier that carried it (`None`: direct).
+    Reached { answer: &'static str, current: bool, carrier: Option<String> },
+    /// Nobody reached the birth: how the direct probe ended, the carriers asked, and the instant on
+    /// the tick clock the ladder ended (`verdict_at_ms`: the round's probes ended).
+    Unreached { direct: String, asked: String, verdict_at_ms: u64 },
+    /// No ladder ran: the birth could not be probed, by name (no incarnation, no client).
+    NotRun(String),
 }
 
 /// One round of the ladder, running beside the loop: started by one tick, folded by a later one.
 #[derive(Debug)]
 struct Round {
     /// The clock of the tick that started it, named on the round's hold-down span; the hold-down
-    /// itself opens at the round's verdict (`RoundEnd::ViaPeer::verdict_at_ms`).
+    /// itself opens at the round's verdict (`RoundEnd::Unreached::verdict_at_ms`).
     started_at_ms: u64,
     path: String,
     /// The mark (or first sighting) the round ran on, named on its spans.
@@ -316,9 +548,9 @@ impl OfflineTickle {
     /// (a verdict that came back after awaited probes) is `now_ms` plus the time the tick has run;
     /// `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
-    /// delay between round 1 and round 2; `tickle` makes the direct connect and `via_peer` the
-    /// via-peer step. `observe` reads iroh's local view of a node once for the answered and the
-    /// failed span (`rdm_transport::iroh_obs`); it decides nothing.
+    /// delay between round 1 and round 2; `tickle` runs the one ladder ([`tickle`], node-tickle.md)
+    /// over the birth. `observe` reads iroh's local view of a node once for the reachable-silent and
+    /// the TRUE OFFLINE span (`rdm_transport::iroh_obs`); it decides nothing.
     ///
     /// A tick waits on no probe (node-recovery.md: one loop, on every gossip interval). Each round it
     /// starts runs beside the loop, at once for every member due, so each member's connect is made
@@ -326,7 +558,7 @@ impl OfflineTickle {
     /// tick after a round ends folds what it found, and nothing is decided before that. A round ends
     /// with its birth's silence and with the seat: its probes are dropped and nothing of it is folded.
     #[allow(clippy::too_many_arguments)]
-    pub async fn tick<P, T, TF, V, VF, O, OF>(
+    pub async fn tick<P, T, TF, O, OF>(
         &mut self,
         now_ms: u64,
         holds_seat: bool,
@@ -335,15 +567,12 @@ impl OfflineTickle {
         probe_delay_ms: u64,
         staleness_floor_ms: u64,
         tickle: T,
-        via_peer: V,
         observe: O,
     ) -> OfflineTickReport
     where
         P: Fn(&str) -> bool,
         T: Fn(String) -> TF,
-        TF: std::future::Future<Output = Result<(), String>> + Send + 'static,
-        V: Fn(String) -> VF,
-        VF: std::future::Future<Output = ViaPeerVerdict> + Send + 'static,
+        TF: std::future::Future<Output = Result<Tickle, String>> + Send + 'static,
         O: Fn(String) -> OF,
         OF: std::future::Future<Output = rdm_transport::iroh_obs::IrohObservation>,
     {
@@ -411,69 +640,67 @@ impl OfflineTickle {
             };
             let id = n.node_id.clone();
             match end {
-                RoundEnd::Direct => {
+                RoundEnd::Reached { answer, current, carrier } => {
+                    // An answer is reachable-silent: recorded (node-recovery.md step 2). The tickle's own
+                    // span carried the answer; this is the mesh-primary's record of it.
                     self.hold_down.remove(&id);
                     self.offline.remove(&id);
                     self.settled.insert(id.clone());
                     let seen = observe(id.clone()).await;
+                    let carrier = carrier.unwrap_or_default();
                     tracing::info_span!(
-                        "rdm.node_admin.node.resolve.via-offline-tickle-answered",
+                        "rdm.node_admin.node.update.via-reachable-silent",
                         node_id = %id,
                         path = %path,
+                        answer,
+                        carrier = %carrier,
                         observer = %self.observer,
                         first_seen_ms = seen_at as i64,
                         iroh_known_addrs = %seen.known_addrs,
                         iroh_active_addrs = %seen.active_addrs,
                         "otel.kind" = "internal"
                     )
-                        .in_scope(|| tracing::info!(node_id = %id, "offline tickle answered — reachable-silent, recorded, no action"));
+                    .in_scope(|| tracing::info!(node_id = %id, answer, carrier = %carrier, "the tickle reached the birth: reachable-silent, recorded, no action"));
+                    if current {
+                        report.answered_current.push(id.clone());
+                    }
                     report.reachable_silent.push(id);
                 }
-                RoundEnd::ViaPeer { error: e, verdict, verdict_at_ms } => match verdict {
-                    ViaPeerVerdict::Answered { via } => {
-                        self.hold_down.remove(&id);
-                        self.offline.remove(&id);
+                RoundEnd::NotRun(reason) => {
+                    tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_id = %id, path = %path, error = %reason, observer = %self.observer, "otel.kind" = "internal")
+                        .in_scope(|| tracing::warn!(node_id = %id, error = %reason, "no ladder ran over the birth: no status change, the hold-down left as it was"));
+                }
+                RoundEnd::Unreached { direct: e, asked, verdict_at_ms } => {
+                    if self.offline.contains(&id) {
                         self.settled.insert(id.clone());
-                        tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle-answered", node_id = %id, path = %path, via = %via, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!(node_id = %id, via = %via, error = %e, "offline tickle failed direct but answered via peer — unreachable from me, no record"));
-                        report.reachable_silent.push(id);
+                    } else if let Some(no_path_since) = self.hold_down.remove(&id) {
+                        self.settled.insert(id.clone());
+                        self.offline.insert(id.clone());
+                        let seen = observe(id.clone()).await;
+                        tracing::info_span!(
+                            "rdm.node_admin.node.update.via-true-offline",
+                            node_id = %id,
+                            path = %path,
+                            error = %e,
+                            asked = %asked,
+                            iroh_known_addrs = %seen.known_addrs,
+                            iroh_active_addrs = %seen.active_addrs,
+                            round = 2i64,
+                            first_no_path_ms = no_path_since as i64,
+                            observer = %self.observer,
+                            first_seen_ms = seen_at as i64,
+                            "otel.kind" = "internal",
+                        )
+                        .in_scope(|| tracing::info!(node_id = %id, error = %e, "no path again one floor after the first: TRUE OFFLINE, no restart, no delete"));
+                        report.offline.push(id);
+                    } else {
+                        // The hold-down runs from the instant no path was known: the round's
+                        // verdict, when its probes ended, never the tick that started it.
+                        self.hold_down.insert(id.clone(), verdict_at_ms);
+                        tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, no_path_at_ms = verdict_at_ms as i64, round_began_ms = started_at_ms as i64, "otel.kind" = "internal")
+                            .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after round 1 no path"));
                     }
-                    ViaPeerVerdict::CandidatesUnreadable(reason) => {
-                        tracing::info_span!("rdm.node_admin.node.reject.via-peer-tickle-candidates-unreadable", node_id = %id, path = %path, reason = %reason, error = %e, observer = %self.observer, "otel.kind" = "internal")
-                            .in_scope(|| tracing::warn!(node_id = %id, reason = %reason, error = %e, "via-peer candidates unreadable — no status change, hold-down left as it was"));
-                    }
-                    ViaPeerVerdict::NoPath { asked } => {
-                        if self.offline.contains(&id) {
-                            self.settled.insert(id.clone());
-                        } else if let Some(no_path_since) = self.hold_down.remove(&id) {
-                            self.settled.insert(id.clone());
-                            self.offline.insert(id.clone());
-                            let seen = observe(id.clone()).await;
-                            tracing::info_span!(
-                                "rdm.node_admin.node.resolve.via-offline-tickle-failed",
-                                node_id = %id,
-                                path = %path,
-                                error = %e,
-                                iroh_known_addrs = %seen.known_addrs,
-                                iroh_active_addrs = %seen.active_addrs,
-                                round = 2i64,
-                                first_no_path_ms = no_path_since as i64,
-                                observer = %self.observer,
-                                first_seen_ms = seen_at as i64,
-                                "otel.kind" = "internal",
-                            )
-                            .in_scope(|| tracing::info!(node_id = %id, error = %e, "offline tickle failed round 2 — TRUE OFFLINE, no restart, no delete"));
-                            report.offline.push(id);
-                        } else {
-                            // The hold-down runs from the instant no path was known: the round's
-                            // verdict, when its probes ended, never the tick that started it.
-                            self.hold_down.insert(id.clone(), verdict_at_ms);
-                            let asked = asked.join(",");
-                            tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, observer = %self.observer, first_seen_ms = seen_at as i64, no_path_at_ms = verdict_at_ms as i64, round_began_ms = started_at_ms as i64, "otel.kind" = "internal")
-                                .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after round 1 no path"));
-                        }
-                    }
-                },
+                }
             }
         }
         for SilentNode { node_id: id, path, incarnation, .. } in silent {
@@ -494,28 +721,32 @@ impl OfflineTickle {
                 }
             }
             report.tickled.push(id.clone());
-            // The round: the direct connect, and only when it fails, the via-peer rung, its probes
-            // under one span of this round. It takes no lock and waits on nothing of this admin's; a
-            // stop's park cancels it where it stands (`StopGate::until_parked`), and it never resumes.
-            let (direct, carried) = (tickle(id.clone()), via_peer(id.clone()));
-            let (node_id, at, observer) = (id.clone(), path.clone(), self.observer.clone());
+            // What this round's `unreached` would be followed by, known at its start (node-tickle.md
+            // "what the caller does next"): the hold-down opens after round 1, round 2 is TRUE OFFLINE,
+            // and a held TRUE OFFLINE birth probed again goes to the inspect.
+            let next = if self.offline.contains(&id) {
+                "inspect"
+            } else if self.hold_down.contains_key(&id) {
+                "true-offline"
+            } else {
+                "hold-down"
+            };
+            // The round: the one ladder over the birth (`tickle`). It takes no lock and waits on
+            // nothing of this admin's; a stop's park cancels it where it stands
+            // (`StopGate::until_parked`), and it never resumes.
+            let ladder = tickle(id.clone());
             // The verdict's instant on the tick clock: this tick's `now_ms` plus the time since it began.
             let (tick_ms, tick_began) = (now_ms, began);
             let (cancelled_id, cancelled_path, cancelled_by) = (id.clone(), path.clone(), self.observer.clone());
             let round = self.gate.until_parked(async move {
-                match direct.await {
-                    Ok(()) => RoundEnd::Direct,
-                    Err(error) => {
-                        let step = tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle", node_id = %node_id, path = %at, observer = %observer, verdict = tracing::field::Empty, "otel.kind" = "internal");
-                        let verdict = tracing::Instrument::instrument(carried, step.clone()).await;
-                        step.record("verdict", match &verdict {
-                            ViaPeerVerdict::Answered { .. } => "answered",
-                            ViaPeerVerdict::NoPath { .. } => "no-path",
-                            ViaPeerVerdict::CandidatesUnreadable(_) => "candidates-unreadable",
-                        });
+                match ladder.await {
+                    Ok(Tickle::Reached { answer, carrier }) => RoundEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
+                    Ok(Tickle::Unreached(unreached)) => {
+                        unreached.next(next);
                         let verdict_at_ms = tick_ms + tick_began.elapsed().as_millis() as u64;
-                        RoundEnd::ViaPeer { error, verdict, verdict_at_ms }
+                        RoundEnd::Unreached { direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
                     }
+                    Err(reason) => RoundEnd::NotRun(reason),
                 }
             });
             let task = tokio::spawn(async move {
@@ -634,6 +865,39 @@ pub(crate) mod tests {
         vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: None, marked_at_ms: None }]
     }
 
+    /// How a cell says the via-peer rung of a round ended, when the direct probe did not answer.
+    #[derive(Debug, Clone, PartialEq)]
+    enum ViaPeerVerdict {
+        /// A peer carried the birth's answer.
+        Answered { via: String },
+        /// No carrier reached the birth: `unreached`, naming the carriers asked.
+        NoPath { asked: Vec<String> },
+        /// No ladder ran, by name.
+        CandidatesUnreadable(String),
+    }
+
+    fn current_answer() -> rdm_core::status::StatusReply {
+        rdm_core::status::StatusReply::Current { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint(), state: rdm_core::status::NodeState::ReadyForTraffic }
+    }
+
+    /// An `unreached` over `asked` carriers: the direct probe and every carried one ended `NotSent`.
+    fn unreached(asked: &[&str]) -> Tickle {
+        Tickle::Unreached(Unreached::of(ProbeEnd::Other { end: "NotSent", detail: "no answer".into() }, asked.iter().map(|c| PeerProbe { carrier: c.to_string(), end: ProbeEnd::Other { end: "NotSent", detail: "deadline".into() } }).collect()))
+    }
+
+    /// The one ladder's result as a cell says it: the direct probe answered (`direct`), or the
+    /// via-peer rung's end.
+    fn ladder_end(direct: bool, via: &ViaPeerVerdict) -> Result<Tickle, String> {
+        if direct {
+            return Ok(Tickle::Reached { answer: current_answer(), carrier: None });
+        }
+        match via {
+            ViaPeerVerdict::Answered { via } => Ok(Tickle::Reached { answer: current_answer(), carrier: Some(via.clone()) }),
+            ViaPeerVerdict::NoPath { asked } => Ok(unreached(&asked.iter().map(String::as_str).collect::<Vec<_>>())),
+            ViaPeerVerdict::CandidatesUnreadable(reason) => Err(reason.clone()),
+        }
+    }
+
     async fn tick(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict) -> OfflineTickReport {
         tick_observed(t, now, seat, set, direct, via, &std::sync::atomic::AtomicUsize::new(0)).await
     }
@@ -651,10 +915,9 @@ pub(crate) mod tests {
                 |_| true,
                 PROBE_DELAY,
                 FLOOR,
-                |_| async move { if direct { Ok(()) } else { Err("no answer".to_string()) } },
                 |_| {
-                    let via = via.clone();
-                    async move { via }
+                    let end = ladder_end(direct, &via);
+                    async move { end }
                 },
                 |_| {
                     reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -670,6 +933,7 @@ pub(crate) mod tests {
         let folded = once(t).await;
         report.tickled.extend(folded.tickled);
         report.reachable_silent.extend(folded.reachable_silent);
+        report.answered_current.extend(folded.answered_current);
         report.offline.extend(folded.offline);
         report.returned.extend(folded.returned);
         report.gone.extend(folded.gone);
@@ -807,10 +1071,9 @@ pub(crate) mod tests {
                         async move {
                             connects.lock().unwrap().push((id, start.elapsed()));
                             sleep(DIAL).await;
-                            Err::<(), String>("the dial to the exited runtime ended at the idle timeout".into())
+                            Ok(unreached(&["mesh1.rpc.2"]))
                         }
                     },
-                    |_| async { no_path() },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
@@ -857,10 +1120,9 @@ pub(crate) mod tests {
                         async move {
                             sleep(DIAL).await;
                             ended.fetch_add(1, Ordering::SeqCst);
-                            Err::<(), String>("the dial to the exited runtime ended at the idle timeout".into())
+                            Ok(unreached(&["mesh1.rpc.2"]))
                         }
                     },
-                    |_| async { no_path() },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
@@ -923,10 +1185,9 @@ pub(crate) mod tests {
                         async move {
                             sleep(DIAL).await;
                             ended.fetch_add(1, Ordering::SeqCst);
-                            Err::<(), String>("the dial to the exited runtime ended at the idle timeout".into())
+                            Ok(unreached(&["mesh1.rpc.2"]))
                         }
                     },
-                    |_| async { no_path() },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
@@ -954,15 +1215,15 @@ pub(crate) mod tests {
         }
     }
 
-    mod via_peer {
-        //! The tickle's via-peer step runs the seat watch's ladder (node-recovery.md step 2, ruling
-        //! R-SW1), under paused time: a probe's wait is its budget, and the clock moves only when
-        //! every probe waits.
-        use super::*;
-        use crate::model::{IncarnationId, NodeId};
-        use rdm_core::status::{NodeState, StatusReply};
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use std::sync::Arc;
+    mod tickle {
+        //! The one reach ladder, `node.tickle` (node-tickle.md; ruling R-SW1), under paused time: a
+        //! probe's wait is its deadline, and the clock moves only when every probe waits.
+        use super::super::*;
+        use super::{FLOOR, PROBE_DELAY};
+        use crate::model::{IncarnationId, Node, NodeId};
+        use rdm_core::status::{NodeState, RetryOn, StatusReply, StatusRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
         use std::time::Duration;
         use tokio::time::{sleep, Instant};
 
@@ -977,74 +1238,247 @@ pub(crate) mod tests {
             StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::ReadyForTraffic }
         }
 
-        /// A probe that spends `after`, records that it ended in `ended`, and ends with `reply`
-        /// (`None`: no answer from the birth, a deadline or a carrier's refusal).
-        fn probe(after: Duration, reply: Option<StatusReply>, ended: Arc<AtomicUsize>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<StatusReply>> + Send>> {
-            Box::pin(async move {
-                sleep(after).await;
-                ended.fetch_add(1, Ordering::SeqCst);
-                reply
-            })
+        fn parked(b: &(NodeId, IncarnationId)) -> StatusReply {
+            StatusReply::CurrentParked { node_id: b.0.clone(), incarnation: b.1.clone() }
         }
 
-        /// CONTRACT (R-SW1 acceptance 1, on the mesh-primary's tickle): after the direct connect
-        /// failed, both peer probes run at once, so two peers each spending a whole budget cost one
-        /// budget, not two; with no answer the step is `NoPath`, naming both carriers.
+        /// The silent member `mesh1.rpc.1` at birth `b`, and its mesh: two ready members, this
+        /// admin (never a carrier) and the member itself.
+        fn member_and_view(b: &(NodeId, IncarnationId)) -> (Node, crate::topology::Topology) {
+            use crate::model::{Fabric, FabricId, NodeStatus, ProviderKind, ScopeStatus};
+            let ready = |name: &str| {
+                let mut n = Node::allocated(name.parse().unwrap());
+                n.node_id = NodeId::mint();
+                n.incarnation_id = Some(IncarnationId::mint());
+                n.status = NodeStatus::ReadyForTraffic;
+                n
+            };
+            let mut node = ready("mesh1.rpc.1");
+            node.node_id = b.0.clone();
+            node.incarnation_id = Some(b.1.clone());
+            node.status = NodeStatus::PendingReconnect;
+            let view = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![ready("mesh1.admin.1"), node.clone(), ready("mesh1.rpc.2"), ready("mesh1.rpc.3"), ready("mesh2.rpc.1")] };
+            (node, view)
+        }
+
+        /// What one probe does: spends `after`, counts its end in `ended`, and ends with `reply`
+        /// (`None`: no answer, a deadline).
+        #[derive(Clone)]
+        struct Probe {
+            after: Duration,
+            reply: Option<StatusReply>,
+        }
+
+        fn probe(after: Duration, reply: Option<StatusReply>) -> Probe {
+            Probe { after, reply }
+        }
+
+        /// A caller whose probes answer as the cell says: the direct one, and one per carrier by
+        /// path.name (a carrier not named fails at once).
+        struct Rig {
+            direct: Probe,
+            peers: Vec<(&'static str, Probe)>,
+            ended: Arc<AtomicUsize>,
+            /// The carriers the ladder asked, in order.
+            asked: Mutex<Vec<String>>,
+        }
+
+        impl Rig {
+            fn new(direct: Probe, peers: Vec<(&'static str, Probe)>) -> Self {
+                Self { direct, peers, ended: Arc::default(), asked: Mutex::default() }
+            }
+
+            async fn run(&self, p: &Probe) -> ProbeEnd {
+                sleep(p.after).await;
+                self.ended.fetch_add(1, Ordering::SeqCst);
+                match &p.reply {
+                    Some(r) => ProbeEnd::Reply(r.clone()),
+                    None => ProbeEnd::Other { end: "NotSent", detail: "not sent: Deadline".into() },
+                }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl TickleCalls for Rig {
+            fn caller(&self) -> String {
+                "mesh1.admin.1".into()
+            }
+
+            fn deadline(&self) -> Duration {
+                BUDGET
+            }
+
+            async fn direct(&self, _node: &Node, probe: &StatusRequest) -> ProbeEnd {
+                assert!(matches!(probe, StatusRequest::ProbeNodeState { .. }), "the probe is ProbeNodeState: {probe:?}");
+                self.run(&self.direct).await
+            }
+
+            async fn via_peer(&self, carrier: &Node, _node: &Node, _probe: &StatusRequest) -> ProbeEnd {
+                self.asked.lock().unwrap().push(carrier.name.to_string());
+                match self.peers.iter().find(|(c, _)| *c == carrier.name.to_string()) {
+                    Some((_, p)) => self.run(p).await,
+                    None => ProbeEnd::Other { end: "NotSent", detail: "not sent: NoActiveRoute".into() },
+                }
+            }
+
+            fn carriers(&self, view: &crate::topology::Topology, node: &Node) -> Vec<Node> {
+                let me = view.members().find(|n| n.name.to_string() == self.caller()).map(|n| n.node_id.clone());
+                eligible_carriers(view, node, me.as_ref()).cloned().collect()
+            }
+        }
+
+        /// CONTRACT (node-tickle.md step 2, "Ends"): the birth's answer to the direct probe ends the
+        /// ladder: `reached`, no carrier, and no peer is asked.
+        #[tokio::test(start_paused = true)]
+        async fn the_direct_answer_ends_the_ladder_before_any_peer_is_asked() {
+            let b = birth();
+            let (node, view) = member_and_view(&b);
+            let rig = Rig::new(probe(Duration::from_millis(5), Some(current(&b))), vec![("mesh1.rpc.2", probe(BUDGET, Some(current(&b))))]);
+            match tickle(&node, &view, &rig).await.unwrap() {
+                Tickle::Reached { answer, carrier: None } => assert_eq!(answer, current(&b)),
+                other => panic!("the direct answer is reached, with no carrier: {other:?}"),
+            }
+            assert!(rig.asked.lock().unwrap().is_empty(), "no peer is asked after a direct answer");
+        }
+
+        /// CONTRACT (R-SW1 acceptance 1; node-tickle.md step 3): after the direct probe failed, both
+        /// peer probes run at once, so two peers each spending a whole budget cost one budget, not
+        /// two; with no answer the ladder is `unreached`, naming both carriers in the order asked,
+        /// never the caller itself.
         #[tokio::test(start_paused = true)]
         async fn the_tickle_spends_one_budget_on_both_peer_probes() {
             let b = birth();
-            let ended = Arc::new(AtomicUsize::new(0));
+            let (node, view) = member_and_view(&b);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(BUDGET, None)), ("mesh1.rpc.3", probe(BUDGET, None))]);
             let start = Instant::now();
-            let peers = vec![("mesh1.rpc.2".to_string(), probe(BUDGET, None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(BUDGET, None, ended.clone()))];
-            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
-            assert_eq!(start.elapsed(), BUDGET, "the two peer probes overlap: one budget, not two");
-            assert_eq!(verdict, ViaPeerVerdict::NoPath { asked: vec!["mesh1.rpc.2".into(), "mesh1.rpc.3".into()] });
-            assert_eq!(ended.load(Ordering::SeqCst), 2, "no answer: both probes ran to their end");
+            let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
+            assert_eq!(start.elapsed(), tickle_round(BUDGET) - BUDGET, "the two peer probes overlap: one budget, not two");
+            assert_eq!(u.carriers(), "mesh1.rpc.2,mesh1.rpc.3", "both carriers of the birth's mesh, this admin never one: {u:?}");
+            assert_eq!(rig.ended.load(Ordering::SeqCst), 3, "no answer: the direct and both carried probes ran to their end");
         }
 
-        /// CONTRACT (R-SW1 completion rule, on the tickle): one failed peer probe does not cancel
-        /// the other. The first peer fails at 1 s; the second answers for the exact birth at 3 s and
-        /// ends the step there, naming that carrier.
+        /// CONTRACT (R-SW1 completion rule; node-tickle.md "Ladder"): one failed peer probe does not
+        /// cancel the other. The first peer fails at 1 s; the second answers for the exact birth at
+        /// 3 s and ends the ladder there, naming that carrier.
         #[tokio::test(start_paused = true)]
         async fn the_tickle_takes_the_second_peers_answer_after_the_first_fails() {
             let b = birth();
-            let ended = Arc::new(AtomicUsize::new(0));
+            let (node, view) = member_and_view(&b);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_secs(1), None)), ("mesh1.rpc.3", probe(Duration::from_secs(3), Some(current(&b))))]);
             let start = Instant::now();
-            let peers = vec![("mesh1.rpc.2".to_string(), probe(Duration::from_secs(1), None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(Duration::from_secs(3), Some(current(&b)), ended.clone()))];
-            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
-            assert_eq!(verdict, ViaPeerVerdict::Answered { via: "mesh1.rpc.3".into() });
-            assert_eq!(start.elapsed(), Duration::from_secs(3), "the second peer's answer, not the first's failure, ends the step");
+            match tickle(&node, &view, &rig).await.unwrap() {
+                Tickle::Reached { carrier: Some(c), .. } => assert_eq!(c, "mesh1.rpc.3"),
+                other => panic!("the second peer's answer is reached through it: {other:?}"),
+            }
+            assert_eq!(start.elapsed(), Duration::from_secs(3), "the second peer's answer, not the first's failure, ends the ladder");
         }
 
-        /// CONTRACT (R-SW1 completion rule, on the tickle): the first answer from the exact birth
-        /// ends the step and drops the probe still running, which never completes.
+        /// CONTRACT (node-tickle.md step 4): the first answer from the exact birth ends the ladder and
+        /// cancels the probe still running, which never completes.
         #[tokio::test(start_paused = true)]
         async fn the_tickle_drops_the_peer_probe_still_running_at_an_answer() {
             let b = birth();
-            let ended = Arc::new(AtomicUsize::new(0));
+            let (node, view) = member_and_view(&b);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(BUDGET, None)), ("mesh1.rpc.3", probe(Duration::from_secs(1), Some(current(&b))))]);
             let start = Instant::now();
-            let peers = vec![("mesh1.rpc.2".to_string(), probe(BUDGET, None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(Duration::from_secs(1), Some(current(&b)), ended.clone()))];
-            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
-            assert_eq!(verdict, ViaPeerVerdict::Answered { via: "mesh1.rpc.3".into() });
+            assert!(matches!(tickle(&node, &view, &rig).await.unwrap(), Tickle::Reached { carrier: Some(c), .. } if c == "mesh1.rpc.3"));
             assert_eq!(start.elapsed(), Duration::from_secs(1));
             sleep(BUDGET * 2).await;
-            assert_eq!(ended.load(Ordering::SeqCst), 1, "the probe still running was dropped with the step");
+            assert_eq!(rig.ended.load(Ordering::SeqCst), 2, "the probe still running was cancelled with the ladder");
+        }
+
+        /// CONTRACT (R-SW1 acceptance 3; node-tickle.md "a stopped node answers CurrentParked"): a
+        /// stopped holder's `CurrentParked` through a peer is the birth's answer and ends the ladder;
+        /// a carrier's own refusal before it is not an answer.
+        #[tokio::test(start_paused = true)]
+        async fn a_stopped_holder_answering_current_parked_through_a_peer_ends_the_ladder() {
+            let b = birth();
+            let (node, view) = member_and_view(&b);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_millis(5), Some(StatusReply::NotReady { reason: "carrier not ready".into() }))), ("mesh1.rpc.3", probe(Duration::from_millis(20), Some(parked(&b))))]);
+            match tickle(&node, &view, &rig).await.unwrap() {
+                Tickle::Reached { answer, carrier: Some(c) } => assert_eq!((answer, c.as_str()), (parked(&b), "mesh1.rpc.3")),
+                other => panic!("CurrentParked through a peer is reached: {other:?}"),
+            }
+        }
+
+        /// CONTRACT (R-SW1 item 3; node-tickle.md "Probe"): an answer is `Current`, `CurrentParked` or
+        /// `Blocked` from the exact birth probed. A NotReady (a carrier's or anyone's), another
+        /// incarnation's reply, a refusal and no reply at all are not answers.
+        #[test]
+        fn only_the_exact_births_state_is_an_answer() {
+            let b = birth();
+            let blocked = StatusReply::Blocked { node_id: b.0.clone(), incarnation: b.1.clone(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } };
+            for r in [current(&b), parked(&b), blocked] {
+                assert!(birth_answered(Some(&r), &b.0, &b.1), "{} is the birth's answer", r.name());
+            }
+            let other = (b.0.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("an-older-birth")).unwrap());
+            for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), parked(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
+                assert!(!birth_answered(Some(&r), &b.0, &b.1), "{} is no answer from the exact birth", r.name());
+            }
+            assert!(!birth_answered(None, &b.0, &b.1), "no reply (a deadline, carrier-edge-lost) is no answer");
+        }
+
+        /// CONTRACT (node-tickle.md "Observability contract"): one ladder emits
+        /// `rdm.node.tickle.resolve.via-direct` for the direct probe (node, node_id, incarnation, the
+        /// failure, the deadline), `rdm.node.tickle.resolve.via-peer` per carrier (the carrier, its
+        /// answer or failure) and, when none answered, `rdm.node.tickle.returns-unknown.via-unreached`
+        /// carrying what the caller does next; a ladder a peer's answer ends has that peer's span
+        /// carry the answer and no unreached span. Must NOT happen: a span of another name for a
+        /// probe, or an unreached span for a ladder that was answered.
+        #[tokio::test(start_paused = true)]
+        async fn the_ladder_spans_the_direct_probe_each_carrier_and_the_unreached_end() {
+            let b = birth();
+            let (node, view) = member_and_view(&b);
+            let capture = crate::span_capture::Capture::new("node-tickle-spans");
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            // Nobody reaches the birth: the caller says it opens the hold-down next.
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_secs(1), None)), ("mesh1.rpc.3", probe(Duration::from_secs(1), Some(StatusReply::NotReady { reason: "carrier not ready".into() })))]);
+            let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("unreached") };
+            u.next("hold-down");
+            drop(u);
+            let direct = capture.named("rdm.node.tickle.resolve.via-direct");
+            assert_eq!(direct.len(), 1, "one direct probe span: {direct:?}");
+            let a = &direct[0].attributes;
+            assert_eq!((a.get("node").map(String::as_str), a.get("node_id").map(String::as_str), a.get("incarnation").map(String::as_str), a.get("caller").map(String::as_str)), (Some("mesh1.rpc.1"), Some(b.0.as_str()), Some(b.1.as_str()), Some("mesh1.admin.1")), "{a:?}");
+            assert_eq!(a.get("failure").map(String::as_str), Some("NotSent: not sent: Deadline"), "{a:?}");
+            assert_eq!(a.get("deadline_ms").map(String::as_str), Some("10000"), "{a:?}");
+            let mut peers = capture.named("rdm.node.tickle.resolve.via-peer");
+            peers.sort_by(|x, y| x.attributes.get("carrier").cmp(&y.attributes.get("carrier")));
+            assert_eq!(peers.iter().map(|p| p.attributes.get("carrier").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["mesh1.rpc.2".to_string(), "mesh1.rpc.3".to_string()], "one span per carrier: {peers:?}");
+            assert_eq!(peers[0].attributes.get("failure").map(String::as_str), Some("NotSent: not sent: Deadline"), "{:?}", peers[0].attributes);
+            assert_eq!(peers[1].attributes.get("answer").map(String::as_str), Some("not-ready"), "a reply that is not the birth's is named as it came: {:?}", peers[1].attributes);
+            let unreached = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
+            assert_eq!(unreached.len(), 1, "one unreached span: {unreached:?}");
+            let a = &unreached[0].attributes;
+            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some("mesh1.rpc.2,mesh1.rpc.3"), Some("hold-down")), "{a:?}");
+            for sp in direct.iter().chain(&peers).chain(&unreached) {
+                eprintln!("span {} trace_id={} {:?}", sp.name, sp.trace_id, sp.attributes);
+            }
+            // A peer's answer: its span carries the answer, and no unreached span follows.
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_secs(1), None)), ("mesh1.rpc.3", probe(Duration::from_millis(10), Some(current(&b))))]);
+            assert!(matches!(tickle(&node, &view, &rig).await.unwrap(), Tickle::Reached { carrier: Some(_), .. }));
+            assert_eq!(capture.named("rdm.node.tickle.resolve.via-direct").len(), 2);
+            let answered: Vec<_> = capture.named("rdm.node.tickle.resolve.via-peer").into_iter().filter(|p| p.attributes.get("answer").map(String::as_str) == Some("current")).collect();
+            assert_eq!(answered.len(), 1, "the carrier's span carries the birth's answer: {answered:?}");
+            assert_eq!(answered[0].attributes.get("carrier").map(String::as_str), Some("mesh1.rpc.3"));
+            assert_eq!(capture.named("rdm.node.tickle.returns-unknown.via-unreached").len(), 1, "an answered ladder has no unreached span");
         }
 
         /// CONTRACT (R-SW1 acceptance: the provider check stays mandatory and comes last): TRUE
         /// OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
         /// (`recovery_due`), is reached on round 2 only after both peer probes of each round ended
-        /// unanswered, each round costing the direct connect's budget plus one peer budget.
+        /// unanswered, each round costing the direct probe's budget plus one peer budget.
         #[tokio::test(start_paused = true)]
         async fn the_provider_is_owed_only_after_both_peer_probes_of_round_two_ended() {
             let b = birth();
-            let ended = Arc::new(AtomicUsize::new(0));
+            let (node, view) = member_and_view(&b);
+            let rig = Arc::new(Rig::new(probe(BUDGET, None), vec![("mesh1.rpc.2", probe(BUDGET, None)), ("mesh1.rpc.3", probe(BUDGET, None))]));
+            let (node, view) = (Arc::new(node), Arc::new(view));
             let mut t = OfflineTickle::new();
             let id = b.0.to_string();
             let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into(), incarnation: Some(b.1.clone()), marked_at_ms: None }];
-            let direct_failed = Arc::new(AtomicBool::new(false));
-            // The instant each round's via-peer rung gave its verdict.
-            let verdict_at: Arc<std::sync::Mutex<Vec<Instant>>> = Arc::default();
+            // The instant each round's ladder ended.
+            let verdict_at: Arc<Mutex<Vec<Instant>>> = Arc::default();
             let round = async |t: &mut OfflineTickle, now: u64| {
                 t.tick(
                     now,
@@ -1054,20 +1488,11 @@ pub(crate) mod tests {
                     PROBE_DELAY,
                     FLOOR,
                     |_| {
-                        let direct_failed = direct_failed.clone();
+                        let (rig, node, view, verdict_at) = (rig.clone(), node.clone(), view.clone(), verdict_at.clone());
                         async move {
-                            sleep(BUDGET).await;
-                            direct_failed.store(true, Ordering::SeqCst);
-                            Err::<(), String>("the direct connect spent its budget".into())
-                        }
-                    },
-                    |_| {
-                        let peers = vec![("mesh1.rpc.2".to_string(), probe(BUDGET, None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(BUDGET, None, ended.clone()))];
-                        let (b, verdict_at) = (b.clone(), verdict_at.clone());
-                        async move {
-                            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
+                            let end = tickle(&node, &view, &*rig).await;
                             verdict_at.lock().unwrap().push(Instant::now());
-                            verdict
+                            end
                         }
                     },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
@@ -1094,9 +1519,8 @@ pub(crate) mod tests {
             sleep(tickle_round(BUDGET) + Duration::from_millis(1)).await;
             assert_eq!(verdict_at.lock().unwrap()[1] - start, tickle_round(BUDGET), "round 2: the direct budget, then one budget for both peers");
             let r2 = round(&mut t, PROBE_DELAY + ms(tickle_round(BUDGET)) + FLOOR + ms(tickle_round(BUDGET)) + 1).await;
-            assert!(direct_failed.load(Ordering::SeqCst));
             assert_eq!(r2.offline, vec![id.clone()], "round 2 no path is TRUE OFFLINE: the provider is owed");
-            assert_eq!(ended.load(Ordering::SeqCst), 4, "TRUE OFFLINE only once both peer probes of both rounds ended");
+            assert_eq!(rig.ended.load(Ordering::SeqCst), 6, "TRUE OFFLINE only once the direct and both peer probes of both rounds ended");
         }
     }
 
@@ -1233,12 +1657,9 @@ pub(crate) mod tests {
                 PROBE_DELAY,
                 FLOOR,
                 |_| async {
-                    tokio::time::sleep(std::time::Duration::from_millis(BUDGET)).await;
-                    Err::<(), String>("the direct connect spent its budget: NotSent".into())
-                },
-                |_| async {
-                    tokio::time::sleep(std::time::Duration::from_millis(BUDGET)).await;
-                    no_path()
+                    // The direct probe spends its budget, then both carried probes spend one at once.
+                    tokio::time::sleep(std::time::Duration::from_millis(2 * BUDGET)).await;
+                    Ok(unreached(&["mesh1.rpc.2"]))
                 },
                 |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )
@@ -1262,14 +1683,14 @@ pub(crate) mod tests {
         tokio::time::sleep(ended).await;
         let folded = round(&mut t, verdict_at + FLOOR + 2 * BUDGET + 1).await;
         assert_eq!(folded.offline, vec!["a".to_string()], "round 2's no path, folded, is TRUE OFFLINE");
-        let failed = capture.named("rdm.node_admin.node.resolve.via-offline-tickle-failed");
+        let failed = capture.named("rdm.node_admin.node.update.via-true-offline");
         assert_eq!(failed.len(), 1, "one TRUE OFFLINE span");
         assert_eq!(failed[0].attributes.get("first_no_path_ms").map(String::as_str), Some(verdict_at.to_string().as_str()), "the hold-down ran from round 1's no path: {:?}", failed[0].attributes);
         let opened = capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened");
         assert_eq!(opened.len(), 1, "one hold-down");
         assert_eq!((opened[0].attributes.get("no_path_at_ms").map(String::as_str), opened[0].attributes.get("round_began_ms").map(String::as_str)), (Some(verdict_at.to_string().as_str()), Some(PROBE_DELAY.to_string().as_str())), "{:?}", opened[0].attributes);
         eprintln!("span rdm.node_admin.node.update.via-offline-hold-down-opened trace_id={} {:?}", opened[0].trace_id, opened[0].attributes);
-        eprintln!("span rdm.node_admin.node.resolve.via-offline-tickle-failed trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
+        eprintln!("span rdm.node_admin.node.update.via-true-offline trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1324,8 +1745,7 @@ pub(crate) mod tests {
                 |id: &str| id != "a",
                 PROBE_DELAY,
                 FLOOR,
-                |_| async { Err("no answer".to_string()) },
-                |_| async { no_path() },
+                |_| async { Ok(unreached(&["mesh1.rpc.2"])) },
                 |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )
             .await

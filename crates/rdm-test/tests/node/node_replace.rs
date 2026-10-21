@@ -1209,7 +1209,7 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
     })
     .await;
     let spans = estate.spans();
-    let true_offline = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned();
+    let true_offline = named(&spans, "rdm.node_admin.node.update.via-true-offline").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned();
     let true_offline = true_offline.unwrap_or_else(|| panic!("the inspection follows the TRUE OFFLINE mark of {node}"));
     assert!(start(&true_offline) <= start(&inspected), "TRUE OFFLINE, then the inspection");
     assert_eq!(lane_attempt_at(&estate, &fp, &birth_build, &mesh).await, attempt_before, "no attempt is opened in {mesh}'s lane for a hung member inside the hold");
@@ -1645,24 +1645,24 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     estate.shutdown().await;
 }
 
-/// The `observer`'s first offline-tickle span of `round` for `node_id` (round 1 opens the hold-down,
+/// The `observer`'s first fold span of tickle `round` for `node_id` (round 1 opens the hold-down,
 /// round 2 is TRUE OFFLINE), once exported.
 fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value, round: u8) -> Option<&'a Value> {
-    let name = if round == 1 { "rdm.node_admin.node.update.via-offline-hold-down-opened" } else { "rdm.node_admin.node.resolve.via-offline-tickle-failed" };
+    let name = if round == 1 { "rdm.node_admin.node.update.via-offline-hold-down-opened" } else { "rdm.node_admin.node.update.via-true-offline" };
     let mut found: Vec<&Value> = named(spans, name).into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
     found.sort_by_key(|sp| start(sp));
     found.into_iter().next()
 }
 
-/// The span that ends the `observer`'s first tickle round for `node_id` once its direct connect
-/// failed: the via-peer step (`rdm.node_admin.node.resolve.via-peer-tickle`), closed by the round
-/// itself when its verdict comes back (offline.rs `OfflineTickle::tick`, the round's `step` span),
-/// once exported. The hold-down span ([`tickle_span`] round 1) is the loop's fold of that verdict,
-/// made by the first pass after the round ended.
-fn round_end_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value) -> Option<&'a Value> {
-    let mut found: Vec<&Value> = named(spans, "rdm.node_admin.node.resolve.via-peer-tickle")
+/// The span that ends the `caller`'s first tickle round for `node_id` with nobody reaching it: the
+/// ladder's result span (`rdm.node.tickle.returns-unknown.via-unreached`, node-tickle.md), closed by
+/// the round itself when the ladder ends (offline.rs `OfflineTickle::tick`), once exported. The
+/// hold-down span ([`tickle_span`] round 1) is the loop's fold of that result, made by the first pass
+/// after the round ended.
+fn round_end_span<'a>(spans: &'a [Value], caller: &str, node_id: &Value) -> Option<&'a Value> {
+    let mut found: Vec<&Value> = named(spans, "rdm.node.tickle.returns-unknown.via-unreached")
         .into_iter()
-        .filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id && sp["attributes"]["verdict"].is_string())
+        .filter(|sp| sp["attributes"]["caller"] == caller && sp["attributes"]["node_id"] == *node_id && sp["attributes"]["next"].is_string())
         .collect();
     found.sort_by_key(|sp| start(sp));
     found.into_iter().next()
@@ -1697,11 +1697,11 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let before = estate.node_value(NODE).await;
     estate.kill_node(NODE).await;
 
-    // Round 1 on the mesh-primary that holds the seat now. Its via-peer step's span ends the round
+    // Round 1 on the mesh-primary that holds the seat now. The ladder's unreached span ends the round
     // (`round_end_span`), due by node-recovery.md steps 1-2: the silence (one floor after the last
     // digest heard: offline.rs `silent_set` derives the mark from it), the loop's pass half a floor
     // after the mark (on the gossip-interval grid: up to one interval late), then one tickle round:
-    // one direct connect, then the connects through up to two peers at once, each to a killed process
+    // one direct probe, then the probes through up to two peers at once, each to a killed process
     // and so spending its whole dial: the connection's idle timeout, the staleness floor (R-T8),
     // inside the call's 10 s budget. Then the export's 200 ms schedule and this cell's read of it
     // (one gossip interval). The hold-down span is not the round's end: the loop folds the verdict at
@@ -1711,7 +1711,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let connect = floor.min(Duration::from_secs(10));
     let round1_due = floor + gossip + gossip + floor / 2 + rdm_admin::offline::tickle_round(connect) + Duration::from_millis(200);
     let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { round_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
-    assert_eq!(s(&round1["attributes"]["verdict"]), "no-path", "{mp}'s round 1 finds no path to the killed {NODE}: {round1}");
+    assert_eq!(s(&round1["attributes"]["next"]), "hold-down", "{mp}'s round 1 finds no path to the killed {NODE}, and the hold-down opens next: {round1}");
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
     let stopping = estate.submit_change(Change::Stop { node: Estate::path(&mp) }).await;
     assert_eq!(stopping.build_id().as_str(), birth_build, "no Build is minted");
@@ -1744,7 +1744,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     assert!(start(new_round1) > taken_ns, "{standby} tickles only once it holds the seat");
     // The window it kept: the round runs on the instant it first saw the member silent, before the
     // seat changed hands and a probe delay or more before it, never on a window opened at the seat.
-    // (The round's span is written when the round ends: the failed direct ping and via-peer kicks
+    // (The round's span is written when the round ends: the failed direct probe and via-peer probes
     // take their call deadlines, so its time after the seat is not the wait before it.)
     let first_seen_ms = num_attr(new_round1, "first_seen_ms");
     assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby}'s window began a probe delay or more before it took the seat: first_seen {first_seen_ms} ms, seat at {} ms", taken_ns / 1_000_000);

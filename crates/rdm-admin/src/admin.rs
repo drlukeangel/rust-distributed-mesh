@@ -2339,8 +2339,7 @@ mod tests {
                     |i: &str| heard.contains(i),
                     floor / 2,
                     floor,
-                    |_| async { Err("no answer".to_string()) },
-                    |_| async { crate::offline::ViaPeerVerdict::NoPath { asked: vec!["mesh2.rpc.2".into()] } },
+                    |_| async { Ok(crate::offline::Tickle::Unreached(crate::offline::Unreached::of(crate::offline::ProbeEnd::Other { end: "NotSent", detail: "no answer".into() }, vec![crate::offline::PeerProbe { carrier: "mesh2.rpc.2".into(), end: crate::offline::ProbeEnd::Other { end: "NotSent", detail: "deadline".into() } }]))) },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await;
@@ -2397,7 +2396,7 @@ mod tests {
     /// silent primary still holds the seat.
     #[tokio::test(start_paused = true)]
     async fn a_successor_has_no_recovery_due_for_a_silent_mesh_primary_until_the_seat_moves() {
-        use crate::offline::{OfflineTickle, SilentNode, ViaPeerVerdict};
+        use crate::offline::{OfflineTickle, ProbeEnd, SilentNode, Tickle, Unreached};
         use rdm_core::Seat::MeshPrimary;
         use MemberStatus::*;
         let book = DigestBook::default();
@@ -2440,8 +2439,7 @@ mod tests {
                     |id: &str| in_view.contains(id),
                     floor / 2,
                     floor,
-                    |id| async move { Err::<(), String>(format!("{id} did not answer the ping")) },
-                    |_| async { ViaPeerVerdict::NoPath { asked: Vec::new() } },
+                    |id| async move { Ok(Tickle::Unreached(Unreached::of(ProbeEnd::Other { end: "NotSent", detail: format!("{id} did not answer the probe") }, Vec::new()))) },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await;
