@@ -764,6 +764,7 @@ impl HandoverDoor {
         match &r {
             Ok(_) => span.record("outcome", "updated"),
             Err(Reply::Failed { reason, .. }) => span.record("outcome", "failed").record("detail", reason.as_str()),
+            Err(Reply::AlreadyApplied { revisions }) => span.record("outcome", "already-applied").record("detail", format!("{revisions:?}").as_str()),
             Err(incomplete @ Reply::Incomplete { .. }) => span.record("outcome", "incomplete").record("detail", refusal_reason(incomplete).1.as_str()),
             Err(refusal) => span.record("outcome", "refused").record("detail", refusal_reason(refusal).1.as_str()),
         };
@@ -776,11 +777,14 @@ impl HandoverDoor {
     /// holder's process is gone, provider-confirmed, after the row (ruling R-PU2, Q10).
     pub async fn move_own_seats(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
         use crate::build_drive::SeatMoveEnd;
-        self.update_primary(moving, None, build_id, attempt, operation, named).await.map_err(|e| match e {
-            Reply::Failed { step, reason, code } => SeatMoveEnd::Failed { step, reason, code },
-            r @ Reply::Incomplete { .. } => SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name())),
-            other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
-        })
+        match self.update_primary(moving, None, build_id, attempt, operation, named).await {
+            Ok(revisions) => Ok(revisions),
+            // A hand-back whose row committed already: the seats moved.
+            Err(Reply::AlreadyApplied { revisions }) => Ok(revisions),
+            Err(Reply::Failed { step, reason, code }) => Err(SeatMoveEnd::Failed { step, reason, code }),
+            Err(r @ Reply::Incomplete { .. }) => Err(SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name()))),
+            Err(other) => Err(SeatMoveEnd::Refused(format!("{}: {other:?}", other.name()))),
+        }
     }
 
     async fn update_primary_in(&self, moving: Moving, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<CommittedSeat>, Reply> {
@@ -807,6 +811,18 @@ impl HandoverDoor {
                 let failed = SourceFailure { source: format!("fabric.storage of {me_name}, the seat move of {operation}"), op: format!("read the seat move of {operation}"), cause: e.to_string() };
                 refused("holder", "source-failed", &failed.to_string(), &of, Some(&failed));
                 return Err(failed.reply());
+            }
+        }
+        // The hand-back (fabric-recovery.md step 4) repeated under another operation once its row
+        // committed: whether it is still owed is read from the committed seat move on the store root,
+        // never from this holder's seat book, which a lost answer leaves behind. The fabric seat's
+        // latest move is this holder's to the birth its view holds at `named`: nothing is written
+        // again; the update completes from that row and answers `AlreadyApplied`, as a repeated
+        // takeover does.
+        if let (true, Some(name)) = (moving.fabric_seat(), named) {
+            if let Some(row) = self.handed_back(&me, name, &of).await? {
+                let revisions = self.complete_from_row(&row).await?;
+                return Err(rdm_core::reply::handover::already_applied(revisions));
             }
         }
         // The seats this holder holds, each at the revision the row moves it from.
@@ -947,6 +963,25 @@ impl HandoverDoor {
         (self.project_view)().await;
         // Steps 6-7: the call carrying the row, then "primary updated".
         self.update_successor(&row).await
+    }
+
+    /// The committed row of the hand-back to `named` when the fabric seat's latest committed move on
+    /// the store root is that row: it moved the seat from `me` to the birth this admin's view holds at
+    /// `named` (fabric-recovery.md step 4). `None` when the latest move is any other; a store that
+    /// cannot be read refuses by name, before anything.
+    async fn handed_back(&self, me: &HandoverBirth, named: &PathName, of: &Refusing<'_>) -> Result<Option<SeatTransferRow>, Reply> {
+        let moves = match self.storage.seat_moves().await {
+            Ok(m) => m,
+            Err(e) => {
+                let failed = SourceFailure { source: format!("fabric.storage of {}, the fabric's seat moves", self.held_name()), op: format!("read the fabric seat's latest move before {}", of.operation), cause: e.to_string() };
+                refused("holder", "source-failed", &failed.to_string(), of, Some(&failed));
+                return Err(failed.reply());
+            }
+        };
+        let to = self.topology.read().await.node(named).and_then(birth_of);
+        let latest = moves.iter().rev().find(|m| m.row.seats.iter().any(|s| s.seat == WireSeat::FabricPrimary));
+        let handed = latest.filter(|m| m.row.seats.iter().any(|s| s.seat == WireSeat::FabricPrimary && s.from.as_ref() == Some(me) && to.is_some() && s.holder == to));
+        Ok(handed.and_then(|m| SeatTransferRow::of_move(&m.row)))
     }
 
     /// The holder's steps 6-7 for its committed `row`: PrimaryUpdate carrying it, and on the

@@ -175,7 +175,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         self.records.exited_name(&lost.node_id, &lost.incarnation)
     }
 
-    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
         match self.fabric.seat_moves().await {
             Ok(moves) => crate::fabric_storage::fabric_seat_taken_from(&moves),
             Err(e) => {
@@ -311,7 +311,7 @@ pub(crate) async fn crashed_peer_mesh(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     unreachable: &(dyn Fn(&str) -> bool + Sync),
-    taken: Option<&(u64, rdm_core::handover::HandoverBirth)>,
+    taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>,
     released: &(dyn Fn(&rdm_core::handover::HandoverBirth) -> bool + Sync),
 ) -> Option<(String, PathName, Option<crate::drift::ExitedBirth>)> {
     for m in current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)) {
@@ -321,7 +321,7 @@ pub(crate) async fn crashed_peer_mesh(
         // ... and only once the lost birth's name was released (fabric-recovery.md step 3: nobody able to
         // inspect it): a lost birth the view still holds as a member is held-running or proven exited by
         // the standing playbook, never re-created beside itself.
-        if let Some((seat_move, lost)) = taken.filter(|(_, lost)| lost.mesh == m.name && released(lost)) {
+        if let Some((seat_move, lost, _)) = taken.filter(|(_, lost, _)| lost.mesh == m.name && released(lost)) {
             if t.cohort(&m.name, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
                 let Some(owed) = crate::build_drive::first_admin_owed(current, &m.name, first) else { continue };
                 if started.insert((current.build_id.clone(), 0u32, vec!["takeover-recreate".to_string(), m.name.clone(), lost.node_id.to_string(), seat_move.to_string()])) {
@@ -417,7 +417,7 @@ pub async fn reconcile_drift(
     decided: &(dyn Fn(&str) -> bool + Sync),
     unreachable: &(dyn Fn(&str) -> bool + Sync),
     exits: &Records,
-    taken: Option<&(u64, rdm_core::handover::HandoverBirth)>,
+    taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>,
     lost_name: Option<&PathName>,
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
@@ -647,7 +647,7 @@ pub async fn reconcile_drift(
                 }
             }
             None if surplus.is_empty() => match (&handback, taken) {
-                (Some(to), Some((at, _))) => (vec![format!("handback:{to}@{at}")], format!("handback: the fabric seat to {to}"), None),
+                (Some(to), Some((at, _, _))) => (vec![format!("handback:{to}@{at}")], format!("handback: the fabric seat to {to}"), None),
                 _ => return None,
             },
             None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),

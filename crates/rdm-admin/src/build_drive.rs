@@ -244,7 +244,7 @@ pub trait DepartureProof: Send + Sync {
     /// possible moved the seat, so the lost mesh's first node-admin is re-created from the fabric lane
     /// with no exit proof (elections §4.3, node-recovery.md `R-FM2`). A proof that holds no seat moves
     /// reads none.
-    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
         None
     }
     /// The path.name the lost birth's exit-proof row names, when one was read: where the node the
@@ -349,7 +349,7 @@ pub struct Drive {
     running: AtomicBool,
     /// The takeover that moved the fabric seat, as this pass read the seat moves: what the handback
     /// is planned from ([`crate::accepted::handback_due`]).
-    taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth)>>,
+    taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>>,
     /// The path.name the lost birth's exit-proof row names, read beside `taken`.
     taken_name: Mutex<Option<PathName>>,
 }
@@ -960,7 +960,7 @@ impl DriveEnv {
             // The mesh the fabric seat was taken from (elections §4.3): an expired hold with no
             // inspection possible moved the seat, so its first node-admin is re-created with no exit
             // proof; the create's own fence decides its data dir (node-recovery.md `R-FM2`).
-            if let Some((t, lost)) = taken.as_ref().filter(|(_, lost)| lost.mesh == m.name) {
+            if let Some((t, lost, _)) = taken.as_ref().filter(|(_, lost, _)| lost.mesh == m.name) {
                 let view = self.topology.read().await;
                 // Only once the lost birth's name was released, its exit-proof row read (fabric-recovery.md
                 // step 3): a lost birth still held as a member is the standing playbook's, re-created by nothing.
@@ -1074,7 +1074,7 @@ impl DriveEnv {
             }
             let me = self.held_name().await;
             let taken = self.departure.taken_from().await;
-            *drive.taken_name.lock().unwrap() = taken.as_ref().and_then(|(_, lost)| self.departure.lost_name(lost));
+            *drive.taken_name.lock().unwrap() = taken.as_ref().and_then(|(_, lost, _)| self.departure.lost_name(lost));
             *drive.taken.lock().unwrap() = taken;
             let p = match self.builds.read_build(&id).await {
                 Ok(p) => p,

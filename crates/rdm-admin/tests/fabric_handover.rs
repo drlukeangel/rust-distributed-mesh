@@ -179,6 +179,9 @@ struct Admin {
 
 /// The error a [`FailingStorage`] answers for a method it is told to fail.
 const PLANTED: &str = "planted: the disk refused";
+/// A [`FailingStorage`] told to fail this commits a seat move and answers the disk's error: the row
+/// stands and the writer hears it refused.
+const ANSWER_LOST: &str = "commit_seat_move answer";
 
 /// A `fabric.storage` held in memory that fails each method named in `fail` with an Io error naming
 /// the method: what a store whose disk refuses answers. `put_open` holds a seat move's commit
@@ -233,7 +236,10 @@ impl FabricStorage for FailingStorage {
         self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let _ = self.put_open.subscribe().wait_for(|open| *open).await;
         self.check("commit_seat_move")?;
-        self.inner.commit_seat_move(row).await
+        let committed = self.inner.commit_seat_move(row).await;
+        // The write stands and its answer is lost: the writer hears the disk's error.
+        self.check(ANSWER_LOST)?;
+        committed
     }
     async fn seat_transfer(&self, operation: &str) -> Result<Option<SeatTransferRow>, FabricStorageError> {
         self.check("seat_transfer")?;
@@ -2496,6 +2502,46 @@ fn a_takeover_before_the_initial_fabric_first_reaches_ready_for_traffic_is_refus
         f.n.status.put_fabric_event_of("mesh1", &FabricEventRow { fabric_id, event: "ready-for-traffic".into() });
         assert_eq!(send(&f.m, &f.n, take(&f.n, 7)).await, updated(vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(&f.n, 8))]), "the same proposal commits once the fabric first reached ready-for-traffic");
         assert_eq!(takeovers().await, 1, "one takeover row");
+    });
+}
+
+/// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4, the
+/// hand-back; Q104 on Architect 2's review: whether a hand-back is still owed is read from the committed
+/// seat move on the store root, and a repeated hand-back for the same committed successor answers
+/// `AlreadyApplied`, as a repeated takeover does): X (mesh2) holds the fabric seat at revision 7 and
+/// hands it back to P (`mesh1.admin.1`) over a store whose answer to the row's write is lost: the row
+/// stands on the store root, X hears `RejectedSourceFailed`, lifts its cut-off and its seat book still
+/// names it. The hand-back repeated under the next run's operation finds the fabric seat's latest move
+/// is its row to P: it writes nothing, X's seat book takes the row, P installs from it, and the answer
+/// is `AlreadyApplied` naming the committed seat. Once X holds the row, the same repeat answers
+/// `AlreadyApplied` again. One hand-back row throughout. What must NOT happen: the repeat refused
+/// (`not-authority` from a book that moved, a conflict from a book left behind) or a second row.
+#[test]
+fn a_repeated_hand_back_after_its_row_committed_answers_already_applied_and_writes_no_second_row() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let (f, store) = failing_seats().await;
+        let to: rdm_admin::model::PathName = "mesh1.admin.1".parse().unwrap();
+        let hand_back = |run: u32| update_operation(Seat::FabricPrimary, "b1", run, &format!("node.fabric-primary.update:{to}"));
+        let rows = || async { f.x.door.storage.seat_moves().await.unwrap().into_iter().filter(|m| matches!(m.row.cause, MoveCause::Handover { .. }) && m.row.seats.iter().any(|s| s.seat == WireSeat::FabricPrimary)).count() };
+        store.failing(ANSWER_LOST);
+        let first = f.x.door.update_primary(Moving::FabricSeatOutside, None, "b1", 1, &hand_back(1), Some(&to)).await;
+        store.mended(ANSWER_LOST);
+        assert!(matches!(&first, Err(Reply::RejectedSourceFailed { cause, .. }) if cause.contains(PLANTED)), "X hears its row's write refused: {first:?}");
+        assert_eq!(rows().await, 1, "the hand-back's row stands on the store root");
+        assert_eq!(f.x.door.membership.seats().fabric(), Some(holder_of(&f.x, 7)), "X's seat book still names X");
+        let repeat = f.x.door.update_primary(Moving::FabricSeatOutside, None, "b1", 2, &hand_back(2), Some(&to)).await;
+        assert_eq!(repeat, Err(Reply::AlreadyApplied { revisions: committed_fabric(&f.p, 8) }), "the repeat finds the committed row and answers AlreadyApplied");
+        assert_eq!(rows().await, 1, "no second row");
+        assert_eq!(f.x.door.membership.seats().fabric(), Some(holder_of(&f.p, 8)), "X's seat book takes the committed row");
+        assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 8)), "P installed from the row");
+        let again = f.x.door.update_primary(Moving::FabricSeatOutside, None, "b1", 3, &hand_back(3), Some(&to)).await;
+        assert_eq!(again, Err(Reply::AlreadyApplied { revisions: committed_fabric(&f.p, 8) }), "a repeat once X holds the row answers AlreadyApplied too");
+        assert_eq!(rows().await, 1, "still one hand-back row");
+        let outcomes: Vec<String> = spans.named("rdm.node_admin.seat.update.via-primary-updating").iter().map(|a| a["outcome"].clone()).collect();
+        assert_eq!(outcomes, vec!["refused".to_string(), "already-applied".into(), "already-applied".into()], "{outcomes:?}");
+        let _ = (&f.n, &f.m);
     });
 }
 

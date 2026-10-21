@@ -167,16 +167,18 @@ pub enum MoveCause {
     Takeover,
 }
 
-/// The birth the fabric seat was taken from, with the move's `t`, when the fabric seat's latest move
-/// in `moves` is a takeover (elections §5): the lost fabric-primary, whose mesh's node-admin the new
-/// fabric-primary re-creates from the fabric lane (elections §4.3, node-recovery.md `R-FM2`). `None`
-/// when that move is an election or a handover, or no move seated the fabric seat.
-pub fn fabric_seat_taken_from(moves: &[SeatMove]) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+/// The birth the fabric seat was taken from and the birth the takeover seated, with the move's `t`,
+/// when the fabric seat's latest move in `moves` is a takeover (elections §5): the lost fabric-primary,
+/// whose mesh's node-admin the new fabric-primary re-creates from the fabric lane (elections §4.3,
+/// node-recovery.md `R-FM2`) and to whose path.name the seat is owed back (fabric-recovery.md step 4),
+/// and the seat's holder on the store root. `None` when that move is an election or a handover, or no
+/// move seated the fabric seat.
+pub fn fabric_seat_taken_from(moves: &[SeatMove]) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
     let (t, cause, moved) = moves.iter().rev().find_map(|m| m.row.seats.iter().find(|s| s.seat == rdm_core::seat::transfer::Seat::FabricPrimary).map(|s| (m.t, &m.row.cause, s)))?;
     if *cause != MoveCause::Takeover {
         return None;
     }
-    moved.from.clone().map(|from| (t, from))
+    Some((t, moved.from.clone()?, moved.holder.clone()?))
 }
 
 /// One row of the fabric's seat-move sequence (`seat-move/1`, Q35 x): the seats it moves, what moved
