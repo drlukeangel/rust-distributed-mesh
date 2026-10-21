@@ -309,7 +309,16 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    let after = view_of(&nodes, &path).await;
+    // The config the join handed rides the started node's digests (R-JN1): the view carries it once the
+    // first of them is heard, within a gossip interval of the start's completion.
+    let until = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
+    let after = loop {
+        let v = view_of(&nodes, &path).await;
+        if v.config == told || std::time::Instant::now() >= until {
+            break v;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert!(!after.parked && after.status == NodeStatus::ReadyForTraffic, "node.get lists {path} ready: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
     assert_eq!(after.config, told, "the started node carries the config its join handed it");
@@ -540,16 +549,19 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     assert!(matches!(refused.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the stop fails naming the unadmitted command: {refused:?}");
 
     // Released: once its mesh-primary hears the birth again (its unheard marks gone: PendingReconnect,
-    // and Dead with its os-stopped row while the offline ladder held it), node.get shows the status the
-    // mesh-primary authored. Nothing was admitted, so nothing is stopping.
+    // and Dead with its os-stopped row while the offline ladder held it), it is commanded back through
+    // node.mesh.join and runs its start sequence (node-recovery.md step 2, Q87): published Pending at
+    // that join, then ready-for-traffic once its hook has passed (node-mesh-join.md step 10). Nothing
+    // was admitted, so nothing is stopping and nothing is parked at any step of it.
     held.signal("-CONT", false);
-    let until = std::time::Instant::now() + Duration::from_secs(30);
+    let until = std::time::Instant::now() + Duration::from_secs(60);
     let heard = loop {
         let v = view_of(&nodes, &path).await;
-        if !matches!(v.status, NodeStatus::PendingReconnect | NodeStatus::Dead) {
+        assert!(!v.parked, "a stop the birth never admitted parks nothing: {v:?}");
+        if v.status == NodeStatus::ReadyForTraffic && !matches!(v.declared.as_deref(), Some("Stopped" | "Leaving")) {
             break v;
         }
-        assert!(std::time::Instant::now() < until, "the released birth is heard again within 30 s: {v:?}");
+        assert!(std::time::Instant::now() < until, "the released birth is heard again and ready-for-traffic within 60 s: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert!(heard.status == NodeStatus::ReadyForTraffic && !heard.parked, "a stop the birth never admitted leaves it neither stopping nor parked: {heard:?}");
