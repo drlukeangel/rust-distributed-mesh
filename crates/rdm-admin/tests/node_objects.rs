@@ -26,7 +26,6 @@ use rdm_admin::join::Joins;
 use rdm_admin::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::topology::Topology;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -143,8 +142,6 @@ impl DeploymentProvider for Up {
 
 /// The membership the admin holds of the birth: it hears the birth only once `joined` is set.
 struct Membership {
-    published: Mutex<Option<Publication>>,
-    joined: AtomicBool,
     /// While set, the node is not ready and this is what its Ready check names.
     not_ready: Mutex<Option<String>>,
     /// While set, the node reports Pending with no blocker: its Ready check fails with this and names nothing.
@@ -153,8 +150,10 @@ struct Membership {
 
 #[async_trait::async_trait]
 impl NodeObserver for Membership {
+    /// No digest of any birth reaches this fixture: the pipeline's waits complete from the report
+    /// `report_bind` makes, and no cell here runs the lost-executor rule.
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
-        self.joined.load(Ordering::SeqCst).then(|| self.published.lock().unwrap().clone()).flatten()
+        None
     }
     async fn ready(&self, _: &Node) -> Result<(), String> {
         match self.not_ready.lock().unwrap().clone().or_else(|| self.pending.lock().unwrap().clone()) {
@@ -374,11 +373,12 @@ impl Rig {
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false), not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root }
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root }
     }
 
     /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
-    /// the fabric-primary has claimed the attempt for it.
+    /// the fabric-primary has claimed the attempt for it; `join` bounds the waits for the birth's
+    /// report (`WaitForBind`, `WaitForMeshJoin`).
     async fn pipeline_create(&self, build: &BuildId, attempt: u32, name: &str, join: Duration) -> Result<(), String> {
         let pipeline = DeploymentPipeline {
             provider: &Up,
@@ -388,14 +388,15 @@ impl Rig {
             lifecycle: &NoLifecycleEvents,
             builds: &*self.builds,
             template: &self.template,
-            timeouts: Timeouts { join, ..Timeouts::default() },
+            timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
         let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
     /// The birth reports where it bound once the create has made its runtime fact available: the
-    /// node's own `JoinNode`, as the pipeline's `WaitForBind` waits for it.
+    /// node's own `JoinNode`, the validated report the pipeline's `WaitForBind` and `WaitForMeshJoin`
+    /// complete from (node-create.md step 5).
     async fn report_bind(&self, build: &BuildId, name: &str) {
         let op = format!("node.create:{name}");
         let name: rdm_admin::model::PathName = name.parse().unwrap();
@@ -428,7 +429,6 @@ impl Rig {
                     load: None,
                     gossip: None,
                 };
-                *self.membership.published.lock().unwrap() = Some(Publication { runtime: Some(runtime), data_dir: Some(data_dir.display().to_string()) });
                 self.joins.report(&digest);
                 return;
             }
@@ -457,7 +457,7 @@ async fn collect_frames(stream: &mut WorkflowStream, within: Duration) -> (Vec<F
     }
 }
 
-const ATTEMPT_ONE_STEPS: [&str; 10] = [
+const ATTEMPT_ONE_STEPS: [&str; 7] = [
     "AllocateIdentity",
     "PrepareStorage",
     "PrepareNetwork",
@@ -465,38 +465,32 @@ const ATTEMPT_ONE_STEPS: [&str; 10] = [
     "RegisterExactRuntimeHandle",
     "ResolveProviderControlDomain",
     "MakeRuntimeFactAvailableToBirth",
-    "WaitForBind",
-    "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata",
-    "ApplyMeshPending",
 ];
 
-/// CONTRACT (ops-naming acceptance 1, "A failure names its step"): a create whose process starts
-/// and whose join then fails ends its stream `Started`, then
-/// `Failed { step: node.join, reason }`. `node.created`, `node.joined` and `node.started` are never emitted, the
-/// node never reaches ready-for-traffic, and the call's span names the failed step.
+/// CONTRACT (ops-naming acceptance 1, "A failure names its step"; node-create.md "Join completion
+/// and failure evidence": only an accepted full report completes the bind/join waits): a create
+/// whose process starts and whose birth never reports where it bound (no `JoinNode` arrives) ends
+/// its stream `Started`, then `Failed { step: node.create, reason }` from `WaitForBind`.
+/// `node.created`, `node.joined` and `node.started` are never emitted, the node never reaches
+/// ready-for-traffic, and the call's span names the failed step.
 #[test]
-fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
+fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_after_it() {
     let cap = capture();
     let (frames, end, published) = cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door(&rig, Duration::from_millis(300)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = stream.accepted().build_id.clone();
-        tokio::spawn({
-            let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
-        });
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(15)).await;
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
     });
     let attempt = 1;
     let reason = match frames.last() {
-        Some(Frame::Failed { step: NodeStep::Join, reason }) => reason.clone(),
-        other => panic!("the stream ends Failed at node.join, not {other:?}; frames {frames:?}"),
+        Some(Frame::Failed { step: NodeStep::Create, reason }) => reason.clone(),
+        other => panic!("the stream ends Failed at node.create, not {other:?}; frames {frames:?}"),
     };
-    assert!(reason.contains("no membership digest"), "the failure carries the step's own reason: {reason}");
+    assert!(reason.contains("did not report where it bound"), "the failure carries the step's own reason: {reason}");
     assert_eq!(
         frames[..frames.len() - 1],
         [Frame::Started { build_id: match &frames[0] { Frame::Started { build_id, .. } => build_id.clone(), f => panic!("{f:?}") }, attempt }]
@@ -509,13 +503,14 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let call = spans_named(&spans, "rdm.node_admin.node.create.via-workflow");
     assert_eq!(call.len(), 1, "{spans:?}");
     assert_eq!(call[0]["attributes"]["outcome"], "failed");
-    assert_eq!(call[0]["attributes"]["failed_step"], "node.join");
+    assert_eq!(call[0]["attributes"]["failed_step"], "node.create");
     for never in ["created", "joined", "started"] {
         assert!(spans_named(&spans, &format!("rdm.node_admin.node.{never}.via-reply-frame")).is_empty(), "node.{never} is never emitted");
     }
-    let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
-    assert_eq!(join_step.len(), 1, "the pipeline ran the join step once");
-    assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    let bind_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForBind").collect();
+    assert_eq!(bind_step.len(), 1, "the pipeline ran the bind wait once");
+    assert_eq!(bind_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    assert!(spans_named(&spans, "rdm.node_admin.deployment.update.via-step").iter().all(|s| s["attributes"]["step"] != "WaitForMeshJoin"), "nothing after the bind wait ran: {spans:?}");
     let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
     assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
     assert_eq!(prepare[0]["attributes"]["awaited"], "claim,transport-key", "PrepareStorage names every await it ran: {}", prepare[0]);
@@ -539,7 +534,7 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
             format!("{}={}ms{io}", a["step"].as_str().unwrap_or_default(), a.get("elapsed_ms").and_then(Value::as_str).unwrap_or("?"))
         })
         .collect();
-    eprintln!("trace {}: rdm.node_admin.node.create.via-workflow outcome=failed failed_step=node.join; steps {}", call[0]["trace_id"], walls.join(", "));
+    eprintln!("trace {}: rdm.node_admin.node.create.via-workflow outcome=failed failed_step=node.create; steps {}", call[0]["trace_id"], walls.join(", "));
 }
 
 /// CONTRACT: a create whose node has joined but is not ready (its Ready check names a blocker, as an
@@ -554,7 +549,6 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         let rig = Arc::new(Rig::new());
         let why = "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready";
         *rig.membership.not_ready.lock().unwrap() = Some(why.to_string());
-        rig.membership.joined.store(true, Ordering::SeqCst);
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
@@ -598,7 +592,6 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
     let (frames, end) = cap.run(async {
         let rig = Arc::new(Rig::new());
         *rig.membership.pending.lock().unwrap() = Some("mesh1.rpc.3 reports Pending".to_string());
-        rig.membership.joined.store(true, Ordering::SeqCst);
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
@@ -617,12 +610,13 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
 }
 
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
-/// the caller and the fabric-primary is cut while the create is at its join. The caller's stream
-/// ends `Indeterminate`, never `Failed`. The cut cancels nothing: `build.get` over a new transport
-/// returns the receipts of exactly the steps that completed, `Resume` names the join as the first
-/// step without a `Complete` receipt, and the re-submit by the Build id streams the same Build
-/// (never a second one) to its end once the birth is heard: no completed step runs again, each
-/// still has one receipt, and the steps' spans say the attempt ran them once.
+/// the caller and the fabric-primary is cut while the create waits for its birth's report (the
+/// `JoinNode` that completes `WaitForBind` and `WaitForMeshJoin`, node-create.md step 5). The
+/// caller's stream ends `Indeterminate`, never `Failed`. The cut cancels nothing: `build.get` over a
+/// new transport returns the receipts of exactly the steps that completed, `Resume` names the bind
+/// wait as the first step without a `Complete` receipt, and the re-submit by the Build id streams
+/// the same Build (never a second one) to its end once the birth is heard: no completed step runs
+/// again, each still has one receipt, and the steps' spans say the attempt ran them once.
 #[test]
 fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     let cap = capture();
@@ -634,17 +628,12 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
-        // The birth reports its bind; the join is not heard yet.
-        tokio::spawn({
-            let (rig, build) = (rig.clone(), build.clone());
-            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
-        });
         let mut frames = Vec::new();
-        // The cut: the executor's process dies at the join and the caller's wire is severed. The
-        // join is where it is cut once the step before it has its receipt.
+        // The cut: the caller's wire is severed while the create waits for the birth's report, which
+        // is not heard yet. The wait is where it is cut once the step before it has its receipt.
         loop {
             let view = rig.builds.read_build(&build).await.unwrap();
-            if view.steps.iter().any(|s| s.step == "ApplyMeshPending") {
+            if view.steps.iter().any(|s| s.step == "MakeRuntimeFactAvailableToBirth") {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -666,7 +655,10 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         // re-submit streams it.
         let mut resumed = nodes_over(&again.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        rig.membership.joined.store(true, Ordering::SeqCst);
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
         let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
         let receipts_after = builds.get(&accepted.build_id).await.unwrap();
@@ -681,7 +673,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     };
     assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
-    assert_eq!(resume.from, Some(("node.create".to_string(), "WaitForMeshJoin".to_string())), "the resume starts at the first step without a Complete receipt");
+    assert_eq!(resume.from, Some(("node.create".to_string(), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
     assert_eq!(disposition, rdm_core::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
 
@@ -689,7 +681,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         assert_eq!(receipts_after.steps.iter().filter(|s| s.step == step).count(), 1, "{step} was not run again: one receipt, from attempt 1");
     }
     assert_eq!(receipts_after.attempt, 1, "the cut opened no second attempt");
-    assert_eq!(completed_steps(&receipts_after, 1).len(), ATTEMPT_ONE_STEPS.len() + 3, "the same attempt went on through the join to its end");
+    assert_eq!(completed_steps(&receipts_after, 1).len(), ATTEMPT_ONE_STEPS.len() + 6, "the same attempt went on through the bind wait and the join to its end");
     assert!(matches!(&final_frames[0], Frame::Started { .. }));
     assert_eq!(final_frames[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
 
@@ -719,7 +711,6 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         let fp = Arc::new(MemoryBuildStateAdapter::new());
         let served = serve(door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
-        rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
@@ -758,7 +749,6 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let door = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
-        rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
@@ -979,7 +969,6 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let fp = Arc::new(MemoryBuildStateAdapter::new());
         let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
-        rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes_over(&served.carrier).create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();

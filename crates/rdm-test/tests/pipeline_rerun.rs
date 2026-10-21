@@ -7,16 +7,20 @@
 
 use crate::common;
 
-use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
-use rdm_core::{FabricId, IncarnationId, NodeId};
-use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use common::{add_node, admin_side, publish_build, template, Published};
+use rdm_core::{FabricId, NodeId};
+use rdm_admin::build::BuildId;
+use rdm_admin::build_state::{
+    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
+    ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
+};
 use rdm_admin::deployment::endpoint::RPC_NODE;
-use rdm_admin::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Timeouts};
+use rdm_admin::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, Timeouts};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{
     DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode,
 };
-use rdm_admin::model::{Node, ProviderKind};
+use rdm_admin::model::ProviderKind;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -27,7 +31,7 @@ use tokio::sync::Notify;
 enum KillAt {
     /// The runtime is spawned; the `DeployRuntime` receipt is never written.
     AfterSpawn,
-    /// Waiting for the node to join membership.
+    /// `WaitForMeshJoin` completed from the birth's report; its receipt is never written.
     InWaitForMeshJoin,
 }
 
@@ -70,24 +74,67 @@ impl DeploymentProvider for Killable {
     }
 }
 
-/// The live observer, pausing forever in `joined` when armed.
+/// The in-memory Build state, pausing forever before one step's receipt when armed: the executor
+/// dying after the step ran and before its receipt was written.
 struct Pausing<'a> {
-    live: &'a LiveMesh,
-    pause: bool,
+    inner: &'a MemoryBuildStateAdapter,
+    before: Option<&'static str>,
     reached: Arc<Notify>,
 }
 
 #[async_trait::async_trait]
-impl NodeObserver for Pausing<'_> {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_admin::deployment::pipeline::Publication> {
-        if self.pause {
+impl BuildStateAdapter for Pausing<'_> {
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(accepted).await
+    }
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        self.inner.open_attempt(opened).await
+    }
+    async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        self.inner.read_build(build_id).await
+    }
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+        self.inner.claim_attempt(claim).await
+    }
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.inner.adopt_claim(claim).await
+    }
+    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        if self.before == Some(receipt.step.as_str()) {
             self.reached.notify_one();
             std::future::pending::<()>().await;
         }
-        self.live.joined(node_id, incarnation).await
+        self.inner.append_step_receipt(receipt).await
     }
-    async fn ready(&self, node: &Node) -> Result<(), String> {
-        self.live.ready(node).await
+    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_attempt_receipt(receipt).await
+    }
+    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(build_id).await
     }
 }
 
@@ -122,14 +169,14 @@ async fn killed_then_rerun(kill_at: KillAt) {
         reached: reached.clone(),
         spawned: Mutex::new(vec![]),
     };
-    let observer = Pausing { live: &admin.observer, pause: kill_at == KillAt::InWaitForMeshJoin, reached: reached.clone() };
+    let paused = Pausing { inner: &builds, before: (kill_at == KillAt::InWaitForMeshJoin).then_some(CreateStep::WaitForMeshJoin.name()), reached: reached.clone() };
     let pipeline = DeploymentPipeline {
         provider: &first,
         joins: &admin.joins,
-        observer: &observer,
+        observer: &admin.observer,
         sink: &sink,
         lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
-        builds: &builds,
+        builds: &paused,
         template: &template,
         timeouts: Timeouts::default(),
     };

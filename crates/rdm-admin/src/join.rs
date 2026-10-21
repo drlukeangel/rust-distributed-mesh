@@ -6,7 +6,10 @@
 //! what it deployed ([`Deployed`], registered by the deployment pipeline before the runtime
 //! starts), verifies the digest against it, and on a match installs the address for that key
 //! (membership's `register_location`, the live resolver, which cancels every dial aimed at the
-//! key's old address) and completes `WaitForBind` from the node's own report. A disagreement is
+//! key's old address) and completes `WaitForBind` and `WaitForMeshJoin` from the node's own report
+//! (node-create.md step 5: from the validated report, never from gossip). Once the create that
+//! registered the deployment ends, the report stays this admin's record of the admitted birth, so
+//! the same deployment's next registration (the Build's next attempt) is handed it. A disagreement is
 //! refused by name with both values. A join for a birth whose create ended without hearing it is
 //! refused as `DeploymentAbandoned`, naming the Build, the attempt and the exact birth: this admin
 //! is the birth's authority and never answers `NotAuthority` about itself.
@@ -115,12 +118,26 @@ pub struct Abandoned {
 /// How many abandoned deployments an admin remembers by name; the oldest is forgotten first.
 const ABANDONED_KEPT: usize = 256;
 
-/// The births this admin deployed and is waiting to hear from, and the deployments it ended
-/// without hearing from them.
+/// A create's deployment whose birth reported and whose create ended: the admitted birth's validated
+/// report, kept for the same deployment's next registration (its Build's next attempt completes
+/// `WaitForMeshJoin` from it, never from gossip). Never a held deployment (a restart's, a heard-again's):
+/// each of those waits for its own commanded join's report.
+#[derive(Debug, Clone)]
+struct Admitted {
+    deployed: Deployed,
+    report: MeshDigest,
+}
+
+/// How many admitted deployments an admin keeps once their creates ended; the oldest is forgotten first.
+const ADMITTED_KEPT: usize = 256;
+
+/// The births this admin deployed and is waiting to hear from, the deployments it ended
+/// without hearing from them, and the admitted births whose creates ended.
 #[derive(Default)]
 pub struct Joins {
     slots: Mutex<HashMap<NodeId, Slot>>,
     abandoned: Mutex<VecDeque<Abandoned>>,
+    admitted: Mutex<VecDeque<Admitted>>,
 }
 
 /// What a digest is to the births this admin deployed.
@@ -144,7 +161,9 @@ pub enum Standing {
 
 impl Joins {
     /// Register `deployed` before its runtime starts. The report arrives on the returned
-    /// receiver. A registration of the same deployment keeps what it already heard.
+    /// receiver. A registration of the same deployment keeps what it already heard: the report a
+    /// deployment still held took, or the one an ended create of the same deployment was handed; a
+    /// held deployment (a restart's, a heard-again's) is handed nothing it did not hear itself.
     pub fn expect(&self, deployed: Deployed) -> watch::Receiver<Option<MeshDigest>> {
         let mut slots = self.slots.lock().unwrap();
         if let Some(s) = slots.get(&deployed.node_id) {
@@ -152,17 +171,29 @@ impl Joins {
                 return s.reported.subscribe();
             }
         }
-        let (tx, rx) = watch::channel(None);
+        let heard = if deployed.held { None } else { self.admitted.lock().unwrap().iter().find(|a| a.deployed == deployed).map(|a| a.report.clone()) };
+        let (tx, rx) = watch::channel(heard);
         slots.insert(deployed.node_id.clone(), Slot { deployed, reported: tx });
         rx
     }
 
-    /// The create of `node_id`'s deployment (`build_id`, `attempt`) ended: stop holding it. A
-    /// deployment that never heard its birth is remembered as abandoned, so a late `JoinNode` is
-    /// refused by name.
+    /// The create of `node_id`'s deployment (`build_id`, `attempt`) ended: stop holding it. A create's
+    /// deployment that heard its birth is kept as the admitted birth's report, handed to the same
+    /// deployment's next registration (a held deployment's report ends with it); one that never heard
+    /// its birth is remembered as abandoned, so a late `JoinNode` is refused by name.
     pub fn end(&self, node_id: &NodeId, build_id: &str, attempt: u32) {
         let Some(slot) = self.slots.lock().unwrap().remove(node_id) else { return };
-        if slot.reported.borrow().is_some() {
+        let report = slot.reported.borrow().clone();
+        if let Some(report) = report {
+            if slot.deployed.held {
+                return;
+            }
+            let mut kept = self.admitted.lock().unwrap();
+            kept.retain(|a| a.deployed.node_id != *node_id);
+            if kept.len() == ADMITTED_KEPT {
+                kept.pop_front();
+            }
+            kept.push_back(Admitted { deployed: slot.deployed, report });
             return;
         }
         let mut kept = self.abandoned.lock().unwrap();
@@ -554,5 +585,36 @@ mod tests {
         let mut key = digest_of(&dep);
         key.node.endpoint_id = EndpointId("other".into());
         assert_eq!(dep.verify(&key).unwrap_err().field, "endpoint_id");
+    }
+
+    /// CONTRACT (node-create.md step 5: the accepting authority "completes WaitForBind /
+    /// WaitForMeshJoin from the validated report, never from gossip"; [`Joins::expect`]: "A
+    /// registration of the same deployment keeps what it already heard"): once the create that
+    /// registered a deployment ends, the report its birth made stays the authority's record of the
+    /// admitted birth, and the same deployment's next registration (the next attempt of its Build)
+    /// is handed that report; the ended create holds the deployment no more, and another deployment
+    /// of the node (its restart, held) is handed nothing. Must NOT happen: the report dropped with
+    /// the create, so the Build's next attempt waits for a JoinNode the admitted birth never sends
+    /// again.
+    // @feature: node-lifecycle
+    #[test]
+    fn an_ended_create_keeps_the_admitted_report_for_the_same_deployments_next_registration() {
+        let joins = Joins::default();
+        let dep = deployed();
+        let rx = joins.expect(dep.clone());
+        let d = digest_of(&dep);
+        joins.report(&d);
+        drop(rx);
+        joins.end(&dep.node_id, "3qcfk1kq47m9", 1);
+        assert_eq!(joins.standing(&d), Standing::Unknown, "an ended create holds the deployment no more");
+        let again = joins.expect(dep.clone());
+        assert_eq!(again.borrow().as_ref().map(|r| r.node.transport_addr), Some(d.node.transport_addr), "the same deployment's next registration is handed the admitted report");
+        let restart = Deployed { held: true, last_accepted_name: Some(dep.name.clone()), ..dep.clone() };
+        assert!(joins.expect(restart.clone()).borrow().is_none(), "another deployment of the node is handed no report");
+        // A held deployment's report ends with its registration: a later registration of the same
+        // held deployment (a heard-again of the live birth) waits for its own commanded join.
+        joins.report(&d);
+        joins.end(&dep.node_id, "3qcfk1kq47m9", 2);
+        assert!(joins.expect(restart).borrow().is_none(), "a held deployment's report is not kept for its next registration");
     }
 }

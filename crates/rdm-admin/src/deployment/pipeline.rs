@@ -38,8 +38,9 @@
 //! before it publishes anything; the birth's projection (topology, fact,
 //! data dir) is published. `WaitForNodeReady` does not begin until the
 //! Build's state holds a `Complete` receipt for each of them
-//! ([`READY_PREREQUISITES`]), and `WaitForMeshJoin` takes only the birth's
-//! own digest carrying exactly that fact and data dir.
+//! ([`READY_PREREQUISITES`]), and `WaitForMeshJoin` completes from the
+//! validated report of exactly that birth, carrying that fact and data dir
+//! (node-create.md step 5), never from gossip.
 //!
 //! Re-runs reconcile forward. A step whose receipt in an earlier attempt of
 //! the same Build is `Complete` is reused from the decision that receipt
@@ -470,8 +471,11 @@ pub(crate) async fn adoption_missing(data_dir: &std::path::Path) -> Result<Vec<&
 /// What the pipeline asks of the live mesh (gossip membership and Node RPC).
 #[async_trait::async_trait]
 pub trait NodeObserver: Send + Sync {
-    /// What this exact birth (`node_id`, `incarnation`) publishes with its
-    /// own membership digest; `None` until it has joined fabric membership.
+    /// What this exact birth (`node_id`, `incarnation`) publishes with its own membership digest;
+    /// `None` until it has joined fabric membership. Read by the lost-executor rule alone
+    /// (`claimed_allocation`: a birth a lost executor launched that has joined stands); the create's
+    /// own waits, `WaitForBind` and `WaitForMeshJoin`, complete from the birth's validated report
+    /// (node-create.md step 5), never from here.
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
@@ -497,10 +501,11 @@ pub trait NodeObserver: Send + Sync {
     }
 }
 
-/// The runtime part of a birth's own membership digest.
+/// The runtime part of a birth's digest: what its validated report carries, and what was made
+/// available to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publication {
-    /// The runtime fact the birth publishes.
+    /// The runtime fact the birth reports.
     pub runtime: Option<RuntimeFact>,
     /// The birth's data directory.
     pub data_dir: Option<String>,
@@ -1727,6 +1732,8 @@ impl DeploymentPipeline<'_> {
             })),
             None => None,
         };
+        // The same report completes WaitForMeshJoin (node-create.md step 5).
+        let admitted = reported.clone();
         // What DeployRuntime obtained, committed one prerequisite at a time.
         let fact = handle.fact();
         let exact = || {
@@ -1805,8 +1812,9 @@ impl DeploymentPipeline<'_> {
         node.listeners = bound.listeners.clone();
         node.status = NodeStatus::Pending;
         // One coherent birth projection: the node record (topology and data
-        // dir) here; the fact itself the birth publishes with its own digest,
-        // which WaitForMeshJoin holds to exactly this fact and data dir.
+        // dir) here; the fact itself the birth reports in its JoinNode digest,
+        // which the accepting authority validated against exactly this fact and
+        // data dir before it was admitted.
         self.step(run, CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), async {
             self.sink.publish(node.clone());
             Ok(RuntimeEvidence { data_dir: node.data_dir.clone(), ..RuntimeEvidence::of(&fact) })
@@ -1824,36 +1832,40 @@ impl DeploymentPipeline<'_> {
                 }
             })
             .await?;
+        // The validated report of this exact birth, the one the accepting authority admitted
+        // (node-create.md step 5): never a digest gossip carried. On a run that reused WaitForBind's
+        // receipt the report is the one this admin kept when the earlier attempt ended (`Joins::end`).
         let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
         self.step_with(run, CreateStep::WaitForMeshJoin.name(), async {
+            let mut admitted = admitted.ok_or_else(|| format!("{}: the handle names no exact runtime to verify a join against", req.node))?;
             let until = Instant::now() + self.timeouts.join;
-            let (joined, last) = loop {
-                let last = self.observer.joined(&id.node_id, &id.incarnation).await;
-                if last.as_ref() == Some(&published) {
-                    break (true, last);
+            loop {
+                let report = admitted.borrow().clone().filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation);
+                if let Some(d) = report {
+                    let reported = Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() };
+                    if reported == published {
+                        return Ok(());
+                    }
+                    return Err(StepFailure::coded(rdm_core::outcome::Code::FailedPrecondition, format!(
+                        "{} incarnation {} reported runtime {} with data dir {:?}, not the runtime {} made available with data dir {:?}",
+                        req.node,
+                        id.incarnation,
+                        reported.runtime.as_ref().map_or_else(|| "none".to_string(), |f| f.locator_fingerprint()),
+                        reported.data_dir,
+                        fact.locator_fingerprint(),
+                        published.data_dir
+                    )));
                 }
-                // A runtime that exited will never join: its own last words, now, not a timeout.
+                // A runtime that exited will never report: its own last words, now, not a timeout.
                 if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
                     let detail = self.provider.failure_detail(&handle, &data_dir).await;
-                    return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before joining the mesh: {detail}")));
+                    return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before its join was admitted: {detail}")));
                 }
-                if Instant::now() >= until {
-                    break (false, last);
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("no validated report of {} incarnation {} is held within {:?}", req.node, id.incarnation, self.timeouts.join)));
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            };
-            match last {
-                _ if joined => Ok(()),
-                None => Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("no membership digest from {} incarnation {} within {:?}", req.node, id.incarnation, self.timeouts.join))),
-                Some(p) => Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!(
-                    "{} incarnation {} publishes runtime {} with data dir {:?}, not the runtime {} made available with data dir {:?}",
-                    req.node,
-                    id.incarnation,
-                    p.runtime.as_ref().map_or_else(|| "none".to_string(), |f| f.locator_fingerprint()),
-                    p.data_dir,
-                    fact.locator_fingerprint(),
-                    published.data_dir
-                ))),
+                let _ = tokio::time::timeout(left.min(Duration::from_millis(100)), admitted.changed()).await;
             }
         })
         .await?;
@@ -3120,6 +3132,108 @@ mod tests {
         let written: Vec<Option<String>> = provider.envs.lock().unwrap().iter().map(|e| e.get(rdm_core::launch::ENV_ROOTS).cloned()).collect();
         let hex = |k: &rdm_core::certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
         assert_eq!(written, vec![Some(hex(&a)), Some(format!("{},{}", hex(&a), hex(&b))), None], "each launch carries the set as it stood at that launch");
+        let _ = std::fs::remove_dir_all(&template.data_root);
+    }
+
+    /// A provider whose exact runtime is this test process and whose birth reports, as the node's own
+    /// `JoinNode` does, to the accepting authority that holds its deployment: the digest the authority
+    /// validates against the deployment and admits. No digest of the birth reaches any book: gossip is
+    /// silent.
+    struct ReportsToTheAuthority {
+        joins: std::sync::Arc<Joins>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for ReportsToTheAuthority {
+        fn kind(&self) -> crate::model::ProviderKind {
+            crate::model::ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            rdm_core::runtime::process_control_domain().expect("this process has a control domain")
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+            let refused = |reason: String| super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason };
+            let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
+            let (pid, start) = match fact.locator {
+                rdm_core::RuntimeLocator::Process { pid, start } => (pid, start),
+                other => return Err(refused(format!("this process is not a container: {other:?}"))),
+            };
+            let handle = DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: crate::model::ProviderKind::Process, pid: Some(pid), start: Some(start), container: None, domain: Some(fact.control_domain.clone()) };
+            let key = crate::admin::load_or_mint_key(&spec.data_dir).await.map_err(refused)?;
+            let env = |k: &str| spec.env.get(k).cloned().ok_or_else(|| refused(format!("the launch carries no {k}")));
+            let digest = rdm_core::MeshDigest {
+                held_hash: Default::default(),
+                fabric_id: rdm_core::FabricId::mint(),
+                node: rdm_core::MeshNode {
+                    node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?).map_err(|e| refused(e.to_string()))?,
+                    name: spec.node.clone(),
+                    endpoint_id: EndpointId(key.public().to_string()),
+                    transport_addr: "127.0.0.1:34567".parse().unwrap(),
+                    incarnation: IncarnationId::parse(&env(rdm_core::launch::ENV_INCARNATION)?).map_err(|e| refused(e.to_string()))?,
+                    supersedes: None,
+                    runtime: handle.fact(),
+                },
+                status: rdm_core::MemberStatus::Pending,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 0,
+                emitted_at_rafka_ms: 0,
+                data_dir: Some(spec.data_dir.display().to_string()),
+                mesh_id: None,
+                in_flight: None,
+                config: Default::default(),
+                load: None,
+                gossip: None,
+            };
+            let joins = self.joins.clone();
+            tokio::spawn(async move {
+                loop {
+                    if matches!(joins.standing(&digest), crate::join::Standing::Deployed { .. }) {
+                        joins.report(&digest);
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+            Ok(handle)
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            DeploymentStatus::Running
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+            Ok(Found::NeverLaunched)
+        }
+    }
+
+    /// CONTRACT (node-create.md step 5: on acceptance the authority "completes WaitForBind /
+    /// WaitForMeshJoin from the validated report, never from gossip"; "Join completion and failure
+    /// evidence": "Only an accepted full report completes the deployment's bind/join waits ... a
+    /// digest ... is insufficient"): a birth whose JoinNode the accepting authority admitted
+    /// completes WaitForMeshJoin while no digest of it reached any book, and the create goes on to
+    /// WaitForNodeReady, where nothing answers Ready. Must NOT happen: WaitForMeshJoin waiting past
+    /// its deadline for a membership digest of a birth whose report was accepted.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn wait_for_mesh_join_completes_from_the_accepted_report_while_gossip_is_silent() {
+        let joins = std::sync::Arc::new(Joins::default());
+        let provider = ReportsToTheAuthority { joins: joins.clone() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        let template = cell_template("join-from-report");
+        let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
+        let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
+        let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
+        assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any book: {err}; receipts {steps:?}");
+        assert!(steps.iter().any(|(s, o)| s == CreateStep::WaitForMeshJoin.name() && *o == StepOutcome::Complete), "WaitForMeshJoin's receipt is Complete: {steps:?}");
         let _ = std::fs::remove_dir_all(&template.data_root);
     }
 }
