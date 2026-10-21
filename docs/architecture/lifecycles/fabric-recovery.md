@@ -54,7 +54,9 @@ on the backbone.
 4. **The seats go home.** Once the node at the lost fabric-primary's path.name, returned or re-created,
    has been ReadyForTraffic for one staleness floor, the holder hands every seat it took back to it by the
    committed handover of [elections §4.4](../fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover),
-   naming it as the successor, in one row. The seats return only that way. The holder held the seats,
+   naming it as the successor, in one row. The hand-back runs as an attempt of the current accepted Build,
+   keyed `handback:<path.name>@<T>`; it commits the seat transfer and does not declare the returning node
+   lost. The seats return only that way. The holder held the seats,
    never the storage: the fabric's shared store root and the fabric-primary's data dir stay where they
    were, and the fabric resolves to a fabric-primary at the original path.name with the original endpoint
    key.
