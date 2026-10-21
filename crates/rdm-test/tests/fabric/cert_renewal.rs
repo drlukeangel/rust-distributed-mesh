@@ -364,6 +364,10 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // first connection while the echo writes to the second, and the echo would wait on a stream
         // that never comes. Every wait is bounded, so a hang is a red line, never a killed binary.
         let destination = birth_of(&b);
+        // The opener resolves the destination from its own view, which takes mesh1.rpc.2 eventually
+        // (its gossip or its next read): the open waits for that fact under the cell's bound, and an
+        // open before it is NotSent peer-unresolved, a red of the cell's order, not of the renewal.
+        until("mesh1.rpc.1's view holds mesh1.rpc.2", BOUND, async || a.node_rpc.resolver.resolve_at(&NodeTarget::ExactNode(destination.node_id.clone()), std::time::Instant::now()).ok().map(|_| ())).await;
         let (opened, accepted) = tokio::join!(
             bounded("mesh1.rpc.1 opens a Direct connection to mesh1.rpc.2", opener.open(&destination)),
             bounded("mesh1.rpc.2 accepts a connection", accepts.accept())
