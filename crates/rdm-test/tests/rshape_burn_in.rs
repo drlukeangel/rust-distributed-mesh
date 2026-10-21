@@ -5196,14 +5196,15 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
         .iter()
         .filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to)
         .map(|sp| s(&sp["name"]))
+        // A death, a tombstone, a departure, a rebirth or a terminate. Not among them (Q89,
+        // fabric-recovery.md): the drift attempt that hands a seat back after a heal, and the
+        // provider inspection a takeover makes of the lost birth, which adopts its runtime handle.
         .filter(|n| {
             n.contains(".node.delete.")
                 || n.contains(".deployment.delete.")
                 || n.contains(".deployment.update.")
-                || n.contains("proven-drift")
                 || n.contains("membership.remove.")
                 || n.contains("membership.reject.via-departed-birth")
-                || n.contains("runtime.update.via-adopt")
                 || n.contains("node.create.via-deployment")
         })
         .collect()

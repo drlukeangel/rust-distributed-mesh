@@ -420,8 +420,12 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
                     out.push(rej(NO_CONTROL_CONSEQUENCE, format!("{} the hold the advertised seats diverge from the ones the public candidates compute: {}", phases[i], c.seats_detail)));
                 }
             }
-            if !c.authority_may_move && (c.fabric_primary[0] != c.fabric_primary[1] || c.fabric_primary[1] != c.fabric_primary[2]) {
-                out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary moved across a stall of a live admin: {:?}", c.fabric_primary)));
+            // Across a stall the fabric seat may move (Q89, fabric-recovery.md "The loss of the
+            // fabric-primary while a node-admin lives": unheard past the floor it is superseded, and one
+            // floor after the node at its path.name is Ready the seats go home); what a stall of a live
+            // admin never does is leave the seat elsewhere once the stall ended.
+            if !c.authority_may_move && c.fabric_primary[0] != c.fabric_primary[2] {
+                out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary did not come home after a stall of a live admin: {:?}", c.fabric_primary)));
             }
             if out.len() == before {
                 proved.push("control");

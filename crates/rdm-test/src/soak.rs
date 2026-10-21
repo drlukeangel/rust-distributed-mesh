@@ -1707,7 +1707,21 @@ impl Driver {
         };
         let kept = if is_rpc { run(vec!["get".into(), "--target".into(), exact.clone(), "--key".into(), key.clone()]).await } else { Value::Null };
         ev.recovery = Some(Recovery { work_complete: if is_rpc { kept["outcome"] == "Reply" } else { true }, marker_after: json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "outcome": kept["outcome"]}).to_string() });
-        let nodes_after = self.estate.node_values().await;
+        // The seats go home one floor after the node at the lost path.name is Ready (Q89): the "after"
+        // read waits for that, bounded, before it judges the seat.
+        let nodes_after = {
+            let est = &self.estate;
+            let fp_before = fp_before.clone();
+            let settled = wait_for_opt(&format!("{path}: the fabric seat home again after the release"), floor * 3 + Duration::from_secs(30), || async {
+                let ns = est.node_values().await;
+                (fabric_primaries(&ns) == fp_before).then_some(ns)
+            })
+            .await;
+            match settled {
+                Some(ns) => ns,
+                None => self.estate.node_values().await,
+            }
+        };
         let (seats_after, detail_after) = seats(&nodes_after);
         ev.control = Some(Control {
             seats_as_expected: [seats_before, seats_during, seats_after],
