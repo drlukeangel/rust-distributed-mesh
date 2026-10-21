@@ -2516,7 +2516,7 @@ impl DeploymentPipeline<'_> {
             DeploymentStatus::Unknown => "unavailable",
         };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), caller, verdict).in_scope(|| tracing::info!("{why}"));
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), handle = ?handle, caller, verdict).in_scope(|| tracing::info!("{why}"));
         status
     }
 
@@ -2965,6 +2965,38 @@ mod tests {
         assert_eq!(capture.named("rdm.node_admin.node.delete.via-os-stopped").len(), 1, "the skipped stop is named once");
         let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| r.step).collect();
         assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec(), "the delete begins at TerminateRuntime");
+    }
+
+    /// CONTRACT (node-runtime-inspect.md Observability contract: the inspect span carries "node,
+    /// node_id, incarnation_id, inspector, handle, verdict, exit_code, exit_proof, reason"; Target:
+    /// "The exact runtime handle recorded at launch"): the inspection's span names the exact handle
+    /// the provider was asked about, the one the caller's launch record holds. Must NOT happen: an
+    /// inspection span with no `handle`, so the evidence cannot say which runtime was inspected.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_inspection_span_names_the_exact_handle_the_provider_was_asked_about() {
+        let provider = Suspended { terminated: Default::default() };
+        let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into(), code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        let template = cell_template("inspect-handle");
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        node.status = NodeStatus::PendingReconnect;
+        node.incarnation_id = Some(IncarnationId::mint());
+        let handle = process_handle();
+        let req = RetireRequest { build_id, attempt: 1, node, handle: handle.clone(), exit: None };
+        let capture = crate::span_capture::Capture::new("i144-e3-inspect-handle");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            pipeline.retire(&req).await.expect("the delete of an os-stopped birth completes");
+        }
+        let inspected = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+        assert!(!inspected.is_empty(), "the delete's inspection is spanned");
+        for c in &inspected {
+            assert_eq!(c.attributes.get("handle").map(String::as_str), Some(format!("{handle:?}").as_str()), "the inspection names the exact handle it asked the provider about: {c:?}");
+        }
     }
 
     /// CONTRACT (R-PV1: "The pending lifecycle action is resumed per its receipts: `node.start` when

@@ -2316,6 +2316,36 @@ async fn an_inbound_connection_is_refused_by_name_on_expired() {
     assert_eq!(reason, "expired");
 }
 
+/// CONTRACT (node-connections-admit.md Spans: "`rdm.node.connections.reject.via-refused` (the same,
+/// plus `reason`)", the same fields as `via-admitted`: cert_expires_at, clock; Verification: "judged
+/// on rafka-time (else `local-bootstrap`)"): a refusal's span names the presented cert's expiry and
+/// the clock the acceptor judged it on, as an admission's does. Must NOT happen: a refusal spanned
+/// with `cert_expires_at` 0 and clock `no-certs` when a cert was presented to a fabric with certs.
+#[test]
+fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-refused-fields").expect("the cell's evidence file can be created");
+    let expiry = CHAIN_NOW_MS - 2 * floor_ms() - 1_000;
+    capture.run(4, async {
+        let chain = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
+        let root = chain.root.verifying_key();
+        let refused = dial_presenting(vec![root], |dialer| rdm_core::certs::cert_to_bytes(&chain.member(dialer, expiry))).await;
+        assert_eq!(refused, Err(ConnectError::Refused { reason: "expired".into() }), "a cert expired by more than a floor is refused `expired`");
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let refused: Vec<(u64, String, String)> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connections.reject.via-refused")
+        .map(|s| {
+            (
+                s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0),
+                s["attributes"]["clock"].as_str().unwrap_or_default().to_string(),
+                s["attributes"]["reason"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(refused, vec![(expiry, "rafka-time".to_string(), "expired".to_string())], "the refusal names the presented cert's expiry, the clock it was judged on and the reason");
+}
+
 /// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 4, §Time): a member cert whose
 /// issuing cert is past its expiry by more than one floor is refused `issuer-expired`.
 #[tokio::test]

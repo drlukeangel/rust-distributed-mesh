@@ -25,6 +25,13 @@ pub trait Admitter: Send + Sync {
     fn admits_by_name(&self) -> bool {
         false
     }
+
+    /// The clock this admitter judges expiries on, as its `verify` names it (node-connections-admit.md
+    /// Verification: `rafka-time`, else `local-bootstrap`), so a refusal's span names the clock it was
+    /// judged on too. An admitter that judges no cert names `no-certs`.
+    fn clock(&self) -> &'static str {
+        "no-certs"
+    }
 }
 
 /// The `NoCerts` admitter (`node-connections-admit.md`: "admits every connection by name, spanned
@@ -95,14 +102,29 @@ impl Admitter for CertAdmitter {
             return Err(NO_CREDENTIAL.to_string());
         };
         let (now_ms, clock) = match self.time.try_now_ms() {
-            Some(ms) => (ms, "rafka-time"),
-            None => (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0), "local-bootstrap"),
+            Some(ms) => (ms, RAFKA_TIME),
+            None => (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0), LOCAL_BOOTSTRAP),
         };
         let skew_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
         // The chain against the node's whole root set, its checks in the page's order (fabric-certs.md
         // §chain): the first failure names the refusal.
         rdm_core::certs::verify(&signed, &self.roots.current(), now_ms, skew_ms).map(|()| (signed.cert.expiry_ms, clock)).map_err(|e| e.as_str().to_string())
     }
+
+    fn clock(&self) -> &'static str {
+        if self.time.is_adopted() { RAFKA_TIME } else { LOCAL_BOOTSTRAP }
+    }
+}
+
+/// The two clocks an admission is judged on (node-connections-admit.md Verification): the node's
+/// rafka-time, else the local clock before it holds one.
+const RAFKA_TIME: &str = "rafka-time";
+const LOCAL_BOOTSTRAP: &str = "local-bootstrap";
+
+/// The expiry (`cert_expires_at`) of the cert a dialer presented, as its bytes carry it: 0 when the
+/// bytes are no cert (a `no-credential` refusal names no expiry).
+fn presented_expiry(cert: &[u8]) -> u64 {
+    rdm_core::certs::cert_from_bytes(cert).map_or(0, |signed| signed.cert.expiry_ms)
 }
 
 /// What a dialer writes first on the connection's control stream.
@@ -244,14 +266,18 @@ async fn refuse(
     let key = connection.remote_id();
     let dialer = registry.inner.resolver.by_endpoint(&key).map(|r| Birth { name: r.name, node_id: r.node_id, incarnation: r.incarnation });
     let source = dialer.as_ref().map_or_else(|| key.fmt_short().to_string(), |b| b.name.to_string());
+    // The same fields as an admission's span (node-connections-admit.md Spans): the presented cert's
+    // expiry (0 when nothing presented parses as a cert) and the clock the admitter judges on.
+    let cert_expires_at = present.map_or(0, |p| presented_expiry(&p.cert));
+    let clock = registry.inner.admitter.lock().unwrap().clock();
     let span = tracing::info_span!(
         "rdm.node.connections.reject.via-refused",
         source = %source,
         destination = %own.name,
         connection = connection.stable_id(),
         alpn = %String::from_utf8_lossy(&alpn.name),
-        cert_expires_at = 0u64,
-        clock = "no-certs",
+        cert_expires_at,
+        clock,
         reason = %reason,
     );
     if let Some(tp) = present.and_then(|p| p.traceparent.as_deref()) {

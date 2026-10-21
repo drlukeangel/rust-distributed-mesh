@@ -169,9 +169,11 @@ impl RecoverySubmitter {
     }
 
     /// The provider's exact-exit proof of `node`'s birth: the runtime fact the book's digest of that
-    /// birth carries, else the birth's own durable runtime row (a point read by its key).
-    pub(crate) async fn inspect(&self, node: &Node) -> Inspected {
-        let Some(incarnation) = node.incarnation_id.clone() else { return Inspected::Unavailable(format!("{} holds no incarnation to inspect", node.name)) };
+    /// birth carries, else the birth's own durable runtime row (a point read by its key). Beside it,
+    /// the exact runtime handle the provider was asked about (node-runtime-inspect.md Target), for the
+    /// inspection's span.
+    pub(crate) async fn inspect(&self, node: &Node) -> (Inspected, Option<DeploymentHandle>) {
+        let Some(incarnation) = node.incarnation_id.clone() else { return (Inspected::Unavailable(format!("{} holds no incarnation to inspect", node.name)), None) };
         // The birth's own digest, else the birth as its mesh-primary's projection carried it to this
         // admin (gossip.md §3: the projection preserves the RuntimeFact an authority-bearing admin
         // needs to manage the birth).
@@ -181,15 +183,17 @@ impl RecoverySubmitter {
         } else {
             match self.nodes_storage.runtime(&node.node_id, &incarnation).await {
                 Ok(r) => r,
-                Err(e) => return Inspected::Unavailable(format!("the durable runtime row of {} at {} could not be read: {e}", node.node_id, incarnation.as_str())),
+                Err(e) => return (Inspected::Unavailable(format!("the durable runtime row of {} at {} could not be read: {e}", node.node_id, incarnation.as_str())), None),
             }
         };
-        match inspection_of(&*self.provider, &held_row, row.as_ref()).await {
+        let (answer, handle) = inspection_with_handle(&*self.provider, &held_row, row.as_ref()).await;
+        let outcome = match answer {
             Ok((code, source)) => Inspected::Exited(code, source),
             Err(NotProven::Running) => Inspected::Running,
             Err(NotProven::OsStopped) => Inspected::OsStopped,
             Err(NotProven::Unavailable(why)) => Inspected::Unavailable(why),
-        }
+        };
+        (outcome, handle)
     }
 
     /// The durable runtime rows the tick watches births from, read once per tick. A refused read
@@ -213,8 +217,8 @@ impl RecoverySubmitter {
     /// removal this admin's book holds announced, read after the inspection (the tick's view predates
     /// it).
     pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &ExitVerdicts) -> Inspected {
-        let outcome = self.inspect(n).await;
-        let row = self.record_verdict(n, &outcome, verdicts).await;
+        let (outcome, handle) = self.inspect(n).await;
+        let row = self.record_verdict(n, &outcome, handle.as_ref(), verdicts).await;
         match &outcome {
             Inspected::Exited(code, source) => {
                 if let Some(inc) = n.incarnation_id.as_ref() {
@@ -452,10 +456,10 @@ impl RecoverySubmitter {
     /// neither named nor put again by a later tick; a put the store refused records nothing, so the
     /// next tick that proves the exit puts the row. For an exit, the answer is where its row stands:
     /// `put` by this tick, `recorded` by an earlier one, or the store's refusal of this tick's put.
-    pub(crate) async fn record_verdict(&self, n: &Node, outcome: &Inspected, verdicts: &ExitVerdicts) -> Result<&'static str, String> {
+    pub(crate) async fn record_verdict(&self, n: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>, verdicts: &ExitVerdicts) -> Result<&'static str, String> {
         let incarnation = n.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its verdict by", n.name, n.node_id))?;
         record_verdict_once(verdicts, (n.node_id.clone(), incarnation), outcome, || async {
-            self.span_inspection(n, outcome);
+            self.span_inspection(n, outcome, handle);
             if let Inspected::Exited(code, source) = outcome {
                 crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await?;
             }
@@ -566,8 +570,9 @@ impl RecoverySubmitter {
     }
 
     /// The inspection's span, named when its verdict for the birth changes (a hung member is
-    /// inspected every tick and named once).
-    pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected) {
+    /// inspected every tick and named once), with `handle` the exact runtime handle the provider was
+    /// asked about (none when nothing was asked).
+    pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>) {
         let (verdict, exit_code, exit_proof, reason) = match outcome {
             Inspected::Exited(code, source) => ("exited", code.map(|c| c.to_string()).unwrap_or_default(), *source, String::new()),
             Inspected::Running => ("running", String::new(), "none", NotProven::Running.to_string()),
@@ -575,7 +580,8 @@ impl RecoverySubmitter {
             Inspected::Unavailable(why) => ("unavailable", String::new(), "none", why.clone()),
         };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), verdict, exit_code, exit_proof, reason = %reason)
+        let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), handle = %handle, verdict, exit_code, exit_proof, reason = %reason)
             .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
     }
 

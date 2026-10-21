@@ -413,16 +413,33 @@ pub async fn inspection_of(
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
 ) -> Result<(Option<i32>, &'static str), NotProven> {
+    inspection_with_handle(provider, held_row, row).await.0
+}
+
+/// [`inspection_of`], with the exact runtime handle the provider was asked about beside the answer
+/// (node-runtime-inspect.md Target; the inspect span's `handle`): `None` when no handle was adopted,
+/// so nothing was asked.
+pub async fn inspection_with_handle(
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    held_row: &Option<(MeshDigest, Duration)>,
+    row: Option<&crate::storage::RuntimeRow>,
+) -> (Result<(Option<i32>, &'static str), NotProven>, Option<DeploymentHandle>) {
     use crate::deployment::provider::DeploymentStatus as S;
     let (fact, data_dir, birth) = match (held_row, row) {
         (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
         (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
-        _ => return Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))),
+        _ => return (Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))), None),
     };
-    let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| NotProven::Unavailable(format!("the provider refused to adopt its runtime: {e}")))?;
+    let handle = match crate::deployment::provider::adopt(provider, &fact) {
+        Ok(h) => h,
+        Err(e) => return (Err(NotProven::Unavailable(format!("the provider refused to adopt its runtime: {e}"))), None),
+    };
     let inspected = provider.inspect(&handle).await;
-    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.as_str()).await.map_err(|e| NotProven::Unavailable(format!("its exit record cannot be read: {e}")))?;
-    match status {
+    let status = match crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.as_str()).await {
+        Ok(s) => s,
+        Err(e) => return (Err(NotProven::Unavailable(format!("its exit record cannot be read: {e}"))), Some(handle)),
+    };
+    let answer = match status {
         S::Exited { code } => {
             // The code is the provider's own when its inspection carried one, else the exit record's
             // (exit_proof turns only an `Exited` with no code into a recorded one).
@@ -436,7 +453,8 @@ pub async fn inspection_of(
         S::Running => Err(NotProven::Running),
         S::OsStopped => Err(NotProven::OsStopped),
         S::Unknown => Err(NotProven::Unavailable("its runtime is not proven exited: Unknown".into())),
-    }
+    };
+    (answer, Some(handle))
 }
 
 /// The provider's proof that the exact birth a digest or a durable row names exited
