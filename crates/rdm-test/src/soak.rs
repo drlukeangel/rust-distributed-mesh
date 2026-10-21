@@ -2094,4 +2094,67 @@ mod tests {
         let kept: Vec<&Action> = repro.minimized.iter().filter(|a| node_of(a) == Some(node.as_str())).collect();
         assert_eq!(named, kept, "every row naming the involved node is kept");
     }
+
+    const UNHEARD: &str = "rdm.node_admin.mesh.update.via-unheard";
+    const VERDICT: &str = "rdm.node_admin.mesh.update.via-probe-verdict";
+    const ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
+
+    /// The rows the floors soak's node-admins wrote at `b6695529` (seed 1431101; mesh2 cut at
+    /// 1792619503.285 s, healed at 1792619540.214 s), as the driver's tail held them at `now` (ns):
+    /// mesh1.admin.1, the fabric-primary, decided mesh2 `unreachable` during the cut; mesh2.admin.1
+    /// ran the ladder on the fabric seat's mesh, took the seat (Q89), heard mesh1 again after the heal
+    /// and handed the seat back (Q107).
+    fn floors_rows(now: u64) -> Vec<Value> {
+        let row = |start: u64, name: &str, attributes: Value| json!({ "name": name, "start_unix_nano": start, "attributes": attributes });
+        let (m1, m2) = ("mesh1.admin.1", "mesh2.admin.1");
+        vec![
+            row(1792619503914494991, UNHEARD, json!({ "node": m1, "mesh": "mesh2", "mark": "false", "unheard_ms": "1025" })),
+            row(1792619505907145899, UNHEARD, json!({ "node": m1, "mesh": "mesh2", "mark": "true", "unheard_ms": "3017" })),
+            row(1792619506392196607, UNHEARD, json!({ "node": m2, "mesh": "mesh1", "mark": "false", "unheard_ms": "3251" })),
+            row(1792619506392287902, UNHEARD, json!({ "node": m2, "mesh": "mesh1", "mark": "true", "unheard_ms": "3251" })),
+            row(1792619513173356769, VERDICT, json!({ "node": m1, "mesh": "mesh2", "outcome": "unreachable", "unheard_ms": "10284" })),
+            row(1792619514555301197, VERDICT, json!({ "node": m2, "mesh": "mesh1", "outcome": "unreachable", "unheard_ms": "11414" })),
+            row(1792619514661288991, ROLE, json!({ "node": m2, "fabric": "ptc1atfj591c", "role": "start" })),
+            row(1792619515239949649, UNHEARD, json!({ "node": m2, "mesh": "mesh1", "mark": "false", "unheard_ms": "12099" })),
+            row(1792619515240016737, UNHEARD, json!({ "node": m2, "mesh": "mesh1", "mark": "true", "unheard_ms": "12099" })),
+            row(1792619523442990838, VERDICT, json!({ "node": m2, "mesh": "mesh1", "outcome": "unreachable", "unheard_ms": "20302" })),
+            row(1792619541116626585, VERDICT, json!({ "node": m2, "mesh": "mesh1", "outcome": "heard-again", "probes": "2", "unheard_ms": "51" })),
+            row(1792619541506096219, ROLE, json!({ "node": m1, "fabric": "ptc1atfj591c", "role": "stop" })),
+            row(1792619545180847809, ROLE, json!({ "node": m2, "fabric": "ptc1atfj591c", "role": "stop" })),
+            row(1792619545306882351, ROLE, json!({ "node": m1, "fabric": "ptc1atfj591c", "role": "start" })),
+        ]
+        .into_iter()
+        .filter(|sp| sp["start_unix_nano"].as_u64().unwrap() <= now)
+        .collect()
+    }
+
+    const FLOOR: Duration = Duration::from_secs(3);
+    const S: u64 = 1_000_000_000;
+
+    /// CONTRACT (mesh-investigation.md: "One investigation per peer mesh, owned by the
+    /// fabric-primary"; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives"
+    /// steps 2 and 4, Q89/Q107): an investigation is its fabric-primary tenure's. A fabric-primary
+    /// that lost the seat during a cut and took it back at the hand-back holds nothing of the verdict
+    /// it reached before: the driver reads only the rows written since it took the role, the span
+    /// the code emits today `rdm.mesh.fabric.update.via-status-publisher` `role=start`. At
+    /// `b6695529` the floors soak waited 150 s on mesh1.admin.1's `unreachable` of mesh2 from the
+    /// ended tenure, which no `heard-again` can follow.
+    #[test]
+    fn a_verdict_of_an_ended_fabric_primary_tenure_holds_no_peer_mesh() {
+        let held = |now: u64| held_unheard_by("mesh1.admin.1", "mesh1", FLOOR, now, &floors_rows(now));
+        assert!(held(1792619530 * S).is_some_and(|why| why.contains("\"unreachable\" at 10284 ms")), "its own tenure's verdict holds mesh2");
+        assert_eq!(held(1792619546 * S), None, "the seat handed back, the earlier tenure's verdict holds nothing");
+        assert_eq!(held(1792619606 * S), None, "the wedge at at_s 102 acts on mesh2");
+    }
+
+    /// CONTRACT (the same pages): a tenure holds what its own ladder says from the moment it took
+    /// the role: the taker's re-tracked mark and its own verdict hold the cut mesh until its
+    /// `heard-again`.
+    #[test]
+    fn a_fabric_primary_tenure_holds_what_its_own_ladder_says() {
+        let held = |now: u64| held_unheard_by("mesh2.admin.1", "mesh2", FLOOR, now, &floors_rows(now));
+        assert!(held(1792619516 * S).is_some_and(|why| why.contains("marked silent at 12099 ms")), "{:?}", held(1792619516 * S));
+        assert!(held(1792619530 * S).is_some_and(|why| why.contains("\"unreachable\" at 20302 ms")), "{:?}", held(1792619530 * S));
+        assert_eq!(held(1792619542 * S), None, "heard again");
+    }
 }
