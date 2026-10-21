@@ -34,7 +34,8 @@ opentelemetry-semantic-conventions = "0.27"
 # commit (never a branch), as direct git dependencies: a git importer sees no root [patch], so the
 # forks themselves depend on each other by git (iroh -> netwatch, noq; iroh-gossip -> iroh, noq) and
 # the graph holds one iroh, netwatch and noq. The iroh fork carries path retirement
-# (Endpoint::replace_direct_addrs), the mapped-address and waker-loss fixes and the bind span fix;
+# (Endpoint::replace_direct_addrs) and the mapped-address and waker-loss fixes (the merge of
+# 2026-10-21 and every kept patch: docs/plans/proposal/iroh-noq-netwatch-gossip-fixes.md);
 # a `test-knobs` Cargo feature, enabled from [dev-dependencies] only and audited by `dep-rules`, adds
 # QuicTransportConfigBuilder::disable_nat_traversal_for_tests (R-I3: a test that owns every path through its
 # own network seam sees no NAT-traversal path open; nothing in production changes);
@@ -48,9 +49,9 @@ opentelemetry-semantic-conventions = "0.27"
 # netwatch enumerates interfaces on the blocking pool; iroh-gossip's net actor never awaits a full
 # per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Vendor divergence
 # and its removal condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
-iroh = { git = "https://github.com/drlukeangel/iroh", rev = "23ab5a849d745d7db174778fa1fe3c12ec158580" }
-iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "23ab5a849d745d7db174778fa1fe3c12ec158580" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "508fb795e2f252e62013dcb15745d4f021a22002" }
+iroh = { git = "https://github.com/drlukeangel/iroh", rev = "076e1a46506e2e8a1782bdf30046c800f7773664" }
+iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "076e1a46506e2e8a1782bdf30046c800f7773664" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "4d58243572f70ca92a1d3dd31267045f9164f84d" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }

@@ -408,6 +408,8 @@ impl FabricBuildStateAdapter {
                             neighbors.lock().unwrap().remove(&peer);
                         }
                         Some(Ok(Event::Lagged)) => break "lagged: events were dropped".to_string(),
+                        // A gossip event this loop does not act on (the enum is non-exhaustive).
+                        Some(Ok(_)) => {}
                         Some(Err(e)) => break format!("subscription error: {e}"),
                         None => break "subscription ended".to_string(),
                     }
