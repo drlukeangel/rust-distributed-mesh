@@ -2344,7 +2344,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // Only the mesh-primary commands its members (commands go down); every admin
                                                     // keeps the bookkeeping.
                                                     if answered_current.lock().unwrap().remove(id) && holds_seat {
-                                                        if let (Some(heard_again), Some(n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
+                                                        if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
+                                                            // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
+                                                            // ready-for-traffic is its last word before the silence (Q87).
+                                                            if n.status == NodeStatus::ReadyForTraffic {
+                                                                n.status = NodeStatus::PendingReconnect;
+                                                            }
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
                                                                 tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
                                                             }

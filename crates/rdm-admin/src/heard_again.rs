@@ -179,10 +179,23 @@ async fn command_mesh_join(
             attempt,
             operation: format!("node.mesh.join:{}", node.name),
         };
-        let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
-        match out.reply() {
-            Some(r) => r.value().name().to_string(),
-            None => out.name().to_string(),
+        // A birth that refuses the command by name because its own record still names it the
+        // fabric-primary is reading the seat row's announcement a few milliseconds behind this admin
+        // (fabric-recovery.md step 3: the superseded holder re-enters like any member): the command is
+        // made again each gossip interval for one staleness floor, then the look stands as refused.
+        let (interval, floor) = (rdm_core::cadence::gossip_interval(), book.staleness_floor());
+        let mut waited = std::time::Duration::ZERO;
+        loop {
+            let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
+            let name = match out.reply() {
+                Some(r) => r.value().name().to_string(),
+                None => out.name().to_string(),
+            };
+            if name != "rejected-not-authority" || waited >= floor {
+                break name;
+            }
+            tokio::time::sleep(interval).await;
+            waited += interval;
         }
     };
     let outcome = tracing::Instrument::instrument(outcome, span.clone()).await;
