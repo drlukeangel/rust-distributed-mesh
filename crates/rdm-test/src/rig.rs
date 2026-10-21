@@ -236,6 +236,9 @@ pub struct AdminSide {
     pub fabric: FabricId,
     /// The births this admin side deployed and awaits a `JoinNode` from.
     pub joins: Arc<rdm_admin::join::Joins>,
+    /// This admin side's nodes.storage: where its join door keeps an admitted birth's report durable
+    /// (the birth's runtime row). A restarted admin side over the same store reads it back.
+    pub nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rdm_core::launch::Launcher,
     /// The node rows this admin side holds by `path.name` (what a mesh-primary's store answers
@@ -432,7 +435,8 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds, &[]).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
-    let joins = Arc::new(rdm_admin::join::Joins::default());
+    let nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
+    let joins = Arc::new(rdm_admin::join::Joins::over(nodes_storage.clone()));
     let rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>> = Arc::default();
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
@@ -615,6 +619,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         seed: (admin_ep.id().to_string(), addr),
         fabric: fabric.clone(),
         joins,
+        nodes_storage,
         launcher: rdm_core::launch::Launcher { name: name.parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
         rows,
         digest: digest_cell,

@@ -15,6 +15,7 @@
 //! is the birth's authority and never answers `NotAuthority` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
+use crate::storage::{NodesStorage, RuntimeRow};
 use rdm_core::{MeshDigest, RuntimeFact};
 use crate::wire::JoinAnswer;
 use rdm_transport::ServerBuilder;
@@ -138,6 +139,9 @@ pub struct Joins {
     slots: Mutex<HashMap<NodeId, Slot>>,
     abandoned: Mutex<VecDeque<Abandoned>>,
     admitted: Mutex<VecDeque<Admitted>>,
+    /// This admin's nodes.storage, where an admitted birth's report is kept durable (its runtime
+    /// row) at admission; `None` for a door that keeps none (a cell's).
+    runtimes: Option<Arc<dyn NodesStorage>>,
 }
 
 /// What a digest is to the births this admin deployed.
@@ -160,6 +164,30 @@ pub enum Standing {
 }
 
 impl Joins {
+    /// `Joins` over this admin's nodes.storage: the admitted birth's report is kept durable there at
+    /// admission (the birth's runtime row, node-create.md step 1), so a re-run after this process
+    /// restarted completes `WaitForMeshJoin` from it (node-create.md step 5), never from gossip.
+    pub fn over(runtimes: Arc<dyn NodesStorage>) -> Self {
+        Self { runtimes: Some(runtimes), ..Self::default() }
+    }
+
+    /// Keep the admitted birth's validated report durable before it is released: a blind put of the
+    /// birth's runtime row (the exact node_id and incarnation, the runtime and data dir the report
+    /// carried). Nothing is kept by a door over no storage.
+    pub async fn keep_admitted(&self, d: &MeshDigest) -> Result<(), String> {
+        let Some(runtimes) = &self.runtimes else { return Ok(()) };
+        let runtime = d.node.runtime.clone().ok_or_else(|| format!("{}: the admitted report names no runtime", d.node.name))?;
+        let row = RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
+        runtimes.put_runtime(&row).await.map_err(|e| format!("{}: the admitted report's runtime row could not be kept: {e}", d.node.name))
+    }
+
+    /// The admitted birth's durable report: the runtime row of the exact birth, `None` where this admin
+    /// keeps none or no report of that birth was kept.
+    pub async fn durable_report(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, String> {
+        let Some(runtimes) = &self.runtimes else { return Ok(None) };
+        runtimes.runtime(node_id, incarnation).await.map_err(|e| format!("the runtime row of {node_id} incarnation {}: {e}", incarnation.as_str()))
+    }
+
     /// Register `deployed` before its runtime starts. The report arrives on the returned
     /// receiver. A registration of the same deployment keeps what it already heard: the report a
     /// deployment still held took, or the one an ended create of the same deployment was handed; a
@@ -378,6 +406,13 @@ impl JoinDoor {
                 span.record("cert_len", cert.len() as u64);
                 if let Err(why) = (self.types)(d.clone(), types).await {
                     return rdm_core::reply::join::not_ready(format!("{}: the app declaration could not be joined and recorded: {why}", self.me));
+                }
+                // The validated report is kept durable before it is released (node-create.md step 5):
+                // a re-run of the create after this process restarted completes WaitForMeshJoin from
+                // it. A put refused installs nothing, and the join is retried.
+                if let Err(why) = self.joins.keep_admitted(&d).await {
+                    span.record("outcome", "not-ready");
+                    return rdm_core::reply::join::not_ready(format!("{}: {why}", self.me));
                 }
                 (self.install)(&d);
                 (self.known)().await;

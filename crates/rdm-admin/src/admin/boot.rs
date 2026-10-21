@@ -563,7 +563,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
     let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
-    let joins = Arc::new(crate::join::Joins::default());
+    let joins = Arc::new(crate::join::Joins::over(nodes_storage.clone()));
     // The runner, once built: the seat watch registers a seat holder heard again through it (Q87).
     let runner_slot: Arc<std::sync::OnceLock<Arc<AdminRunner>>> = Arc::default();
     let heard_again_slot: crate::heard_again::HeardAgainSlot = Arc::default();

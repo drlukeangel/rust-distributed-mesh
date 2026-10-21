@@ -1834,15 +1834,21 @@ impl DeploymentPipeline<'_> {
             .await?;
         // The validated report of this exact birth, the one the accepting authority admitted
         // (node-create.md step 5): never a digest gossip carried. On a run that reused WaitForBind's
-        // receipt the report is the one this admin kept when the earlier attempt ended (`Joins::end`).
+        // receipt the report is the one this admin kept when the earlier attempt ended (`Joins::end`)
+        // or, this process having restarted since, the one kept durable at admission.
         let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
         self.step_with(run, CreateStep::WaitForMeshJoin.name(), async {
             let mut admitted = admitted.ok_or_else(|| format!("{}: the handle names no exact runtime to verify a join against", req.node))?;
             let until = Instant::now() + self.timeouts.join;
             loop {
-                let report = admitted.borrow().clone().filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation);
-                if let Some(d) = report {
-                    let reported = Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() };
+                let held = admitted.borrow().clone().filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation).map(|d| Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() });
+                // Held by no process any more (this admin restarted after the join was admitted): the
+                // admitted birth's runtime row, kept durable at admission (`Joins::keep_admitted`).
+                let reported = match held {
+                    Some(p) => Some(p),
+                    None => self.joins.durable_report(&id.node_id, &id.incarnation).await.map_err(|e| StepFailure::from(format!("{}: {e}", req.node)))?.map(|row| Publication { runtime: Some(row.runtime), data_dir: row.data_dir }),
+                };
+                if let Some(reported) = reported {
                     if reported == published {
                         return Ok(());
                     }

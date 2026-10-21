@@ -382,7 +382,10 @@ impl NodeRecord {
 }
 
 /// One birth's exact runtime as this admin first held it: the durable map a successor fabric
-/// primary proves an exit from when its own membership never heard the birth. Its own keyed row
+/// primary proves an exit from when its own membership never heard the birth, and the validated
+/// report its accepting authority admitted (written first at the join's admission,
+/// `crate::join::Joins::keep_admitted`, before the report is released: a re-run of the create after
+/// that admin restarted completes WaitForMeshJoin from it, node-create.md step 5). Its own keyed row
 /// (NodeId + IncarnationId), written once by a blind put, never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRow {
