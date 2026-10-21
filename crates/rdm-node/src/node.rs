@@ -966,15 +966,14 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.membership.held_name(&s.name);
-        // Back on the topic means a neighbour: only then does this node say it is back, once, as
-        // Pending, so every node that held it parked or restarting hears the rejoin.
+        // Back on the topic means a neighbour: only then does this node report NodeJoined. It
+        // publishes no Pending of its own: its first Digest heartbeat follows (node-mesh-join.md
+        // step 9), and the mesh-primary, hearing it as a neighbour, publishes it once as Pending
+        // (step 10).
         membership.wait_for_neighbour().await;
         if let Some(progress) = &self.progress {
             let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
         }
-        let mut pending = s.digest.clone();
-        pending.status = MemberStatus::Pending;
-        let _ = membership.publish(&pending).await;
         if let Some(held) = self.held_again.take() {
             let _ = held.send(());
         }

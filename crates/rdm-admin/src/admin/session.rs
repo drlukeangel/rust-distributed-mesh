@@ -462,11 +462,11 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         if let Some(progress) = &self.progress {
             let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
         }
-        // Back on the topic means a neighbour: only then does this admin say it is back, once, as
-        // Pending, so every node that held it parked or restarting hears the rejoin.
+        // Back on the topic means a neighbour: only then is the admin held again. It publishes no
+        // Pending of its own: its Digest heartbeat follows (node-mesh-join.md step 9), and the
+        // mesh-primary, hearing it as a neighbour, publishes it once as Pending (step 10).
         membership.wait_for_neighbour().await;
-        let pending = s.digest.lock().unwrap().clone();
-        let _ = membership.publish(&pending).await;
+        let presented = s.digest.lock().unwrap().clone();
         if let Some(held) = self.held_again.take() {
             let _ = held.send(());
         }
@@ -475,7 +475,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         // The control entry this start repeats when nothing names the Build it is missing: the join it
         // made, to the admin that commanded the start, with the digest it presented.
         let entry = through.map(|t| {
-            let mut digest = pending.clone();
+            let mut digest = presented.clone();
             digest.status = MemberStatus::Pending;
             entry_repeat(s.client.clone(), t.target.clone(), t.anchor.clone(), digest, s.accepted.clone(), s.entry_floor.clone(), s.rafka_time.clone(), s.wake.clone(), s.membership.mesh_name().to_string(), s.mesh_id.clone())
         });

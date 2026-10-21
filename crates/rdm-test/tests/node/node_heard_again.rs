@@ -126,6 +126,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
     let floor = rdm_transport::membership::staleness_floor();
 
     // An rpc node, then the node-admin that is not the mesh-primary: every node follows the path.
+    let rpc_node_id = estate.node_view("mesh1.rpc.2").await.node_id.to_string();
     let rpc_released_at = hold_past_the_floor_then_release(&estate, "mesh1.rpc.2", floor).await;
     let admin_released_at = hold_past_the_floor_then_release(&estate, "mesh1.admin.2", floor).await;
 
@@ -169,6 +170,21 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         // The authority's record of the birth's own ready-for-traffic declaration (its `sender`).
         let ready_at = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == node && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since).map(at).min();
         assert!(ready_at.is_some_and(|r| r > pending_at.unwrap()), "{node}: ready-for-traffic is declared only after the Pending publish: pending {pending_at:?}, ready {ready_at:?}");
+        // The node: after its join it says NodeJoined and heartbeats; the Pending publish is the
+        // mesh-primary's, never the node's (node-mesh-join.md step 10). An rpc node's heartbeat
+        // publisher begins again at its re-entry, and its first heartbeat names the sequence of the
+        // first digest it published: every digest a peer installs of the birth from its channel step
+        // on is that publisher's (its sequence at or past the heartbeat's). A digest below it is one
+        // the node published itself inside its start, before its publisher: the one that said Pending.
+        if node == "mesh1.rpc.2" {
+            let channel_at = steps.iter().find(|(n, _, _)| n == "rdm.mesh.node.update.via-membership-joined").map(|(_, start, _)| *start).unwrap_or_else(|| panic!("{node}: the heard-again start enters its mesh channel (via-membership-joined): {names:?}"));
+            let seq = |sp: &Value| s(&sp["attributes"]["digest_seq"]).parse::<u64>().unwrap_or(0);
+            let heartbeat = named(&spans, "rdm.mesh.node.update.via-heartbeat").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && at(sp) >= channel_at).map(seq).min().unwrap_or_else(|| panic!("{node}: its heartbeat publisher runs again after its re-entry (via-heartbeat after {channel_at})"));
+            let installed: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-digest").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == rpc_node_id && at(sp) >= channel_at).map(|sp| (s(&sp["attributes"]["node"]), seq(sp))).collect();
+            assert!(!installed.is_empty(), "{node}: its peers install its digests after its re-entry (via-digest after {channel_at})");
+            let before_publisher: Vec<&(String, u64)> = installed.iter().filter(|(_, seq)| *seq < heartbeat).collect();
+            assert!(before_publisher.is_empty(), "{node}: no digest of its own precedes its heartbeat publisher's first ({heartbeat}) after its re-entry: the node says NodeJoined and heartbeats, the Pending publish is the mesh-primary's (node-mesh-join.md step 10); installed by its peers (receiver, digest_seq): {before_publisher:?} of {installed:?}");
+        }
         // The cert: issued again for the same birth at the heard-again join.
         let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
         assert!(!certs.is_empty(), "{node}: the accepting authority issues a fresh member cert at the heard-again join");
