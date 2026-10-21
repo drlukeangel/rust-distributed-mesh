@@ -458,7 +458,15 @@ impl AdminRunner {
             // §4.3: a lost mesh's node-admin over the inherited data dir only with exit proof).
             FenceOutcome::Clear { gone: Some(prev) } => {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
-                    let exit = self.records.put_exit(&prev, None, "provider").await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is not deleted and nothing is created over it: {e}", prev.node_id, incarnation.as_str()))?;
+                    // The path's previous birth read exited; its exit-proof row is written from
+                    // node.runtime.inspect's own `exit-proven` (node-runtime-inspect.md step 5), never
+                    // from that read: any other answer now refuses the create by name, since nothing
+                    // proves the path free.
+                    let finding = crate::seat_watch::inspect_birth(&*self.provider, &self.book, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), &prev).await;
+                    let crate::seat_watch::Finding::Exited { code, proof } = &finding else {
+                        return Err(format!("{node}: birth {} at {} read exited at the path, and node.runtime.inspect answers {} ({}): no exit-proof row is written, so it is not deleted and nothing is created over it", prev.node_id, incarnation.as_str(), finding.name(), finding.detail()).into());
+                    };
+                    let exit = self.records.put_exit(&prev, *code, proof).await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is not deleted and nothing is created over it: {e}", prev.node_id, incarnation.as_str()))?;
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
                     self.delete_crashed(&*self.builds, build_id, attempt, node, &from, exit).await?;
                     return self.create_over(&*self.builds, build_id, attempt, node, &from).await;
@@ -565,7 +573,7 @@ impl AdminRunner {
             .await
             .map_err(|e| format!("node.delete:{node}: the exit-proof row of birth {} at {} could not be read by {me}: {e}", from.node_id, from.incarnation.as_str()))?;
         if let Some(exit) = exit {
-            return self.delete_crashed(builds, build_id, attempt, node, from, exit).await;
+            return self.delete_crashed(builds, build_id, attempt, node, from, exit).await.map(|_| ());
         }
         let held = self
             .records
@@ -596,9 +604,14 @@ impl AdminRunner {
 
     /// node.delete of the crashed target `from` at `node` on the exit-proof row `exit` in hand
     /// (node-delete.md "Crashed target"): the delete workflow, nothing sent to the dead process. A
-    /// birth the provider sees running is not exited and is not deleted.
-    pub(crate) async fn delete_crashed(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, exit: crate::status_storage::NodeExitRow) -> Result<(), crate::executor::RunEnd> {
-        let (exited, handle) = self.exited_birth("node.delete", node, from).await?;
+    /// birth the provider sees running is not exited and is not deleted. Answers the provider's exact
+    /// terminal receipt, the `TerminateRuntime` step's: a mesh.delete takes it as the birth's roster
+    /// receipt (mesh-delete.md "Resume after the primary's loss" step 1).
+    pub(crate) async fn delete_crashed(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, exit: crate::status_storage::NodeExitRow) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
+        let (mut exited, handle) = self.exited_birth("node.delete", node, from).await?;
+        // The exit-proof row in hand is the proof: a node-admin deleted on it has its row written by the
+        // fabric-primary when the mesh has no primary left to write it (R-OW1, `NodeRows::deleted`).
+        exited.exit_proven = true;
         match self.provider.inspect(&handle).await {
             crate::deployment::provider::DeploymentStatus::Running => {
                 return Err(format!("node.delete:{node}: birth {} at {} still runs: it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.as_str()).into());
@@ -610,12 +623,12 @@ impl AdminRunner {
         }
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: exited, handle, exit: Some(exit) };
-        self.pipeline_with(&template, builds).retire(&req).await.map_err(crate::executor::RunEnd::from)?;
+        let terminal = self.pipeline_with(&template, builds).retire(&req).await.map_err(crate::executor::RunEnd::from)?;
         let held = self.handles.lock().unwrap().get(node).is_some_and(|(n, _)| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         if held {
             self.handles.lock().unwrap().remove(node);
         }
-        Ok(())
+        Ok(terminal)
     }
 
     /// Node recovery's node.create (node-recovery.md sequence steps 4-5): a new node at `node` over

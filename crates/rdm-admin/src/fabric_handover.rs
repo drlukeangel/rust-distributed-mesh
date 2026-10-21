@@ -1133,11 +1133,12 @@ impl HandoverDoor {
                     Err((retry, format!("its exact birth answered the tickle ladder ({}), and the one retry against it {retry} ({retry_why}); {stands}", finding.name())))
                 }
             },
-            (crate::seat_watch::Finding::Exited { code }, Some(n)) => {
+            (crate::seat_watch::Finding::Exited { code, proof }, Some(n)) => {
                 span.record("retry", "none");
-                // The provider's exit proof: recorded durably as the birth's exit-proof row, which every
-                // projection reads as its proven loss; this admin's own view reads it now.
-                let recorded = self.records.put_exit(&n, *code, "provider").await;
+                // The inspect's exit proof (node-runtime-inspect.md step 5): recorded durably as the
+                // birth's exit-proof row, its proof the inspect's, which every projection reads as its
+                // proven loss; this admin's own view reads it now.
+                let recorded = self.records.put_exit(&n, *code, proof).await;
                 span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
                 self.records.read_exits(&self.book).await;
                 (self.project_view)().await;

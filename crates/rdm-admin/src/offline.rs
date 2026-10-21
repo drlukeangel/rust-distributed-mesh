@@ -602,6 +602,7 @@ pub(crate) async fn put_exit_proof(store: &dyn crate::status_storage::StatusStor
     let Some(incarnation_id) = node.incarnation_id.clone() else {
         return Err(format!("{} ({}) holds no incarnation: no birth to key its exit-proof row by", node.name, node.node_id));
     };
+    crate::admin::exit_proof_named(proof).map_err(|e| format!("the exit-proof row of {} ({}) at {} is not written: {e}", node.name, node.node_id, incarnation_id.as_str()))?;
     let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms };
     store.put_node_exit(&row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row: {e}", node.name, node.node_id))?;
     Ok(row)

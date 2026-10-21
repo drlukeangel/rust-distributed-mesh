@@ -424,7 +424,6 @@ pub async fn inspection_with_handle(
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
 ) -> (Result<(Option<i32>, &'static str), NotProven>, Option<DeploymentHandle>) {
-    use crate::deployment::provider::DeploymentStatus as S;
     let (fact, data_dir, birth) = match (held_row, row) {
         (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
         (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
@@ -434,25 +433,15 @@ pub async fn inspection_with_handle(
         Ok(h) => h,
         Err(e) => return (Err(NotProven::Unavailable(format!("the provider refused to adopt its runtime: {e}"))), None),
     };
-    let inspected = provider.inspect(&handle).await;
-    let status = match crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.as_str()).await {
-        Ok(s) => s,
-        Err(e) => return (Err(NotProven::Unavailable(format!("its exit record cannot be read: {e}"))), Some(handle)),
-    };
-    let answer = match status {
-        S::Exited { code } => {
-            // The code is the provider's own when its inspection carried one, else the exit record's
-            // (exit_proof turns only an `Exited` with no code into a recorded one).
-            let source = match (&inspected, code) {
-                (_, None) => "none",
-                (S::Exited { code: Some(_) }, Some(_)) => "provider",
-                (S::Exited { code: None } | S::Running | S::OsStopped | S::Unknown, Some(_)) => "exit-record",
-            };
-            Ok((code, source))
-        }
-        S::Running => Err(NotProven::Running),
-        S::OsStopped => Err(NotProven::OsStopped),
-        S::Unknown => Err(NotProven::Unavailable("its runtime is not proven exited: Unknown".into())),
+    // The one inspect (node-runtime-inspect.md; `seat_watch::inspect_handle`): its `Exited` carries
+    // the code and where the proof came from, the row's `proof`.
+    let answer = match crate::seat_watch::inspect_handle(provider, &handle, &fact, data_dir.as_deref(), &birth.as_str()).await {
+        crate::seat_watch::Finding::Exited { code, proof } => Ok((code, proof)),
+        crate::seat_watch::Finding::Running => Err(NotProven::Running),
+        crate::seat_watch::Finding::OsStopped => Err(NotProven::OsStopped),
+        crate::seat_watch::Finding::Unproven { reason } => Err(NotProven::Unavailable(reason)),
+        // The inspect asks the birth nothing: no probe answers here.
+        crate::seat_watch::Finding::Answered | crate::seat_watch::Finding::AnsweredViaPeer { .. } => unreachable!("the provider's inspection is no probe"),
     };
     (answer, Some(handle))
 }

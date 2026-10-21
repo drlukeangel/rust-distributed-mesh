@@ -71,6 +71,8 @@ struct Retired {
     builds: Vec<String>,
     resolution: Value,
     spans: Vec<Value>,
+    /// Every mesh1 birth's path.name and pid before the delete.
+    pids: Vec<(String, u64)>,
 }
 
 /// mesh1 deleted, then its last admin's own node.delete, run to their end and read back.
@@ -123,7 +125,7 @@ async fn retire_mesh1(test: &str) -> Retired {
     if !builds.contains(&c) {
         builds.push(c);
     }
-    Retired { last, builds, resolution, spans: estate.spans() }
+    Retired { last, builds, resolution, spans: estate.spans(), pids }
 }
 
 /// mesh1's last admin, stopped by its own node.delete, announces nothing after its stop's cut, and
@@ -142,7 +144,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let cell = "a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let Retired { last, builds, resolution, spans } = retire_mesh1(cell).await;
+    let Retired { last, builds, resolution, spans, pids } = retire_mesh1(cell).await;
     let of_builds = |sp: &Value| builds.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
     // The executor's exit proof: the TerminateRuntime of the last admin's node.delete, complete inside
@@ -179,6 +181,15 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     assert_eq!(deleted.len(), 1, "NodeDeleted published once for {last}: {deleted:?}");
     assert!(start(deleted[0]) >= end(obs), "NodeDeleted follows the exit proof: {}", deleted[0]);
     assert_eq!(resolution["reply"]["resolution"], "gone", "a peer holds {last} Gone: {resolution}");
+    // Every member's exit is node.delete's (mesh-delete.md step 3; node-runtime-inspect.md step 5):
+    // its NodeDeleted published once by its executor, and no exit-proof row a projection read is a
+    // receipt copied by hand.
+    for (name, _) in pids.iter().filter(|(n, _)| *n != last) {
+        let published: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == name.as_str() && of_builds(sp)).collect();
+        assert_eq!(published.len(), 1, "{name}'s NodeDeleted is published once under {builds:?}: {published:?}");
+    }
+    let copied: Vec<String> = named(&spans, "rdm.node_admin.node.resolve.via-exit-proof-row").into_iter().filter(|sp| sp["attributes"]["proof"] == "terminal-receipt").map(|sp| format!("{} {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["proof"]))).collect();
+    assert!(copied.is_empty(), "no exit-proof row is a copied receipt: {copied:?}");
 
     let result = json!({
         "cell": cell,

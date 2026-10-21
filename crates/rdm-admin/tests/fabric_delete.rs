@@ -23,18 +23,18 @@
 //!      (`RosterAmended`), adopts held state (`roster_rows_read`), runs `mesh.delete` (`members_exited`),
 //!      and is removed last by the fabric-primary's `node.delete`.
 
-use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, NodeKind};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_admin::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology, TopologyChange};
 use rdm_admin::admin::Records;
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::control_plane::ControlPlane;
-use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
+use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeProof, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::executor::{executor_for, seat_move};
 use rdm_admin::fabric_storage::{FabricIdentity, FabricStorage, MemoryFabricStorage};
 use rdm_admin::join::Joins;
-use rdm_admin::mesh_delete::{accepted_roster, amend_roster, birth_row_deleted, complete_fabric_delete, completion_of, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_proof, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
+use rdm_admin::mesh_delete::{accepted_roster, amend_roster, complete_fabric_delete, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_proof, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows};
 use rdm_admin::status_rpc::Declared;
@@ -100,7 +100,7 @@ impl NodeObserver for NoRpc {
 }
 
 #[derive(Default)]
-struct View(Mutex<BTreeMap<String, Node>>, Mutex<BTreeSet<String>>);
+struct View(Mutex<BTreeMap<String, Node>>, Mutex<BTreeSet<String>>, Mutex<Option<Arc<NodeRows>>>);
 impl TopologySink for View {
     fn publish(&self, n: Node) {
         self.0.lock().unwrap().insert(n.name.to_string(), n);
@@ -112,6 +112,17 @@ impl TopologySink for View {
             view.remove(&name.to_string());
         }
         self.1.lock().unwrap().insert(name.to_string());
+    }
+    fn node_rows(&self) -> Option<Arc<NodeRows>> {
+        self.2.lock().unwrap().clone()
+    }
+}
+
+impl View {
+    /// The writer node.delete's `NodeDeleted` step writes a member's row `Deleted` through
+    /// (node-delete.md step 3): the executing admin's.
+    fn writes_through(&self, rows: Arc<NodeRows>) {
+        *self.2.lock().unwrap() = Some(rows);
     }
 }
 
@@ -211,8 +222,8 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let status_storage = MemoryStatusStorage::default();
     let declared = Mutex::new(Declared::default());
     let nodes_storage = Arc::new(MemoryNodesStorage::default());
-    let rows_m1 = NodeRows::new(m1_a1.name.clone(), m1_a1.node_id.clone(), observed.clone(), nodes_storage.clone());
-    let rows_m2 = NodeRows::new(m2_a1.name.clone(), m2_a1.node_id.clone(), observed.clone(), nodes_storage.clone());
+    let rows_m1 = Arc::new(NodeRows::new(m1_a1.name.clone(), m1_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
+    let rows_m2 = Arc::new(NodeRows::new(m2_a1.name.clone(), m2_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
     rows_written(&nodes_storage, &rows_m1, &[m1_a1.clone(), m1_r1.clone()]).await;
     rows_written(&nodes_storage, &rows_m2, &[m2_a1.clone(), m2_r1.clone()]).await;
 
@@ -267,28 +278,15 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let m2_records = vec![m2_a1.clone(), m2_r1.clone()];
     let roster_m2 = accepted_roster(&*builds, &key_m2, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
     let leaving_m2 = accepted_roster(&*builds, &key_m2, STEP_LEAVING_ROSTER, "mesh2.admin.1", &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
-    members_exited(
-        &*builds,
-        &key_m2,
-        "mesh2.admin.1",
-        &leaving_m2,
-        &me_m2,
-        rt_m2.clone(),
-        &m2_records,
-        &[],
-        &NoLifecycleEvents,
-        |n: Node| {
-            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
-            async move {
-                let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
-            }
-        },
-        |b: RosterBirth| {
-            let (rows_m2, op_m2, m2_records) = (&rows_m2, &op_m2, &m2_records);
-            async move { birth_row_deleted(Some(rows_m2), "mesh2.admin.1", op_m2, m2_records, &b).await }
-        },
-    )
+    // mesh2.admin.1 executes its members' node.deletes: their rows Deleted are node.delete's own.
+    view_sink.writes_through(rows_m2.clone());
+    members_exited(&*builds, &key_m2, "mesh2.admin.1", &leaving_m2, &me_m2, rt_m2.clone(), &m2_records, &[], |n: Node| {
+        let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
+        async move {
+            let name = n.name.to_string();
+            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+        }
+    })
     .await
     .unwrap();
     let facts = builds.facts().await.unwrap();
@@ -362,28 +360,14 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let m1_records = vec![m1_a1.clone(), m1_r1.clone()];
     let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
     let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
-    members_exited(
-        &*builds,
-        &key_m1,
-        "mesh1.admin.1",
-        &leaving_m1,
-        &me_m1,
-        rt_m1.clone(),
-        &m1_records,
-        &[],
-        &NoLifecycleEvents,
-        |n: Node| {
-            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
-            async move {
-                let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
-            }
-        },
-        |b: RosterBirth| {
-            let (rows_m1, op_m1, m1_records) = (&rows_m1, &op_m1, &m1_records);
-            async move { birth_row_deleted(Some(rows_m1), "mesh1.admin.1", op_m1, m1_records, &b).await }
-        },
-    )
+    view_sink.writes_through(rows_m1.clone());
+    members_exited(&*builds, &key_m1, "mesh1.admin.1", &leaving_m1, &me_m1, rt_m1.clone(), &m1_records, &[], |n: Node| {
+        let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
+        async move {
+            let name = n.name.to_string();
+            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+        }
+    })
     .await
     .unwrap();
     let facts = builds.facts().await.unwrap();
@@ -494,15 +478,17 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
         }));
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let rows_fp = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone());
+        let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
         for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
             nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
-        let status_storage = MemoryStatusStorage::default();
+        let status_storage = Arc::new(MemoryStatusStorage::default());
         let mesh_storage = MemoryMeshStorage::default();
         mesh_storage.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        // The fabric-primary's records: the exit-proof rows it puts land in its status store.
         let records = Records::default();
+        records.set_status(status_storage.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -512,9 +498,35 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let op_m2 = operation(&id2);
         let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
         let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
+        // Each exited birth's node.delete as a crashed target, the fabric-primary its executor: the
+        // ordinary workflow on the exit-proof row, its NodeDeleted writing the row through rows_fp.
+        let joins = Joins::default();
+        let sink = View::default();
+        sink.writes_through(rows_fp.clone());
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: fabric_id.clone(),
+            executable: "/nonexistent/rafka-rpc-node".into(),
+            seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rdm_core::launch::Launcher { name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            store_dir: data_root.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let delete = |b: RosterBirth, exit: rdm_admin::status_storage::NodeExitRow| {
+            let (pipeline, handles, build_id, m2_nodes) = (&pipeline, &handles, &build_id, &m2_nodes);
+            async move {
+                let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), exit: Some(exit) }).await.map_err(|e| e.to_string())
+            }
+        };
 
         // Arm 1: mesh2.admin.1's runtime is still running -> unproven -> Err naming mesh2.admin.1.
-        let unproven = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths).await;
+        let unproven = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete).await;
         let err = unproven.expect_err("unproven node-admin runtime refuses unanswered mesh delete");
         assert!(err.contains("mesh2.admin.1") && err.contains("not proven exited"), "refusal names the unproven birth: {err}");
         assert_eq!(nodes_storage.node_row_at(&m2_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "no row is written Deleted when unproven");
@@ -524,7 +536,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         // by the provider). Nothing is commanded and no node-admin is created; rows are written
         // Deleted on that proof and mesh2 is written Dead as acting primary.
         fleet.running_pids.lock().unwrap().clear();
-        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths)
+        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
             .await
             .expect("fully crashed mesh resolves on provider exit proof");
         let UnansweredMeshOutcome::FullyCrashed(manifest) = crashed else { panic!("expected FullyCrashed, got {crashed:?}") };
@@ -537,6 +549,19 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.dead), "mesh2 row in mesh.storage is Dead");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         assert_eq!(owner_resume(&steps, &op_m2), Ok(OwnerResume::Left), "MeshLeft is recorded so no separate RetireNode is planned for the crashed primary");
+        // Each roster birth's exit is node.delete's own (mesh-delete.md step 3, "each member's step is
+        // its own `node.delete:<path.name>`"; node-delete.md "Crashed target"): its TerminateRuntime,
+        // NodeDeleted and Complete receipts under its own key, and its exit-proof row the inspect's
+        // (node-runtime-inspect.md step 5), never a receipt copied by hand.
+        for n in &m2_nodes {
+            let op = format!("node.delete:{}", n.name);
+            for step in ["TerminateRuntime", "NodeDeleted", "Complete"] {
+                assert!(steps.iter().any(|r| r.operation == op && r.step == step && r.outcome == StepOutcome::Complete), "{}'s {step} receipt under {op}: {:?}", n.name, steps.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
+            }
+            let exit = status_storage.node_exit_of("mesh2", &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().unwrap_or_else(|| panic!("{}'s exit-proof row", n.name));
+            assert!(["provider", "exit-record", "none"].contains(&exit.proof.as_str()) && exit.observed_at_ms > 0, "{}'s exit-proof row is the inspect's, at the instant it was observed: {exit:?}", n.name);
+        }
+        assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
     }
 
     // ---- Arm 3 (Members live / carrier-edge-lost: create one node-admin into mesh2) ----
@@ -560,16 +585,17 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
         }));
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let rows_fp = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone());
+        let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
         for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
             nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
-        let status_storage = MemoryStatusStorage::default();
+        let status_storage = Arc::new(MemoryStatusStorage::default());
         let mesh_storage = MemoryMeshStorage::default();
         mesh_storage.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
         let declared = Mutex::new(Declared::default());
         let records = Records::default();
+        records.set_status(status_storage.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -579,13 +605,44 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let op_m2 = operation(&id2);
         let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
         let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
-
-        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths)
+        let joins = Joins::default();
+        let view_sink = View::default();
+        view_sink.writes_through(rows_fp.clone());
+        let fp_template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: fabric_id.clone(),
+            executable: "/nonexistent/rafka-rpc-node".into(),
+            seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rdm_core::launch::Launcher { name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            store_dir: data_root.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
+        // The exited admin's node.delete as a crashed target, the fabric-primary its executor.
+        let delete = |b: RosterBirth, exit: rdm_admin::status_storage::NodeExitRow| {
+            let (pipeline, handles, build_id, m2_nodes) = (&fp_pipeline, &handles, &build_id, &m2_nodes);
+            async move {
+                let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), exit: Some(exit) }).await.map_err(|e| e.to_string())
+            }
+        };
+        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
             .await
             .expect("members live with admin proven exited resolves to CreateAdmin");
         let UnansweredMeshOutcome::CreateAdmin { path, predecessor } = outcome else { panic!("expected CreateAdmin, got {outcome:?}") };
         assert_eq!(path, "mesh2.admin.2".parse::<PathName>().unwrap(), "creates one node-admin at the next free ordinal above mesh2.admin.1");
         assert_eq!(predecessor, RosterBirth::of(&m2_a1).unwrap());
+        // The exited admin's roster receipt is its own node.delete's TerminateRuntime (mesh-delete.md
+        // "Resume after the primary's loss" step 1), and nothing is written under any other key.
+        let steps = builds.read_build(&build_id).await.unwrap().steps;
+        assert!(steps.iter().any(|r| r.operation == format!("node.delete:{}", m2_a1.name) && r.step == "TerminateRuntime" && r.outcome == StepOutcome::Complete), "mesh2.admin.1's exit is its node.delete's receipt: {:?}", steps.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
+        assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
+        let exit = status_storage.node_exit_of("mesh2", &m2_a1.node_id, m2_a1.incarnation_id.as_ref().unwrap()).await.unwrap().expect("mesh2.admin.1's exit-proof row");
+        assert!(["provider", "exit-record", "none"].contains(&exit.proof.as_str()) && exit.observed_at_ms > 0, "the exit-proof row is the inspect's: {exit:?}");
 
         // The one node-admin `mesh2.admin.2` is created into `mesh2` under `id2` on the same Build,
         // becomes mesh-primary, amends the roster, adopts held state (`roster_rows_read`), and runs
@@ -598,7 +655,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         view.write().await.nodes.retain(|n| n.name != m2_a1.name);
         view.write().await.nodes.push(m2_a2.clone());
-        let rows_a2 = NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone());
+        let rows_a2 = Arc::new(NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
 
         amend_roster(&builds, &key_m2, "mesh1.admin.1", &RosterAmended { predecessor: predecessor.clone(), final_primary: me_a2.clone(), final_runtime: rt_a2.clone() })
@@ -613,8 +670,8 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let records_for_leave = roster_records(&current_nodes, &leaving, |_| None);
         roster_rows_read(Some(&rows_a2), "mesh2.admin.2", &op_m2, &leaving, &records_for_leave).await;
 
-        let joins = Joins::default();
-        let view_sink = View::default();
+        // mesh2.admin.2 executes its members' node.deletes: their rows Deleted are node.delete's own.
+        view_sink.writes_through(rows_a2.clone());
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
@@ -629,28 +686,13 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let manifest = members_exited(
-            &builds,
-            &key_m2,
-            "mesh2.admin.2",
-            &leaving,
-            &me_a2,
-            rt_a2.clone(),
-            &records_for_leave,
-            &known,
-            &NoLifecycleEvents,
-            |n: Node| {
-                let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
-                async move {
-                    let name = n.name.to_string();
-                    pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
-                }
-            },
-            |b: RosterBirth| {
-                let (rows_a2, op_m2, records_for_leave) = (&rows_a2, &op_m2, &records_for_leave);
-                async move { birth_row_deleted(Some(rows_a2), "mesh2.admin.2", op_m2, records_for_leave, &b).await }
-            },
-        )
+        let manifest = members_exited(&builds, &key_m2, "mesh2.admin.2", &leaving, &me_a2, rt_a2.clone(), &records_for_leave, &known, |n: Node| {
+            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
+            async move {
+                let name = n.name.to_string();
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+            }
+        })
         .await
         .expect("created admin mesh2.admin.2 completes mesh.delete of mesh2");
 
@@ -662,7 +704,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         });
         rows_fp.deleted(&m2_a2, "node.delete:mesh2.admin.2").await.unwrap();
         let left = mesh_left_proof(&manifest, &term_a2).unwrap();
-        mesh_left_rows(Some(&rows_fp), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
+        mesh_left_rows(Some(&rows_fp), &*status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
 
         for name in [&m2_a1.name, &m2_r1.name, &m2_a2.name] {
             let row = nodes_storage.node_row_at(name).await.unwrap().unwrap();

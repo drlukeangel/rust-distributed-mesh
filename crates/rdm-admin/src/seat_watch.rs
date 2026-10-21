@@ -152,10 +152,15 @@ pub enum Finding {
     /// The provider inspected its exact runtime and the operating system holds it suspended:
     /// neither hung nor gone, so no hold opens and nothing is terminated (deployment-provider.md §2.5).
     OsStopped,
-    /// The provider inspected its exact runtime and it exited: a verified loss.
+    /// The provider inspected its exact runtime and it exited: a verified loss, `exit-proven { code }`
+    /// (node-runtime-inspect.md "Result").
     Exited {
         /// The exit code, when one is provable.
         code: Option<i32>,
+        /// Where the proof came from, the `proof` of the exit-proof row the caller writes
+        /// (node-runtime-inspect.md step 5): `provider` (the provider's own terminal status),
+        /// `exit-record` (the runtime's exit record in its data dir) or `none` (exited with no code).
+        proof: &'static str,
     },
     /// Nothing proves the birth gone or alive: named by what was missing.
     Unproven {
@@ -181,7 +186,7 @@ impl Finding {
     pub fn detail(&self) -> String {
         match self {
             Self::AnsweredViaPeer { carrier } => carrier.clone(),
-            Self::Exited { code } => code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into()),
+            Self::Exited { code, proof } => format!("{} ({proof})", code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into())),
             Self::Unproven { reason } => reason.clone(),
             _ => String::new(),
         }
@@ -293,16 +298,43 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
             }
         }
     };
-    let handle = match crate::deployment::provider::adopt(provider, &fact) {
-        Ok(h) => h,
-        Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
-    };
-    let inspected = provider.inspect(&handle).await;
-    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.as_str()).await {
-        Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
-        Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
-        Ok(crate::deployment::provider::DeploymentStatus::OsStopped) => Finding::OsStopped,
-        Ok(crate::deployment::provider::DeploymentStatus::Unknown) => Finding::Unproven { reason: "its runtime is not proven exited: Unknown".into() },
+    inspect_runtime(provider, &fact, data_dir.as_deref(), &inc.as_str()).await
+}
+
+/// node.runtime.inspect of the exact runtime `fact` names, the birth `incarnation`'s, by `provider`
+/// (node-runtime-inspect.md steps 2 and 5): the fact adopted in this provider's control domain and
+/// inspected, the code the runtime's own exit record proves read from `data_dir`
+/// ([`crate::deployment::provider::exit_proof`]), and only the runtime's own terminal status an exit.
+/// The one inspect every caller runs: the seat watch's ladder, the fabric authority's drift pass, the
+/// create's read of the path's previous birth, a mesh delete's proof of a lost member. A fact the
+/// provider refuses to adopt, an unreadable exit record and the provider's `Unknown` are each
+/// unproven, named why.
+pub async fn inspect_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, fact: &rdm_core::runtime::RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Finding {
+    match crate::deployment::provider::adopt(provider, fact) {
+        Ok(handle) => inspect_handle(provider, &handle, fact, data_dir, incarnation).await,
+        Err(e) => Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
+    }
+}
+
+/// [`inspect_runtime`] of the runtime `fact` already adopted as `handle`: the provider's inspection,
+/// then the exit record's code for an `Exited` with none. `proof` of an exit names where its code
+/// came from: `provider` when the provider's own inspection carried it, `exit-record` when only the
+/// runtime's record did, `none` when neither proves a code.
+pub async fn inspect_handle(provider: &dyn crate::deployment::provider::DeploymentProvider, handle: &crate::deployment::provider::DeploymentHandle, fact: &rdm_core::runtime::RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Finding {
+    use crate::deployment::provider::DeploymentStatus as S;
+    let inspected = provider.inspect(handle).await;
+    match crate::deployment::provider::exit_proof(inspected.clone(), fact, data_dir.map(std::path::Path::new), incarnation).await {
+        Ok(S::Exited { code }) => {
+            let proof = match (&inspected, code) {
+                (_, None) => "none",
+                (S::Exited { code: Some(_) }, Some(_)) => "provider",
+                (S::Exited { code: None } | S::Running | S::OsStopped | S::Unknown, Some(_)) => "exit-record",
+            };
+            Finding::Exited { code, proof }
+        }
+        Ok(S::Running) => Finding::Running,
+        Ok(S::OsStopped) => Finding::OsStopped,
+        Ok(S::Unknown) => Finding::Unproven { reason: "its runtime is not proven exited: Unknown".into() },
         Err(e) => Finding::Unproven { reason: format!("its exit record cannot be read: {e}") },
     }
 }
@@ -491,10 +523,10 @@ pub async fn run(w: Watch) {
                 }
                 Finding::Unproven { .. } => {}
             }
-            let proven = if let Finding::Exited { code } = &finding {
+            let proven = if let Finding::Exited { code, proof } = &finding {
                 // The verified loss is recorded durably: the holder's exit-proof row is what every
-                // projection reads as its proven loss.
-                let recorded = w.records.put_exit(&node, *code, "provider").await;
+                // projection reads as its proven loss, its proof the inspect's.
+                let recorded = w.records.put_exit(&node, *code, proof).await;
                 span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
                 recorded.is_ok()
             } else {
@@ -796,7 +828,7 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn no_probe_outcome_proves_a_loss_without_the_provider() {
             let b = birth();
-            for (said, expect_exit) in [(Finding::Running, false), (Finding::Unproven { reason: "its runtime is not proven exited".into() }, false), (Finding::Exited { code: Some(137) }, true)] {
+            for (said, expect_exit) in [(Finding::Running, false), (Finding::Unproven { reason: "its runtime is not proven exited".into() }, false), (Finding::Exited { code: Some(137), proof: "provider" }, true)] {
                 let asked = AtomicBool::new(false);
                 let peers = vec![("mesh1.rpc.1".to_string(), probe(BUDGET, None)), ("mesh1.rpc.2".to_string(), probe(BUDGET, Some(StatusReply::NotReady { reason: "carrier not ready".into() })))];
                 let found = ladder(&b.0, &b.1, async { false }, peers, provider_says(said.clone(), &asked)).await;

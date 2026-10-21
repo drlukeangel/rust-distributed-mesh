@@ -720,13 +720,15 @@ impl Records {
     }
 
     /// Record the provider's proof that `node`'s exact birth exited (node-recovery.md: "Exited is the
-    /// proof, recorded durably"): its exit-proof row, a blind put of its `(node_id, incarnation)` key
-    /// among the status rows of its own mesh (`status/<mesh>/exits/`), whichever admin proved it. This
-    /// is the fact every projection reads as the birth's proven loss ([`Self::read_exits`]); nothing
-    /// is held in memory for it. `proof` names where the exit came from (`provider`, `exit-record`,
-    /// `none`, `terminate-runtime`).
+    /// proof, recorded durably"; node-runtime-inspect.md step 5): its exit-proof row, a blind put of
+    /// its `(node_id, incarnation)` key among the status rows of its own mesh (`status/<mesh>/exits/`),
+    /// whichever admin proved it. This is the fact every projection reads as the birth's proven loss
+    /// ([`Self::read_exits`]); nothing is held in memory for it. Fed only from node.runtime.inspect's
+    /// `exit-proven`, node.delete's own `TerminateRuntime` or a committed takeover: `proof` names what
+    /// proved the exit and is refused by name otherwise ([`exit_proof_named`]).
     pub async fn put_exit(&self, node: &Node, exit_code: Option<i32>, proof: &str) -> Result<crate::status_storage::NodeExitRow, String> {
         let incarnation_id = node.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its exit-proof row by", node.name, node.node_id))?;
+        exit_proof_named(proof).map_err(|e| format!("the exit-proof row of {} ({}) at {} is not written: {e}", node.name, node.node_id, incarnation_id.as_str()))?;
         let store = self.status.get().map(|f| f.storage().clone()).ok_or_else(|| format!("no status store is held to record the exit of {} ({}) at {}", node.name, node.node_id, incarnation_id.as_str()))?;
         let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms: local_now_ms() };
         store.put_node_exit_of(&node.mesh, &row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row among {}'s status rows: {e}", node.name, node.node_id, node.mesh))?;
@@ -749,14 +751,15 @@ impl Records {
         store.node_exit_of(mesh, node_id, incarnation).await.map_err(|e| format!("status.storage read of {named} ({node_id}) exit-proof row at {} among {mesh}'s status rows: {e}", incarnation.as_str()))
     }
 
-    /// [`Self::put_exit`] of the birth an exact Exited receipt names (a TerminateRuntime's, or the
-    /// lost final primary's provider proof a mesh leave recorded).
-    pub async fn put_exit_of_receipt(&self, t: &crate::deployment::pipeline::TerminalReceipt) -> Result<crate::status_storage::NodeExitRow, String> {
+    /// [`Self::put_exit`] of the birth a node.delete's `TerminateRuntime` receipt names: the inspect
+    /// node.delete runs after the stop (node-runtime-inspect.md: "after the stop, before
+    /// `node.deleted`"), whose exact Exited the receipt commits; the row's proof is `terminate-runtime`.
+    pub async fn put_exit_of_terminate(&self, t: &crate::deployment::pipeline::TerminalReceipt) -> Result<crate::status_storage::NodeExitRow, String> {
         let name: PathName = t.node.parse().map_err(|e| format!("the Exited receipt of {} {} names no path.name: {e:?}", t.node, t.incarnation_id))?;
         let mut node = Node::allocated(name);
         node.node_id = NodeId::parse(&t.node_id).map_err(|e| format!("the Exited receipt of {} {} names no node id ({:?}): {e}", t.node, t.incarnation_id, t.node_id))?;
         node.incarnation_id = Some(IncarnationId::parse(&t.incarnation_id).map_err(|e| format!("the Exited receipt of {} {} names no incarnation: {e}", t.node, t.incarnation_id))?);
-        self.put_exit(&node, t.exit_code, "terminal-receipt").await
+        self.put_exit(&node, t.exit_code, "terminate-runtime").await
     }
 
     /// Record a `held-running` verdict for `node` (`R-FM1`): on first verdict sets `since = now_ms`
@@ -1080,4 +1083,18 @@ impl TopologySink for Records {
     fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
         self.rows.get().cloned()
     }
+}
+
+/// What an exit-proof row's `proof` may name (node-runtime-inspect.md step 5; node-delete.md "Exact
+/// runtime exit evidence": "the provider's matching Exited observation ... or the committed takeover
+/// that superseded it"): the inspect's `provider`, `exit-record` or `none`; node.delete's own
+/// `TerminateRuntime`, `terminate-runtime`; or a committed takeover, `takeover { revision: <t> }`
+/// (fabric-recovery.md step 3). Anything else (a receipt copied by hand) is refused by name: silence,
+/// a reply and a copy never prove a runtime exit.
+pub fn exit_proof_named(proof: &str) -> Result<(), String> {
+    let takeover = proof.strip_prefix("takeover { revision: ").and_then(|rest| rest.strip_suffix(" }")).is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()));
+    if matches!(proof, "provider" | "exit-record" | "none" | "terminate-runtime") || takeover {
+        return Ok(());
+    }
+    Err(format!("`{proof}` names no proof of a runtime exit: the inspect's `provider`, `exit-record` or `none`, node.delete's `terminate-runtime`, or `takeover {{ revision: <t> }}`"))
 }

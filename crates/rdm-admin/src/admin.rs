@@ -2603,15 +2603,17 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let final_primary = crate::mesh_delete::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.to_string() };
+        // The write node.delete's NodeDeleted step makes (`DeploymentPipeline::deleted_row`): the writer of
+        // the mesh's rows writes the exact record's row Deleted.
         let write = || async {
-            let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
-            crate::mesh_delete::birth_row_deleted(records.node_rows().as_deref(), "mesh1.admin.1", "node.delete:mesh2.admin.1", &nodes, &final_primary).await
+            let record = view.read().await.nodes.iter().find(|n| n.mesh == "mesh2" && n.node_id == last.node.node_id).cloned().expect("the view holds the final primary's record");
+            records.node_rows().expect("a node-row writer").deleted(&record, "node.delete:mesh2.admin.1").await.map_err(|e| e.to_string())
         };
         // The exit proven and not held: the election keeps the exited holder seated (R-EL1).
         let refused = write().await;
         assert!(refused.as_ref().is_err_and(|e| e.contains("is not the writer of mesh2's node rows")), "unheld, the exited holder still writes mesh2's rows: {refused:?}");
         records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-        records.put_exit_of_receipt(&exited_receipt(&last)).await.unwrap();
+        records.put_exit(&final_primary.record().unwrap(), Some(0), "provider").await.unwrap();
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         assert_eq!(view.read().await.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None, "held, the exited holder holds no seat: mesh2 has no primary");
         write().await.unwrap_or_else(|e| panic!("the fabric-primary writes the final primary's row Deleted: {e}"));
@@ -4059,9 +4061,32 @@ mod tests {
         records.publish(n.clone());
         let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records));
         assert_eq!(view.read().await.node(&n.name).map(|v| v.status), Some(NodeStatus::Leaving), "listed from its record");
-        records.put_exit(&n, Some(0), "terminal-receipt").await.unwrap();
+        records.put_exit(&n, Some(0), "terminate-runtime").await.unwrap();
         let t = records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         assert_eq!(t.node(&n.name).map(|v| v.status), Some(NodeStatus::Dead), "the proven exit of a birth listed from its record alone");
+    }
+
+    /// CONTRACT (node-runtime-inspect.md step 5: "`exit-proven { code }`: the caller writes the
+    /// birth's exit-proof row"; node-delete.md "Exact runtime exit evidence": "require the provider's
+    /// matching Exited observation ... or the committed takeover that superseded it"; fabric-recovery.md
+    /// step 3, `takeover { revision }`): the exit-proof row is put through `Records::put_exit`, and
+    /// its `proof` names what proved the exit: the inspect's `provider`, `exit-record` or `none`,
+    /// node.delete's own `terminate-runtime`, or the committed takeover. A proof that names none of
+    /// them (a receipt copied by hand, `terminal-receipt`) is refused by name and writes no row.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_exit_proof_row_is_put_only_from_an_inspects_exited_or_a_takeover() {
+        let records = Records::default();
+        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh2".into(), "mesh2.admin.1".parse().unwrap(), NodeId::mint());
+        let mut n = Node::allocated("mesh2.rpc.1".parse().unwrap());
+        n.incarnation_id = Some(IncarnationId::mint());
+        let refused = records.put_exit(&n, Some(0), "terminal-receipt").await.expect_err("a receipt copied by hand proves nothing: no row");
+        assert!(refused.contains("terminal-receipt") && refused.contains("proof"), "the refusal names the proof kind: {refused}");
+        assert_eq!(records.exit_row_of(&n).await.unwrap(), None, "nothing was written");
+        for proof in ["provider", "exit-record", "none", "terminate-runtime", "takeover { revision: 3 }"] {
+            let row = records.put_exit(&n, Some(0), proof).await.unwrap_or_else(|e| panic!("{proof} is a proof kind the inspect, node.delete or a takeover writes: {e}"));
+            assert!((row.proof.as_str(), row.observed_at_ms > 0) == (proof, true), "the row names its proof at the instant it was observed: {row:?}");
+        }
     }
 
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
