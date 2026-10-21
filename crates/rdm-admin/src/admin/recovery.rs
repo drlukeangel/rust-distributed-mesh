@@ -947,6 +947,12 @@ mod os_stopped_clear_tests {
         async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
             self.0.remove_node_declared(node_id, incarnation_id).await
         }
+        async fn put_node_declared_of(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+            self.0.put_node_declared_of(mesh, row).await
+        }
+        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+            self.0.remove_node_declared_of(mesh, node_id, incarnation_id).await
+        }
         async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
             self.0.node_declared().await
         }

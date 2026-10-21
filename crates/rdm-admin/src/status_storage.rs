@@ -435,6 +435,15 @@ pub trait StatusStorage: Send + Sync {
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError>;
     /// A blind tombstone of every declared-state key of the birth `(node_id, incarnation_id)`.
     async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError>;
+    /// A blind put of the declared-state fact `row` among the status rows of the mesh named `mesh`
+    /// (`status/<mesh>/declared/` of the store root: this store's own mesh or another's): the
+    /// fabric-primary accepting the join report of a birth of a mesh with no primary records its
+    /// Pending among that mesh's rows (Q97), durable before state-commit as every applied
+    /// declaration is (Q54).
+    async fn put_node_declared_of(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError>;
+    /// A blind tombstone of every declared-state key of the birth `(node_id, incarnation_id)` among
+    /// the status rows of the mesh named `mesh`.
+    async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError>;
     /// Every declared-state row held.
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError>;
     /// Blind put of the operation's applied effect; a cycle begin never clears it.
@@ -544,6 +553,9 @@ pub struct MemoryStatusStorage {
     /// no mesh of its own, so every named mesh keeps its own rows, and a read of a named mesh's rows
     /// also finds this store's own (their keys, a mesh id or an exact birth, are fabric-unique).
     meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
+    /// The declared-state rows of each other mesh named through the `_of` puts, by row key: never
+    /// listed by `node_declared`, which lists this store's own.
+    declared_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDeclaredRow>>>,
     /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
     /// The held-running rows of each mesh named through the `_of` reads and puts, by row key.
@@ -591,6 +603,15 @@ impl MemoryStatusStorage {
     /// mesh's rows is cut off.
     fn row_write(&self, mesh: &str, store: &str) -> Result<(), StorageError> {
         self.cut_off.mesh_row_write(&self.own_mesh, mesh, || format!("status/{mesh}/{store}"))
+    }
+
+    /// The declared-state rows this store put among the status rows of the mesh named `mesh`
+    /// ([`StatusStorage::put_node_declared_of`]): this store's own when `mesh` is its own mesh.
+    pub fn node_declared_of(&self, mesh: &str) -> Vec<NodeDeclaredRow> {
+        if mesh == self.own_mesh {
+            return self.declared.lock().unwrap().values().cloned().collect();
+        }
+        self.declared_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default()
     }
 
     /// Keep `row` among the status rows of the mesh named `mesh`, as that mesh's writer puts its own
@@ -649,6 +670,26 @@ impl StatusStorage for MemoryStatusStorage {
         let mut d = self.declared.lock().unwrap();
         for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
             d.remove(&k);
+        }
+        Ok(())
+    }
+    async fn put_node_declared_of(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        if mesh == self.own_mesh {
+            return self.put_node_declared(row).await;
+        }
+        self.row_write(mesh, "declared")?;
+        self.declared_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        if mesh == self.own_mesh {
+            return self.remove_node_declared(node_id, incarnation_id).await;
+        }
+        self.row_write(mesh, "declared")?;
+        if let Some(rows) = self.declared_named.lock().unwrap().get_mut(mesh) {
+            for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+                rows.remove(&k);
+            }
         }
         Ok(())
     }
@@ -872,8 +913,8 @@ pub struct FileStatusStorage {
     mesh: String,
     root: crate::store_root::StoreRoot,
     writer: IncarnationId,
-    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`, `fabric`), by mesh
-    /// and directory, opened on first use.
+    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`, `fabric`,
+    /// `declared`, ...), by mesh and directory, opened on first use.
     others: Mutex<std::collections::BTreeMap<(String, &'static str), std::sync::Arc<FileRecords>>>,
     /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
     /// other mesh's status rows, those opened later included, refuse writes naming it.
@@ -936,20 +977,37 @@ impl FileStatusStorage {
         ]
     }
 
-    /// The `dir` status rows (`meshes`, `exits`, `fabric`) of another mesh `mesh` on the shared root, opened
-    /// outside the lock and kept once under it (the cut-off read under the same lock).
+    /// The `dir` status rows (`meshes`, `exits`, `fabric`, ...) of another mesh `mesh` on the shared
+    /// root, opened outside the lock and kept once under it (the cut-off read under the same lock).
+    /// `declared` is opened straight to the disk, as this mesh's own is ([`Self::open`]): Q54, an
+    /// Applied declaration is durable even before state-commit, among another mesh's rows too.
     async fn other(&self, mesh: &str, dir: &'static str) -> Result<std::sync::Arc<FileRecords>, StorageError> {
         let key = (mesh.to_string(), dir);
         if let Some(m) = self.others.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return Ok(m.clone());
         }
-        let opened = std::sync::Arc::new(self.root.records(&self.root.status(mesh), dir, &self.writer).await?);
+        let base = self.root.status(mesh);
+        let opened = std::sync::Arc::new(match dir {
+            "declared" => FileRecords::open(&base, dir, &self.writer).await?,
+            _ => self.root.records(&base, dir, &self.writer).await?,
+        });
         let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
         let m = others.entry(key).or_insert(opened).clone();
         if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             m.cut_off(reason);
         }
         Ok(m)
+    }
+
+    /// Put the declared-state fact `row` into `store`, the `declared` rows of the mesh named `mesh`.
+    async fn put_declared_into(&self, mesh: &str, store: &FileRecords, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        let span = tracing::info_span!("rdm.node_admin.status.update.via-declared-put",
+            node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), state = ?row.state,
+            writer = %self.writer.as_str(), directory = %self.root.status(mesh).join("declared").display(),
+            holding = store.holding(), outcome = tracing::field::Empty);
+        let result = tracing::Instrument::instrument(store.write(&row.key(), NODE_DECLARED_FORMAT, row), span.clone()).await;
+        span.record("outcome", if result.is_ok() { "acknowledged" } else { "refused" });
+        result
     }
 
     /// The fabric-primary seat moves (R14 item 4): cut off this store's writes to every other mesh's
@@ -1024,17 +1082,28 @@ impl StatusStorage for FileStatusStorage {
         self.other(mesh, "fabric").await?.list(FABRIC_EVENT_FORMAT).await
     }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
-        let span = tracing::info_span!("rdm.node_admin.status.update.via-declared-put",
-            node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), state = ?row.state,
-            writer = %self.writer.as_str(), directory = %self.root.status(&self.mesh).join("declared").display(),
-            holding = self.declared.holding(), outcome = tracing::field::Empty);
-        let result = tracing::Instrument::instrument(self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row), span.clone()).await;
-        span.record("outcome", if result.is_ok() { "acknowledged" } else { "refused" });
-        result
+        self.put_declared_into(&self.mesh, &self.declared, row).await
     }
     async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
             self.declared.remove(&k).await?;
+        }
+        Ok(())
+    }
+    async fn put_node_declared_of(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.put_node_declared(row).await;
+        }
+        let store = self.other(mesh, "declared").await?;
+        self.put_declared_into(mesh, &store, row).await
+    }
+    async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.remove_node_declared(node_id, incarnation_id).await;
+        }
+        let store = self.other(mesh, "declared").await?;
+        for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+            store.remove(&k).await?;
         }
         Ok(())
     }

@@ -1721,6 +1721,12 @@ mod tests {
         async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node_declared(node_id, incarnation_id).await
         }
+        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_declared_of(mesh, row).await
+        }
+        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
+        }
         async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
             self.inner.node_declared().await
         }
@@ -3858,6 +3864,12 @@ mod tests {
         }
         async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node_declared(node_id, incarnation_id).await
+        }
+        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_declared_of(mesh, row).await
+        }
+        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
         }
         async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
             self.inner.node_declared().await

@@ -613,6 +613,14 @@ impl StatusStorage for Refusing {
         self.check()?;
         self.inner.remove_node_declared(node_id, incarnation_id).await
     }
+    async fn put_node_declared_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.check()?;
+        self.inner.put_node_declared_of(mesh, row).await
+    }
+    async fn remove_node_declared_of(&self, mesh: &str, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.check()?;
+        self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
+    }
     async fn node_declared(&self) -> Result<Vec<rdm_admin::status_storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_declared().await
     }
