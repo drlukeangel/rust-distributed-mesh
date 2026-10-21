@@ -504,10 +504,18 @@ fn handback_ready() -> &'static std::sync::Mutex<std::collections::HashMap<rdm_c
 }
 
 /// [`handback_due`] once the node it names has been ready-for-traffic for `dwell` (Q89): `None` before.
+/// A birth this process has commanded back whose command is still on its way has not returned
+/// (fabric-recovery.md step 3; node-recovery.md step 1: a birth heard again runs its hook again before
+/// it is ready-for-traffic): the ReadyForTraffic the view holds of it is its last word before the
+/// silence, and the floor starts only after its return.
 pub fn handback_due_after_dwell(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>, dwell: std::time::Duration) -> Option<PathName> {
     let due = handback_due(observed, taken, lost_name)?;
     let id = observed.node(&due)?.node_id.clone();
     let mut ready = handback_ready().lock().unwrap();
+    if crate::heard_again::returning(&id) {
+        ready.remove(&id);
+        return None;
+    }
     let since = *ready.entry(id).or_insert_with(std::time::Instant::now);
     (since.elapsed() >= dwell).then_some(due)
 }
