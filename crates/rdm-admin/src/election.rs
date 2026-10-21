@@ -801,6 +801,28 @@ mod tests {
         }
     }
 
+    /// CONTRACT (elections §4.3, §5): another mesh's view right after a takeover. The standby
+    /// mesh1.admin.2 took the fabric seat from the lost mesh1.admin.1 (record revision 2); this view
+    /// still holds mesh1's record naming the lost birth (revision 1) and holds the standby
+    /// PendingReconnect. A living holder keeps its seat through silence and, with only Pending admins
+    /// of its mesh left, the seat waits: it never moves to another mesh on a status.
+    #[test]
+    fn a_living_holder_another_view_holds_silent_keeps_the_fabric_seat_in_its_mesh() {
+        let mut inc = incumbency(holder("mesh1", "720000000000", "s1", 2), &[holder("mesh1", "500000000000", "a1", 1), holder("mesh2", "200000000000", "b1", 1)]);
+        lose(&mut inc, "500000000000", "a1");
+        let mut nodes = vec![
+            born("mesh1.admin.1", "500000000000", "a1", NodeStatus::Dead),
+            born("mesh1.admin.2", "720000000000", "s1", PendingReconnect),
+            born("mesh2.admin.1", "200000000000", "b1", Ready),
+            born("mesh2.admin.2", "270000000000", "b2", Ready),
+        ];
+        resolve_with(&mut nodes, &inc);
+        assert_ne!(fabric_name(&nodes).as_deref(), Some("mesh2.admin.1"), "the fabric seat left mesh1 while its holder lives: {:?}", fabric_name(&nodes));
+        nodes[1].status = Ready;
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"), "heard again, the holder is its mesh's primary and keeps the seat");
+    }
+
     /// CONTRACT (R-A2 cell 6, election side): a holder that is silent but not proven lost keeps
     /// the seat; observer-inferred `Dead` is not proof either. Nobody else takes it.
     #[test]
