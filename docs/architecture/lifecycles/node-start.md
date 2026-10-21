@@ -37,8 +37,9 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
    facts only when the node is below the authority's floor, after the hook and before
    node.started: the node-admin Ready check reports a missing pointer, an unreadable Build
    or holdings behind the required floor, and the node reads the facts with
-   [FetchBuildFacts](../node-rpc-envelope.md#build-facts-op-0x1f-rdm), served only by a
-   node-admin, under that schema's resolution order and backoff. The
+   [FetchCurrentBuild](../node-rpc-envelope.md#build-facts-op-0x1f-rdm) when the missing pointer names no Build,
+   else with [FetchBuildFacts](../node-rpc-envelope.md#build-facts-op-0x1f-rdm) of the Build named, each served
+   only by a node-admin, under that schema's resolution order and backoff. The
    facts are absorbed through the Build log; the step completes when the Ready check holds
    the required facts, never on a received frame alone. Refresh rafka-time **last**, so it
    is current when the node re-enters.
