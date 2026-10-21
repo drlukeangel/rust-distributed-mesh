@@ -47,8 +47,9 @@ opentelemetry-semantic-conventions = "0.27"
 # commit iroh pins carries interfaces::interface_enumerations(), the count the fork's test asserts.
 # Removal condition: upstream iroh accepts an endpoint option that binds without a network monitor.
 # netwatch enumerates interfaces on the blocking pool; iroh-gossip's net actor never awaits a full
-# per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Vendor divergence
-# and its removal condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
+# per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Every kept patch and
+# its removal condition: docs/plans/proposal/iroh-noq-netwatch-gossip-fixes.md, the one fork ledger
+# (rafka-v2 keeps none and points there).
 iroh = { git = "https://github.com/drlukeangel/iroh", rev = "076e1a46506e2e8a1782bdf30046c800f7773664" }
 iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "076e1a46506e2e8a1782bdf30046c800f7773664" }
 iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "4d58243572f70ca92a1d3dd31267045f9164f84d" }

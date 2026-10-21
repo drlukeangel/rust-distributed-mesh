@@ -6,6 +6,10 @@ no fork's default branch moved. This page lists every patch we still carry, why,
 and every patch the merge dropped because upstream now does the same. Upstream issues or PRs for the
 kept patches: none filed yet.
 
+This page is the one ledger of the forks: rafka-v2 keeps none (Luke, 2026-10-21; its
+`docs/eng/vendor-divergence.md` is deleted and its `[patch]` comment points here). A change to a fork
+lands here in the same commit as the pin that takes it, with the measurement that justified it.
+
 | Fork | Pinned commit | Upstream merged | Our patches kept | Dropped (upstream does it) |
 |---|---|---|---|---|
 | noq | `bf723891` | n0-computer/noq main `f40e4024` (noq 1.4.0, 110 commits) | 1 | 0 |
@@ -33,13 +37,14 @@ kept patches: none filed yet.
 
 ## iroh and iroh-base
 
-Removal conditions are in the workspace `Cargo.toml` comment and rafka-v2's
-`docs/eng/vendor-divergence.md`.
+Each patch goes when upstream merges an equivalent, unless its line says otherwise.
 
 - **`Endpoint::replace_direct_addrs` retires every superseded direct path**, open ones included (`f964f599c`).
+  Remove when upstream retires every path of a replaced address set.
 - **`Builder::network_monitor(bool)`, default true** (`921afe536`, R-B2): with false, bind builds no
   netmon monitor and enumerates no interfaces. Kept through the merge: `handle_network_change` still
-  reads `if_state_details`, with upstream's #4605 no-server band-aid added in front.
+  reads `if_state_details`, with upstream's #4605 no-server band-aid added in front. Remove when
+  upstream accepts an endpoint option that binds without a network monitor.
 - **`test-knobs` feature: `QuicTransportConfigBuilder::disable_nat_traversal_for_tests`** (`8bc873b79`, R-I3).
 - **Cached mapped addresses evicted when a `RemoteStateActor` shuts down** (`c1d432c96`, `d82f4f13c`, `0f2af4c82`).
 - **`RemoteStateActor` arms fed through an mpsc funnel** (`f5b6288e0`): no waker loss from
@@ -49,8 +54,10 @@ Removal conditions are in the workspace `Cargo.toml` comment and rafka-v2's
 - **`Endpoint::socket_buffer_sizes`** (`6895edb7e`, U13).
 - **`send_datagrams` counter in `SocketMetrics`** (`bb1116d5f`, U12).
 - **`poll_send` span at debug** (`986291499`) and the flow-bracket line at trace (`99b419a2c`).
-- **cdylib crate-type dropped** (`bfcbca719`), so sccache caches the build.
+- **cdylib crate-type dropped** (`bfcbca719`), so sccache caches the build. Remove when the crate type
+  can be chosen per target (rust-lang/cargo#12260).
 - **netwatch, portmapper and noq by git from drlukeangel's forks** (`5d248d3d4`), one of each in the graph.
+  Remove with the last of those forks.
 - **The missing `debug` import** (`c74f8cfc5`).
 - Dropped: **the bind span fix** (`b94cb9183`). Upstream's `bind` is `#[instrument(name = "endpoint", fields(id))]`,
   which holds no guard across an await.
@@ -60,10 +67,14 @@ Removal conditions are in the workspace `Cargo.toml` comment and rafka-v2's
 - **The net actor never awaits a peer's full send queue** (`637a374`, tests `fa25f6c`, `6711230`,
   `fcf4263`): a full queue loses that one enqueue to that one peer (counted in
   `msgs_dropped_send_queue_full`), and plumtree repairs it. Upstream still awaits the send there;
-  its #186 bounds a busy publisher and a slow stream header elsewhere.
+  its #186 bounds a busy publisher and a slow stream header elsewhere. Remove when an upstream release
+  never awaits a peer's send there and our regression tests pass against it.
 - **`peer_topics` pruned on `PeerDisconnected`** (`3ee4d7b`).
-- **cdylib crate-type dropped** (`05ef7c0`).
-- **iroh, iroh-base and noq by git from drlukeangel's forks** (`80fede4`).
+- **cdylib crate-type dropped** (`05ef7c0`), as in iroh.
+- **iroh, iroh-base and noq by git from drlukeangel's forks** (`80fede4`). Remove with the iroh and
+  noq forks.
+- Not carried: the HyParView pending-neighbour patches (R-G4 `61a8cbb`, R-G5 `4b6f558`) were reverted
+  before this merge (the pin `508fb795`, RDM `bf349ba6`, 2026-10-19).
 - Our regression tests stay beside upstream's and pass on the merged code: connection and state
   eviction (`790db7f`), quitting one topic keeps a connection other topics use (`0fff6a8`), the
   hyparview metadata prunes, plumtree's `neighbor_down_prunes_lazy_push_queue`, `state`'s
