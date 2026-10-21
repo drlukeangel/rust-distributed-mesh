@@ -12,6 +12,10 @@
 //!   round's down op. Nothing leaves a checklist by a timer.
 //! - The application work is behind two hooks: `sync_state` (state-sync) and `traffic_opened`
 //!   (one notice, gating nothing). What a node writes at commit-state is behind [`RoundActions`].
+//! - A new primary, through election or recovery, re-sends the current round before it republishes
+//!   the status it adopted (states.md, "The round checklist"; R-S3): members already done check in
+//!   again, and the checklist rebuilds itself from the check-ins heard after the round began. Its
+//!   down op is the read `ProbeNodeState` (Q87) ([`FabricRounds::adopted_step`]).
 
 use crate::accepted::FabricTopology;
 use crate::admin::Records;
@@ -19,15 +23,18 @@ use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
 use crate::fabric_state::{Expected, FabricState, RoundBook, RoundKey, RoundKind, RoundOp};
 use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeKind, PathName};
-use crate::round::Missing;
+use crate::round::{fabric_missing, missing_members, reports_of, Missing};
 use crate::status_declare::{Authority, DeclareWake, Declarer, Key};
 use crate::topology::Topology;
 use crate::wiring::{FabricHooks, StateSyncRound, SyncState};
+use rdm_transport::membership::{Announced, DigestBook};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::MemberStatus;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::Instrument;
 
@@ -152,6 +159,60 @@ pub(crate) struct RoundEnv {
     pub actions: Arc<dyn RoundActions>,
 }
 
+/// Which rounds of an adopted status are complete now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Complete {
+    /// Whether the mesh's round is complete.
+    pub mesh: bool,
+    /// Whether the fabric's round is complete.
+    pub fabric: bool,
+}
+
+/// What the status loop hands [`FabricRounds::adopted_step`] each turn.
+pub struct AdoptedInputs<'a> {
+    /// This admin's view, as installed this turn.
+    pub view: &'a Topology,
+    /// The accepted Build's planned births of this admin's mesh; `None`: the Build was unreadable.
+    pub planned: Option<Vec<PathName>>,
+    /// The digest book: the check-ins of the mesh round are the digests heard since it began.
+    pub book: &'a DigestBook,
+}
+
+/// What the fabric-primary's view held of a mesh primary when it sent that primary the down op:
+/// the facts the primary's declaration is decided against (its birth, the endpoint it is resolved
+/// by, and its mesh's id). The down op goes again when any of them changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Addressed {
+    node_id: NodeId,
+    incarnation: Option<IncarnationId>,
+    endpoint: Option<crate::model::EndpointId>,
+    mesh_id: Option<crate::model::MeshId>,
+}
+
+impl Addressed {
+    fn of(p: &Node, mesh: &crate::model::Mesh) -> Self {
+        Self { node_id: p.node_id.clone(), incarnation: p.incarnation_id.clone(), endpoint: p.endpoint_id.clone(), mesh_id: mesh.id.clone() }
+    }
+}
+
+/// One adopted status's round: when it began (a check-in counts only after that) and the hold last named.
+struct AdoptedRound {
+    began: Instant,
+    held: Option<String>,
+}
+
+/// The rounds a new primary runs before it republishes the statuses it adopted (states.md, "The
+/// round checklist"; R-S3): its mesh's while it adopted its mesh's status, the fabric's while it
+/// adopted the fabric's. A round exists exactly while its status is adopted and unpublished.
+#[derive(Default)]
+struct Adopted {
+    mesh: Option<AdoptedRound>,
+    fabric: Option<AdoptedRound>,
+    /// The mesh primaries this admin, as the fabric-primary, has sent the down op to, by mesh: the
+    /// view's primary changing from this is what sends it again (R-S2).
+    addressed: BTreeMap<String, Addressed>,
+}
+
 enum Progress {
     Waiting,
     Answered(StateSyncRound),
@@ -209,12 +270,14 @@ pub struct FabricRounds {
     climb: tokio::sync::Mutex<Climb>,
     /// Poked when a check-in, the application's answer or this admin's own mesh round arrives.
     climb_wake: tokio::sync::Notify,
+    /// The rounds of the statuses this admin adopted as a new primary.
+    adopted: Mutex<Adopted>,
 }
 
 impl FabricRounds {
     /// The rounds of the admin `env` describes.
     pub(crate) fn new(env: RoundEnv) -> Arc<Self> {
-        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashMap::new()), acted: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
+        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashMap::new()), acted: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new(), adopted: Mutex::new(Adopted::default()) })
     }
 
     /// The paths the current Build plans in each mesh (`node.get` names a birth its view no longer
@@ -263,17 +326,7 @@ impl FabricRounds {
                 .in_scope(|| tracing::info!("no gossip is bound to this admin's rounds: the hook is not published"));
             return;
         };
-        let frame = crate::fabric_state::hook_frame(key, up, node_id.clone(), incarnation.clone(), &me.to_string(), gossip.membership.clock().now_rafka_ms());
-        let kind = if up { key.kind.completion() } else { key.kind.command() };
-        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
-        async {
-            match gossip.backbone.publish_command_hook(&frame).await {
-                Ok(()) => tracing::info!("the round hook was published on the mesh channel and the backbone"),
-                Err(e) => tracing::info!(error = %e, "the round hook was not handed to every channel"),
-            }
-        }
-        .instrument(span)
-        .await;
+        let _ = rdm_node::rounds::publish_hook(&me, key, up, node_id, incarnation, &gossip.membership, Some(&gossip.backbone)).await;
     }
 
     // ------------------------------------------------------------------ the fabric-primary
@@ -498,8 +551,8 @@ impl FabricRounds {
         let mut out = mesh_blockers(view, &meshes, &planned);
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
             meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
-        let reports = crate::round::reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
-        out.extend(crate::round::fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
+        let reports = reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
+        out.extend(fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
         out
     }
 
@@ -930,6 +983,137 @@ impl FabricRounds {
         }
     }
 
+    // ------------------------------------------------- the round of an adopted status (R-S3)
+
+    /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
+    /// was recovered): the down op goes to it, so it re-sends what it owes this admin. Not the
+    /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
+    /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
+    pub fn address_changed_mesh_primaries(&self, view: &Topology, is_fabric_primary: bool) {
+        let targets = self.changed_mesh_primaries(view, is_fabric_primary);
+        if !targets.is_empty() {
+            let me = self.held_name_in(view);
+            send_down(&me, "fabric", &view.fabric.name, targets, &self.env.client);
+        }
+    }
+
+    /// The mesh primaries to send the down op now, recorded as addressed.
+    pub(crate) fn changed_mesh_primaries(&self, view: &Topology, is_fabric_primary: bool) -> Vec<(String, Option<Node>)> {
+        let mut adopted = self.adopted.lock().unwrap();
+        if !is_fabric_primary {
+            adopted.addressed.clear();
+            return Vec::new();
+        }
+        let mut targets = Vec::new();
+        let mut present = Vec::new();
+        for m in &view.meshes {
+            let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.node_id != self.env.node_id) else { continue };
+            present.push(m.name.clone());
+            let now = Addressed::of(p, m);
+            if adopted.addressed.get(&m.name) != Some(&now) {
+                adopted.addressed.insert(m.name.clone(), now);
+                targets.push((m.name.clone(), Some(p.clone())));
+            }
+        }
+        adopted.addressed.retain(|mesh, _| present.contains(mesh));
+        targets
+    }
+
+    /// No status is adopted and waiting: no round of an adopted status is open.
+    pub fn adopted_end(&self) {
+        let mut adopted = self.adopted.lock().unwrap();
+        adopted.mesh = None;
+        adopted.fabric = None;
+    }
+
+    /// One step of the rounds of the adopted statuses. `awaiting` says which adopted statuses still
+    /// wait for their round; the answer says which rounds are complete now (so the publisher may
+    /// republish). A round opens on its first step: its down op goes to every planned birth but this
+    /// admin, and its checklist counts only the check-ins heard from then on. The mesh round's
+    /// check-in is a planned birth's digest heard ready-for-traffic after the round began; the
+    /// fabric round's is a report from the CURRENT mesh primary's birth. The fabric-primary clears
+    /// `degraded` only on such a report, never on a topology reading.
+    pub fn adopted_step(&self, awaiting: Announced, i: AdoptedInputs<'_>) -> Complete {
+        let mut adopted = self.adopted.lock().unwrap();
+        let me = self.held_name_in(i.view);
+        let mesh_name = me.mesh.clone();
+        let mut out = Complete::default();
+        if !awaiting.mesh_awaiting_round {
+            adopted.mesh = None;
+        } else {
+            let first = adopted.mesh.is_none();
+            let round = adopted.mesh.get_or_insert_with(|| AdoptedRound { began: Instant::now(), held: None });
+            if first {
+                let targets: Vec<(String, Option<Node>)> = i.planned.iter().flatten().filter(|p| **p != me).map(|p| (p.to_string(), i.view.members().find(|n| &n.name == p).cloned())).collect();
+                send_down(&me, "mesh", &mesh_name, targets, &self.env.client);
+            }
+            let missing = match &i.planned {
+                None => vec![Missing { who: mesh_name.clone(), why: "accepted-build-unreadable" }],
+                Some(planned) => {
+                    let me_ready = i.view.own(&self.env.node_id).is_some_and(|n| n.status == crate::model::NodeStatus::ReadyForTraffic);
+                    let (heard, known) = (i.book.heard_direct_since(round.began), i.book.all());
+                    missing_members(planned, &me, me_ready, &heard, &known, &|id| i.book.is_departed(id))
+                }
+            };
+            if missing.is_empty() {
+                let waited_ms = round.began.elapsed().as_millis() as u64;
+                tracing::info_span!("rdm.node_admin.mesh.update.via-round-complete", node = %me, mesh = %mesh_name, members = i.planned.as_ref().map(Vec::len).unwrap_or(0), waited_ms)
+                    .in_scope(|| tracing::info!("every planned birth checked in: the adopted status is republished"));
+                out.mesh = true;
+            } else {
+                let now = crate::round::named(&missing);
+                if round.held.as_deref() != Some(now.as_str()) {
+                    tracing::info_span!("rdm.node_admin.mesh.update.via-round-held", node = %me, mesh = %mesh_name, missing = %now, waited_ms = round.began.elapsed().as_millis() as u64)
+                        .in_scope(|| tracing::info!("the round is held: a planned birth has not checked in"));
+                    round.held = Some(now);
+                }
+            }
+        }
+        if !awaiting.fabric_awaiting_round {
+            adopted.fabric = None;
+        } else {
+            let Adopted { fabric, addressed, .. } = &mut *adopted;
+            let first = fabric.is_none();
+            let round = fabric.get_or_insert_with(|| AdoptedRound { began: Instant::now(), held: None });
+            let meshes: Vec<(String, Option<IncarnationId>, bool)> = i
+                .view
+                .meshes
+                .iter()
+                .map(|m| {
+                    let p = i.view.cohort_primary(&m.name, NodeKind::NodeAdmin);
+                    (m.name.clone(), p.and_then(|p| p.incarnation_id.clone()), p.is_some_and(|p| p.node_id == self.env.node_id))
+                })
+                .collect();
+            if first {
+                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
+                for (mesh, p) in &targets {
+                    if let (Some(p), Some(m)) = (p, i.view.meshes.iter().find(|m| &m.name == mesh)) {
+                        addressed.insert(mesh.clone(), Addressed::of(p, m));
+                    }
+                }
+                send_down(&me, "fabric", &i.view.fabric.name, targets, &self.env.client);
+            }
+            let my_mesh_done = !awaiting.mesh_awaiting_round || out.mesh;
+            let reports = reports_of(&self.env.records.declared.lock().unwrap(), i.view, meshes.iter().map(|(m, _, _)| m.as_str()));
+            let missing = fabric_missing(&meshes, my_mesh_done, &reports);
+            if missing.is_empty() {
+                let waited_ms = round.began.elapsed().as_millis() as u64;
+                let cleared = self.env.records.set_adopted_degraded(false);
+                tracing::info_span!("rdm.node_admin.fabric.update.via-round-complete", node = %me, meshes = meshes.len(), waited_ms, degraded_cleared = cleared)
+                    .in_scope(|| tracing::info!("every mesh primary reported for this round"));
+                out.fabric = true;
+            } else {
+                let now = crate::round::named(&missing);
+                if round.held.as_deref() != Some(now.as_str()) {
+                    tracing::info_span!("rdm.node_admin.fabric.update.via-round-held", node = %me, missing = %now, waited_ms = round.began.elapsed().as_millis() as u64)
+                        .in_scope(|| tracing::info!("the fabric round is held: a planned birth has not reported"));
+                    round.held = Some(now);
+                }
+            }
+        }
+        out
+    }
+
     // ----------------------------------------------------------------- served by an admin
 
     /// The completions this admin owes for a round the accepted Build has moved past are withdrawn,
@@ -1056,6 +1240,42 @@ impl FabricRounds {
         } else {
             rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) })
         }
+    }
+}
+
+/// The adopted status round's down op to each target, once, on its own task: the answer is named in
+/// a span and nothing is retried. A target the view holds no birth of is named too. The op is a read
+/// ([`ProbeNodeState`](rdm_core::status::StatusRequest::ProbeNodeState); node-status.md: `node.get`
+/// manufactures no transition): the member re-publishes its presence and answers its state. A member
+/// off its mesh is the tickle ladder's to command back (node-recovery.md step 2, Q87), never this
+/// op's. A failed send is answered by nobody: no member leaves the checklist by a timer, and a new
+/// primary re-sends.
+fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String, Option<Node>)>, client: &Arc<NodeRpcClient>) {
+    for (who, node) in targets {
+        let (me, of, client) = (me.clone(), of.to_string(), client.clone());
+        // The span opens before the call, so the call and the target's serve chain are its children.
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-round-down", node = %me, mesh = %of, scope, target = %who, outcome = tracing::field::Empty);
+        tokio::spawn(
+            async move {
+                let outcome = match &node {
+                    None => "no-birth-in-view".to_string(),
+                    Some(n) => match n.incarnation_id.clone() {
+                        None => "birth-has-no-incarnation".to_string(),
+                        Some(incarnation) => {
+                            // `node.get` of the exact birth: it reasserts itself and answers its state.
+                            let birth = rdm_client::ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
+                            match rdm_client::NodeRpc::new(&client).get(&birth, &CallOptions::default()).await {
+                                Ok(reply) => reply.name().to_string(),
+                                Err(end) => end.rpc_name().to_string(),
+                            }
+                        }
+                    },
+                };
+                tracing::Span::current().record("outcome", outcome.as_str());
+                tracing::info!("the round's down op re-sent");
+            }
+            .instrument(span),
+        );
     }
 }
 
@@ -1623,6 +1843,204 @@ mod tests {
         assert_eq!(ended.len(), 2, "the member is commanded under each opening of the round: {ended:?}");
         let own = mesh_rounds_ended(&capture, 2).await;
         assert_eq!(own, ["run", "from-record"], "the reopened round has a driver of its own, which takes this admin's action from its record");
+    }
+
+    use crate::model::{MeshId, NodeStatus as NS};
+    use rdm_transport::membership::DigestBook;
+
+    fn member(name: &str, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.status = NS::ReadyForTraffic;
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.is_primary = primary;
+        n.is_fabric_primary = fabric_primary;
+        n
+    }
+
+    /// A degraded fabric of two meshes, holding `nodes`.
+    fn view(nodes: Vec<Node>) -> Topology {
+        Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Degraded, provider: ProviderKind::Process },
+            meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+            nodes,
+        }
+    }
+
+    fn digest(p: &PathName, status: MemberStatus) -> rdm_core::MeshDigest {
+        rdm_core::MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: FabricId::mint(),
+            node: rdm_core::MeshNode {
+                node_id: NodeId::mint(),
+                name: p.clone(),
+                endpoint_id: crate::model::EndpointId(String::new()),
+                transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+                incarnation: IncarnationId::mint(),
+                supersedes: None,
+                runtime: None,
+            },
+            status,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 0,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            config: Default::default(),
+            load: None,
+            gossip: None,
+        }
+    }
+
+    /// The rounds of `me` over `view` and `records`, with a Build log that holds nothing.
+    async fn adopted_rounds_of(me: &Node, view: Topology, records: Arc<Records>) -> Arc<FabricRounds> {
+        rounds_of(me, view, Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), records, FabricId::mint(), Arc::new(NoScratchpad)).await
+    }
+
+    /// The `via-round-down` spans toward `target` once `n` have ended, or what ended within 15 s: a
+    /// down op's span ends with its task, which runs beside the cell.
+    async fn down_ops_ended_to(capture: &crate::span_capture::Capture, target: &str, n: usize) -> Vec<crate::span_capture::Captured> {
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let ended: Vec<_> = capture.named("rdm.node_admin.mesh.update.via-round-down").into_iter().filter(|s| s.attributes.get("target").map(String::as_str) == Some(target)).collect();
+            if ended.len() >= n || tokio::time::Instant::now() >= until {
+                return ended;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// CONTRACT (states.md, "The round checklist": "A new primary, through election or recovery,
+    /// re-sends the current round. Members already done check in again, and the checklist rebuilds
+    /// itself"; Q87: the round's down op is a read): the round a new mesh primary runs for the status
+    /// it adopted is run by this admin's rounds, the one owner of every checklist. The down op goes to
+    /// every planned birth but this admin, once per opening of the round; a digest heard before the
+    /// round began is no check-in, and the round completes on a digest heard after it began. A status
+    /// adopted again opens the round again and the checklist rebuilds itself: the down op goes again,
+    /// and the digest that completed the earlier opening counts for nothing. Must NOT happen: a second
+    /// owner with a checklist of its own, or a checklist carried from one opening to the next.
+    #[tokio::test]
+    async fn an_adopted_status_round_is_this_admins_rounds_own_and_its_checklist_rebuilds_per_opening() {
+        let capture = crate::span_capture::Capture::new("i143-one-round-owner");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (me, rpc) = (member("mesh1.admin.1", true, false), member("mesh1.rpc.1", false, false));
+        let v = view(vec![me.clone(), rpc.clone()]);
+        let rounds = adopted_rounds_of(&me, v.clone(), Arc::new(Records::default())).await;
+        let book = DigestBook::default();
+        let awaiting = Announced { mesh_awaiting_round: true, fabric_awaiting_round: false };
+        let planned = vec![me.name.clone(), rpc.name.clone()];
+        let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), book: &book };
+        let held = || capture.named("rdm.node_admin.mesh.update.via-round-held").into_iter().map(|s| s.attributes.get("missing").cloned().unwrap_or_default()).collect::<Vec<_>>();
+        // The member was heard before the round began: held, not checked in.
+        let mut heard = digest(&rpc.name, MemberStatus::ReadyForTraffic);
+        assert!(book.record(heard.clone()));
+        assert!(!rounds.adopted_step(awaiting, inputs()).mesh, "a digest heard before the round is not a check-in");
+        assert_eq!(held(), ["mesh1.rpc.1(not-heard-since-round)"], "the hold names the planned birth that has not checked in");
+        heard.digest_seq += 1;
+        assert!(book.record(heard.clone()));
+        assert!(rounds.adopted_step(awaiting, inputs()).mesh, "every planned birth checked in after the round began");
+        let complete = capture.named("rdm.node_admin.mesh.update.via-round-complete");
+        assert_eq!(complete.len(), 1, "the round completed once: {complete:?}");
+        assert_eq!(complete[0].attributes.get("members").map(String::as_str), Some("2"));
+        // The adopted status went out: no round is open. Adopted again, the round opens and the checklist rebuilds itself.
+        rounds.adopted_end();
+        assert!(!rounds.adopted_step(awaiting, inputs()).mesh, "the checklist rebuilt: the digest that completed the earlier opening is no check-in");
+        assert_eq!(held().len(), 2, "the hold is named again for the new opening");
+        heard.digest_seq += 1;
+        assert!(book.record(heard));
+        assert!(rounds.adopted_step(awaiting, inputs()).mesh);
+        let down = down_ops_ended_to(&capture, "mesh1.rpc.1", 2).await;
+        assert_eq!(down.len(), 2, "the down op went to the planned member once per opening: {down:?}");
+        assert!(down.iter().all(|s| s.attributes.get("scope").map(String::as_str) == Some("mesh") && s.attributes.get("mesh").map(String::as_str) == Some("mesh1")), "{down:?}");
+    }
+
+    /// CONTRACT (R-S2): the fabric-primary sends the down op to a mesh's primary when its view of
+    /// that primary appears or changes, once each, and to nobody when it is not the fabric-primary.
+    #[tokio::test]
+    async fn fabric_primary_addresses_a_mesh_primary_when_its_view_of_it_changes() {
+        let me = member("mesh1.admin.1", true, true);
+        let first = member("mesh2.admin.1", true, false);
+        let v0 = view(vec![me.clone()]);
+        let rounds = adopted_rounds_of(&me, v0.clone(), Arc::new(Records::default())).await;
+        assert!(rounds.changed_mesh_primaries(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
+
+        let v1 = view(vec![me.clone(), first.clone()]);
+        let sent: Vec<String> = rounds.changed_mesh_primaries(&v1, true).into_iter().map(|(m, _)| m).collect();
+        assert_eq!(sent, vec!["mesh2".to_string()], "a mesh primary gained by the view is addressed");
+        assert!(rounds.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
+
+        let mut recovered = first.clone();
+        recovered.incarnation_id = Some(IncarnationId::mint());
+        let v2 = view(vec![me.clone(), recovered]);
+        assert_eq!(rounds.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
+
+        // The primary was in view before its endpoint was: gaining the endpoint it is resolved by
+        // is a change, so the down op goes again once the receiver can resolve the sender.
+        let mut early = first.clone();
+        early.endpoint_id = None;
+        let mut v_early = view(vec![me.clone(), early.clone()]);
+        let rounds = adopted_rounds_of(&me, v_early.clone(), Arc::new(Records::default())).await;
+        assert_eq!(rounds.changed_mesh_primaries(&v_early, true).len(), 1);
+        assert!(rounds.changed_mesh_primaries(&v_early, true).is_empty());
+        for n in &mut v_early.nodes {
+            if n.name == early.name {
+                n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
+            }
+        }
+        assert_eq!(rounds.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
+    }
+
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn successor_fabric_holder_keeps_degraded_until_every_mesh_primary_reports_for_its_round() {
+        // The seat moved to mesh2's primary while mesh1 was being recovered; the new holder adopted degraded.
+        let (me, recovered) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false));
+        let v = view(vec![me.clone(), recovered.clone()]);
+        let records = Arc::new(Records::default());
+        records.set_adopted_degraded(true);
+        let book = DigestBook::default();
+        let rounds = adopted_rounds_of(&me, v.clone(), records.clone()).await;
+        let awaiting = Announced { mesh_awaiting_round: false, fabric_awaiting_round: true };
+        let inputs = || AdoptedInputs { view: &v, planned: None, book: &book };
+        // A ready primary of a newer birth is in the view; nobody has reported to this holder.
+        let done = rounds.adopted_step(awaiting, inputs());
+        assert!(!done.fabric && records.adopted_degraded(), "the topology reading alone does not clear degraded");
+        // A report from a birth that is not the primary now does not either.
+        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(IncarnationId::mint()), Instant::now());
+        let done = rounds.adopted_step(awaiting, inputs());
+        assert!(!done.fabric && records.adopted_degraded(), "a report of another birth is not the current primary's");
+        // The current primary re-declares to the new holder: the round is complete and degraded clears.
+        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(recovered.incarnation_id.clone().unwrap()), Instant::now());
+        let done = rounds.adopted_step(awaiting, inputs());
+        assert!(done.fabric && !records.adopted_degraded(), "every mesh primary reported for this round");
+    }
+
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn elected_mesh_primary_completes_its_round_only_when_every_planned_birth_checks_in_after_it_began() {
+        let (me, rpc) = (member("mesh1.admin.1", true, false), member("mesh1.rpc.1", false, false));
+        let v = view(vec![me.clone(), rpc.clone()]);
+        let book = DigestBook::default();
+        let rounds = adopted_rounds_of(&me, v.clone(), Arc::new(Records::default())).await;
+        let awaiting = Announced { mesh_awaiting_round: true, fabric_awaiting_round: false };
+        let planned = vec![me.name.clone(), rpc.name.clone()];
+        let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), book: &book };
+        // The member was heard before the round began (it is held, but it has not checked in).
+        let before = digest(&rpc.name, MemberStatus::ReadyForTraffic);
+        assert!(book.record(before.clone()));
+        let done = rounds.adopted_step(awaiting, inputs());
+        assert!(!done.mesh, "a digest heard before the round is not a check-in");
+        // Its next heartbeat arrives after the round began: it has checked in.
+        let mut again = before;
+        again.digest_seq += 1;
+        assert!(book.record(again));
+        let done = rounds.adopted_step(awaiting, inputs());
+        assert!(done.mesh, "every planned birth checked in after the round began");
+        // An unreadable accepted Build holds the round by name.
+        let unreadable = adopted_rounds_of(&me, v.clone(), Arc::new(Records::default())).await;
+        let done = unreadable.adopted_step(awaiting, AdoptedInputs { view: &v, planned: None, book: &book });
+        assert!(!done.mesh);
     }
 
     /// The `own_action` of each ended `via-mesh-round` span, in end order, once `n` have ended or

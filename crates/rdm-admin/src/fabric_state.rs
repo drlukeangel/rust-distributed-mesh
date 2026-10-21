@@ -11,33 +11,7 @@
 //! Nothing leaves a checklist by a timer.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
-use crate::status_declare::Destination;
-
-/// The last send of one round command that ended without the birth admitting it. A round command
-/// rides one Owed call (node-rpc.md §43, i146 e3): the delivery layer resends it until the birth
-/// answers, so a lost route is the layer's to wait out and nothing here tracks one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Sent {
-    pub to: Destination,
-    /// A typed reply came back (the birth refused the op by name): terminal until an eligible event.
-    /// Otherwise the call ended because its birth's exit or removal is proven.
-    pub typed: bool,
-}
-
-/// Is a round command due again? When the birth addressed this admin, or the destination changed to a
-/// deliverable birth. A target that is not deliverable is sent nothing.
-fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
-    if addressed {
-        return true;
-    }
-    if !deliverable {
-        return false;
-    }
-    match sent {
-        None => true,
-        Some(s) => &s.to != now,
-    }
-}
+use crate::status_declare::{eligible, Destination, Sent};
 use crate::topology::Topology;
 use crate::round::Missing;
 use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};

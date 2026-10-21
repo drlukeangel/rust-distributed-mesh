@@ -4,13 +4,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rdm_transport::membership::Frame;
+use rdm_transport::membership::{Backbone, Frame, Membership};
 use rdm_core::RoundHook;
 use rdm_core::status::StatusRequest;
-#[cfg(feature = "file-backend")]
 use tracing::Instrument;
 
-use crate::model::{FabricId, IncarnationId, NodeId, PathName};
+use crate::model::{EndpointId, FabricId, IncarnationId, Node, NodeId, PathName};
 
 /// Which of the two rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -82,6 +81,85 @@ pub fn hook_frame(key: &RoundKey, up: bool, node_id: NodeId, incarnation: Incarn
         (RoundKind::StateCommit, true) => Frame::StateCommitted { hook, forwarded_by },
         (RoundKind::OpenTraffic, false) => Frame::TrafficOpening { hook, forwarded_by },
         (RoundKind::OpenTraffic, true) => Frame::TrafficOpened { hook, forwarded_by },
+    }
+}
+
+/// Publish the round hook of `key`'s op (gossip.md, "Fabric round gossip hooks"), in the path of the
+/// call it runs with: a command hook (`up == false`) names the commanded birth, a completion hook
+/// `publisher`'s own birth. The frame goes on `publisher`'s mesh channel and, when it is on the
+/// backbone, the backbone. `Err` names why the frame was not handed to every channel.
+pub async fn publish_hook(publisher: &PathName, key: &RoundKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId, membership: &Membership, backbone: Option<&Backbone>) -> Result<(), String> {
+    let frame = hook_frame(key, up, node_id.clone(), incarnation.clone(), &publisher.to_string(), membership.clock().now_rafka_ms());
+    let hook = if up { key.kind.completion() } else { key.kind.command() };
+    let channels = if backbone.is_some() { "mesh,backbone" } else { "mesh" };
+    let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %publisher, round = key.kind.command(), hook, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal");
+    async {
+        let published = match backbone {
+            Some(backbone) => backbone.publish_command_hook(&frame).await,
+            None => membership.publish_lifecycle(&frame).await,
+        };
+        match published {
+            Ok(()) => {
+                tracing::info!("the round hook was published");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::info!(error = %e, "the round hook was not handed to every channel");
+                Err(e.to_string())
+            }
+        }
+    }
+    .instrument(span)
+    .await
+}
+
+/// Where an owed message (a declaration, a round command) went: the exact birth, and the address
+/// facts the view held for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    /// The exact birth's node id.
+    pub node_id: NodeId,
+    /// Its incarnation, as the view held it.
+    pub incarnation: Option<IncarnationId>,
+    /// The endpoint it is resolved by, as the view held it.
+    pub endpoint: Option<EndpointId>,
+    /// Its transport address, as the view held it.
+    pub addr: Option<std::net::SocketAddr>,
+}
+
+impl Destination {
+    /// The destination `n` is now.
+    pub fn of(n: &Node) -> Self {
+        Self { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: n.endpoint_id.clone(), addr: n.transport_addr }
+    }
+}
+
+/// The last send of one owed message that ended without the birth admitting it. The message rides
+/// one Owed call (node-rpc.md §43): the delivery layer resends it until the birth answers, so a lost
+/// route is the layer's to wait out and nothing here tracks one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sent {
+    /// Where it went.
+    pub to: Destination,
+    /// A typed reply came back (the birth refused the op by name): terminal until an eligible event.
+    /// Otherwise the call ended because the birth's exit or removal is proven.
+    pub typed: bool,
+}
+
+/// Is an owed message due again (R-S2)? Sent when it becomes owed, and again only when the birth
+/// addressed this node or the destination changed to a deliverable birth. A failed delivery is never
+/// a reason: the Owed call is the layer's to deliver (node-rpc.md §43). A target that is not
+/// deliverable is sent nothing.
+pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
+    if addressed {
+        return true;
+    }
+    if !deliverable {
+        return false;
+    }
+    match sent {
+        None => true,
+        Some(s) => &s.to != now,
     }
 }
 

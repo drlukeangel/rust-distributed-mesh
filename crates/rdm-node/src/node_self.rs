@@ -800,17 +800,9 @@ impl NodeSelf {
     /// hook runs once, however often the completion is sent.
     async fn check_in(&self, commander: &NodeId, key: &crate::rounds::RoundKey) {
         let req = key.kind.up(key, self.node_id.clone(), self.incarnation.clone());
-        // The check-in hook runs in the path of the completion call, before it goes out.
-        let frame = crate::rounds::hook_frame(key, true, self.node_id.clone(), self.incarnation.clone(), &self.held_name().to_string(), self.membership.clock().now_rafka_ms());
-        let channels = if self.backbone.is_some() { "mesh,backbone" } else { "mesh" };
-        tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.held_name(), round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the check-in hook is published"));
-        // What became of the hook is named on the call's span: handed to gossip, or why not.
-        let hook = match &self.backbone {
-            Some(backbone) => backbone.publish_command_hook(&frame).await,
-            None => self.membership.publish_lifecycle(&frame).await,
-        };
-        let hook = match hook {
+        // The check-in hook runs in the path of the completion call, before it goes out. What became
+        // of it is named on the call's span: handed to gossip, or why not.
+        let hook = match crate::rounds::publish_hook(&self.held_name(), key, true, &self.node_id, &self.incarnation, &self.membership, self.backbone.as_ref()).await {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };

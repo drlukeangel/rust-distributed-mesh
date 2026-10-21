@@ -94,45 +94,7 @@ impl DeclareWake {
     }
 }
 
-/// Where a declaration went: the exact birth, and the address facts the view held for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Destination {
-    pub node_id: NodeId,
-    pub incarnation: Option<IncarnationId>,
-    pub endpoint: Option<crate::model::EndpointId>,
-    pub addr: Option<std::net::SocketAddr>,
-}
-
-impl Destination {
-    pub(crate) fn of(n: &crate::model::Node) -> Self {
-        Self { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: n.endpoint_id.clone(), addr: n.transport_addr }
-    }
-}
-
-/// The last send of one declaration that ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Sent {
-    pub to: Destination,
-    /// A typed reply came back: terminal until an eligible event.
-    pub typed: bool,
-}
-
-/// Is a declaration due (R-S2)? Sent when it becomes owed, and again only when the authority
-/// addressed this admin or the destination changed to a deliverable birth. A failed delivery is never
-/// a reason: the Owed call is the layer's to deliver (node-rpc.md §43). A target that is not
-/// deliverable is sent nothing.
-pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
-    if addressed {
-        return true;
-    }
-    if !deliverable {
-        return false;
-    }
-    match sent {
-        None => true,
-        Some(s) => &s.to != now,
-    }
-}
+pub use rdm_node::rounds::{eligible, Destination, Sent};
 
 /// How a reply ends a declaration: its name, and whether it finishes the key (applied, or refused for
 /// a fact the authority holds that this declaration can never move past).

@@ -2461,12 +2461,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let seat_storage = fabric_storage.clone();
                                         let seat_cut_off = cut_off_writes.clone();
                                         let adapter = runner.builds.clone();
-                                        let (records, rpc_client) = (records.clone(), node_rpc.client.clone());
+                                        let records = records.clone();
                                         let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
                                         let park = park_gate.clone();
                                         hierarchy = tokio::spawn(async move {
-                                            // The round a new primary runs before it republishes the status it adopted (`crate::round`).
-                                            let mut rounds = crate::round::RoundDriver::new(me.clone(), seat_node_id.clone());
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
                                             let mut unreadable_named: Option<String> = None;
@@ -2616,13 +2614,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // An unreadable builds store steps no round: the adopted status waits, named above.
                                                     if let Some(current) = &current {
                                                         let planned = current.as_ref().map(|b| crate::round::planned(&b.topology, &mesh));
-                                                        let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records }).await;
+                                                        // The round a new primary runs before it republishes the status it adopted (R-S3).
+                                                        let done = fabric_rounds.adopted_step(announced, crate::fabric_rounds::AdoptedInputs { view: &t, planned, book: &membership.book });
                                                         if done.mesh || done.fabric {
                                                             announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
                                                         }
                                                     }
                                                 } else {
-                                                    rounds.end();
+                                                    fabric_rounds.adopted_end();
                                                 }
                                                 // The state just announced is the one the climb may move on from.
                                                 if records.set_published_fabric_state((fabric_primary && !announced.fabric_awaiting_round).then_some(held_state)) && fabric_primary {
@@ -2630,7 +2629,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
                                                 // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
-                                                rounds.address_changed_mesh_primaries(&t, fabric_primary, Some(&rpc_client));
+                                                fabric_rounds.address_changed_mesh_primaries(&t, fabric_primary);
                                                 let addr = rdm_transport::membership::gossip_addr;
                                                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                                                 builds.join_admins(admins.clone()).await;
