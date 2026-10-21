@@ -213,6 +213,32 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
     }
 }
 
+/// CONTRACT (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted join report, per join and
+/// not per birth): a birth held past the floor and released is commanded back and ready again; held
+/// and released a second time in the same Build attempt, it is commanded back again and is ready
+/// again. Each command back is its own command: the second join's ready-for-traffic declaration is
+/// applied, never answered AlreadyApplied from the first join's, so the birth never stays Pending
+/// after its second return. What must NOT happen: the birth left Pending after its second return.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
+    let mut estate = Estate::bootstrap(owner_of("a_node_held_twice_is_commanded_back_and_ready_after_each_release"), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settled_views(&[("mesh1", 2, 2)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let floor = rdm_transport::membership::staleness_floor();
+    let first = hold_past_the_floor_then_release(&estate, "mesh1.rpc.2", floor).await;
+    let second = hold_past_the_floor_then_release(&estate, "mesh1.rpc.2", floor).await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let applied_after = |since: u64| {
+        named(&spans, "rdm.node_admin.status.update.via-declaration")
+            .into_iter()
+            .any(|sp| s(&sp["attributes"]["sender"]) == "mesh1.rpc.2" && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since)
+    };
+    assert!(applied_after(first), "mesh1.rpc.2: its ready-for-traffic declaration after the first release is applied");
+    assert!(applied_after(second), "mesh1.rpc.2: its ready-for-traffic declaration after the second release is applied, not answered from the first join's");
+}
+
 /// CONTRACT (node-recovery.md step 2, "never to a birth with a command of its authority open or in
 /// flight"): a command is open from its send to its completion, not for the life of the admin. An rpc
 /// node restarted by a Build (node.restart, the same node.id and incarnation) and, once ready again,
