@@ -4,8 +4,9 @@
 
 Fabric recovery restores the fabric from the fabric-primary's durable topology after every
 node-admin of every mesh is lost, whether or not any node is still alive; while any node-admin lives,
-the seat moves and the lost mesh is re-created without a person
-([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)). It starts when a person or a script
+the seats move and the fabric-primary is brought back without a person
+([the loss of the fabric-primary](#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
+[elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)). It starts when a person or a script
 launches one node-admin on the fabric-primary's
 data dir ([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-relaunch-and-who-starts-recovery));
 durable topology selects recovery, never Day 0. No surviving maker exists, so there are no
@@ -13,6 +14,59 @@ maker JoinNode/GetTopology calls. The relaunched node-admin is a new node over i
 data dir: a new node.id and incarnation, the same path.name and endpoint key, and a new port.
 The sequence below reads topology from a node that is alive; when no node is,
 [Nothing alive](#nothing-alive) is the case.
+
+## The loss of the fabric-primary while a node-admin lives
+
+One sequence, whatever stopped the fabric-primary and whoever holds its seats until it is back. Only
+two things vary: when the row is written, and which node-admin the one leadership calculation names
+([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): the lowest ReadyForTraffic
+node-admin of the fabric-primary's own mesh while it has one, else the lowest ReadyForTraffic mesh-primary
+on the backbone.
+
+1. **Unheard past the staleness floor.** Every admin marks the fabric-primary `PendingReconnect` at the
+   floor ([node recovery](node-recovery.md) step 1). Silence is the trigger; no provider verdict and no hung
+   hold stands between the mark and the row. An admin whose own view is cut off or healing acts on nothing
+   ([gossip §6](../gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)).
+2. **The successor writes the one row.** It names itself by the calculation on its own view and runs the
+   writer's steps of [node.fabric-primary.update](node-primary-update.md#the-fabric-seat-nodefabric-primaryupdate):
+   "primary updating", the seat row at the next revision behind the store's authority fence, "primary
+   updated". The row moves every seat the fabric-primary held, the mesh seat with the fabric seat (Q51), to
+   one holder: a fabric-primary is a mesh-primary. Any other admin that notices tells the successor; the
+   successor acts only when its own view agrees; repeats answer `AlreadyApplied`; the fence lets one row
+   commit.
+   - *Its own mesh*: the standby's seat watch wakes at the first tick after the mark and writes. It needs
+     no probe to know it is alive, and it publishes the mesh's aggregate as its primary within one
+     backbone interval.
+   - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its aggregate stops, so it runs
+     [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
+     node-admins. An answer from any of them ends the investigation and the seats stay in that mesh. No
+     answer from any of them by the decision step is the backbone rule, and the lowest ReadyForTraffic
+     mesh-primary writes the row.
+3. **The successor is now the authority above the lost fabric-primary**, and the standing playbook runs
+   downward from it: heard again by its digest or its tickle, the lost birth is commanded back through
+   [node.mesh.join](node-mesh-join.md) and runs its start sequence, hook, cert and rafka-time (Q87); the
+   provider reporting it running, it is `held-running` and the hung hold toward its terminate runs
+   (`R-FM1`); proven exited, [node recovery](node-recovery.md) re-creates it at the same path.name over the
+   inherited data dir with the same endpoint key and a new node.id; nobody able to inspect it, the row's
+   `takeover { revision }` proof releases its name and it is re-created over a new data dir, `inherited = false`
+   (`R-FM2`).
+4. **The seats go home.** Once the node at the lost fabric-primary's path.name, returned or re-created,
+   has been ReadyForTraffic for one staleness floor, the holder hands every seat it took back to it by the
+   committed handover of [elections §4.4](../fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover),
+   naming it as the successor, in one row. The seats return only that way. The holder held the seats,
+   never the storage: the fabric's shared store root and the fabric-primary's data dir stay where they
+   were, and the fabric resolves to a fabric-primary at the original path.name with the original endpoint
+   key.
+
+| from the fabric-primary's last frame | default (floor 30 s) | gate (floor 3 s) |
+|---|---|---|
+| mark `PendingReconnect`, every admin | 30 s | 3 s |
+| its own mesh: the standby's row, at the first tick after the mark | 30 to 32 s | 3 to 3.5 s |
+| its own mesh: the mesh's aggregate published again | by 34 s | by 4 s |
+| outside its mesh: probe 1, probe 2, decision ([mesh investigation](mesh-investigation.md)) | 20 s, 40 s, 60 s | 2 s, 4 s, 6 s |
+| outside its mesh: the row, when nobody in that mesh answered either probe | 60 s | 6 s |
+| the hand-back, after the node at its path.name is ReadyForTraffic | one floor | one floor |
+| its terminate when the provider keeps reporting it running | ten floors | ten floors |
 
 1. Load the durable topology and the accepted Build map; bind port 0 and retain the OS-assigned
    endpoint. The first GetTopology targets a node from that durable map: OWN MESH first,
@@ -117,7 +171,7 @@ the fabric brings it back: a person or a script launches a node-admin.
   ([a mesh is an entity](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)).
   A same-id re-claim is idempotent, so there is no NameHeld and no mass delete. A node's name is released by node
   recovery's node.delete and taken by its node.create, which carries a new node.id. A committed takeover
-  ([elections §5](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) vacates the lost
-  mesh's primary seat in its one row and releases the lost node-admin's name: its row is written Deleted with exit
-  proof `takeover { revision }`, and the mesh's re-created node-admin takes the name and, by the ordinary rule, the
-  vacant seat.
+  ([elections §5](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) moves every seat
+  the lost fabric-primary held in its one row. Only when no surviving admin can inspect the lost birth does the row
+  release its name: its row is written Deleted with exit proof `takeover { revision }`, and the mesh's re-created
+  node-admin takes the name. A lost birth an admin can inspect keeps its name until the provider proves its exit.

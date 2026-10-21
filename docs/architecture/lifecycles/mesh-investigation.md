@@ -10,6 +10,9 @@ mesh is then dead and never restarted. Remote liveness comes only from direct ba
 own call and connection facts, never forwarded topology
 ([Gossip §3.3](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-snapshots-and-the-top-up),
 [held-member repair](../gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)).
+When the unheard mesh holds the fabric seat, every mesh-primary runs this ladder on it, and its decision step
+is the backbone rule of [elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary): the fabric-primary's
+loss is [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)'s sequence.
 
 One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
 since the fabric-primary's last valid direct backbone receipt from mesh-x. Only that receipt starts

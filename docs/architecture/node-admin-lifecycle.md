@@ -34,6 +34,11 @@ workflow node-admin drives, its events and its gossip),
 5. **Stored topology is a recovery contact map.** The attached snapshot is the last ready-for-traffic
    fabric, not the latest state. It locates live nodes; current topology comes from those nodes.
    A stored member may not answer, and the stored map is not current birth or liveness proof.
+6. **A node-admin acts on no view that heard nobody.** Silence is receipt age on the node's own clock, so a
+   node held, suspended or cut off wakes to a book in which every member is silent at once. Its view is cut off
+   and then healing ([gossip §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)); until one
+   staleness floor after it hears a member again it commands no member, reads no tickle verdict and writes no
+   seat row. It is the one held, and it re-enters like any member.
 
 ## 2. One start, its launch inputs
 

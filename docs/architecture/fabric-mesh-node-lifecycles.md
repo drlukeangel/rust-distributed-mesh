@@ -60,7 +60,7 @@ progress wait.
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) | Moving the fabric-primary seat, the first step of a mesh.delete of the seat's mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor retired |
-| [Recovery](lifecycles/fabric-recovery.md) | Relaunching after loss of every node-admin |
+| [Recovery](lifecycles/fabric-recovery.md) | Relaunching after loss of every node-admin; the loss of the fabric-primary while a node-admin lives, who holds its seats until it is back, the hand-back |
 | [fabric.delete](lifecycles/fabric-delete.md) | Deleting the fabric, mesh by mesh, the fabric-primary's own mesh last |
 
 ## Mesh workflows

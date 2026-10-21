@@ -52,7 +52,8 @@ timer of its own:
    peer probe does not cancel the other; every probe names the same exact
    `(node.id, incarnation)`; a failure, a deadline included, never
    proves anything, and the provider check below stays mandatory. A node-admin watching a
-   silent seat holder (seat watch) runs this same ladder. An answer is
+   silent seat holder of its own mesh (seat watch) runs this same ladder at the mark, without the
+   half-floor wait; outside the holder's mesh the ladder is [mesh investigation](mesh-investigation.md)'s. An answer is
    `reachable-silent`: recorded, and a held birth that answered `Current`, or that is heard again by
    its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the authority above
    it (its mesh-primary; the fabric-primary for a seat holder: every admin looks, one commands) and

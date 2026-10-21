@@ -775,7 +775,9 @@ The exact span name follows repository observability canon.
 whose silence no lifecycle gossip event it applied explains; it ends when the view hears a member again or
 when that silence is explained, and one silence window of healing follows. What a cut-off or healing view
 may not do is [fabric-authority.md §2.3.1](fabric-authority.md#231-topology-authority),
-[build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) and §12. Expected
+[build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build), §12 and
+[node-admin-lifecycle.md §1 rule 6](node-admin-lifecycle.md#1-rules): a node-admin commands no member and writes
+no seat row from it. Expected
 silence never cuts a view off and is never stale: a member whose node.stop this view admitted or applied
 (stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose
 deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an
