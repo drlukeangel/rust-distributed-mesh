@@ -565,7 +565,9 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         .filter(|sp| {
             let n = sp["name"].as_str().unwrap_or_default();
             let on_isolated = isolated_set.contains(sp["attributes"]["node"].as_str().unwrap_or_default());
-            (n.starts_with("rdm.node_admin.node.") && (n.contains(".create.") || n.contains(".delete.") || n.contains(".retire.") || n.contains(".update.via-build")) && on_isolated)
+            // A node-row step that found the row held wrote nothing: a read, never a create.
+            let wrote = sp["attributes"]["outcome"] != "row-held-by-node";
+            (n.starts_with("rdm.node_admin.node.") && (n.contains(".create.") || n.contains(".delete.") || n.contains(".retire.") || n.contains(".update.via-build")) && on_isolated && wrote)
                 || (n == "rdm.node_admin.deployment.update.via-pipeline" && on_isolated)
                 || (n == "rdm.node_admin.build.update.via-reconcile" && sp["attributes"]["build_id"] == fabric_build.as_str())
         })
@@ -579,10 +581,21 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
 
     // Q96: the hand-back runs as an attempt of the current accepted Build, keyed `handback:<path.name>@<T>`
     // (fabric-recovery.md step 4): it is the hand-back, never a death or a re-birth.
-    let handbacks = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == fabric_build.as_str() && start(sp) > cut_at && attr(sp, "scope").starts_with("handback:")).count() as u64;
+    // Each hand-back attempt ends HandedOff, and the seat's returning holder claims the next attempt
+    // (build.md: "The next attempt is claimed after the running attempt's terminal receipt (Complete,
+    // Failed or HandedOff)"): both are the hand-back's.
+    let handback_spans: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == fabric_build.as_str() && start(sp) > cut_at && attr(sp, "scope").starts_with("handback:")).collect();
+    let continued = handback_spans
+        .iter()
+        .filter(|h| {
+            let (next, to) = (attr(h, "attempt").parse::<u64>().unwrap_or(0) + 1, attr(h, "scope").rsplit(' ').next().unwrap_or_default().to_string());
+            named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|c| c["attributes"]["build_id"] == fabric_build.as_str() && attr(c, "attempt").parse::<u64>().ok() == Some(next) && attr(c, "executor") == to && attr(c, "outcome") == "won")
+        })
+        .count() as u64;
+    let handbacks = handback_spans.len() as u64 + continued;
 
     let mut rec2 = ev.reconciliation.take().unwrap();
-    rec2.check("the Build gained no attempt but the hand-back's", attempt_after == attempt_before + handbacks, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}, hand-back attempts {handbacks}"));
+    rec2.check("the Build gained no attempt but the hand-back's and the returning holder's after it", attempt_after == attempt_before + handbacks, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}, hand-back attempts {} and their continuations {continued}", handback_spans.len()));
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
     rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
     // A silent ViaPeer leg never replies and ends `NotSent(CarrierEdgeLost)` naming the carrier's
