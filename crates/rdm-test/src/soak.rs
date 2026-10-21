@@ -1152,6 +1152,8 @@ impl Driver {
     pub async fn run(mut self) -> (Report, Estate) {
         // The initial fabric refuses a node delete, restart and replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
         self.estate.until_fabric_ready(Duration::from_secs(120)).await;
+        // The host's counters of a container fabric's bridge, the reference a failed control call's are read against.
+        crate::host_net::keep(&self.estate, "start", None).await;
         let tr = tokio::spawn(traffic(self.shared.clone(), self.estate.probe_handle(), self.cfg.seed));
         self.sched.record("start", &format!("seed={} secs={}", self.cfg.seed, self.cfg.secs));
         let deadline = Instant::now() + Duration::from_secs(self.cfg.secs);
@@ -1216,6 +1218,7 @@ impl Driver {
         self.shared.stop.store(true, Ordering::Relaxed);
         let _ = tr.await;
         let (ledger, ledger_violations) = self.reconcile_ledger().await;
+        crate::host_net::keep(&self.estate, "end", None).await;
         let mut report = Report {
             seed: self.cfg.seed,
             secs: self.cfg.secs,
@@ -1610,6 +1613,7 @@ impl Driver {
         if is_rpc {
             let put = run(vec!["put".into(), "--target".into(), exact.clone(), "--key".into(), key.clone(), "--value".into(), "before-hold".into()]).await;
             if put["outcome"] != "Reply" {
+                crate::host_net::keep(&self.estate, &format!("round-{round:04}.{path}"), Some(&path)).await;
                 return Err(broken("healthy-control-before-fault", format!("{path}: the control put before the hold: {put}")));
             }
         }
@@ -1889,6 +1893,8 @@ impl Driver {
         for n in nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic") {
             let r = self.estate.probe(&["get", "--target", &format!("exact:{}", s(&n["node_id"])), "--key", "9998"]);
             if r["outcome"] != "Reply" || r["reply"]["incarnation_id"] != n["incarnation_id"] {
+                let name = s(&n["name"]);
+                crate::host_net::keep(&self.estate, &format!("round-{round:04}.{name}"), Some(&name)).await;
                 return Err(broken("every-rpc-node-reachable-on-its-current-birth", format!("round {round}: {} not reachable on its current birth: {r}", n["name"])));
             }
         }

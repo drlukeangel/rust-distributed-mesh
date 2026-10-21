@@ -56,6 +56,7 @@ pub mod wedge;
 
 // ── Chaos Kit Fault Backends (from former rafka-chaos) ──
 pub mod container_faults;
+pub mod host_net;
 pub mod disk_faults;
 pub mod link_faults;
 pub mod netfault;
