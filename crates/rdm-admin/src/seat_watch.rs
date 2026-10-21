@@ -232,7 +232,10 @@ impl Looker {
             let commands = view.own(&self.me_id).is_some_and(|me| me.is_fabric_primary);
             if let Ok(reply) = rdm_client::NodeRpc::new(&self.client).get(&birth, &once).await {
                 if let (true, true, Some(heard_again)) = (commands, matches!(reply, rdm_core::status::StatusReply::Current { .. }), self.heard_again.get()) {
-                    heard_again.command(n, &incarnation).await;
+                    // Held off its mesh in this watch's eyes (it was looked at because it was silent): the
+                    // view's ready-for-traffic is its last word before the silence, not where it stands now.
+                    let held = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
+                    heard_again.command(&held, &incarnation).await;
                 }
             }
             true
