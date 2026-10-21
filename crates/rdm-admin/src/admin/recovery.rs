@@ -824,6 +824,7 @@ pub fn admins_of_meshes_without_a_ready_admin<'a>(view: &'a Topology, me_mesh: &
         n.kind == NodeKind::NodeAdmin
             && n.mesh != me_mesh
             && vacant.contains_key(&n.mesh)
+            && !view.meshes.iter().any(|m| m.name == n.mesh && matches!(m.status, crate::model::ScopeStatus::Leaving | crate::model::ScopeStatus::Dead))
             && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)
             && !view.members().any(|o| o.mesh == n.mesh && o.kind == NodeKind::NodeAdmin && o.status == NodeStatus::ReadyForTraffic)
     })

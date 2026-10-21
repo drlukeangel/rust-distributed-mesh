@@ -188,6 +188,19 @@ async fn fabric_at(estate: &Estate, admin: &str) -> Option<FabricView> {
 }
 
 /// The (path, incarnation) set a view holds ready for traffic.
+/// The node rows once `fp` is the fabric-primary again, read every half second up to `within`.
+async fn wait_for_opt_values(estate: &Estate, fp: &str, within: Duration) -> Option<Vec<Value>> {
+    let until = std::time::Instant::now() + within;
+    while std::time::Instant::now() < until {
+        let ns = estate.node_values().await;
+        if ns.iter().any(|n| n["is_fabric_primary"] == true && n["name"] == fp) {
+            return Some(ns);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    None
+}
+
 fn births(nodes: &[Value]) -> BTreeSet<(String, String)> {
     nodes.iter().filter(|n| n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect()
 }
@@ -487,7 +500,13 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let converged_ms = conv_started.elapsed().as_millis() as u64;
     let healed = legs(&estate, &target_id, &carrier).await;
     let kept = estate.probe(&["get", "--target", &format!("exact:{target_id}"), "--key", "iso"]);
-    let nodes_after = estate.node_values().await;
+    // fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4: the seats go
+    // home one staleness floor after the node at the lost path.name is Ready again; the after read
+    // waits for that, bounded, and judges the seat then.
+    let nodes_after = match wait_for_opt_values(&estate, &fabric_primary, floor * 3 + Duration::from_secs(30)).await {
+        Some(ns) => ns,
+        None => estate.node_values().await,
+    };
     let (seats_after, seats_detail_after) = match seats_as_expected(&nodes_after) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
     let attempt_after = estate.attempt_of_build(&fabric_build).await;
     let fabric_after = fabric_json(&estate).await;

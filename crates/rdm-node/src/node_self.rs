@@ -1041,7 +1041,9 @@ impl NodeSelf {
         // The fabric-primary has no authority above it (Q87; fabric-recovery.md step 3): a commanded join
         // reaching the birth whose own record holds the fabric seat is refused by name, whoever sent it
         // (a superseded holder healing from a cut-off commands on a stale book).
-        if self.membership.seats().fabric().is_some_and(|h| h.node_id == self.node_id && h.incarnation == self.incarnation) {
+        // Its own record is an authority claim like any other: a view cut off or healing authorizes
+        // nothing (gossip.md §6), so a holder back from a hold re-enters like any member.
+        if self.membership.authorizes() && self.membership.seats().fabric().is_some_and(|h| h.node_id == self.node_id && h.incarnation == self.incarnation) {
             return rdm_core::reply::status::rejected_not_authority(rdm_core::status::NotAuthority::ReceiverNotPrimary { needed: format!("a birth with an authority above it: {} holds the fabric seat, which nothing above commands to join", self.held_name()) });
         }
         let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
