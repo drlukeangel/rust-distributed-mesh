@@ -874,6 +874,13 @@ impl SpanTail {
     }
 }
 
+/// The investigation ladder's rows (mesh-investigation.md's span table).
+const LADDER_UNHEARD: &str = "rdm.node_admin.mesh.update.via-unheard";
+const LADDER_VERDICT: &str = "rdm.node_admin.mesh.update.via-probe-verdict";
+/// The span the code emits today when a node-admin takes (`role=start`) or gives up (`role=stop`)
+/// the fabric-primary role: `Backbone::set_fabric_primary(live && holds_fabric_seat)`.
+const FABRIC_ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
+
 /// The peer mesh the fabric-primary `fp_name` (of `fp_mesh`) holds unheard at `now` (ns), if any,
 /// with why, read from the node-admins' `spans` in start order: the mesh its investigation ladder
 /// tracks, marked silent, or decided, until its `heard-again` verdict (mesh-investigation.md; the
@@ -884,9 +891,22 @@ impl SpanTail {
 /// restarted `mesh2.admin.2` 6 s after its mesh-primary was released from a hold, 2.6 s into the
 /// fabric-primary's silence of mesh2 (its frames resumed 3.3 s after the release), and the
 /// restart was refused `unheard-mesh` although every view had converged.
+///
+/// Only the rows of the fabric-primary's current tenure count: those written from its latest
+/// [`FABRIC_ROLE`] `role=start` on, or every row when the tail holds none (the role was taken
+/// before the tail began). An investigation is its fabric-primary's (mesh-investigation.md "One
+/// investigation per peer mesh, owned by the fabric-primary"): the ladder is kept while the admin
+/// holds the seat and its view authorizes, the same condition the role row follows, and is dropped
+/// with no row otherwise (investigate.rs `run`), so no `heard-again` ever follows a verdict of an
+/// ended tenure. At `b6695529` the floors soak's mesh1.admin.1 decided mesh2 `unreachable` during
+/// the cut, lost the seat to mesh2.admin.1's takeover (Q89), took it back at the hand-back (Q107)
+/// after the heal, and the driver waited 150 s on that verdict.
 fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, spans: &[Value]) -> Option<String> {
+    let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let of_fp = |sp: &&Value| sp["attributes"]["node"] == fp_name;
+    let tenure = spans.iter().filter(of_fp).filter(|sp| sp["name"] == FABRIC_ROLE && sp["attributes"]["role"] == "start").map(start).max().unwrap_or(0);
     let mut last: BTreeMap<String, &Value> = BTreeMap::new();
-    for sp in spans.iter().filter(|sp| sp["attributes"]["node"] == fp_name) {
+    for sp in spans.iter().filter(of_fp).filter(|sp| start(sp) >= tenure && matches!(sp["name"].as_str(), Some(LADDER_UNHEARD | LADDER_VERDICT))) {
         last.insert(s(&sp["attributes"]["mesh"]), sp);
     }
     for (mesh, sp) in last {
@@ -894,10 +914,10 @@ fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, span
             continue;
         }
         let a = &sp["attributes"];
-        let age = Duration::from_nanos(now.saturating_sub(sp["start_unix_nano"].as_u64().unwrap_or(0)));
+        let age = Duration::from_nanos(now.saturating_sub(start(sp)));
         let unheard_ms = a["unheard_ms"].as_str().map(str::to_string).unwrap_or_else(|| a["unheard_ms"].to_string());
         match sp["name"].as_str() {
-            Some("rdm.node_admin.mesh.update.via-unheard") => {
+            Some(LADDER_UNHEARD) => {
                 let marked = a["mark"] == true || a["mark"] == "true";
                 if marked {
                     return Some(format!("{fp_name} holds {mesh} unheard: marked silent at {unheard_ms} ms, no heard-again verdict yet"));
@@ -906,7 +926,7 @@ fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, span
                     return Some(format!("{fp_name} holds {mesh} unheard: tracked at {unheard_ms} ms {} ms ago, the mark rung not yet passed", age.as_millis()));
                 }
             }
-            Some("rdm.node_admin.mesh.update.via-probe-verdict") => {
+            Some(LADDER_VERDICT) => {
                 if a["outcome"] != "heard-again" {
                     return Some(format!("{fp_name} holds {mesh} unheard: the investigation's verdict is {} at {unheard_ms} ms, no heard-again verdict yet", a["outcome"]));
                 }
@@ -952,7 +972,8 @@ pub struct Driver {
     cut_births: BTreeMap<String, BTreeMap<String, (String, String)>>,
     started: Instant,
     /// The fabric-primary's investigation rows (`rdm.node_admin.mesh.update.via-unheard`,
-    /// `via-probe-verdict`), read as they are written: [`Self::held_unheard`].
+    /// `via-probe-verdict`) and every admin's take and release of the fabric-primary role
+    /// ([`FABRIC_ROLE`]), read as they are written: [`Self::held_unheard`].
     ladder: SpanTail,
 }
 
@@ -971,7 +992,7 @@ impl Driver {
         let known = admins_of(&estate.node_values().await);
         let progress = Arc::new(Mutex::new(Progress { executed: Vec::new(), initial: Some(initial.clone()) }));
         let shared = Arc::new(Shared { book: Mutex::new(OpBook::default()), view: Mutex::new(View::default()), stop: AtomicBool::new(false) });
-        let ladder = SpanTail::from_now(estate.evidence.clone(), |sp| matches!(sp["name"].as_str(), Some("rdm.node_admin.mesh.update.via-unheard" | "rdm.node_admin.mesh.update.via-probe-verdict")));
+        let ladder = SpanTail::from_now(estate.evidence.clone(), |sp| matches!(sp["name"].as_str(), Some(LADDER_UNHEARD | LADDER_VERDICT | FABRIC_ROLE)));
         Self {
             estate,
             rng: Rng(cfg.seed),
