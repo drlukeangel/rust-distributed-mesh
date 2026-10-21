@@ -2178,4 +2178,33 @@ mod tests {
         assert!(held(1792619530 * S).is_some_and(|why| why.contains("\"unreachable\" at 20302 ms")), "{:?}", held(1792619530 * S));
         assert_eq!(held(1792619542 * S), None, "heard again");
     }
+
+    /// CONTRACT (the same pages; elections §4.3): what an admin's ladder wrote before it took the
+    /// role holds nothing once it holds the seat. The 300 s floors soak run on this fix (seed 1431101):
+    /// mesh1.admin.1 learned at the heal that mesh2.admin.1 held the seat, ran the ladder on the
+    /// fabric seat's mesh (its Track and Mark of mesh2 written after its `role=stop`), and took the
+    /// seat back at the hand-back 3.4 s later; no heard-again follows the dropped ladder.
+    #[test]
+    fn rows_written_before_the_role_was_taken_hold_no_peer_mesh() {
+        let row = |start: u64, name: &str, attributes: Value| json!({ "name": name, "start_unix_nano": start, "attributes": attributes });
+        let m1 = "mesh1.admin.1";
+        let rows = |now: u64| -> Vec<Value> {
+            vec![
+                row(1792624289395393285, ROLE, json!({ "node": m1, "role": "start" })),
+                row(1792624336848434598, UNHEARD, json!({ "node": m1, "mesh": "mesh2", "mark": "false", "unheard_ms": "1005" })),
+                row(1792624338849041428, UNHEARD, json!({ "node": m1, "mesh": "mesh2", "mark": "true", "unheard_ms": "3006" })),
+                row(1792624345872482391, VERDICT, json!({ "node": m1, "mesh": "mesh2", "outcome": "unreachable", "unheard_ms": "10030" })),
+                row(1792624372628422228, ROLE, json!({ "node": m1, "role": "stop" })),
+                row(1792624372641811137, UNHEARD, json!({ "node": m1, "mesh": "mesh2", "mark": "false", "unheard_ms": "36799" })),
+                row(1792624372641915905, UNHEARD, json!({ "node": m1, "mesh": "mesh2", "mark": "true", "unheard_ms": "36799" })),
+                row(1792624376088269623, ROLE, json!({ "node": m1, "role": "start" })),
+            ]
+            .into_iter()
+            .filter(|sp| sp["start_unix_nano"].as_u64().unwrap() <= now)
+            .collect()
+        };
+        let held = |now: u64| held_unheard_by(m1, "mesh1", FLOOR, now, &rows(now));
+        assert!(held(1792624350 * S).is_some_and(|why| why.contains("\"unreachable\" at 10030 ms")), "{:?}", held(1792624350 * S));
+        assert_eq!(held(1792624380 * S), None, "the seat taken again, the rows written before hold nothing");
+    }
 }
