@@ -37,7 +37,7 @@ step. A node's other properties have their own commands ([node properties](../no
    interrupted case under [Failure and receipts](#failure-and-receipts).
 6. `node.name.updated` is emitted [by case](#completion-by-case).
 
-The node owns its name: it is the authority on the name it publishes, and what it publishes is the
+The node owns its name: it is the owner of the name it publishes, and what it publishes is the
 row's name. A node never renames itself.
 
 ## Completion by case

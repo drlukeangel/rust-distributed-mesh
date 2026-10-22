@@ -11,7 +11,7 @@ proves a runtime gone. It is run by:
 - the mesh-primary in [node recovery](node-recovery.md), on a member marked `PendingReconnect`;
 - the fabric-primary in [mesh investigation](mesh-investigation.md), on a mesh's primary and then
   its other node-admins (probe 1 at 20 s, probe 2 at 40 s);
-- the seat watch on a silent seat holder ([elections](../fabric-node-lifecycle-elections.md));
+- [node investigation](node-investigation.md) of a silent primary ([elections](../fabric-node-lifecycle-elections.md));
 - the successor ladder of [node.primary.update](node-primary-update.md) after the row.
 
 Mesh investigation is this primitive run by the fabric-primary over a mesh's node-admins; node
@@ -22,29 +22,29 @@ the primitive does not.
 
 | Field | Contract |
 |---|---|
-| Caller | The authority above the node: its mesh-primary for a member, the fabric-primary for a mesh-primary or another mesh's node-admin |
+| Caller | The primary above the node: its mesh-primary for a member, the fabric-primary for a mesh-primary or another mesh's node-admin |
 | Target | One node, by `(node.id, incarnation)`; every probe names the same pair, and only that pair's answer counts |
 | Probe | `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline; the node answers `Current { state }`, `CurrentParked` or `Blocked { reason, retry_on }` |
 | Ladder | Direct first. On failure, the same probe carried by [Forward](../node-rpc-envelope.md#forward-op-0x1a-core) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other |
 | Ends | Any answer from the node, under the probed incarnation, ends the ladder and cancels the probes still running |
 | Result | `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached it within the ladder. Unreached is never death |
-| What follows | The caller's: recovery runs the inspect on `unreached`; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md); investigation decides at 60 s; the seat watch records and acts per the elections page |
+| What follows | The caller's: recovery runs the inspect on `unreached`; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s |
 | Spans | `rdm.node.tickle.resolve.via-direct` for the direct probe, `via-peer` per carrier, each with the answer or the failure; `rdm.node.tickle.returns-unknown.via-unreached` when the ladder ends with no answer; `rdm.node_admin.node.update.via-mesh-join-commanded` when the caller commands the reached node back through node.mesh.join, with the reply |
 
 ## Numbered end-to-end sequence
 
 1. The caller holds the node's id and incarnation and a reason to ask: silence past the staleness floor, a
    command to the node that was never sent for a reachability reason (the connect refused, timed out
-   or failed; the endpoint unresolved: [node recovery](node-recovery.md) step 1), a silent seat
-   holder, an investigation's clock, a successor that has not answered.
+   or failed; the endpoint unresolved: [node recovery](node-recovery.md) step 1), a silent
+   primary, an investigation's clock, a successor that has not answered.
 2. Direct: `ProbeNodeState { node_id, incarnation }` to the node's held address, with the probe's deadline.
 3. On no answer, the same probe through up to two eligible live peers of the node's mesh, both
    sent at once, each a `Forward` whose inner op is the probe; a peer that cannot carry it is
    `InnerNotSent` and counts as no answer.
 4. The first answer from the node, under the probed incarnation, ends the ladder: `reached { answer }`, the other probes
    cancelled. No answer within the ladder: `unreached`.
-5. The caller acts on the result per its own page. Nothing on this page writes a row, moves a
-   seat or publishes a frame.
+5. The caller acts on the result per its own page. Nothing on this page writes a row, changes a
+   primary or publishes a frame.
 
 ## Command, completion and gossip messages
 

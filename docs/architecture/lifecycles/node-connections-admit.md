@@ -10,7 +10,7 @@ runs on no Node RPC connection and no gossip connection: RDM never registers it 
 and a registration naming them is refused by name at `bind`.
 
 What it checks is what the connection carries, never who opened it: a correctly signed, unexpired cert
-of this fabric is admitted whoever presents it, and the step reads no node kind, no seat and no sender
+of this fabric is admitted whoever presents it, and the step reads no node kind, no primary and no sender
 identity. The cert check is the credential R-RX1 assumed, not a sender gate.
 
 ## Operation contract

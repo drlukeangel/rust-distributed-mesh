@@ -4,7 +4,7 @@
 
 `mesh.delete` removes a mesh. The fabric-primary runs it as one Build. Every member except
 the mesh-primary is deleted with [node.delete](node-delete.md), ordinary nodes first, then the
-other node-admins. The mesh-primary, still alive, reports `mesh.deleted` from their exit proofs
+other node-admins. The mesh-primary, still alive, reports `mesh.deleted` from their node.delete receipts
 and writes the mesh row deleted. The mesh-primary is not deleted inside its own mesh.delete:
 someone has to report the end of the mesh, so a separate node.delete, with the fabric-primary as
 executor, deletes it afterwards.
@@ -15,12 +15,12 @@ executor, deletes it afterwards.
 |---|---|
 | Caller / driver | Typed caller; the fabric-primary runs it as one Build through the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) |
 | Precondition | The fabric has first reached ready-for-traffic. Before then the Build is refused by name, `fabric-not-ready`, and nothing runs ([States](states.md#fabric-not-ready)) |
-| Seat | If the mesh holds the fabric-primary seat, [node.fabric-primary.update](node-primary-update.md#fabric-seat) runs first with this mesh excluded from the successor search; under [fabric.delete](fabric-delete.md) the fabric-primary's own mesh is deleted last and keeps the seat |
+| Fabric-primary | If the mesh's mesh-primary is the fabric-primary, [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) runs first with this mesh excluded from the successor search; under [fabric.delete](fabric-delete.md) the fabric-primary's own mesh is deleted last and it stays fabric-primary |
 | Mesh state | `mesh.deleting`: the mesh-primary publishes its mesh's status, deleting, as its [MeshStatus](../gossip.md#31-frame-catalog) frame; peers learn it only from the mesh-primary |
 | Targets | Every member of the accepted roster except the mesh-primary |
 | Executor | The mesh-primary, for each member's node.delete |
 | Tiers | Ordinary nodes in parallel, then the other node-admins in parallel; a tier starts only when every node.delete of the tier before it is complete |
-| Terminal event | `mesh.deleted`, reported by the mesh-primary, still alive, from its members' exact exit proofs |
+| Terminal event | `mesh.deleted`, reported by the mesh-primary, still alive, from its members' node.delete receipts |
 | Rows | Each member's row deleted (its node.delete); the mesh row deleted at mesh.deleted, written by the mesh-primary |
 | After | The mesh-primary keeps publishing its aggregate until a separate node.delete, with the fabric-primary as executor, deletes it; its final aggregate, the mesh deleted and itself deleting, is its last gossip, and the fabric-primary publishes nothing for the mesh or that admin (R-RX4) |
 | Identity | A mesh's deleted and a node's deleted release names as [States](states.md) states; a mesh created again under the same name claims its names over the deleted mesh and node rows |
@@ -31,7 +31,7 @@ executor, deletes it afterwards.
 
 1. The caller submits mesh.delete. The fabric-primary accepts the Build, captures the exact
    roster once and claims the attempt for the mesh-primary as executor. If the mesh holds the
-   fabric-primary seat, [node.fabric-primary.update](node-primary-update.md#fabric-seat) runs first with this
+   fabric-primary, [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) runs first with this
    mesh excluded from the successor search and `node.fabric-primary.updated` confirms the committed
    transfer before any member is deleted; the
    new fabric-primary drives the rest.
@@ -42,7 +42,7 @@ executor, deletes it afterwards.
    for every ordinary node in parallel.
 4. When every ordinary node's node.delete is complete, the mesh-primary runs node.delete for the
    other node-admins in parallel, the same way.
-5. `mesh.deleted`: when every member has its exact exit proof, the mesh-primary, still alive,
+5. `mesh.deleted`: when every member has its node.delete receipt, the mesh-primary, still alive,
    writes the mesh row deleted and reports mesh.deleted to the fabric-primary with the members'
    receipt manifest and its own exact birth. The fabric-primary validates the manifest against
    the captured roster ([mesh delete pair](../node-rpc-envelope.md#mesh-delete-command-pair))
@@ -64,10 +64,10 @@ The roster is captured once and never recaptured. When the mesh-primary is lost 
 mesh.delete, the fabric-primary resumes the attempt in this order, each step its own durable
 receipt:
 
-1. The lost primary's exact provider Exited is recorded as its roster receipt. A silent but
-   unproven primary refuses the resume by name; silence is not death.
+1. The lost primary's node investigation verdict is recorded as its roster receipt; a verdict of
+   `reached` refuses the resume by name, since the primary is not lost.
 2. A named amendment, `RosterAmended { predecessor, final_primary }`, admits the new mesh-primary:
-   the surviving admin of the mesh that the election seated or, when none survives, the one
+   the surviving admin of the mesh the election named or, when none survives, the one
    node-admin the fabric-primary creates for it, the only new node a deleting mesh may gain. An
    identical amendment replays `AlreadyApplied`; a second amendment for the same predecessor is
    refused by name.
@@ -84,7 +84,7 @@ A repeated loss repeats steps 1 to 3, one amendment per predecessor.
 
 ```text
 mesh.delete
-  [node.fabric-primary.update → node.fabric-primary.updated, if the mesh holds the seat]
+  [node.fabric-primary.update → node.fabric-primary.updated, if the mesh-primary is the fabric-primary]
   ← mesh.deleting           the mesh-primary's aggregate carries the mesh deleting
   ← every member's node.delete events, tier by tier
   ← mesh.deleted            from the mesh-primary, still alive; mesh row deleted
@@ -92,7 +92,7 @@ mesh.delete
 node.delete (the mesh-primary)   a separate call; the fabric-primary is the executor
   ← the final aggregate     from the mesh-primary: the mesh deleted, itself deleting; its last gossip
   ← every node.stop event   on the delete's stream; nothing published
-  ← node.deleted            from exact provider exit proof; nothing published
+  ← node.deleted            from the step's receipt; nothing published
 ```
 
 Decoded wire views of the two mesh-level calls, both on op `0x1B` (27); the three postcard
@@ -120,7 +120,7 @@ command to the mesh-primary:
 ```
 
 Its unary reply is `{ "Applied": null }`; the mesh-primary then publishes `MeshStatus` deleting.
-The mesh-primary's report, after every member has its exact exit proof, is its own call to the
+The mesh-primary's report, after every member has its node.delete receipt, is its own call to the
 fabric-primary:
 
 ```json
@@ -203,7 +203,7 @@ sequenceDiagram
     participant B as Node-admin backbone
     participant R as Peer mesh-primary
     C->>F: build.create(mesh.delete)
-    opt the mesh holds the fabric-primary seat
+    opt the mesh-primary is the fabric-primary
         F->>F: node.fabric-primary.update → node.fabric-primary.updated
     end
     F->>M: build.attempt.run (Won claim)
@@ -239,7 +239,7 @@ sequenceDiagram
 
 ## Failure and receipts
 
-A member whose exit cannot be proven leaves its tier incomplete, and mesh.deleted is not
+A member whose node.delete has no receipt leaves its tier incomplete, and mesh.deleted is not
 reported. The next attempt resumes from the receipts. The fabric-primary keeps the operation
 trace and the durable receipts until the separate node.delete of the mesh-primary completes.
 Failed steps and stream certainty follow the
@@ -250,7 +250,7 @@ Failed steps and stream certainty follow the
 | Step | Actor | Span / evidence | Correlation |
 |---|---|---|---|
 | mesh.delete Build | fabric-primary | build.create, build.attempt.run; claim for the mesh-primary | Build, attempt, `mesh.delete:<mesh_id>` |
-| Seat move | fabric-primary | [node.fabric-primary.update](node-primary-update.md#observability-contract) when the mesh holds the seat | same trace |
+| Fabric-primary change | fabric-primary | [node.fabric-primary.update](node-primary-update.md#observability-contract) when the mesh-primary is the fabric-primary | same trace |
 | Member delete | mesh-primary and each member | [node.delete](node-delete.md#observability-contract) per member; exact Exited receipt | outer operation plus `node.delete:<path.name>` |
 | mesh.deleted | mesh-primary | manifest validated by the fabric-primary; mesh row deleted; aggregate carries the mesh deleted | outer operation; complete roster |
 | Mesh-primary delete | fabric-primary | node.delete with the fabric-primary as executor; exact Exited; row deleted | its own Build and trace |

@@ -14,7 +14,7 @@ page that owns each step is linked at the step.
 | Caller / executor | A person starts the first node-admin with no mesh and no durable topology ([start modes](../node-admin-lifecycle.md#3-start-modes)); that node-admin is the executor and the fabric-primary |
 | Entry | No fabric exists; the spec names each mesh and its first node-admin |
 | Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-primary.md#11-identity-creation-order)) |
-| Seats | The first node-admin is the only eligible candidate and holds both seats ([elections](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) |
+| Primaries | The first node-admin is the only eligible candidate and is both mesh-primary and fabric-primary ([elections](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) |
 | Rows | The fabric-primary creates the fabric row and its own mesh's row at Day 0, held in the scratchpad until state-commit ([fabric entity](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)) |
 | Status | pending, then the rounds state-sync, state-commit and ready-for-traffic ([States](states.md#rounds)) |
 | Completion | `fabric.created` when the fabric is ready-for-traffic |
@@ -27,7 +27,7 @@ page that owns each step is linked at the step.
    CA under that root ([fabric certs](../fabric-certs.md#the-cert-workflows)).
 2. [node.create](node-create.md) for each mesh's first node-admin. A mesh comes into being with
    its first node-admin ([mesh absent](node-create.md#mesh-absent)).
-3. The first mesh's first node-admin is the first fabric-primary. It holds both seats, accepts the
+3. The first mesh's first node-admin is the first fabric-primary. It is both mesh-primary and fabric-primary, accepts the
    first Build ([ready root](../build.md#101-ready-root--deadlock-guard)),
    and creates the fabric row and its own mesh's row. Every other mesh's row is created by that
    mesh's primary.

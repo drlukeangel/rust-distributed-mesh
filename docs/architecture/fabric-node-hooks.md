@@ -44,7 +44,7 @@ installed only after the hook returns Ok. The hook subscribes the app's kind top
 channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so does a birth its mesh-primary held
 `PendingReconnect` when it is heard again: commanded back through node.mesh.join, it answers the
 tickle `Current { pending }` while its start runs (`Blocked` only while its hook reports a blocker),
-with the cert its accepting authority issues at the join and rafka-time refreshed last, and is
+with the cert its accepting primary issues at the join and rafka-time refreshed last, and is
 published ready-for-traffic only once the hook passes. Every entry to ready-for-traffic, from any other state, runs the hook;
 the process's data-dir inheritance is an independent fact supplied by its spec.
 
@@ -54,9 +54,9 @@ the process's data-dir inheritance is an independent fact supplied by its spec.
 - `start_kind`: FirstStart for create, AfterStop for a process rejoining, after a stop or when it
   is heard again after its mesh-primary held it `PendingReconnect`;
 - whether the spec supplies an inherited data dir; start_kind alone does not decide it;
-- the accepting authority, i.e. the admin that accepted the JoinNode. It is `None`, with the
+- the accepting primary, i.e. the admin that accepted the JoinNode. It is `None`, with the
   reason, for the Day-0 root and for a fabric-primary recovered from its durable map. Those
-  births have no authority to pull from and complete the hook from local state
+  births have no primary to pull from and complete the hook from local state
   ([gossip.md §9](gossip.md#9-joinnode-op-0x1d--bootstrap-hydration)).
 - the Node RPC client the app uses for its own calls;
 - the membership handle, so the app subscribes its gossip kind topics before it takes a
@@ -69,7 +69,7 @@ the process's data-dir inheritance is an independent fact supplied by its spec.
 
 1. Read the member cert from the context. RDM issued it at JoinNode with the `CertSigner` Rafka instantiated it with ([fabric certs](fabric-certs.md)).
 2. Subscribe the entity-framework kind topics the node projects.
-3. Read them from the accepting authority with [node.topology.get](lifecycles/node-topology-get.md)
+3. Read them from the accepting primary with [node.topology.get](lifecycles/node-topology-get.md)
    ([the pull at entry](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)).
 4. Apply the answer through the same receive path as live gossip, with each kind's snapshot
    completeness boundary as the floor. A row that arrives both by gossip and in the
@@ -98,7 +98,7 @@ defines.
 
 An admin answers that node.topology.get only once its own `before_ready` has returned
 `Ok`. Until then it answers a typed `NotReady`, which the caller maps to
-`Blocked { retry_on: AuthorityReady }`. A mesh's first node therefore never pulls from an
+`Blocked { retry_on: PrimaryReady }`. A mesh's first node therefore never pulls from an
 admin that holds nothing yet.
 
 ### Cancellation and lifecycle commands

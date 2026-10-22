@@ -45,7 +45,7 @@ topology, never by looking whether a channel exists and then creating it.
    [node.start](node-start.md#end-to-end-sequence) with FirstStart; `node.created` follows
    the whole start (step 6). The process's first outbound Node RPC is the report of [node.mesh.join](node-mesh-join.md): a node-admin
    joins its maker; an ordinary node joins its mesh-primary.
-4. The accepting authority validates the reported digest against the deployment, the name
+4. The accepting primary validates the reported digest against the deployment, the name
    against the create spec at a first start, and refuses a mismatch by name, installing
    nothing and releasing no wait ([Join contract](../node-rpc-envelope.md#join-op-0x1d-rdm)).
 5. On acceptance it installs the actual address and completes WaitForBind / WaitForMeshJoin

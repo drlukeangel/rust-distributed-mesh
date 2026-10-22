@@ -53,7 +53,7 @@ One live Iroh Endpoint belongs to one process. Router/ALPN multiplexes gossip an
 
 ### 3.2 rafka-mesh-ops
 
-Rafka owns its product protocol descriptors, codecs, op allocations and request/reply payloads in `rafka-mesh-ops`, and adds its rows to the [op ledger](node-rpc-envelope.md#the-op-ledger) through the server builder. RDM `rafka-node-rpc-contract` owns the generic protocol and envelope vocabulary and the core ledger rows. Product contracts have no generic topology/election authority; domain retry policy stays with the owning caller.
+Rafka owns its product protocol descriptors, codecs, op allocations and request/reply payloads in `rafka-mesh-ops`, and adds its rows to the [op ledger](node-rpc-envelope.md#the-op-ledger) through the server builder. RDM `rafka-node-rpc-contract` owns the generic protocol and envelope vocabulary and the core ledger rows. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
 
 ### 3.3 rafka-node-rpc
 
@@ -120,7 +120,7 @@ The connection pool key is §20's.
 
 ~~~text
 CurrentPath(path.name)
-    -> current exact holder of that logical slot
+    -> current exact birth at that logical slot
 
 ExactNode(NodeId)
     -> that exact logical identity only
@@ -130,7 +130,7 @@ CurrentPath intentionally follows replacement. ExactNode never does.
 
 ### 4.2 Live resolver contract
 
-LiveNodeResolver is location/identity state only. It does not own MemberStatus policy, election, topology authority, or death inference.
+LiveNodeResolver is location/identity state only. It does not own MemberStatus policy, election, topology, or death inference.
 
 Conceptually it holds:
 - current exact NodeId -> path, IncarnationId, EndpointId, endpoint slot/freshness;
@@ -143,7 +143,7 @@ Resolution semantics:
 ExactNode(current id)        -> Found
 ExactNode(retained deleted) -> Gone
 ExactNode(never known)       -> Unknown
-CurrentPath(path)            -> current holder or Unknown
+CurrentPath(path)            -> current birth or Unknown
 ~~~
 
 A connections-deleting, connections-deleted, stopping or stopped current birth may still resolve Found. Lifecycle status is not resolver policy.
@@ -625,7 +625,7 @@ The shared classification is `rdm_core::outcome::Code`: exactly the 17 [standard
 | 11 | `OUT_OF_RANGE` | reserved; no current use |
 | 12 | `UNIMPLEMENTED` | RequestNotHandled or an unserved op |
 | 13 | `INTERNAL` | INTERNAL_RPC_FAILURE or a runtime/framing contract violation |
-| 14 | `UNAVAILABLE` | NotReady, Busy, ConnectionsDeleting; NotSent except an expired owner bound or NotForwardable; a receiving birth proven exited or removed, detail receiver-gone |
+| 14 | `UNAVAILABLE` | NotReady, Busy, ConnectionsDeleting; NotSent except an expired owner bound or NotForwardable; a receiving birth re-created or removed, detail receiver-gone |
 | 15 | `DATA_LOSS` | Corrupt |
 | 16 | `UNAUTHENTICATED` | reserved; never constructed by a mesh handler |
 
@@ -968,7 +968,7 @@ The span names, the attributes each records and the trace edge between caller an
 | dial/open/send failure before complete-send + finish | `NotSent` | `UNAVAILABLE` | no | no |
 | owner's bound lapses before commit, including a permit wait | `NotSent` | `DEADLINE_EXCEEDED` | no | no |
 | owner's bound lapses after commit | `Indeterminate` | `DEADLINE_EXCEEDED` | unknown | no |
-| receiving birth proven exited or removed | `NotSent` before commit; `Indeterminate` after commit, detail receiver-gone | `UNAVAILABLE` | no before commit; unknown after | no |
+| receiving birth re-created or removed | `NotSent` before commit; `Indeterminate` after commit, detail receiver-gone | `UNAVAILABLE` | no before commit; unknown after | no |
 | owner cancels the invocation | `CallerGone` delivery end | `CANCELLED` | unknown after commit | no |
 | unserved op reset | `Unserved` | `UNIMPLEMENTED` | no | no |
 | `PeerUnresolved` typed reply | `Reply` | `NOT_FOUND` | no domain handler | no |
@@ -1020,7 +1020,7 @@ Retry automatically in Node RPC. Send immediately. Without an ack, resend the sa
 same delivery id: first retry at the publish cadence, then exponential backoff with jitter, capped at
 the staleness floor; one attempt in flight per message. The receiver suppresses duplicate delivery ids, including duplicates received while the
 original invocation is executing. Before recoverable acceptance, duplicates remain pending without an
-ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's proven exit or accepted removal, or on
+ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's re-creation or accepted removal, or on
 explicit cancellation or retargeting by the owning workflow; never on a timer, never on absence from a
 view, never on a newer message of its kind.
 The owner of an Owed request chooses its route policy: the one receiver it is owed to and the carriers it
@@ -1032,7 +1032,7 @@ An ack proves receipt, never execution. The receiver acks only once the operatio
 accepted work recoverable (a durable acceptance record, or the result already recorded); a read-only
 request needs no new write. The handler supplies that boundary; the runtime sends the ack and holds
 no durable queue. Each owner defines how its pending commands, check-ins and responses are
-reconstructed from durable evidence with their operation identity; a relaunch as a new birth follows
+reconstructed from durable evidence with their operation identity; a new birth follows
 lifecycle recovery, never a replay.
 
 Delivery identity is not operation identity (§33). The delivery id and the ack live in the transport
@@ -1060,7 +1060,7 @@ op not served              -> Unserved
 op served, variant unknown -> Malformed(UnknownVariant)
 ```
 
-Domains may use build metadata such as `bin_key` or build SHA when selecting an exact eligible target, but that is advisory placement input. The call outcome remains authoritative.
+Domains may use build metadata such as `bin_key` or build SHA when selecting an exact eligible target, but that is advisory placement input. The call outcome is the fact.
 
 This avoids a second distributed cache of remote capabilities that can itself go stale.
 

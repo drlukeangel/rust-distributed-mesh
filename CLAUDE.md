@@ -21,13 +21,13 @@ is never built here.
 
 ## Vocabulary
 
-`id` / `index` / `name` are three things; `key` is none of them. `target`, never fence. `revision`,
+The primaries are the fabric-primary, each mesh's mesh-primary and each node type's node-type primary in its mesh; a primary changes by `node.primary.update` or, unheard past the staleness floor, by the leadership election. `id` / `index` / `name` are three things; `key` is none of them. `target`, never fence. `revision`,
 never epoch. Connections are deleted (`node.connections.delete`), never drained. `forward` is the
 control plane's word (Forward 0x1A, `build.attempt.run`); `proxy` is the data plane's (a `Proxy`
 connection). Banned everywhere: `relay`, `cluster`, `tailer`, `sidecar`, `child mesh`, `viewer`,
 `operator`, `sysadmin`, `tree`, `partition`, `reborn`, `drain` / `draining` / `drained` (the state is
 `connections-deleting`, the bound `RDM_CONNECTIONS_DELETE_DEADLINE_MS`: [node-connections-delete](docs/architecture/lifecycles/node-connections-delete.md)),
-`park` / `parked`, `fence`, `epoch`, `relaunch`, `departed`, `retire` / `retired` (the name check's set,
+`park` / `parked`, `fence`, `epoch`, `relaunch`, `departed`, `retire` / `retired`, `seat` / `seated` / `unseat`, `holder`, `authority` / `authorize` / `authoritative`, `cohort`, `lane`, `cut-off` / `cut off`, `committed seat`, `exit proof` / `proven`, `held-running`, `hung hold`, `LeadershipView` / `resolver`, `sticky`, `yield` (the name check's set,
 `scripts/name-check.py`). A node is restarted (same node.id and
 incarnation) or re-born (same path.name, new node.id); a mesh is never reborn.
 
@@ -99,9 +99,8 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_BIN_DIR` | _(beside the running exe)_ | `rafka-node-admin`: where `rafka-node-admin` and `rafka-rpc-node` live. |
 | `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rdm.mesh.node.create.via-deployment` parents to it. |
 | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` | `5000` | rpc node: the bound of a node-wide connections delete, on `node.connections.delete { All }` and on a signal stop alike ([node-connections-delete](docs/architecture/lifecycles/node-connections-delete.md)): how long in-flight handlers may finish before the node leaves. |
-| `RDM_HUNG_HOLD_FLOORS` | `10` | `rafka-node-admin`: how many staleness floors (`RDM_STALENESS_MS`) a TRUE OFFLINE member or mesh-primary whose provider inspection reports `Running` (`held-running { since, verdicts }`) is held before the authority submits the recovery Build starting with `TerminateRuntime { node_id, incarnation, handle }` (`R-FM1`). |
-| `RDM_DATA_DIR_GONE_FLOORS` | `2` | `rafka-node-admin`: how many staleness floors (`RDM_STALENESS_MS`) an exited member whose inherited `data_dir` is absent (`NotFound` on the directory itself) is held before the mesh-primary records `data-dir-lost { path, since }` and recovers it at the same `path.name` over a newly allocated `data_dir` with a newly minted endpoint key and `inherited = false` (`R-FM2`). |
-| `RDM_CA_SECRET` | _(bootstrap: unset = minted on day 0; launched admin: written by the launching admin)_ | The fabric root. The bootstrap `rafka-node-admin` takes it from the app (`CertChoice::Ca`) or mints it; every launched node-admin is written it beside its mesh's issuing material, so any admin that takes the fabric seat can mint and rotate. RDM keeps it as `ca-secret` beside the data dir, state it reads back on a restart, like `node-key`. A new root while the fabric runs is `fabric.root.update`. |
+| `RDM_DATA_DIR_GONE_FLOORS` | `2` | `rafka-node-admin`: how many staleness floors (`RDM_STALENESS_MS`) a member whose node investigation verdict is `exited` and whose inherited `data_dir` is absent (`NotFound` on the directory itself) is held before the mesh-primary records `data-dir-lost { path, since }` and recovers it at the same `path.name` over a newly allocated `data_dir` with a newly minted endpoint key and `inherited = false` (`R-FM2`). |
+| `RDM_CA_SECRET` | _(bootstrap: unset = minted on day 0; launched admin: written by the launching admin)_ | The fabric root. The bootstrap `rafka-node-admin` takes it from the app (`CertChoice::Ca`) or mints it; every launched node-admin is written it beside its mesh's issuing material, so any admin that becomes fabric-primary can mint and rotate. RDM keeps it as `ca-secret` beside the data dir, state it reads back on a restart, like `node-key`. A new root while the fabric runs is `fabric.root.update`. |
 | `RDM_ISSUING_KEY` / `RDM_ISSUING_CERT` | _(written by the launching admin)_ | A launched `rafka-node-admin`'s mesh issuing material, beside the root and the fabric CA, minted under the fabric CA by the fabric-primary at the mesh's acceptance (`mesh.issuer.create`) and re-minted by `mesh.issuer.renew`. |
 | `RDM_FABRIC_CA_KEY` | _(written by the launching admin)_ | The fabric CA's key: a launched `rafka-node-admin` is written it beside the root and its mesh's issuing material, whose cert carries the CA's cert. Every admin keeps its CA as `fabric-ca` beside the data dir and reads it back on a restart, the way it reads `ca-secret`; the bootstrap admin mints the CA on day 0 (`fabric.ca.create`). Issuing material without it is refused by name. |
 | `RDM_MEMBER_CERT_TTL_SECS` | `86400` | Fabric policy (read once by the bootstrap admin, carried in the entry pull): a member cert's TTL. A member cert never outlives its issuer. |

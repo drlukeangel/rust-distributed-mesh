@@ -47,7 +47,7 @@ is connected to it and nothing routes to it; it is stopped after. A stopped node
 While node[1] is stopped as `<name>.old` and its data remains available:
 
 1. node[2]: node.connections.delete `{ scope: All }`, node.mesh.leave, then node[2].delete releases
-   `<name>` after exact runtime exit proof. Any wanted successor data is Rafka's to copy out first.
+   `<name>` after its node.delete receipt. Any wanted successor data is Rafka's to copy out first.
 2. node[1].start rejoins the same stopped process with AfterStop under `<name>.old`: same
    incarnation, endpoint key, port and bin. Complete its full hook and readiness gates.
 3. node[1]: node.connections.delete `{ scope: All }`, node.mesh.leave, then
@@ -80,7 +80,7 @@ rollback:
 
 Stop publishes its mesh-primary NodeStopped overlay; delete publishes NodeDeleting and
 NodeDeleted. The successor's digest under `<name>` is the only
-new birth peers hear, and it is dissemination: the row is the authority, the apply's
+new birth peers hear, and it is dissemination: the row is the fact, the apply's
 reply is the receipt ([node.name.update](node-name-update.md)). The recipe's caller acts on streamed events and receipts, never on
 peer gossip.
 

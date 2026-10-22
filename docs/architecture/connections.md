@@ -372,7 +372,7 @@ stable_hash(source, destination, destination_incarnation)
     % deterministically_ordered_eligible_carriers.len()
 ```
 
-The chosen carrier is sticky until a named structural event invalidates it. A newly available carrier does
+The chosen carrier stays chosen until a named structural event invalidates it. A newly available carrier does
 not reshuffle working routes merely by appearing.
 
 ---
@@ -646,7 +646,7 @@ was superseded before dial
 was already satisfied by Direct Connected
 ```
 
-A successful pooled connection remains the authoritative Direct Connected event. The reconnect span is not a
+A successful pooled connection remains the Direct Connected event. The reconnect span is not a
 second source of connection truth.
 
 Cold discovery continues to expose `effective_route_cold_discovery_ms` so the first-use cost after a genuinely

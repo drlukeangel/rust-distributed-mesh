@@ -14,9 +14,9 @@ and transition checks and the refusal fields.
 
 A report is sent when owed and again only on an eligible event:
 
-- its authoritative destination changes to a deliverable exact instance;
+- its primary's address changes to a deliverable exact instance;
 - a failed delivery gains a viable route;
-- the authority addresses this node with the round's down call.
+- the primary addresses this node with the round's down call.
 
 Typed replies, including named refusals, are terminal. One coalesced wake drives the
 work, never a timer. An unreachable target schedules no report. `node.get`

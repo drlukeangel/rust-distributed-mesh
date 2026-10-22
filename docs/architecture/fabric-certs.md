@@ -51,8 +51,8 @@ admin into its environment at launch (`RDM_CA_SECRET`, `RDM_FABRIC_CA_KEY`, `RDM
 `RDM_ISSUING_CERT`; the CA's cert travels inside the issuing cert), the way `RDM_MESH_ID` is
 (`mesh.issuer.create`, a step of [mesh.create](lifecycles/mesh-create.md)). It holds its mesh's issuer
 and the fabric CA as given and mints no second one; it mints another mesh's issuer under that CA only
-while it holds the fabric seat (§Custody: only the fabric-primary mints). An admin with seeds or an
-anchor and no root refuses to start by name, and so does a root holder off day 0 with no CA. No admin
+while it is fabric-primary (§Custody: only the fabric-primary mints). An admin with seeds or an
+anchor and no root refuses to start by name, and so does an admin with a root off day 0 and no CA. No admin
 signs a member cert that outlives its issuer (`MemberOutlivesIssuer`).
 
 ## How RDM is instantiated
@@ -74,9 +74,9 @@ was given; the app never signs or verifies anything.
 
 | Event | Issuer | Carried in |
 |---|---|---|
-| a node's JoinNode is accepted (the first start inside node.create, and every node.start after a stop, node.restart included) | the accepting authority: the maker for a node-admin, the mesh-primary for an ordinary node | the JoinNode answer, as opaque bytes |
+| a node's JoinNode is accepted (the first start inside node.create, and every node.start after a stop, node.restart included) | the accepting primary: the maker for a node-admin, the mesh-primary for an ordinary node | the JoinNode answer, as opaque bytes |
 | a new mesh's first node-admin is deployed | the maker, which holds the root or an issuing cert that may mint for that mesh | that admin's launch |
-| a member cert has lived two thirds of its TTL (`RDM_CERT_RENEW_AT`, with up to 5 % jitter) | the birth's issuing authority (its mesh-primary; the fabric-primary for a mesh-primary) | [node.cert.renew](lifecycles/node-cert-renew.md) to the running birth; the old cert stays valid to its own expiry |
+| a member cert has lived two thirds of its TTL (`RDM_CERT_RENEW_AT`, with up to 5 % jitter) | the birth's issuer (its mesh-primary; the fabric-primary for a mesh-primary) | [node.cert.renew](lifecycles/node-cert-renew.md) to the running birth; the old cert stays valid to its own expiry |
 
 Every JoinNode issues a fresh member cert (`node.cert.create`, [node.mesh.join](lifecycles/node-mesh-join.md)
 step 5), so a node that starts again after a stop holds a new cert, and a new node over an inherited
@@ -102,13 +102,13 @@ side of its validity.
 
 The issuer puts a cert row for the exact birth at every issue and renew: `NodeCertRow { node_id,
 name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a status-row kind beside
-`held-running` and `os-stopped`, keyed by the birth and `issued_at` (format `node-cert/1`); the receipt
+`data-dir-lost` and `data-dir-unreadable`, keyed by the birth and `issued_at` (format `node-cert/1`); the receipt
 is a row under the same key, and the birth's newest issue and whether it has a receipt are its renewal
 state. `node.get` surfaces it as
 `cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary folds the rows and
 continues the schedule from them; nothing about renewal lives only in memory. Every cert row is in the
 fabric-level projection: `fabric.get` shows the next expiry across the fabric, and a mesh whose renewals
-stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) is surfaced on `fabric.get` as `renewals: stalled`, the way `held-running` is. There is no revocation: expiry is the revocation, which is why the
+stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) is surfaced on `fabric.get` as `renewals: stalled`. There is no revocation: expiry is the revocation, which is why the
 member TTL is a day. The TTLs and the renewal point are fabric policy, read once by the bootstrap admin
 and fixed for the fabric, carried to every later admin in its entry pull the way `MESH_SPAWN_TYPE` is:
 `RDM_MEMBER_CERT_TTL_SECS` (default 86400), `RDM_ISSUING_CERT_TTL_SECS` (default 2592000, 30 days),
@@ -135,8 +135,8 @@ internal CA rotation touches no node's trust set. Every admin also holds the cur
 written into its launch beside the root (`RDM_FABRIC_CA_KEY`; the bootstrap admin mints it on day 0,
 `fabric.ca.create`) and kept as `fabric-ca` beside its data dir, which it reads back on a restart the
 way it reads `ca-secret`.
-Only the fabric-primary mints and rotates with it; a successor seated by election over a proven-exited
-holder mints and rotates from its own copy, so the loss of a fabric-primary costs the chain nothing.
+Only the fabric-primary mints and rotates with it; a successor the election names over an unheard
+fabric-primary mints and rotates from its own copy, so the loss of a fabric-primary costs the chain nothing.
 The root is never in a row, a frame or a digest.
 
 ## On a connection
@@ -163,8 +163,8 @@ One vocabulary, `<entity>.<thing>.<verb>`, the event in the past tense.
 | `mesh.issuer.create` | step inside mesh.create | the fabric-primary, at the mesh's acceptance | none (the first admin's launch env) | [mesh.create](lifecycles/mesh-create.md) step 2 |
 | `mesh.issuer.renew` | workflow, on the fabric-primary's tick | the fabric-primary → the mesh-primary, and through it (forwarded) every other node-admin of the mesh | `node.issuer.update` per admin | [mesh.issuer.renew](lifecycles/mesh-issuer-renew.md) |
 | `node.issuer.update` | primitive | the fabric-primary → one node-admin, exact birth: the mesh-primary directly, any other admin forwarded through the mesh-primary | Status 0x1B `UpdateIssuer`, reply `IssuerUpdated` | [node.issuer.update](lifecycles/node-issuer-update.md) |
-| `node.cert.create` | step inside node.mesh.join | the accepting authority, before it admits | none (the join answer) | [node.mesh.join](lifecycles/node-mesh-join.md) step 5 |
-| `node.cert.renew` | primitive, on the issuing authority's tick | mesh-primary → member; fabric-primary → mesh-primary | Status 0x1B `RenewCert`, reply `CertRenewed` | [node.cert.renew](lifecycles/node-cert-renew.md) |
+| `node.cert.create` | step inside node.mesh.join | the accepting primary, before it admits | none (the join answer) | [node.mesh.join](lifecycles/node-mesh-join.md) step 5 |
+| `node.cert.renew` | primitive, on the issuer's tick | mesh-primary → member; fabric-primary → mesh-primary | Status 0x1B `RenewCert`, reply `CertRenewed` | [node.cert.renew](lifecycles/node-cert-renew.md) |
 | `node.cert.get` | a field of node.get | any caller → the view | `NodeView.cert` on the `Nodes` reply | [typed-object table](node-rpc-envelope.md#typed-object-contract) |
 | `node.connections.admit` | primitive, on accept | the acceptor, every inbound connection of a registered ALPN | the connection's first bi-stream; not a Node RPC op | [node.connections.admit](lifecycles/node-connections-admit.md) |
 | `fabric.ca.renew` | workflow, on the fabric-primary's tick | the fabric-primary → every mesh (issuer) | `mesh.issuer.renew` per mesh; no trust-set change | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) |

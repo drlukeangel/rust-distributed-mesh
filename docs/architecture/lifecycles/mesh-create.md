@@ -48,9 +48,9 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    `before_ready` hook, the topology read on its maker, the Build floor, rafka-time last,
    `node.started`. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
    ReadyForTraffic.
-7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) seats the node-admin as
+7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin
    `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
-   writes the mesh row, publishes its `Seated` record and its mesh's status
+   writes the mesh row (naming itself its primary), publishes `primary updated` and its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every
@@ -100,24 +100,23 @@ not hold answers `RejectedStaleMesh { held }`; a state the mesh cannot move to a
 
 ## Gossip messages
 
-Three frames, all authored by the new mesh-primary once it holds the seat; nothing is published
+Three frames, all authored by the new mesh-primary once it is mesh-primary; nothing is published
 for `mesh2` before that, and the fabric-primary never publishes on its behalf (R-RX4).
 
-The seat the election filled, on `mesh2`'s channel and the backbone
-([catalog](../gossip.md#31-frame-catalog), `Seated`):
+The primary the election named, on `mesh2`'s channel and the backbone
+([catalog](../gossip.md#31-frame-catalog), `primary updated`):
 
 ```json
 {
-  "frame": "seated",
-  "seat": "mesh-primary",
-  "holder": {
+  "frame": "primary updated",
+  "node_type": "node-admin",
+  "primary": {
     "mesh": "mesh2",
     "node_id": "adm2b7d4f9h1",
     "incarnation": "0000000000000001",
     "revision": 1
   }
 }
-```
 
 The mesh's status, the mesh-primary's own `MeshStatus`, first `pending` and at step 8
 `ready-for-traffic`:
@@ -158,8 +157,8 @@ sequenceDiagram
     F->>A: 5. ApplyMeshState(Pending)
     A-->>F: Applied
     Note over A: 6. hook, topology read, node.started, fabric-primary sets ReadyForTraffic
-    Note over A: 7. election seats it mesh-primary, claims mesh name, writes mesh row
-    A->>G: 7. Seated, MeshStatus pending, first Members aggregate
+    Note over A: 7. election names it mesh-primary, claims mesh name, writes mesh row
+    A->>G: 7. primary updated, MeshStatus pending, first Members aggregate
     G-->>R: install mesh2 into external topology
     F-->>C: node.created
     Note over A: 8. creates mesh2's other nodes under the same Build
@@ -169,7 +168,7 @@ sequenceDiagram
 ```
 
 Checked against the numbered sequence: acceptance mints the id before anything is launched; the
-join precedes the channel; Pending follows the Ping; the seat, the name claim and the first frames
+join precedes the channel; Pending follows the Ping; the primary, the name claim and the first frames
 come after Ready; nothing about `mesh2` is on gossip before step 7.
 
 ## Failure and receipts

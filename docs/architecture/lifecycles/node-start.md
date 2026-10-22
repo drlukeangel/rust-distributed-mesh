@@ -19,14 +19,14 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
 ## End-to-end sequence
 
 1. A stopped process remains the same exact
-   runtime and keeps its endpoint/port; it does not relaunch or load a new executable.
-2. Run [node.mesh.join](node-mesh-join.md): `JoinNode` on the accepting authority, the answer's name, cert
+   runtime and keeps its endpoint/port; it does not start a new process or load a new executable.
+2. Run [node.mesh.join](node-mesh-join.md): `JoinNode` on the accepting primary, the answer's name, cert
    and rafka-time installed, the mesh channel joined (and the backbone, a node-admin), `node.mesh.joined`. FirstStart makes it the process's first
    outbound call; AfterStop rejoins the same `(node.id, incarnation)` over the endpoint and path of
    the call that commanded it, and learns who answered from the answer. Emit
    `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records
    pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written
-   before `CommandAccepted`; starting remains the executing authority's overlay.
+   before `CommandAccepted`; starting remains the executor's overlay.
 3. Run [before_ready](../fabric-node-hooks.md#before_ready) with the
    start kind and inherited-data-dir indication. The app subscribes its kind topics
    through the joined channel and reads no topology snapshot as a prerequisite.
@@ -34,7 +34,7 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
    answer and cancellation follow [Outcomes and the gate](../fabric-node-hooks.md#outcomes-and-the-gate).
 4. Obtain complete topology through [node.topology.get](node-topology-get.md). Install
    only complete source snapshots; partial snapshots never complete start. Fetch Build
-   facts only when the node is below the authority's floor, after the hook and before
+   facts only when the node is below the primary's floor, after the hook and before
    node.started: the node-admin Ready check reports a missing pointer, an unreadable Build
    or holdings behind the required floor, and the node reads the facts with
    [FetchCurrentBuild](../node-rpc-envelope.md#build-facts-op-0x1f-rdm) when the missing pointer names no Build,
