@@ -133,8 +133,6 @@ the call of step 6. For the `node-admin` type the primary is commanded first and
   with the departing mesh excluded; nothing else moves.
 - **Fabric shutdown:** fabric.delete moves no primary; every primary stays until deletion.
 
-<a id="fabric-seat"></a>
-
 ## The fabric-primary: node.fabric-primary.update
 
 The fabric-primary is its own property, projected as `is_fabric_primary` (never a settable field: a

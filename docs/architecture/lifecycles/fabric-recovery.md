@@ -8,7 +8,7 @@ the fabric-primary moves and is brought back without a person
 ([the loss of the fabric-primary](#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
 [elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)). It starts when a person or a script
 launches one node-admin on the fabric-primary's
-data dir ([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-relaunch-and-who-starts-recovery));
+data dir ([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-recovery-and-who-starts-it));
 durable topology selects recovery, never Day 0. No surviving maker exists, so there are no
 maker JoinNode/GetTopology calls. The launched node-admin is a new node over its inherited
 data dir: a new node.id and incarnation, the same path.name and endpoint key, and a new port.
