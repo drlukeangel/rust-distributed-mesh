@@ -339,7 +339,7 @@ mod tests {
     /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"; Q35 x: the keys and rows): the
     /// store root's layout, byte for byte: a Build fact at `fabric/builds/rev-<R>/<seq>.json`
     /// (`build-fact/1`), a seal at a mesh lane's key (`lane-seal/1 { revision, sealed_by, by }`), a seat
-    /// move at `seat-moves/<T>.json` (`seat-move/1`) and a mesh's in-flight row naming its claim's lane
+    /// move at `seat-moves/<T>--<node.id>--<incarnation>.json` (`seat-move/1`) and a mesh's in-flight row naming its claim's lane
     /// key (`mesh-in-flight/2`). A layout that moves moves this cell with it (`durable format moved`).
     #[tokio::test]
     async fn the_store_layout_is_frozen_byte_for_byte() {
@@ -365,10 +365,10 @@ mod tests {
             by: by(),
         };
         use crate::fabric_storage::FabricStorage as _;
-        assert!(matches!(storage.commit_seat_move(&moved).await.unwrap(), crate::fabric_storage::MoveCommit::Committed(crate::fabric_storage::SeatMove { t: 1, .. })));
+        assert!(matches!(crate::fabric_storage::commit_seat_move(&storage, &moved).await.unwrap(), crate::fabric_storage::MoveCommit::Committed(crate::fabric_storage::SeatMove { t: 1, .. })));
         let birth = format!(r#"{{"mesh":"mesh2","node_id":"200000000000","incarnation":"{}"}}"#, rdm_core::fixture_crockford60("n"));
         assert_eq!(
-            read("seat-moves/00000000000000000001.json"),
+            read(&format!("seat-moves/00000000000000000001--200000000000--{}.json", rdm_core::fixture_crockford60("n"))),
             format!(r#"{{"format":"seat-move/1","record":{{"seats":[{{"seat":"FabricPrimary","from_revision":0,"revision":1,"holder":{birth},"from":null}}],"cause":"election","by":{birth}}}}}"#)
         );
         use crate::storage::MeshStorage as _;

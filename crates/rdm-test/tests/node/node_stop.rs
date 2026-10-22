@@ -1015,7 +1015,8 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
 }
 
-/// The fabric's seat moves on its store root, `seat-moves/<T>`, each as its file name and bytes: what
+/// The fabric's seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>`, each as its file
+/// name and bytes: what
 /// a seat move commits, compared whole.
 fn seat_transfer_rows(estate: &Estate) -> Vec<(String, Vec<u8>)> {
     let moves = estate.fabric_store_root().join("seat-moves");

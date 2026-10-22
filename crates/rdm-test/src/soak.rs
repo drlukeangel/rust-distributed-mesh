@@ -773,7 +773,8 @@ fn fabric_primaries(nodes: &[Value]) -> String {
     crate::elections::advertised_fabric_primaries(nodes).join(",")
 }
 
-/// The fabric's committed seat moves on its store root, `seat-moves/<T>.json` (`seat-move/1`), in
+/// The fabric's committed seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>.json`
+/// (`seat-move/1`), folded as every reader folds them (Q109), in
 /// their order: the durable fact a hand-back being owed is read from (Q104: the committed seat move on
 /// the store root, never a view). A row that cannot be read is left out by name in `unread`.
 fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMove>, Vec<String>) {
@@ -783,7 +784,7 @@ fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMov
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter_map(|p| p.file_stem().and_then(|t| t.to_str()).and_then(|t| t.parse::<u64>().ok()).map(|t| (t, p.clone())))
+        .filter_map(|p| p.file_stem().and_then(|t| t.to_str()).and_then(|k| k.split("--").next()?.parse::<u64>().ok()).map(|t| (t, p.clone())))
         .collect();
     files.sort();
     let (mut moves, mut unread) = (Vec::new(), Vec::new());
@@ -797,7 +798,8 @@ fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMov
             Err(e) => unread.push(format!("{}: {e}", p.display())),
         }
     }
-    (moves, unread)
+    // Every reader folds the stored rows the same way (Q109): a row that does not follow is ignored.
+    (rdm_admin::fabric_storage::fold(&moves), unread)
 }
 
 /// The path.name the fabric seat belongs to, read from the committed seat moves and named from the
@@ -2351,7 +2353,7 @@ mod tests {
         assert_eq!(fabric_home(&[], &nodes), None, "no move seated it: the driver keeps the advertised holder");
     }
 
-    /// CONTRACT (the same pages): the reader takes the store root's `seat-moves/<T>.json` rows in their
+    /// CONTRACT (the same pages): the reader takes the store root's `seat-moves/<T>--<node.id>--<incarnation>.json` rows in their
     /// order, the format the fabric's storage writes (`seat-move/1`), and names a row it cannot read.
     #[test]
     fn the_seat_moves_are_read_from_the_store_root_in_order() {
@@ -2360,7 +2362,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for m in e6s8_moves().into_iter().rev() {
             let file = json!({ "format": rdm_admin::fabric_storage::SEAT_MOVE_FORMAT, "record": serde_json::to_value(&m.row).unwrap() });
-            std::fs::write(dir.join(format!("{:020}.json", m.t)), serde_json::to_vec(&file).unwrap()).unwrap();
+            std::fs::write(dir.join(format!("{:020}--{}--{}.json", m.t, m.row.by.node_id, m.row.by.incarnation.as_str())), serde_json::to_vec(&file).unwrap()).unwrap();
         }
         std::fs::write(dir.join(format!("{:020}.json", 4)), b"{\"format\":\"seat-move/0\"}").unwrap();
         let (moves, unread) = seat_moves(&root);

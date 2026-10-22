@@ -517,15 +517,15 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
     let build = &build_id.as_str();
     let handover_calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| sp["attributes"]["op"].as_str().and_then(|o| o.parse::<u64>().ok()).or_else(|| sp["attributes"]["op"].as_u64()) == Some(0x21)).count();
     assert!(handover_calls >= 1, "the seat moved by the fabric-primary handover, op 0x21");
-    let fenced: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
-    assert!(!fenced.is_empty(), "the old fabric-primary's dispatch after the fence was refused, Fenced in its span");
-    assert!(fenced.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{fenced:?}");
+    let yielded: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-seat-yielded").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
+    assert!(!yielded.is_empty(), "the old fabric-primary's dispatch after its seat moved was refused, SeatYielded in its span");
+    assert!(yielded.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{yielded:?}");
     let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["replay"]) == "false").collect();
     assert_eq!(installed.len(), 1, "the new seat installed the committed row once, not a replay: {installed:?}");
     let installed_at = installed[0]["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
-    let early: Vec<_> = fenced.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) <= installed_at).collect();
+    let early: Vec<_> = yielded.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) <= installed_at).collect();
     assert!(early.is_empty(), "C1 step 8: the old seat's drive names the new seat only once the successor installed ({installed_at}): {early:?}");
-    estate.record_trace_url(fenced[0]["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(yielded[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 impl Caller {

@@ -677,7 +677,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             // The lane key's revision and sequence, as a `LaneKey` writes them (the storage boundary's
             // type, every backend's key).
             require(root, "crates/rdm-admin/src/build_state.rs", &["pub(crate) const REV_PREFIX: &str = \"rev-\";", "format!(\"{REV_PREFIX}{revision:020}\")", "format!(\"{seq:020}\")"], ratchet, &mut out);
-            require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "format!(\"{t:020}\")"], ratchet, &mut out);
+            require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "format!(\"{t:020}--{}--{}\", by.node_id, by.incarnation.as_str())"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";", "const IN_FLIGHT: &str = \"in-flight\";"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateResealIsAtomic => {

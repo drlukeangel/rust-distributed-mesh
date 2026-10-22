@@ -876,12 +876,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     // Each lane is written under the revision of its seat's record this birth holds
                     // (Q28, Q35): the fabric seat's for `fabric/builds/`, a mesh's primary seat's for
                     // `meshes/<mesh>/builds/`.
-                    let (lane_book, lane_records, lane_me) = (membership.book.clone(), records.clone(), (node_id.clone(), incarnation.clone()));
+                    let (lane_book, lane_records) = (membership.book.clone(), records.clone());
                     let revisions: crate::build_state::LaneRevisions = Arc::new(move |lane: &crate::build_state::LaneId| {
                         let incumbency = incumbency_of(&lane_book, &lane_records);
                         match lane {
-                            crate::build_state::LaneId::Fabric => crate::seat_watch::lane_seat("the fabric seat record", incumbency.fabric.as_ref(), &lane_me, &incumbency.lost),
-                            crate::build_state::LaneId::Mesh(m) => crate::seat_watch::lane_seat(&format!("mesh {m}'s primary seat record"), incumbency.meshes.get(m), &lane_me, &incumbency.lost),
+                            crate::build_state::LaneId::Fabric => crate::seat_watch::lane_seat(incumbency.fabric.as_ref()),
+                            crate::build_state::LaneId::Mesh(m) => crate::seat_watch::lane_seat(incumbency.meshes.get(m)),
                         }
                     });
                     journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions, seals: crate::fabric_storage::seals_owed(fabric_storage.clone(), rdm_core::handover::HandoverBirth { mesh: own_mesh.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) });

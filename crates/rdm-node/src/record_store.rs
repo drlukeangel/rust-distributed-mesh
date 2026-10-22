@@ -298,6 +298,11 @@ impl FileRecords {
     /// The directory and its files are read on the blocking pool, as a point read is, so no worker
     /// thread waits on the disk.
     pub async fn list<T: DeserializeOwned + Send + 'static>(&self, format: &str) -> Result<Vec<T>, StorageError> {
+        Ok(self.list_keyed(format).await?.into_iter().map(|(_, record)| record).collect())
+    }
+
+    /// [`Self::list`], each record with its key.
+    pub async fn list_keyed<T: DeserializeOwned + Send + 'static>(&self, format: &str) -> Result<Vec<(String, T)>, StorageError> {
         // The held rows are read before the disk: a row the publication moves to the disk meanwhile
         // (it leaves the held rows only once its file is written) is in one of the two.
         let held: std::collections::BTreeMap<String, HeldRow> = self.held().map(|h| h.rows.lock().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_default();
@@ -318,7 +323,7 @@ impl FileRecords {
     /// The records of the files a directory read `paths` named, under the rows the store holds. A file
     /// listed and then removed before it is read is a record that is gone: the list answers the
     /// records that remain.
-    fn read_listed<T: DeserializeOwned>(dir: &Path, paths: Vec<PathBuf>, held: std::collections::BTreeMap<String, HeldRow>, format: &str) -> Result<Vec<T>, StorageError> {
+    fn read_listed<T: DeserializeOwned>(dir: &Path, paths: Vec<PathBuf>, held: std::collections::BTreeMap<String, HeldRow>, format: &str) -> Result<Vec<(String, T)>, StorageError> {
         let mut records: std::collections::BTreeMap<String, T> = std::collections::BTreeMap::new();
         for p in paths {
             let key = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -339,7 +344,7 @@ impl FileRecords {
                 records.insert(key, Self::decode(&p, b, format)?);
             }
         }
-        Ok(records.into_values().collect())
+        Ok(records.into_iter().collect())
     }
 
     /// Store `record` under `key`, replacing what was there: held in the scratchpad while the store
@@ -1276,7 +1281,7 @@ mod tests {
         let listed = vec![dir.join("k001.json"), dir.join("k002.json"), dir.join("k003.json")];
         assert!(!listed[1].exists(), "k002 was listed and is gone before its record is read");
         let records = FileRecords::read_listed::<u32>(&dir, listed, std::collections::BTreeMap::new(), "thing/1");
-        assert_eq!(records.unwrap(), [1, 3], "the list answers the records that remain");
+        assert_eq!(records.unwrap().into_iter().map(|(_, r)| r).collect::<Vec<_>>(), [1, 3], "the list answers the records that remain");
     }
 
     /// CONTRACT: opening a store (its directory made on the disk) never waits on the disk on a

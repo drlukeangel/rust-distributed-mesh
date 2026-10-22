@@ -479,7 +479,7 @@ fn at_ns(sp: &Value) -> u64 {
 /// 3. P says "primary updated" (C1 step 7: `via-announce-primary-updated` at P, sent on the backbone and
 ///    its mesh channel), and only then does its attempt end, handed off to H (`build.update.via-dispatch`
 ///    at P for its own attempt, handed-off). P's drive ends at the row (`seat-lost`;
-///    `build.reject.via-fenced` naming H), and P decides no claim after its row.
+///    `build.reject.via-seat-yielded` naming H), and P decides no claim after its row.
 /// 4. Only then does the commanding Build continue (step 8; build.md: "A live run is reattached, never
 ///    re-claimed"): H claims the next attempt and dispatches the stop of P; H says nothing for P's row
 ///    (P said it; a `seat.update.via-row-acknowledged` at H for P's row, if any, announced nothing). The
@@ -630,7 +630,7 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     let p_drive: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(p_drive.iter().any(|sp| attr(sp, "outcome") == "seat-lost"), "P's drive ends at its seat row: {p_drive:#?}");
     assert!(matches!(first.last(), Some(rdm_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends SeatMoved naming H: {first:?}, broke: {broke:?}");
-    let p_refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
+    let p_refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-seat-yielded").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(!p_refused.is_empty() && p_refused.iter().all(|sp| attr(sp, "to") == h_name), "P's drive lost the seat at the committed record naming H: {p_refused:#?}");
     // Every SeatMoved of the Build names H: the seats move once.
     let moved: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build).collect();

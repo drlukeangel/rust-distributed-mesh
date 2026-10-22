@@ -83,7 +83,8 @@ fn fabric_revision(estate: &Estate) -> u64 {
     seat_moves(estate).iter().rev().find_map(|m| m["seats"].as_array()?.iter().find(|x| x["seat"] == "FabricPrimary").map(|x| x["revision"].as_u64().unwrap_or(0))).expect("the fabric seat has a row")
 }
 
-/// The fabric's seat moves on its store root, `seat-moves/<T>`, in order: each row's record.
+/// The fabric's seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>`, in key order: each
+/// row's record.
 fn seat_moves(estate: &Estate) -> Vec<Value> {
     let dir = estate.fabric_store_root().join("seat-moves");
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -94,8 +95,8 @@ fn seat_moves(estate: &Estate) -> Vec<Value> {
 /// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
 /// "Outside its mesh": a mesh-primary runs mesh investigation's ladder on the fabric-primary's mesh; "No
 /// answer from any of them by the decision step is the backbone rule, and the lowest ReadyForTraffic
-/// mesh-primary writes the row"; elections §5: "The takeover commits only through the store's authority
-/// fence ... Every mesh-primary that notices tells the winner (`node.fabric-primary.update`)"; Q48: every
+/// mesh-primary writes the row"; elections §5: "The winner begins recovery only after its seat row is
+/// written ... Every mesh-primary that notices tells the winner (`node.fabric-primary.update`)"; Q48: every
 /// seat change is one row of kind `election | takeover | handover`): mesh1 holds the fabric seat. mesh2's
 /// admins cannot inspect mesh1's runtimes (provider-domain cut), and every process of mesh1 is killed.
 /// mesh2's primary probes mesh1's admins, each `unreachable`; nothing records their exit. The seat does
@@ -309,7 +310,7 @@ async fn an_old_fabric_primary_resumed_after_the_takeover_commits_nothing_past_t
     estate.record_trace_url(s(&committed[0]["trace_id"]).as_str());
 }
 
-/// CONTRACT (elections §5: "if the store cannot provide the fence the takeover stays held. A held
+/// CONTRACT (elections §5: "a takeover whose row cannot be written stays held. A held
 /// takeover is surfaced on `fabric.get` as `takeover { lost, expected_revision, winner, proposer,
 /// since, reason }` until it commits"): mesh1 is lost, uninspectable, and the fabric's seat-move store
 /// cannot be written. Past the hold the winner cannot commit: the takeover stays held, and the

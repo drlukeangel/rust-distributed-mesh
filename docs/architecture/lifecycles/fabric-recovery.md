@@ -29,11 +29,10 @@ on the backbone.
    ([gossip §6](../gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)).
 2. **The successor writes the one row.** It names itself by the calculation on its own view and runs the
    writer's steps of [node.fabric-primary.update](node-primary-update.md#the-fabric-seat-nodefabric-primaryupdate):
-   "primary updating", the seat row at the next revision behind the store's authority fence, "primary
+   "primary updating", the seat row at the next revision, "primary
    updated". The row moves every seat the fabric-primary held, the mesh seat with the fabric seat (Q51), to
    one holder: a fabric-primary is a mesh-primary. Any other admin that notices tells the successor; the
-   successor acts only when its own view agrees; repeats answer `AlreadyApplied`; the fence lets one row
-   commit.
+   successor acts only when its own view agrees; repeats answer `AlreadyApplied`.
    - *Its own mesh*: the standby's seat watch writes at the first tick after the mark, once its seat record
      has named that holder for one staleness floor: a record learned after a heal names a holder whose
      silence in this admin's book began before the record did. It needs no probe to know it is alive, and it

@@ -2008,9 +2008,6 @@ impl MemoryBuildStateAdapter {
         let (revision, owed) = match self.seats.get() {
             Some(seats) => {
                 let seat = (seats.revisions)(&lane);
-                if let (false, Err(record)) = (matches!(fact, BuildFact::Step(_) | BuildFact::Attempt(_)), &seat.holds) {
-                    return Err(stale(lane.name(), Some(seat.revision), record.clone()));
-                }
                 (seat.revision, (seats.seals)(lane.clone(), seat.revision).await.map_err(BuildStateError::Io)?)
             }
             None => (0, Vec::new()),
@@ -2385,11 +2382,6 @@ pub struct LaneSeat {
     /// The record's revision (0 while none is held): every write to the lane is made under it, so a
     /// write of a revision a seat move sealed is refused at the seal.
     pub revision: u64,
-    /// `Ok` when the record names this birth, none, or a birth proven gone; `Err` naming the record
-    /// when it names another live birth. A decision of the lane (an acceptance, an open, a claim, a
-    /// forget) is this birth's to write only while it holds the seat; a receipt of an attempt it
-    /// executes is written under the record's revision whoever holds it.
-    pub holds: Result<(), String>,
 }
 
 /// The seals a birth owes on a lane before it appends under `revision` (Q35: "the successor appends
@@ -2654,15 +2646,9 @@ impl FileJournal {
         mesh.map(|m| LaneId::Mesh(m.to_string())).unwrap_or(LaneId::Fabric)
     }
 
-    /// The revision this birth writes `fact` to `lane` under, or, for a decision of a lane whose
-    /// seat record names another live birth, the stale refusal naming that record.
-    fn revision_of(&self, lane: &LaneId, fact: &BuildFact) -> Result<u64, BuildStateError> {
-        let Some(of) = self.revisions.get() else { return Ok(0) };
-        let seat = of(lane);
-        match (fact, seat.holds) {
-            (BuildFact::Step(_) | BuildFact::Attempt(_), _) | (_, Ok(())) => Ok(seat.revision),
-            (_, Err(record)) => Err(stale(lane.name(), Some(seat.revision), record)),
-        }
+    /// The revision this birth writes to `lane` under: its seat record's (Q28).
+    fn revision_of(&self, lane: &LaneId) -> u64 {
+        self.revisions.get().map_or(0, |of| of(lane).revision)
     }
 
     /// The lanes this admin reads: the fabric lane and every mesh's while it holds the fabric seat,
@@ -2773,7 +2759,7 @@ impl FileJournal {
     /// the caller decides again).
     async fn append(&self, w: &Derived, fact: BuildFact) -> Result<LaneKey, BuildStateError> {
         let lane = self.lane_of(&fact);
-        let revision = self.revision_of(&lane, &fact)?;
+        let revision = self.revision_of(&lane);
         self.ready_lane(w, &lane, revision).await?;
         match self.lane(self.lanes.append(&lane, revision, &fact)).await.map_err(lane_io)? {
             crate::build_lanes::Appended::At(key) => {
@@ -2969,7 +2955,7 @@ impl BuildStateAdapter for FileJournal {
             }
             let fact = BuildFact::Claim(claim.clone());
             let lane = self.lane_of(&fact);
-            let revision = self.revision_of(&lane, &fact)?;
+            let revision = self.revision_of(&lane);
             self.ready_lane(&w, &lane, revision).await?;
             let held = snapshot(&self.log);
             let holder = claim_holder(&held, &claim.build_id, claim.mesh.as_deref(), claim.attempt);
@@ -4376,55 +4362,6 @@ mod tests {
         }
     }
 
-    /// The seats of a birth whose every lane's seat record, at `revision`, names `holds`.
-    fn seats_at(revision: u64, holds: Result<(), String>) -> JournalSeats {
-        JournalSeats {
-            holds_fabric: Arc::new(|| true),
-            holds_mesh: Arc::new(|| true),
-            revisions: Arc::new(move |_| LaneSeat { revision, holds: holds.clone() }),
-            seals: Arc::new(|_, _| Box::pin(async { Ok(Vec::new()) })),
-        }
-    }
-
-    /// The same script against any Build log: a decision of a lane whose seat record names another
-    /// live birth is refused stale, naming the record, and a fact of a revision a seat move sealed
-    /// is refused stale; neither is written.
-    async fn a_stale_seats_facts_are_refused_by_name(stale_log: &dyn LocalBuildLog, sealed_log: &dyn LocalBuildLog) {
-        stale_log.hold_seats(seats_at(3, Err("the fabric seat record names mesh2.admin.1 at revision 4".into())));
-        match stale_log.publish_accepted(&intent("b1")).await {
-            Err(BuildStateError::StaleSeat { at, revision, detail }) => assert_eq!((at.as_str(), revision, detail.contains("mesh2.admin.1")), ("fabric/builds", Some(3), true), "{detail}"),
-            other => panic!("an acceptance by a birth whose seat moved is refused stale by name, not {other:?}"),
-        }
-        assert!(stale_log.facts().await.unwrap().is_empty(), "nothing of the refused acceptance is written");
-        sealed_log.hold_seats(seats_at(0, Ok(())));
-        let by = birth("mesh1", "200000000000", "n");
-        let moved = crate::fabric_storage::SeatMove {
-            t: 1,
-            row: crate::fabric_storage::SeatMoveRow {
-                seats: vec![crate::fabric_storage::MovedSeat { seat: rdm_core::seat::transfer::Seat::FabricPrimary, from_revision: 0, revision: 1, holder: Some(by.clone()), from: Some(birth("mesh1", "100000000000", "p")) }],
-                cause: crate::fabric_storage::MoveCause::Election,
-                by: by.clone(),
-            },
-        };
-        sealed_log.seal_moved(&moved, &by).await.unwrap();
-        match sealed_log.publish_accepted(&intent("b1")).await {
-            Err(BuildStateError::StaleSeat { revision, .. }) => assert_eq!(revision, Some(0)),
-            other => panic!("an acceptance under a revision a seat move sealed is refused stale, not {other:?}"),
-        }
-        assert!(sealed_log.facts().await.unwrap().iter().all(|f| !matches!(f, BuildFact::Accepted(_))), "nothing of the refused acceptance is written");
-    }
-
-    /// CONTRACT (Q28, Q35; 1b, Arch's decision 3): a stale seat's Build facts are refused by the
-    /// journal, whatever backs it: on the memory log, as on the file journal, an acceptance by a birth
-    /// whose fabric seat record names another live birth is refused `StaleSeat` naming that record,
-    /// and one under a revision a seat move sealed is refused `StaleSeat` at that revision; neither
-    /// is written. Must NOT happen: a memory log taking a decision its seat no longer authorizes.
-    #[tokio::test]
-    async fn the_memory_log_refuses_a_stale_seats_facts_as_the_file_journal_does() {
-        a_stale_seats_facts_are_refused_by_name(&MemoryBuildStateAdapter::of_mesh("mesh1"), &MemoryBuildStateAdapter::of_mesh("mesh1")).await;
-        a_stale_seats_facts_are_refused_by_name(&open_at(&tmp()).await.unwrap(), &open_at(&tmp()).await.unwrap()).await;
-    }
-
     fn birth(mesh: &str, node: &str, inc: &str) -> rdm_core::handover::HandoverBirth {
         rdm_core::handover::HandoverBirth { mesh: mesh.into(), node_id: crate::model::NodeId::parse(node).unwrap(), incarnation: crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap() }
     }
@@ -4433,7 +4370,7 @@ mod tests {
     /// `storage`'s seat moves name, written by `by`.
     async fn seated_at(dir: &Path, revision: u64, storage: &Arc<dyn crate::fabric_storage::FabricStorage>, by: rdm_core::handover::HandoverBirth) -> FileJournal {
         let j = open_at(dir).await.unwrap();
-        j.set_lane_seats(Arc::new(move |_| LaneSeat { revision, holds: Ok(()) }), crate::fabric_storage::seals_owed(storage.clone(), by));
+        j.set_lane_seats(Arc::new(move |_| LaneSeat { revision }), crate::fabric_storage::seals_owed(storage.clone(), by));
         j
     }
 
@@ -4466,7 +4403,7 @@ mod tests {
             seats: vec![rdm_core::seat::transfer::CommittedSeat { seat: rdm_core::seat::transfer::Seat::MeshPrimary { mesh: "mesh1".into() }, holder: successor.clone(), revision: 1 }],
             by: holder.clone(),
         };
-        assert!(matches!(storage.commit_seat_move(&row.seat_move()).await.unwrap(), crate::fabric_storage::MoveCommit::Committed(crate::fabric_storage::SeatMove { t: 1, .. })));
+        assert!(matches!(crate::fabric_storage::commit_seat_move(&*storage, &row.seat_move()).await.unwrap(), crate::fabric_storage::MoveCommit::Committed(crate::fabric_storage::SeatMove { t: 1, .. })));
         let capture = crate::span_capture::Capture::new("e6-1-crash-between-row-and-seal");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let new = seated_at(&dir, 1, &storage, successor.clone()).await;

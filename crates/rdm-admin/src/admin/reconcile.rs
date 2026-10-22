@@ -182,7 +182,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     }
 
     async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
-        match self.fabric.seat_moves().await {
+        match crate::fabric_storage::folded_moves(&*self.fabric).await {
             Ok(moves) => crate::fabric_storage::fabric_seat_taken_from(&moves),
             Err(e) => {
                 tracing::info_span!("rdm.node_admin.seat.reject.via-seat-moves-unreadable", node = %self.held_name(), store = "fabric.storage", error = %e)

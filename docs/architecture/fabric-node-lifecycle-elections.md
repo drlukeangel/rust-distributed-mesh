@@ -22,7 +22,7 @@ held seat record + current candidate facts
     -> resolved primary
 ~~~
 
-Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §4.3's staleness-floor rule and the store's authority fence; every other seat moves only on yield, a committed transfer or a proven loss, or with the fabric seat, when both are held by the lost mesh's node-admin and one takeover row moves both.
+Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §4.3's staleness-floor rule; every other seat moves only on yield, a committed transfer or a proven loss, or with the fabric seat, when both are held by the lost mesh's node-admin and one takeover row moves both.
 
 A published is_primary or is_fabric_primary bit is a projection of this result. It never creates authority by advertisement.
 
@@ -155,7 +155,7 @@ For every seat:
 - a living holder keeps its seat unless a committed takeover has superseded it; a lower-NodeId candidate that later becomes Ready never displaces it;
 - silence, an observer-inferred Dead, a `held-running` hold or an unheard route is not proof of death: nothing is terminated or re-born on it, and a holder keeps its seat through it. The fabric-primary alone is superseded at the staleness floor by §4.3, every seat it held in one row, and gets them back by the hand-back of §4.3;
 - for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step proves the exit; the seat moves only once that exit proof is recorded, never before the proof;
-- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; its seats move by §4.3, and the holder that took them runs the hold (`RDM_HUNG_HOLD_FLOORS`) and the terminate as for any `held-running` member; watching admins record `held-running { since, verdicts }` on its status row (surfaced on `node.get` and `fabric.get`). The takeover commits only through the store's authority fence: every fabric write and Build claim carries the writer's seat revision, the store validates it against the current committed seat revision, rejects every stale one, and serializes the takeover with writes and claims so no old-authority operation commits afterwards; the winner begins recovery only after that fence has committed, and if the store cannot provide the fence the takeover stays held. A held takeover is surfaced on `fabric.get` as `takeover { lost, expected_revision, winner, proposer, since, reason }` until it commits or the holder is proven gone and the ordinary rule fills the seat. Every mesh-primary that notices tells the winner (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row;
+- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; its seats move by §4.3, and the holder that took them runs the hold (`RDM_HUNG_HOLD_FLOORS`) and the terminate as for any `held-running` member; watching admins record `held-running { since, verdicts }` on its status row (surfaced on `node.get` and `fabric.get`). The winner begins recovery only after its seat row is written, and a takeover whose row cannot be written stays held. A held takeover is surfaced on `fabric.get` as `takeover { lost, expected_revision, winner, proposer, since, reason }` until it commits or the holder is proven gone and the ordinary rule fills the seat. Every mesh-primary that notices tells the winner (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row;
 - a holder that yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh;
 - restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the holder;
 - replacement mints a new NodeId and may or may not win.
@@ -168,7 +168,7 @@ Election movement never changes the current Build, never changes accepted topolo
 
 ## 6. fabric.delete moves no seat
 
-A seat moves only by its holder's yield, a committed transfer (§4.4), a proven loss, or, for the fabric seat alone, §4.3's staleness-floor rule under the store's fence, never by a status (§5), so [fabric.delete](lifecycles/fabric-delete.md) moves no seat: each mesh-primary keeps
+A seat moves only by its holder's yield, a committed transfer (§4.4), a proven loss, or, for the fabric seat alone, §4.3's staleness-floor rule, never by a status (§5), so [fabric.delete](lifecycles/fabric-delete.md) moves no seat: each mesh-primary keeps
 its seat until it is itself deleted, and the fabric-primary keeps the fabric seat to the end.
 
 ---
