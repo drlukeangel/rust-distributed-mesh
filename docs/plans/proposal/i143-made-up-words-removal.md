@@ -49,7 +49,7 @@ line that would need one is listed in §6 as his call.
 | cohort | the nodes of one type in one mesh (`(mesh, node_type)`); its primary is the node-type primary of that mesh, a node of that type, a node-admin only for the `node-admin` type | Q107 (1): "every cohort `(mesh, node_type)` runs one election"; `node-rpc-envelope.md` JoinNode `types` |
 | mesh-primary seat, fabric seat; "holds the seat" | being the mesh-primary, being the fabric-primary | the terms themselves |
 | holder | the primary (mesh-primary, fabric-primary, node-type primary) | the terms themselves |
-| seat row, seat move, committed seat row, `seat-moves/<T>…` | the node row's `is_primary` and `is_fabric_primary`, written by `node.primary.update` and `node.fabric-primary.update` (the update sequence below) | `node-rpc-envelope.md:362-363`: "`is_primary` … `node.primary.update`; never a put", "`is_fabric_primary` … `node.fabric-primary.update`" |
+| seat row, seat move, committed seat row, `seat-moves/<T>…` | the Mesh row's primaries and the fabric row's mesh, each written once by `node.primary.update` or `node.fabric-primary.update` (the update sequence below); `is_primary` and `is_fabric_primary` are answered from them, never written on a node row | `node-rpc-envelope.md:362-363`: "`is_primary` … `node.primary.update`; never a put", "`is_fabric_primary` … `node.fabric-primary.update`" |
 | committed (seat, row, transfer, takeover) | written; one writer writes the row | Q109 A: one writer per row, the storage decides nothing |
 | takeover, take seats, `TakeSeats` | take over | Luke's verb ("taken over fabric-primary", 2026-10-20); 26 page lines already use it |
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
@@ -77,31 +77,44 @@ is one field on one row, written once. The Mesh row (`meshes/<mesh>`) is the mes
 
 - the Mesh row: the mesh-primary and each node-type primary of that mesh, as `(node_id, incarnation,
   revision)` per type;
-- the fabric row: the mesh whose mesh-primary is the fabric-primary, and, while that is a takeover,
-  `first_primary`: the path.name the fabric-primary is handed back to (Q107 (4)'s words). Because the
-  fabric row names a mesh and not a node, the fabric-primary follows that mesh's mesh-primary by
-  construction, and the combined transfer of the rule above is one write.
+- the fabric row: the mesh whose mesh-primary is the fabric-primary. Because the fabric row names a
+  mesh and not a node, the fabric-primary follows that mesh's mesh-primary by construction, and the
+  combined transfer of the rule above is one write. Nothing else is stored for a takeover: which mesh
+  the fabric-primary left, and the path.name being re-created there, are facts of the recovery Build the
+  temporary holder runs (fabric-recovery.md step 4: "The hand-back runs as an attempt of the current
+  accepted Build, keyed `handback:<path.name>@<T>`"), and a Build is read back on restart.
 
 1. A mesh-primary changes by `node.primary.update`, whether it hands over itself or is unheard past
    the staleness floor: the successor writes the Mesh row once, naming itself, since it is that row's
    writer from then. If its mesh holds the fabric-primary, it is now the fabric-primary too: the fabric
    row names its mesh and does not change. A node-type primary of any other type changes by the same
-   operation, the Mesh row written by the mesh-primary.
+   operation, the Mesh row written by the mesh-primary. A same-mesh successor keeps both: there is no
+   hand-back inside a mesh (Q107 (3): "No hand-back for any primary but the fabric seat's: the successor
+   keeps the seat, and the old holder heard again is a member"), and under the rule above the
+   fabric-primary cannot leave its mesh-primary, so the re-created node at the lost primary's path.name
+   is a member. fabric-recovery.md step 4 today hands back in the own-mesh arm too; that line changes to
+   this, and is listed in the landing's file as a page-vs-rule difference.
 2. The one exception, `node.fabric-primary.update` from the backbone: when no node-admin of the
    fabric-primary's mesh is available to the backbone, the lowest ReadyForTraffic mesh-primary on the
-   backbone (Q89) writes the fabric row once, naming its own mesh and setting `first_primary` to the
-   lost primary's path.name if `first_primary` is absent. An existing `first_primary` is preserved: a
-   takeover of a takeover (A's mesh lost, B took it, B's mesh lost before A's returned, C takes it) keeps
-   A's path.name, so the hand-back destination is never lost. The temporary holder's mesh-primary may
-   change by step 1 meanwhile; the fabric-primary follows it and the fabric row does not change.
-3. The hand-back (Q107 (4)): once the node at `first_primary` has been ReadyForTraffic for one floor,
-   the temporary holder writes the fabric row once, naming that node's mesh and clearing
-   `first_primary`. The fabric-primary is that mesh's mesh-primary from then, which is that node by the
-   rule above. `handback_due` reads `first_primary` from the fabric row instead of the seat-move log; a
-   restart of the temporary holder reads the same field.
+   backbone (Q89) writes the fabric row once, naming its own mesh. It then runs the lost mesh's
+   recovery as the current Build's attempt (§8), re-creating its node-admins at their path.names. A
+   takeover of a takeover (A's mesh lost, B took it, B's mesh lost before A's returned, C takes it)
+   changes only the fabric row again; the recovery of A's mesh is the current Build, which C resumes per
+   its receipts like any interrupted attempt, so the destination is never lost and nothing is stored for
+   it. The temporary holder's mesh-primary may change by step 1 meanwhile; the fabric-primary follows it
+   and the fabric row does not change.
+3. The hand-back (Q107 (4); fabric-recovery.md step 4), in two existing operations by two writers,
+   each one write of its own row. First the re-created node-admin at the lost primary's path.name
+   becomes its mesh's mesh-primary by step 1: its Mesh row names an unheard birth and it is the lowest
+   ReadyForTraffic node-admin of its mesh, so it writes the Mesh row naming itself. Then, once that node
+   has been ReadyForTraffic for one floor and its Mesh row names it, the temporary holder's hand-back
+   attempt of the current Build writes the fabric row once, naming that mesh. The fabric-primary is that
+   mesh's mesh-primary from then, which is that node. `handback_due` reads the current Build's recovery
+   attempt and the Mesh row, not a seat-move log and not a field of its own.
 4. A planned `node.fabric-primary.update` to another mesh (mesh.delete of the fabric-primary's mesh is
-   the one page case) names the destination mesh and clears `first_primary`: the command decides where
-   the fabric-primary lives, so it cancels an outstanding hand-back, stated here so it is never silent.
+   the one page case) names the destination mesh. While a recovery with its hand-back is the current
+   Build's open attempt, the planned transfer is refused `build-in-progress` like any other Build until
+   it completes (R-BI7); nothing is cancelled silently.
 5. Every one of these is one write of one row: the row lands or answers a named error (R14's fs
    contract, as node-primary-update.md already states for the one row); on a named error nothing
    changed and the step fails by name. There is no second write to resume. A node-admin that restarts
