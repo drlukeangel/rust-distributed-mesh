@@ -224,9 +224,14 @@ follows the pages, in this order, each landing with the cells that prove the ope
 3. `authorizes()` and the cut-off view out, with their 18 callers and 9 cells, and a before-and-after
    flame, since it is gossip code.
 4. seat, authority and cohort out of the code: the election's result, recorded as `is_primary` and
-   `is_fabric_primary` on node rows by the mesh-primary, replaces the seat-move log (`seat-move/1` retired
-   under the durable-format rule, its decoding kept); the wire and durable items of §4.2 renamed as the
-   envelope page now names them.
+   `is_fabric_primary` on node rows by the mesh-primary (fields `NodeRecord` does not yet have), replaces
+   the seat-move log (`seat-move/1` retired under the durable-format rule, its decoding kept); the wire
+   and durable items of §4.2 renamed as the envelope page now names them. The rows writers
+   (`rows_writer.rs`, its callers in `boot.rs`) retry a failed write on their own clock under the one
+   backoff rule until the store acknowledges it, never waiting for a birth or primary change
+   (node-identity-and-state.md §2.7; today they wait for `birth_changes`). Cell, RED first: the first
+   write fails, no topology change follows, the store recovers, and the responsible writer persists the
+   row.
 5. Q110's machinery out (§8): the exit proof as a condition, the hung hold, the held-running and exit
    rows, and the sticky file whole.
 

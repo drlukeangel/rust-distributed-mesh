@@ -75,8 +75,12 @@ and recording it are separate for every type.
 - **The record's write fails** (step 5). The row is a local write, temp file, fsync, rename (R14's fs
   contract), and it answers a named error or succeeds. The step completed on the acknowledgement of
   step 4 and the role is the election's, not the write's: a named error is handled as every storage
-  error is, named on its span and surfaced, it fails nothing already completed, the successor stays
-  what the election names it, and the mesh-primary records the row on its next write. A writer dying before the rename changes nothing:
+  error is, named on its span and surfaced, it fails nothing already completed, and the successor stays
+  what the election names it. The row is owed by its writer: the mesh-primary retries the write of the
+  row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes))
+  until the store acknowledges it, on its own clock, never waiting for a digest, a birth or a primary
+  change, and marks the row written only on that acknowledgement, while it is the writer. A write that
+  never succeeds is surfaced as a stalled row; it blocks and reverses nothing. A writer dying before the rename changes nothing:
   on restart it reads its rows, computes the election from what it holds and records what is missing.
 - **After the successor installed itself, it is primary whatever the call returns.** The receiver never refuses the
   call for the birth it names (R-UC1a, R-RX5); it installs from the election's result the call carries

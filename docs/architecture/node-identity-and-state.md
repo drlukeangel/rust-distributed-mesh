@@ -344,7 +344,11 @@ records the role and does not grant it.
 - **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row once the fabric is
   `state-commit` ([States](lifecycles/states.md#states)), through the mesh rows writer, and every
   node writes its connections rows; each finishes its writes before its state-committed check-in. Before then
-  the rows wait in the scratchpad. After that it writes each create and update at once. The
+  the rows wait in the scratchpad. After that it writes each create and update at once. A write the
+  store refuses or fails is owed: the writer retries the row's current state under the one backoff
+  rule ([Node RPC §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)) until the store
+  acknowledges it, on its own clock, never waiting for a birth, a digest or a primary change, and marks
+  the row written only on that acknowledgement, while it is the writer. The
   row's write is the claim then the record (`rdm-admin/src/admin/rows_writer.rs`,
   `rdm.node_admin.mesh.create.via-mesh-row`: `row-written`, `row-held-by-mesh` for the same MeshId,
   `name-held` naming the holder). A mesh whose name another mesh's row already holds stays held,
