@@ -3,14 +3,14 @@
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
 This page owns the node-admin launch contract and its start modes, who starts a node-admin of an
-existing mesh, and Rafka's relaunch copy. One start, a handful of parameters; the sequences
+existing mesh, and Rafka's recovery copy. One start, a handful of parameters; the sequences
 themselves are [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) and
 [fabric recovery](lifecycles/fabric-recovery.md).
 
 **Related:** [`fabric-mesh-node-lifecycles.md`](fabric-mesh-node-lifecycles.md) (every node
 workflow node-admin drives, its events and its gossip),
 [`fabric-node-lifecycle-elections.md`](fabric-node-lifecycle-elections.md)
-(seats), [`build.md`](build.md) (the current Build, Builds),
+(the primaries), [`build.md`](build.md) (the current Build, Builds),
 [`day0.md`](/home/admin/rafka-v2/docs/architecture/day0.md) (the system org's birth, which runs on top of a Day-0 fabric).
 
 ---
@@ -26,19 +26,20 @@ workflow node-admin drives, its events and its gossip),
    mesh.deleted a separate node.delete removes the mesh-primary, and fabric.delete.
 3. **The fabric primary is handed off, never wiped out.** Before its delete, restart or replace, it runs
    [node.primary.update](lifecycles/node-primary-update.md), commanded from above, and its successor, now
-   its primary, commands the step ([elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover-r-a2--r-st2));
-   as its mesh's last admin its seat leaves only by node.fabric-primary.update inside mesh.delete.
-4. **Silence is not departure, and a failed connection is not death.** Only exact provider
-   evidence that a runtime exited proves it gone. A member whose node-admins are lost is never
-   recreated because of that loss.
+   its primary, commands the step ([elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover));
+   as its mesh's last admin it stops being fabric-primary only by node.fabric-primary.update inside mesh.delete.
+4. **Silence is not departure, and a failed connection is not death.** What became of an unheard
+   node is [node investigation](lifecycles/node-investigation.md)'s verdict (Q111): reached, it is commanded
+   back; anything else, it is re-created. A member whose node-admins are lost is never re-created
+   because of that loss alone.
 5. **Stored topology is a recovery contact map.** The attached snapshot is the last ready-for-traffic
    fabric, not the latest state. It locates live nodes; current topology comes from those nodes.
    A stored member may not answer, and the stored map is not current birth or liveness proof.
-6. **A node-admin acts on no view that heard nobody.** Silence is receipt age on the node's own clock, so a
-   node held, suspended or cut off wakes to a book in which every member is silent at once. Its view is cut off
-   and then healing ([gossip §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)); until one
-   staleness floor after it hears a member again it commands no member, reads no tickle verdict and writes no
-   seat row. It is the one held, and it re-enters like any member.
+6. **A node-admin acts on its own view.** Silence is receipt age on the node's own clock, so a node held
+   or suspended wakes to a book in which every member is silent at once; what it then does is what every
+   node-admin does with an unheard member, [node investigation](lifecycles/node-investigation.md), whose
+   verdict decides. A node-admin that was re-created while it was held is refused at admission and
+   terminated when it comes back (Q110).
 
 ## 2. One start, its launch inputs
 
@@ -64,8 +65,8 @@ a relaunch starts from a seed: any live node serves
 `RDM_STOPPED_NODE_TTL` is the [stopped-node collector](node-identity-and-state.md#stopped-node-garbage-collector)'s
 ttl, read by the fabric-primary only.
 
-The two primary flags state what the node-admin must recover, not a seat it keeps: once it holds
-the current topology, its seats are the [election](fabric-node-lifecycle-elections.md)'s.
+The two primary flags state what the node-admin must recover, not a role it keeps: once it holds
+the current topology, whether it is a primary is the [election](fabric-node-lifecycle-elections.md)'s.
 
 ## 3. Start modes
 
@@ -74,10 +75,10 @@ The parameters select one of these modes:
 | mode | parameters | started by | what the node-admin does |
 |---|---|---|---|
 | **Day 0** | no mesh and no durable topology | a person | Starts the fabric as its fabric primary ([fabric.create](lifecycles/fabric-create.md)), then waits for the next node or mesh deployment request (a Build). |
-| **Create** | mesh, seed | a node-admin executing a Build | Runs [node.start](lifecycles/node-start.md) with FirstStart, its maker the accepting authority; once ready-for-traffic it takes part in elections. |
+| **Create** | mesh, seed | a node-admin executing a Build | Runs [node.start](lifecycles/node-start.md) with FirstStart, its maker the accepting primary; once ready-for-traffic it takes part in elections. |
 | **Recover** | mesh, seed, the exited node's data dir | a node-admin executing the recovery Build | node.create at the same path.name over the inherited data dir: same endpoint key, new NodeId, incarnation and port ([node recovery](lifecycles/node-recovery.md)). |
 | **Create as mesh primary** | mesh, seed, mesh primary | the fabric primary | A live peer mesh lost all its node-admins: node.create of a node-admin into it ([mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation) step 6), then the entry sequence (§4) and the mesh's missing node-admins (§4.3). |
-| **Fabric recovery** | mesh, seed, mesh primary, fabric primary | a person | Every node-admin is lost (catastrophic): the entry sequence (§4), then every mesh's missing node-admins. The relaunched node-admin is a new node over its inherited data dir: new node.id and incarnation, same path.name and endpoint key, new port. |
+| **Fabric recovery** | mesh, seed, mesh primary, fabric primary | a person | Every node-admin is lost (catastrophic): the entry sequence (§4), then every mesh's missing node-admins. The launched node-admin is a new node over its inherited data dir: new node.id and incarnation, same path.name and endpoint key, new port. |
 
 node.restart launches nothing: it is node.stop then node.start on the same process
 ([node restart](lifecycles/node-restart.md)).
@@ -104,16 +105,16 @@ member the sweep did not reach goes to [node recovery](lifecycles/node-recovery.
 [A node-admin joins the live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) step 6; the
 order across meshes is [fabric recovery](lifecycles/fabric-recovery.md)'s.
 
-### 4.4 Fabric-primary relaunch and who starts recovery
+### 4.4 Fabric-primary recovery and who starts it
 
-The sequence a relaunched fabric-primary runs from its durable map is
+The sequence a launched fabric-primary runs from its durable map is
 [fabric recovery](lifecycles/fabric-recovery.md); the durable topology is a contact map (rule 5).
 
 | event | who starts the node-admin | flow |
 |---|---|---|
 | a live peer mesh loses every node-admin | fabric-primary, same accepted Build, the mesh's own MeshId | node.create into the live mesh, maker admission/read, local topology read, own-mesh sweep, node recovery, restore own admins |
-| fabric-primary is relaunched into its own mesh | authorized relaunch on its durable data dir; the relaunched node-admin is a new node over the inherited data dir (new node.id, incarnation and port; same path.name and endpoint key) | no maker; durable-map topology read, own mesh first, same entry flow |
-| the fabric-primary's mesh loses every node-admin while other meshes live | the backbone's lowest ReadyForTraffic node-admin, seated by [elections §4.3](fabric-node-lifecycle-elections.md#43-fabric-primary) after the hold; same accepted Build, the mesh's own MeshId | seat row at the next revision; node.create of a node-admin into the lost mesh (inherited data dir only with exit proof, else a new one, R-FM2); committed handover back once it is Ready |
+| fabric-primary is launched again into its own mesh | a person's launch on its durable data dir; the launched node-admin is a new node over the inherited data dir (new node.id, incarnation and port; same path.name and endpoint key) | no maker; durable-map topology read, own mesh first, same entry flow |
+| the fabric-primary's mesh loses every node-admin while other meshes live | the backbone's lowest ReadyForTraffic mesh-primary, elected by [elections §4.3](fabric-node-lifecycle-elections.md#43-fabric-primary) at mesh investigation's decision step; same accepted Build, the mesh's own MeshId | the fabric row naming its mesh; node investigation of the lost mesh's node-admins, then node.create of a node-admin into it on the verdict (inherited data dir when `exited`, else a new one, R-FM2); hand-back once the node at the lost primary's path.name is Ready for one floor and is its mesh's mesh-primary |
 | every node-admin of every mesh is lost, nothing alive included ([fabric recovery](lifecycles/fabric-recovery.md#nothing-alive)) | person or script with mesh, seed and both primary flags, on fabric-primary's data dir | no Day 0; no maker; durable-map reads while a node is alive, own mesh first, then [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation) of the other meshes |
 
 ## 5. Join admission and topology reads
@@ -138,9 +139,9 @@ The Pending hand-off to a mesh's first admin is a row of [States: who sets each 
 
 - node.restart (same NodeId, incarnation, endpoint and port) and replacement (new NodeId at the
   same path.name) of a node-admin are Builds, one node-admin at a time per mesh (rule 2).
-- A Build that runs `node.connections.delete { scope: All }` on, stops, restarts or replaces a seat
-  holder runs [node.primary.update](lifecycles/node-primary-update.md) first: the holder, commanded from
-  above, moves its seats to its successor, who then commands the holder's step (rule 3).
+- A Build that runs `node.connections.delete { scope: All }` on, stops, restarts or replaces a
+  primary runs [node.primary.update](lifecycles/node-primary-update.md) first: the primary, commanded from
+  above, hands over to its successor, who then commands the old primary's step (rule 3).
 
 ### 6.1 Named-birth replace input
 
@@ -155,7 +156,7 @@ runtime, rebuilt from the Build action and the data-root runtime record. It emit
 the birth. Completion requires the NodeDeleted receipt of that exact birth. Source:
 RDM's `rebuild_absent_birth` in `rafka-node-admin-core`.
 
-## 7. Rafka storage and relaunch
+## 7. Rafka storage and recovery
 
 Inside Rafka, RDM's records live in the node's in-memory store (its scratchpad), then in
 the system topics through the [state-commit round](lifecycles/states.md#states).
@@ -165,12 +166,12 @@ go there directly afterwards.
 Every node-admin also keeps an on-disk copy of its fabric, meshes, nodes, connections,
 status and Build records. That copy is a snapshot taken when the fabric last reaches
 ready-for-traffic, not a continuously overwritten latest-state copy: the latest state
-can contain the change that brought the system down, so a relaunch from it can loop.
+can contain the change that brought the system down, so a recovery from it can loop.
 The next ready-for-traffic round replaces the on-disk snapshot.
 
 Only a person-started recovery with that storage attached reads the snapshot.
-An election or live authority transfer uses held current records, not this relaunch copy.
-Without attached storage, relaunch contacts a seed node and reads GetTopology; any live
+An election or live hand-over uses held current records, not this recovery copy.
+Without attached storage, recovery contacts a seed node and reads GetTopology; any live
 node serves that read. A node-admin joining a live mesh calls its maker for join admission and topology
 under §4.1. Stored, unversioned topology is only a contact map to a live own-mesh node,
 which supplies the current versioned snapshot. Stored topology never refreshes liveness.

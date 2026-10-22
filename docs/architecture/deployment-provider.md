@@ -21,7 +21,7 @@ pub enum ProviderKind {
 
 Unknown values are a bootstrap refusal. They never silently fall back to process.
 
-The established provider becomes fabric policy and is inherited by later node-admins and nodes. A Build request does not choose its provider. A joining admin whose local bootstrap value conflicts with established fabric policy refuses deployment authority by name.
+The established provider becomes fabric policy and is inherited by later node-admins and nodes. A Build request does not choose its provider. A joining admin whose local bootstrap value conflicts with established fabric policy refuses to deploy, by name.
 
 A runtime locator is meaningful only inside the **provider control domain** that owns it. The provider policy makes both the exact runtime locator and its control domain available as current control facts.
 
@@ -41,14 +41,14 @@ A multi-host provider must take one of two shapes; both are constraints on any p
 
 ```text
 A. remotely controllable provider domain
-   any eligible authority can adopt and control the published locator
+   any primary can adopt and control the published locator
 
 B. domain-local execution
-   the current authority stays the control-plane authority
+   the current primary stays the control-plane primary
    the exact runtime operation is routed to an executor that owns the published control domain
 ```
 
-What is built of this today is the refusal: a locator from another control domain is refused by name (`foreign-control-domain`), never acted on as if it were local. Authority and deployment locality are separate. Host or provider locality may constrain readiness or execution routing, never leadership ordering.
+What is built of this today is the refusal: a locator from another control domain is refused by name (`foreign-control-domain`), never acted on as if it were local. Being primary and deployment locality are separate. Host or provider locality may constrain readiness or execution routing, never leadership ordering.
 
 ---
 
@@ -88,7 +88,7 @@ Exact Rust naming may differ. The semantic cuts may not:
 
 - **Spawn records before it runs.** The launch record (`deployment.json` in the data dir) is durable before the executable runs, so a runtime that runs always has its record and an executor lost at any point of the spawn leaves `find` a record to read. A record that cannot be written stops the launch before the executable runs.
 - **Find is for the launcher's successor.** It tells a running launch, one that ran and exited, and one never launched apart, from the record and the domain, so a re-run after a crash mid-`DeployRuntime` adopts the runtime instead of starting a second one.
-- **Adopt is for any authority.** A successor reconstructs a control handle from a birth's published RuntimeFact alone, with no launcher and no completed Build receipts. The Day-0 admin a person or the test harness started enters the same tracking by adopting its own current runtime before Ready.
+- **Adopt is for any primary.** A successor reconstructs a control handle from a birth's published RuntimeFact alone, with no launcher and no completed Build receipts. The Day-0 admin a person or the test harness started enters the same tracking by adopting its own current runtime before Ready.
 - **Inspect reads, terminate acts, nothing else commands.** The provider sends no signal to a runtime but the stop ladder's and the terminate's. It never sends `SIGCONT`, never unpauses a container, never authors a node's status, never speaks Node RPC.
 
 ### 2.1 RuntimeFact is compact exact current-runtime identity
@@ -159,7 +159,7 @@ current runtime metadata of the birth
     the operational context needed to manage it: data_dir, the resolved executable, the launch's environment
 ```
 
-Required runtime-management metadata converges to every authority-capable admin as current birth projection state. It never stays launcher-private.
+Required runtime-management metadata converges to every node-admin as current birth projection state. It never stays launcher-private.
 
 `data_dir` is not part of RuntimeFact equality. RuntimeFact stays compact; management metadata rides the node's record and config ([node.config.update](lifecycles/node-config-update.md)).
 
@@ -209,12 +209,12 @@ What each state is, and what the mesh does with it:
 
 | state | meaning | proof value | the caller's act |
 |---|---|---|---|
-| `Running` | the exact runtime exists, is nonterminal and is not observed OS-suspended | the runtime is not gone; this proves neither that it answers nor that it is ready, however silent or loud the node | nothing is recovered or deleted; a silent `Running` birth follows [node recovery](lifecycles/node-recovery.md) steps 2-4 (tickle, TRUE OFFLINE, `held-running`, the R-FM1 hold and terminate) |
-| `OsStopped` | the operating system holds every task suspended | the exact runtime exists and is observed suspended: this proves neither exit nor a completed `node.stop`, and says nothing about whether the node would answer once the suspension ends | the mesh-primary records the durable status-row fact `os-stopped { since }` (surfaced on `node.get`, never a gossip `MemberStatus`), opens no R-FM1 hold, runs no `TerminateRuntime` for this observation, sends no signal, and re-inspects every recovery tick |
-| `Exited { code }` | the exact runtime ended | the only proof that the concrete runtime can no longer accept work | the caller writes the birth's exit-proof row durably before anything else, then its page continues (recovery, `node.deleted`) |
-| `Unknown` | the inspection could not tell | neither life nor exit | recorded as uncertainty; no hold, no terminate, no exit proof is inferred; the next tick asks again |
+| `Running` | the exact runtime exists, is nonterminal and is not observed OS-suspended | the runtime is not gone; this proves neither that it answers nor that it is ready, however silent or loud the node | [node investigation](lifecycles/node-investigation.md)'s `running` verdict: a silent `Running` birth is re-created, `TerminateRuntime` first ([node recovery](lifecycles/node-recovery.md)) |
+| `OsStopped` | the operating system holds every task suspended | the exact runtime exists and is observed suspended: this proves neither exit nor a completed `node.stop`, and says nothing about whether the node would answer once the suspension ends | node investigation's `os-stopped` verdict: re-created over a newly allocated data dir; an explicit node.delete skips the stop and terminates |
+| `Exited { code }` | the exact runtime ended | the concrete runtime can no longer accept work | node investigation's `exited` verdict: re-created over the inherited data dir; a delete proceeds to `node.deleted` |
+| `Unknown` | the inspection could not tell | neither life nor exit | node investigation's `unproven` verdict: re-created over a newly allocated data dir |
 
-`OsStopped` changes state only through the operating system. Entering it from `Running` cancels an open R-FM1 hold: the `held-running` row is removed and its pending `TerminateRuntime` is void; a runtime that resumes but stays unreachable opens a fresh hold under the ordinary rule, and the hold's terminate step inspects the exact runtime again immediately before it asks the provider to terminate: `Running` lets the request go; `OsStopped` or `Unknown` fails the step by name and requests nothing; `Exited` sends no signal and the step takes the exit proof. While the `os-stopped` fact is held, the recovery tick keeps inspecting the exact runtime: `Running` again clears the fact and RPC recovery proceeds through the ordinary ladder (a reached tickle; the pending lifecycle step resumes from its receipts, never a `node.start` selected because the provider reports `Running`); `Exited` is the ordinary exit proof; `Unknown` records the uncertainty. A new authority revalidates the stored fact with its own inspection: the fact is an observation, not permanent runtime truth. The fact is a typed keyed row like `held-running`: `NodeOsStoppedRow { node_id, name, incarnation_id, since, inspections }`, keyed by the exact birth, under `os-stopped` among the mesh's status rows with its own format marker, written and removed by the mesh-primary (removed on `Running` or `Exited`), folded by a successor only after its own inspection confirms it. An explicit `node.delete` of an OS-stopped birth stays available: it skips the Node RPC stop by name (a suspended process answers no call), runs `TerminateRuntime` on the exact handle as `terminate(Immediate)` (no graceful wait; nothing of the runtime is resumed), takes the exit proof and continues ([node.delete](lifecycles/node-delete.md)); explicit only, never from recovery, which respects suspension.
+`OsStopped` changes state only through the operating system. It is an answer of node.runtime.inspect and a verdict of node investigation like the others; nothing holds on it and nothing waits for it to change. An explicit `node.delete` of an OS-stopped birth stays available: it skips the Node RPC stop by name (a suspended process answers no call), runs `TerminateRuntime` on the exact handle as `terminate(Immediate)` (no graceful wait; nothing of the runtime is resumed) and continues ([node.delete](lifecycles/node-delete.md)).
 
 What stays inference: a runtime the operating system shows `Running` that answers nothing (a deadlock). No provider can see it; RPC silence and the R-FM1 hold are the only signal.
 
@@ -223,8 +223,8 @@ What stays inference: a runtime the operating system shows `Running` that answer
 The control domain is one host and pid namespace. The handle is `{ pid, start }`, where `start` is the kernel's start time of the pid, read at launch; a recycled pid never matches (`is(pid, start)`).
 
 - **Spawn.** The launch record is written to `<data_dir>/deployment.json` before the executable runs. The launcher's own `RDM_*`, `TRACEPARENT` and `TRACESTATE` never reach the child; the child sees exactly the launch contract its spec names.
-- **Inspect reads the live thread group, not the leader.** A process is gone only once every task of its thread group has exited: during `exit_group` the leader can read as a zombie while sibling threads still hold the group's sockets. The provider reads `/proc/<pid>/task/*/stat` for every task, and the same for tracked children: all live tasks in `T` or `t` is `OsStopped`; any live task in another state is `Running`; no live task, or `/proc/<pid>` gone with the start identity matched, is `Exited`; task files present but unreadable or partial is `Unknown`, never exit proof. The same reads serve the launcher's children and adopted runtimes alike.
-- **Exit code.** For a child the provider has the code from its wait. For an adopted process it does not: the process runtime records a deliberate exit in `<data_dir>/exit.json`, keyed to its deployment and incarnation, and only that exact record turns an unknown code into a proven one.
+- **Inspect reads the live thread group, not the leader.** A process is gone only once every task of its thread group has exited: during `exit_group` the leader can read as a zombie while sibling threads still hold the group's sockets. The provider reads `/proc/<pid>/task/*/stat` for every task, and the same for tracked children: all live tasks in `T` or `t` is `OsStopped`; any live task in another state is `Running`; no live task, or `/proc/<pid>` gone with the start identity matched, is `Exited`; task files present but unreadable or partial is `Unknown`. The same reads serve the launcher's children and adopted runtimes alike.
+- **Exit code.** For a child the provider has the code from its wait. For an adopted process it does not: the process runtime records a deliberate exit in `<data_dir>/exit.json`, keyed to its deployment and incarnation, and only that exact record supplies an unknown code.
 - **Signal stop and terminate.** `signal_stop` is `SIGTERM`. `terminate(Graceful { grace })` is `SIGTERM` then `SIGKILL` after `grace`; `terminate(Immediate)` is `SIGKILL`. Nothing else is ever sent.
 
 ### 2.7 The container provider
@@ -238,7 +238,7 @@ The control domain is one Docker daemon. The handle is `{ container id, init pid
 
 ### 2.8 Exit proof
 
-Once a handle is adopted or spawned, the provider's `Exited` for that exact handle is the proof that the concrete runtime can no longer accept work, and the only one. A RuntimeFact's presence proves neither running nor gone. An RPC failure, a failed dial, a closed endpoint, a timeout, an `unreached` tickle and the observer-inferred `Dead` prove nothing ([node.tickle](lifecycles/node-tickle.md)). The exit-proof row is written durably before any step rests on it; a later attempt reads the row and asks the provider again only for a birth with no row.
+Once a handle is adopted or spawned, the provider's `Exited` for that exact handle says the concrete runtime can no longer accept work. A RuntimeFact's presence says neither running nor gone. An RPC failure, a failed dial, a closed endpoint, a timeout, an `unreached` tickle and the observer-inferred `Dead` say nothing by themselves ([node.tickle](lifecycles/node-tickle.md)): [node investigation](lifecycles/node-investigation.md)'s verdict is the one decision.
 
 ## 3. The pipeline's steps
 
@@ -267,7 +267,7 @@ The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRunt
 
 The successor's management cut: from a current membership birth's RuntimeFact and runtime metadata, resolve the control domain, adopt the published runtime (or route to an executor of its domain), and inspect or terminate as the Build requires.
 
-A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the exact handle, the provider's exit proof, then identity release with storage retained. A `node.delete` of a target whose provider state is `OsStopped` skips the stop by name and begins at `TerminateRuntime`: the stop cannot execute, and the delete was explicitly commanded. The R-FM1 recovery of a hung runtime begins with the same `TerminateRuntime { node_id, incarnation, handle }` step after its hold, and only then. Externally visible steps reconcile forward; published topology is never blindly reversed.
+A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the exact handle, then identity release with storage retained. A `node.delete` of a target whose provider state is `OsStopped` skips the stop by name and begins at `TerminateRuntime`: the stop cannot execute, and the delete was explicitly commanded. The recovery of a birth whose verdict is `running` begins with the same `TerminateRuntime { node_id, incarnation, handle }` step. Externally visible steps reconcile forward; published topology is never blindly reversed.
 
 ## 4. Storage policy and the data dir
 
@@ -295,8 +295,8 @@ RDM deletes nothing on disk, ever. Rafka's per-kind defaults (broker and node-ad
 | span | emitted by | fields |
 |---|---|---|
 | `rdm.node_admin.deployment.update.via-step` | the pipeline, per step | build_id, attempt, node, step (`DeployRuntime`, `PrepareStorage`, `TerminateRuntime`, …), outcome |
-| `rdm.node_admin.node.resolve.via-provider-inspection` | the caller of node.runtime.inspect | node, node_id, incarnation_id, inspector, handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), exit_code, exit_proof (`put` / `held` / none), reason |
+| `rdm.node_admin.node.resolve.via-provider-inspection` | the caller of node.runtime.inspect | node, node_id, incarnation_id, inspector, handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), exit_code, reason |
 | `rdm.node_admin.runtime.reject.via-<reason>` | adopt | `invalid-fact`, `other-provider`, `foreign-control-domain` |
 | `rdm.node_admin.node.update.via-data-dir-lost`, `via-data-dir-unreadable` | PrepareStorage | node, node_id, incarnation_id, path, cause |
 
-Environment: `MESH_SPAWN_TYPE`, `RDM_CONTAINER_SUBNET_POOL`, `RDM_REQUIRE_CONTAINER`, `RDM_HUNG_HOLD_FLOORS`, `RDM_DATA_DIR_GONE_FLOORS`, `RDM_INHERITED_DATA_DIR` (the table in `CLAUDE.md`).
+Environment: `MESH_SPAWN_TYPE`, `RDM_CONTAINER_SUBNET_POOL`, `RDM_REQUIRE_CONTAINER`, `RDM_DATA_DIR_GONE_FLOORS`, `RDM_INHERITED_DATA_DIR` (the table in `CLAUDE.md`).

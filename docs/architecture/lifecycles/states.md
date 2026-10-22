@@ -8,7 +8,7 @@ lives on its own page; op fields and enums live only in the
 [envelope](../node-rpc-envelope.md#status-op-0x1b-rdm); how a state travels to peers is
 [gossip](../gossip.md#31-frame-catalog). Application state-sync is an external integration contract.
 
-- **Fabric:** `pending` → `state-sync` → `state-commit` → `ready-for-traffic`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the fully crashed arm upon exact provider exit proof (both arms, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status ([mesh investigation](mesh-investigation.md)). Until the initial fabric first reaches ready-for-traffic, no seat moves and no caller workflow writes a row ([the initial fabric](#fabric-not-ready)).
+- **Fabric:** `pending` → `state-sync` → `state-commit` → `ready-for-traffic`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the no-member-answers arm's verdict (both arms, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status ([mesh investigation](mesh-investigation.md)). Until the initial fabric first reaches ready-for-traffic, no primary changes and no caller workflow writes a row ([the initial fabric](#fabric-not-ready)).
 - **Mesh:** `pending` → `ready-for-traffic` → `deleting` → `deleted`. MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status. A mesh is alive while it holds a node; only its mesh-primary leaves it, always last, and the mesh is then dead and never restarted. A mesh id is never reissued; deleted is final. A deleted mesh releases its name within the fabric as a deleted node releases its name within its path; a mesh created again under that name is a new mesh with a new id.
 - **Node:** starting → pending → ready-for-traffic → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted under the [node object contract](../node-rpc-envelope.md#typed-object-contract). Stopped is a status: a live, stopped process. Start rejoins that same process and restores readiness only after all start gates pass. Delete proves exact runtime exit, writes the durable row deleted and releases identity/name; it is not a return to readiness.
 - **Node row silence marks:** a node row may carry the observer-inferred marks `PendingReconnect` and `Dead` (TRUE OFFLINE), written by the node's mesh-primary. They are never themselves a reason to act ([node recovery](node-recovery.md)).
@@ -30,11 +30,11 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
 | node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |
-| node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's exact provider exit proof |
+| node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step receipt |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rafka-node-admin-core`) |
 | mesh ReadyForTraffic | the fabric-primary | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
-| mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' exact exit proofs; never an op |
+| mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
 | fabric state-sync, state-commit, ready-for-traffic | the fabric-primary | the completed round below it |
 
 The internal report and apply that move a node's status are [node status](node-status.md).
@@ -66,10 +66,10 @@ Each workflow's directed calls, stream events and gossip are on its page in the
 ### The initial fabric before ready-for-traffic
 
 Until the initial fabric first reaches ready-for-traffic it is pending, in state-sync or in
-state-commit, and nothing that moves a seat or writes caller state runs. These are refused by
+state-commit, and nothing that changes a primary or writes caller state runs. These are refused by
 name, `fabric-not-ready`:
 
-- a Build or update that would move a fabric-primary or mesh-primary seat
+- a Build or update that would change the fabric-primary or a mesh-primary
   ([node.primary.update and node.fabric-primary.update](node-primary-update.md));
 - [mesh.delete](mesh-delete.md);
 - every node workflow a caller submits that writes a row: node.stop, node.start, node.restart,
@@ -80,8 +80,8 @@ ready-for-traffic, runs as usual. Once the fabric is ready-for-traffic these are
 usual. A Build is refused at build.create with the Build family's existing `Rejected` refusal
 ([Build refusals](../node-rpc-envelope.md#fabric-not-ready-refusal)).
 The reason is that before state-commit the Fabric row, each mesh's Mesh row and its members'
-Node rows live only in their holders' scratchpads, so a seat that moved or a row written in that
-window is lost with its holder or cannot be read by its successor.
+Node rows live only in their writers' scratchpads, so a primary change or a row written in that
+window is lost with its writer or cannot be read by its successor.
 
 ## Routing
 
@@ -134,8 +134,8 @@ and leaves the live process stopped. node.get answers Current { parked }.
 node.start is the only transition out of stopped.
 It retains node.id, incarnation, endpoint key, bound port and bin and completes all
 start gates before ready-for-traffic. node.restart composes that stop/start; it is not
-an exit/relaunch. node.delete proceeds from stopped, as deleting, to exact provider exit proof
-and identity release, deleted. Silence is never exit proof.
+an exit and a new birth. node.delete proceeds from stopped, as deleting, to `TerminateRuntime`
+and identity release, deleted. Silence decides nothing; node investigation does.
 
 The [stopped-node collector](../node-identity-and-state.md#stopped-node-garbage-collector)
 submits ordinary node.delete Builds after the configured stopped-node TTL, skipping
@@ -144,11 +144,11 @@ the sweep; retained storage is not removed by collection.
 
 ## Leadership
 
-Node status alone does not surrender a primary seat. Ordinary `node.connections.delete { scope: All }`
-or node.stop of a seat holder requires [node.primary.update](node-primary-update.md) first
-(node.fabric-primary.update for the fabric seat);
-on the initial fabric no seat moves before ready-for-traffic ([fabric-not-ready](#fabric-not-ready)).
-What fabric.delete does with seats is [fabric.delete](fabric-delete.md) and [Elections §6](../fabric-node-lifecycle-elections.md#6-fabricdelete-moves-no-seat). Traffic eligibility, committed leadership and exact runtime exit
+Node status alone does not change a primary. Ordinary `node.connections.delete { scope: All }`
+or node.stop of a primary requires [node.primary.update](node-primary-update.md) first
+(node.fabric-primary.update for the fabric-primary);
+on the initial fabric no primary changes before ready-for-traffic ([fabric-not-ready](#fabric-not-ready)).
+What fabric.delete does with the primaries is [fabric.delete](fabric-delete.md) and [Elections §6](../fabric-node-lifecycle-elections.md#6-fabricdelete-moves-no-primary). Traffic eligibility, the election and the runtime's exit
 are separate facts.
 
 ## The round checklist
@@ -160,12 +160,12 @@ are separate facts.
   status changes do not wait for the entire round checklist.
 - A new primary, through election or recovery, re-sends the current round.
   Members already done check in again, and the checklist rebuilds itself.
-- A member leaves the checklist only through the accepted removal and a proven exit,
+- A member leaves the checklist only through the accepted removal or its re-creation,
   never by a timer.
 - A check-in is a message the member owes its primary ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes),
   under `Budget::Owed`): delivered until the primary answers it, ended only by that answer, the
-  primary's proven exit or accepted removal, or the member dropping it; re-owed to the new holder
-  when the primary's seat moves; never ended by a timer. The primary counts a check-in once per
+  primary's re-creation or accepted removal, or the member dropping it; re-owed to the new primary
+  when the primary changes; never ended by a timer. The primary counts a check-in once per
   (round, birth) and answers a repeat `AlreadyApplied`.
 - A primary counts only check-ins that arrive after it receives this round.
 - State-commit is a FABRIC state. A node's or mesh's state-committed reply is a check-in,
