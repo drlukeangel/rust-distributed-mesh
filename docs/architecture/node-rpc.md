@@ -3,7 +3,7 @@
 
 This page owns the Node RPC runtime, how one invocation executes: the resolver, the pool, the dispatch pipeline after the target, admission and memory, supervision, `HandlerScope` and `ReplySink`, the `RpcOutcome` algebra, budgets, connections-deleting behaviour and retry guidance. The wire (the target, the context, the typed body, the op ledger, the reserved stream codes and every schema) is [node-rpc-envelope.md](node-rpc-envelope.md).
 
-**Crates:** RDM `rafka-node-rpc` (the runtime) and `rafka-node-rpc-contract` (descriptor, framing and outcome vocabulary).
+**Crates:** RDM `rdm-transport` (the runtime) and `rdm-core` (descriptor, framing and outcome vocabulary).
 
 **Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability, the protocol carrier-policy hook and direct reconnect reconciliation; [`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md) owns Iroh/QUIC transport mechanics; [`ops-protocol-and-usage.md`](/home/admin/rafka-v2/docs/architecture/ops-protocol-and-usage.md) owns broker `DataFrame` operation semantics; [`readers-and-writers.md`](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md) owns reader/writer attempt policy; [`lifecycles/states.md`](lifecycles/states.md) owns node states and the primaries, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; [`internal-mesh-auth.md`](/home/admin/rafka-v2/docs/architecture/internal-mesh-auth.md) owns the gateway↔broker trust model; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#on-a-connection).
 
@@ -11,7 +11,7 @@ This page owns the Node RPC runtime, how one invocation executes: the resolver, 
 
 ## 1. The one-sentence rule
 
-**The owning domain chooses one exact semantic node; the connections projection says whether that exact node is Direct, Proxy via one exact carrier, or unreachable under the protocol's carrier policy; `rafka-node-rpc` executes the selected direct leg or one-hop carried invocation over Iroh/QUIC and reports exactly what is known about that attempt.**
+**The owning domain chooses one exact semantic node; the connections projection says whether that exact node is Direct, Proxy via one exact carrier, or unreachable under the protocol's carrier policy; `rdm-transport` executes the selected direct leg or one-hop carried invocation over Iroh/QUIC and reports exactly what is known about that attempt.**
 
 Everything else in this document protects that sentence from convenience shortcuts.
 
@@ -31,9 +31,9 @@ The generic crates remain siblings. Do not add a mesh-transport -> node-rpc or n
 
 ~~~mermaid
 flowchart TB
-    ME[rafka-mesh-entity\nidentity/value types] --> MT[rafka-mesh-transport\ngossip / Iroh transport]
+    ME[rdm-core\nidentity/value types] --> MT[rdm-transport\ngossip / Iroh transport]
     ME --> NR[rafka-node-rpc\nresolver + client/runtime]
-    NC[rafka-node-rpc-contract\ndescriptor / framing / outcome] --> NR
+    NC[rdm-core\ndescriptor / framing / outcome] --> NR
     MO[rafka-mesh-ops\nRafka product contracts/codecs] --> PC
 
     MT --> PC[process composition\nnode-admin / rpc node / downstream node-base]
@@ -45,7 +45,7 @@ flowchart TB
 
 The arrows mean "is consumed by."
 
-### 3.1 rafka-mesh-transport
+### 3.1 rdm-transport
 
 Owns Iroh/gossip transport mechanics and current membership dissemination. It does not import Node RPC to become its resolver adapter.
 
@@ -53,7 +53,7 @@ One live Iroh Endpoint belongs to one process. Router/ALPN multiplexes gossip an
 
 ### 3.2 rafka-mesh-ops
 
-Rafka owns its product protocol descriptors, codecs, op allocations and request/reply payloads in `rafka-mesh-ops`, and adds its rows to the [op ledger](node-rpc-envelope.md#the-op-ledger) through the server builder. RDM `rafka-node-rpc-contract` owns the generic protocol and envelope vocabulary and the core ledger rows. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
+Rafka owns its product protocol descriptors, codecs, op allocations and request/reply payloads in `rafka-mesh-ops`, and adds its rows to the [op ledger](node-rpc-envelope.md#the-op-ledger) through the server builder. RDM `rdm-core` owns the generic protocol and envelope vocabulary and the core ledger rows. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
 
 ### 3.3 rafka-node-rpc
 
@@ -164,7 +164,7 @@ The layers are deliberately three, not two:
 |---|---|
 | domain state machine | semantic destination, leg order, retries, next leg |
 | `connections` / RDM Mesh EF | Direct / Proxy-via-carrier / unreachable answer for that destination; Proxy validity and reconnect |
-| `rafka-node-rpc` | execution and certainty for the selected direct or one-hop carried invocation |
+| `rdm-transport` | execution and certainty for the selected direct or one-hop carried invocation |
 
 `rafka-reach-reroute` adapts Rafka's callers to the middle layer and owns no route truth.
 
@@ -200,7 +200,7 @@ pub trait StreamingNodeProtocol: NodeProtocol {
 
 ## 9. Protocol catalog and op allocation
 
-The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rafka-node-rpc-contract`, a product adds its rows through the server builder, and the build makes the served catalog once at boot. Op uniqueness, retired ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
+The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rdm-core`, a product adds its rows through the server builder, and the build makes the served catalog once at boot. Op uniqueness, retired ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
 
 A descriptor is the envelope's `NodeProtocol` declaration plus two runtime facts: unary or server-streaming, and its default admission (§17).
 
@@ -472,7 +472,7 @@ Pool identity:
 (scope, peer node, incarnation)
 ~~~
 
-This is `PoolKey` in `rafka-node-rpc` (`scope`, `peer`, `incarnation`). For Rafka, `scope` is the shard: the Rafka adapter keeps shard scope in the key and never collapses it.
+This is `PoolKey` in `rdm-transport` (`scope`, `peer`, `incarnation`). For Rafka, `scope` is the shard: the Rafka adapter keeps shard scope in the key and never collapses it.
 
 The endpoint slot and its freshness are facts the pool holds per entry. The caller checks them against the resolver before dial; they are never key fields and never on the wire. Every request pins an exact target slot/freshness before dispatch.
 

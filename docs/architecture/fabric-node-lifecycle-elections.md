@@ -7,7 +7,7 @@ primary: the one rule, its inputs (the recorded primaries and the current member
 staleness-floor rule, and the hand-over by [node.primary.update](lifecycles/node-primary-update.md).
 Other pages consume the elected primary and link here.
 
-RDM's `rafka-node-admin-core` implements the one election; Rafka binds its facts to it and consumes the
+RDM's `rdm-admin` implements the one election; Rafka binds its facts to it and consumes the
 elected primaries.
 
 ---

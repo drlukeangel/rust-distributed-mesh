@@ -127,7 +127,7 @@ Valid baggage propagates whole; only `test_case`, `scenario` and `operation` are
 to generic span attributes. The allowlist does not remove other keys from the carried value.
 
 A `caller_system` matches `[a-z0-9-]+`, and a part that is dropped is never truncated
-(RDM's `CallContext::sanitized` in `rafka-node-rpc-contract`).
+(RDM's `CallContext::sanitized` in `rdm-core`).
 
 ## Section 2: the body
 
@@ -334,16 +334,16 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build and drives topology Builds; a mesh-primary drives drift attempts of the current Build inside its mesh. [ClaimAttempt 0x1C](#buildclaim-op-0x1c-rdm) is the attempt claim; [FetchBuildFacts 0x1F](#build-facts-op-0x1f-rdm) is the facts read | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 | build.attempt.run | [Build 0x20](#build-op-0x20-rdm); fabric-primary calls the named executor with the won claim | receipt replay, current Blocked, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 
-Codec evidence: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/status.rs::StatusRequest`
+Codec evidence: `crates/rdm-core/src/status.rs::StatusRequest`
 (DeclareNodeState, ApplyNodeState, ProbeNodeState; StopNode and StartNode are reserved there),
 `crates/rdm-core/src/node_command.rs::NodeCommandRequest` (DeleteConnections, StopNode, StartNode),
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/join.rs::JoinRequest`,
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/topology.rs::TopologyRequest`,
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_facts.rs::BuildFactsRequest` and
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_claim.rs::BuildClaimRequest`. The
-request target is `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/framing.rs::Target`. The
+`crates/rdm-core/src/join.rs::JoinRequest`,
+`crates/rdm-core/src/topology.rs::TopologyRequest`,
+`crates/rdm-core/src/build_facts.rs::BuildFactsRequest` and
+`crates/rdm-core/src/build_claim.rs::BuildClaimRequest`. The
+request target is `crates/rdm-core/src/framing.rs::Target`. The
 request-commit certainty boundary is
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/outcome.rs::RpcOutcome`.
+`crates/rdm-core/src/outcome.rs::RpcOutcome`.
 
 ### Node properties
 
@@ -394,7 +394,7 @@ is ready. A node-admin waits until its primary is filled and its view holds it;
 an rpc node waits until it joins its mesh. The rejection span is
 `rdm.node_rpc.request.reject.via-not-ready`. This door is the generic serving gate, not a
 fabric traffic-opening declaration. Source:
-`planned:rust-distributed-mesh/crates/rafka-node-rpc/src/server.rs::with_ready_gate`.
+`crates/rdm-transport/src/server.rs::with_ready_gate`.
 
 NotReady, on every op and from every handler, means one thing: the door or the handler cannot
 serve this call yet, and the reason says which. It is never a lifecycle fact about the subject.
@@ -491,7 +491,7 @@ evidence includes the target node's action, not only the node-admin's. Gossip ca
 CallContext: a gossip frame is correlated by identity ([gossip correlation](gossip.md#gossip-correlation)),
 never by a W3C parent edge.
 
-The Node RPC runtime (`rafka-node-rpc`) emits:
+The Node RPC runtime (`rdm-transport`) emits:
 
 ```text
 rdm.node_rpc.request.serve.via-direct
@@ -517,7 +517,7 @@ rdm.node_rpc.stream.serve.via-terminal
 rdm.node_rpc.stream.reject.via-protocol-violation
 ```
 
-The live resolver's membership updates (`rafka-node-admin-core`, `rafka-node-rpc-testkit`):
+The live resolver's membership updates (`rdm-admin`, `rdm-test`):
 
 ```text
 rdm.node_rpc.node.update.via-membership
@@ -525,8 +525,8 @@ rdm.node_rpc.node.remove.via-membership
 rdm.node_rpc.node.reject.via-membership
 ```
 
-The testkit oracles and the proof product's own families (`rafka-node-rpc-testkit`,
-`rafka-node-base`) are RDM-owned test and proof instrumentation, never product acceptance
+The testkit oracles and the proof product's own families (`rdm-test`,
+`rdm-node`) are RDM-owned test and proof instrumentation, never product acceptance
 evidence:
 
 ```text
@@ -573,7 +573,7 @@ operation
 
 ## Ping, op `0x01`, core
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/ping.rs::PingRequest`.
+Contract source: RDM `crates/rdm-core/src/ping.rs::PingRequest`.
 
 Direction: peer. Any mesh member calls an exact member; that member serves it. Request ceiling 64 KiB; reply ceiling 64 KiB + 64 bytes. Not forwardable. Typed refusals are the six refusal variants below. Caller/server emit the runtime spans above with this op.
 
@@ -595,9 +595,9 @@ pub enum PingReply {
 
 ## Forward, op `0x1A`, core
 
-Contract source: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/forward.rs::ForwardRequest`;
-reply variants and count: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/forward.rs::ForwardReply`
-and `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/forward.rs::Forward`.
+Contract source: `crates/rdm-core/src/forward.rs::ForwardRequest`;
+reply variants and count: `crates/rdm-core/src/forward.rs::ForwardReply`
+and `crates/rdm-core/src/forward.rs::Forward`.
 Forward is a core op served by every node, node-admins included. Direction: peer. The source
 calls an exact carrier; the carrier makes one direct inner call and never chooses a different
 target or another carrier. Not itself forwardable. Forward is a control-plane call and keeps nothing; a
@@ -678,8 +678,8 @@ dial: an overall budget uses deadline minus now; a split budget uses its reply b
 Forwarding never resets a caller's deadline to the default.
 The carrier bounds its inner call by remaining_ms minus FORWARD_REPLY_RESERVE (100 ms).
 The reserve covers transport and decode only; it is not connection-fact bookkeeping time.
-See `planned:rust-distributed-mesh/crates/rafka-node-rpc/src/client.rs::open` and
-`planned:rust-distributed-mesh/crates/rafka-node-rpc/src/forward.rs::carry_once`.
+See `crates/rdm-transport/src/client.rs::open` and
+`crates/rdm-transport/src/forward.rs::carry_once`.
 
 Reply position 13 is NoInnerBudget; REPLY_VARIANTS is 14. If remaining minus reserve is
 <= 0, the carrier emits `rdm.node_rpc.request.reject.via-forward-budget-spent`, makes no
@@ -692,7 +692,7 @@ write happens after the reply and is never on the reply path. Outer and inner ca
 
 ## Status, op `0x1B`, rdm
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/status.rs::StatusRequest`.
+Contract source: RDM `crates/rdm-core/src/status.rs::StatusRequest`.
 
 Direction: upward for declarations; downward for applies and probes. An ordinary node declares to its mesh-primary node-admin. Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own ([node.status](lifecycles/node-status.md)); a mesh-primary declares its mesh state to the fabric-primary. The primary applies/probes the exact node birth; the fabric-primary applies mesh state at its bootstrap admin and fabric events at its mesh-primary.
 
@@ -880,7 +880,7 @@ pub enum RetryOn {
 }
 ```
 
-`ConfigOverCap` is `planned:rust-distributed-mesh/crates/rafka-mesh-entity/src/digest.rs::ConfigOverCap`.
+`ConfigOverCap` is `crates/rdm-core/src/digest.rs::ConfigOverCap`.
 
 <a id="fabric-round-command-pairs"></a>
 
@@ -958,7 +958,7 @@ in the accepted Build's durable operation records, scoped to
 trust. The fabric-primary must read and validate those records before it accepts the handoff;
 a reference alone is not terminal proof. No storage API name is fixed here. RuntimeFact uses
 RDM's exact deployment/provider/control-domain/locator identity, defined in
-`planned:rust-distributed-mesh/crates/rafka-mesh-entity/src/runtime.rs::RuntimeFact`.
+`crates/rdm-core/src/runtime.rs::RuntimeFact`.
 
 The referenced manifest records the accepted roster of exact births, the final primary
 that remains running, and a provider terminal receipt for every other roster entry.
@@ -985,7 +985,7 @@ mesh-primary's exit; a separate node.delete, with the fabric-primary as executor
 
 ## BuildClaim, op `0x1C`, rdm
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_claim.rs::BuildClaimRequest`.
+Contract source: RDM `crates/rdm-core/src/build_claim.rs::BuildClaimRequest`.
 
 Direction: upward, to the fabric-primary, which writes every Build record: a mesh-primary claims its mesh's drift attempt through it, and the fabric-primary claims a topology Build's attempt itself. The claim is one record at `(build_id, mesh, attempt)` in the Build journal, written once by the fabric-primary; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself, reporting its receipts up the attempt's stream. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
 
@@ -1129,10 +1129,10 @@ have the runtime causal edge; handler evidence identifies the exact joining birt
 
 ## Topology, op `0x1E`, rdm
 
-Contract source: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/topology.rs::StoredNode`,
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/topology.rs::TopologyRequest` (request),
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/topology.rs::TopologyReply` (reply), and
-`planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/topology.rs::Topology` (reply count).
+Contract source: `crates/rdm-core/src/topology.rs::StoredNode`,
+`crates/rdm-core/src/topology.rs::TopologyRequest` (request),
+`crates/rdm-core/src/topology.rs::TopologyReply` (reply), and
+`crates/rdm-core/src/topology.rs::Topology` (reply count).
 Direction: peer read, any node → any node. Every node serves it. Read-only: the target
 changes no state because of the read. Not forwardable: this is a server-streaming entry.
 The request ceiling is 4 KiB and reply ceiling is 8 KiB. Meshes are named by String on the
@@ -1214,8 +1214,8 @@ It serves only a mesh the maker holds no snapshot of, never the maker's own mesh
 snapshot wins. The reader never installs Stored as topology: it uses the map only to reach
 a live node of its own mesh. A read from a node of another mesh installs topology only for
 other meshes and holds none of the reader's own mesh as heard.
-Serving: `planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/topology_read.rs::StoredMap` and
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/topology_read.rs::TopologyDoor`.
+Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
+`crates/rdm-node/src/topology_read.rs::TopologyDoor`.
 
 Caller span: `rdm.node_rpc.request.update.via-call`, op=0x1E. Server:
 `rdm.node_rpc.request.serve.via-direct`, child `rdm.mesh.topology.serve.via-read`, with
@@ -1230,9 +1230,9 @@ and [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery).
 
 ## Build-facts, op `0x1F`, rdm
 
-Contract source: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_facts.rs::BuildFactsRequest`
-and `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_facts.rs::BuildFactsReply`;
-ledger: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/catalog.rs::core_ledger`.
+Contract source: `crates/rdm-core/src/build_facts.rs::BuildFactsRequest`
+and `crates/rdm-core/src/build_facts.rs::BuildFactsReply`;
+ledger: `crates/rdm-core/src/catalog.rs::core_ledger`.
 Direction: peer read between node-admins. RDM owns this server stream; it is not
 forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes;
 reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered.
@@ -1268,9 +1268,9 @@ The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
 unreadable-build, behind-floor. no-pointer, which names no Build, reads `FetchCurrentBuild`: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads `FetchBuildFacts` of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins,
 then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms
-doubling to 4 s. Source: `planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
-`planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
-`planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::BACKOFF_CAP`.
+doubling to 4 s. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
+`crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
+`crates/rdm-admin/src/fetch_build.rs::BACKOFF_CAP`.
 Responder spans: `rdm.node_admin.build.serve.via-fetch-facts`,
 `rdm.node_admin.build.reject.via-unservable-fact`. Requester spans:
 `rdm.node_admin.build.update.via-fetch-facts`, `rdm.node_admin.build.reject.via-fetch-incomplete`,
@@ -1279,7 +1279,7 @@ Generic RPC call/serve spans carry op=0x1F. Typed refusals are the reply variant
 
 ## Build, op `0x20`, rdm
 
-Contract source: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build.rs::BuildRequest`.
+Contract source: `crates/rdm-core/src/build.rs::BuildRequest`.
 
 The `build` family is RDM-owned, live and canonical. RDM accepts, drives, reads and
 deletes Builds only through Node RPC. An older node answers `UNSERVED_OP` by name for
@@ -1301,7 +1301,7 @@ The fabric-primary accepts **every** Build and drives every topology Build: it c
 A call covers one contiguous run of operations with the same executor, in plan
 order. Mesh creation and deletion, plus members of any mesh with no mesh-primary,
 run in process at the fabric-primary and feed the same outer stream
-(`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/executor.rs::executor_for`). Hand-off is the fabric-primary's next claim and call.
+(`crates/rdm-admin/src/executor.rs::executor_for`). Hand-off is the fabric-primary's next claim and call.
 
 ### Frames, durable receipts and reattachment
 
@@ -1373,12 +1373,12 @@ the outer trace under the same rule. A dispatch refused after the fabric-primary
 its span.
 
 Mechanism:
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/build_claim.rs::ClaimDoor` (claim door),
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/executor.rs::executor_for` (executor_for),
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/build_state.rs::BuildStateAdapter` (adopt_claim),
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/build_state.rs::BuildAttemptClaim` (claim row),
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/build_state.rs::BuildStepReceipt` (step receipt) and
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/build_state.rs::StepOutcome` (Complete/Failed outcomes).
+`crates/rdm-admin/src/build_claim.rs::ClaimDoor` (claim door),
+`crates/rdm-admin/src/executor.rs::executor_for` (executor_for),
+`crates/rdm-admin/src/build_state.rs::BuildStateAdapter` (adopt_claim),
+`crates/rdm-admin/src/build_state.rs::BuildAttemptClaim` (claim row),
+`crates/rdm-admin/src/build_state.rs::BuildStepReceipt` (step receipt) and
+`crates/rdm-admin/src/build_state.rs::StepOutcome` (Complete/Failed outcomes).
 
 build.attempt.run carries the stored BuildAttemptClaim { build_id, attempt,
 executor } plus the Won reply's context; its whole body is `AttemptRun` below.
@@ -1622,7 +1622,7 @@ nothing in this repository serves them.
 
 ## Proof-store, op `0x70`, testkit
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-testkit/src/proof_store.rs::ProofRequest`.
+Contract source: RDM `crates/rdm-test/src/proof_store.rs::ProofRequest`.
 
 Direction: peer. Test clients call a testkit node that serves its durable proof store. Forwardable. Mismatch, TooLarge and StoreFailed are typed refusals; runtime refusals are in ProofReply. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
@@ -1669,7 +1669,7 @@ pub enum ProofReply {
 
 ## Resolve-probe, op `0x71`, testkit
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-testkit/src/resolve_probe.rs::ResolveRequest`.
+Contract source: RDM `crates/rdm-test/src/resolve_probe.rs::ResolveRequest`.
 
 Direction: peer. Test clients call the testkit node whose held resolver they inspect. Forwardable. BadTarget is a typed refusal; Gone, Unknown and Unavailable are resolver results. Server additionally emits `rdm.node_rpc.resolve_probe.serve.via-request`. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
@@ -1706,7 +1706,7 @@ pub enum ResolveReply {
 
 ## Declare-probe, op `0x72`, testkit
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-testkit/src/declare_probe.rs::DeclareRequest`.
+Contract source: RDM `crates/rdm-test/src/declare_probe.rs::DeclareRequest`.
 
 Direction: peer. Test clients call a testkit node and ask it to declare upward to the selected primary. Not forwardable. BadTarget is a typed refusal; Answered carries the actual status outcome/reply. Server additionally emits `rdm.node_rpc.declare_probe.serve.via-request`. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
@@ -1734,7 +1734,7 @@ pub enum DeclareReply {
 
 ## Originate, op `0x73`, testkit
 
-Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-testkit/src/originate.rs::OriginateRequest`.
+Contract source: RDM `crates/rdm-test/src/originate.rs::OriginateRequest`.
 
 Direction: peer. Test clients call a testkit node to originate calls or control its test fault/evidence seams. Not forwardable. BadDestination and the runtime refusal variants are typed refusals. ProofOp here is local to the originate family, distinct from the proof-store operation label. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 

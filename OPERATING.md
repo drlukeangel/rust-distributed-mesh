@@ -52,7 +52,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 | Nodes | Per-node state; restart and remove (each a Build) | node-admin |
 | Builds | The accepted Build and the Builds the UI submitted, with attempts and steps | node-admin `GET /api/builds` |
 | Boot Waterfall | A node's boot trace | Jaeger |
-| Chaos | Per-node stop, continue and kill of its exact runtime; network cut of a node or a peer mesh; each fault's typed outcome. The fabric-primary is never a target. | `rafka-chaos` |
+| Chaos | Per-node stop, continue and kill of its exact runtime; network cut of a node or a peer mesh; each fault's typed outcome. The fabric-primary is never a target. | `rdm-test` faults |
 | Timeline | The running log, newest first, from the nodes' own span records in `RDM_EVIDENCE_DIR`; high-volume events behind a toggle | evidence folder |
 
 ## Common operations

@@ -154,7 +154,7 @@ A replace of a birth absent from the view runs node.delete against its exact
 runtime, rebuilt from the Build action and the data-root runtime record. It emits
 `rdm.node_admin.node.update.via-rebuilt-birth` and refuses by name when no record names
 the birth. Completion requires the NodeDeleted receipt of that exact birth. Source:
-RDM's `rebuild_absent_birth` in `rafka-node-admin-core`.
+RDM's `rebuild_absent_birth` in `rdm-admin`.
 
 ## 7. Rafka storage and recovery
 

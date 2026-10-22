@@ -189,14 +189,14 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    maker. It installs complete topology snapshots and obtains its control/status context.
 3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
    can exit while the mesh has no node-admin. It installs complete snapshots and joins its mesh
-   channel using member addresses (RDM's `get_topology` in `rafka-node-admin-core`'s reenter module).
+   channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module).
    A mesh with no live node has no local node to read, so there is no local topology read, and no
    member address to join from: its mesh channel is created again under the mesh's MeshId by its first
    listener, the created node-admin.
 4. Before it is ready, it sends one bounded Ping, once, to every node IN ITS OWN MESH
    (a 2 s deadline each, at most 8 at once). A reply identifies a live exact birth; no reply
    is "not yet reached", never death. Ready waits for the sweep to finish (RDM's `start_booted` in
-   `rafka-node-admin-core`'s admin module and `enter_existing_mesh` in its reenter module).
+   `rdm-admin`'s admin module and `enter_existing_mesh` in its reenter module).
    It then becomes ready-for-traffic and is mesh-primary under the election; as the
    mesh's successor primary it adopts the mesh's held state
    ([fabric primary §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)).

@@ -1,6 +1,6 @@
 # Chaos kit
 
-`crates/rafka-chaos` holds the fault backends a scenario, a test or the demo admin UI applies to
+`crates/rdm-test` (`src/faults.rs` and the `*_faults.rs` beside it) holds the fault backends a scenario, a test or the demo admin UI applies to
 a running estate. Each answers with a typed outcome: applied (with the observation that
 acknowledged it) or refused (with the reason; nothing was done).
 

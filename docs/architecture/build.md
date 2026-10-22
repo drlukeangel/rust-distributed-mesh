@@ -35,7 +35,7 @@ LifecycleTransitionPipeline
 
 No one mechanism impersonates another. Build storage is execution evidence: it is neither a second topology writer nor the current-runtime database. The current Build is read from `builds.storage` newest first (§4); `builds.storage` also records what happened while executing it.
 
-RDM `rafka-node-admin-core` is the single implementation of Build reconciliation, runtime adoption and leadership projection; Rafka imports it, binds its adapters and policy into it, and never reimplements leadership, shape reconciliation, executor selection, runtime adoption, drift detection or recovery.
+RDM `rdm-admin` is the single implementation of Build reconciliation, runtime adoption and leadership projection; Rafka imports it, binds its adapters and policy into it, and never reimplements leadership, shape reconciliation, executor selection, runtime adoption, drift detection or recovery.
 
 ### Node-admin composition and customer seams
 
@@ -95,16 +95,16 @@ Rafka imports these RDM packages at one exact revision:
 
 | package | what it holds |
 |---|---|
-| `rafka-node-rpc-contract` | the Node RPC protocol contract: framing, outcomes, reserved codes and protocol traits, with no transport dependency |
-| `rafka-mesh-entity` | the generic Mesh entity: exact-node identity, process incarnation, membership, endpoint freshness, RuntimeFact and connection projections |
-| `rafka-mesh-transport` | the gossip substrate on Iroh: the membership digest book, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
-| `rafka-node-rpc` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
-| `rafka-node-admin-core` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
-| `rafka-node-admin-client` | the typed client and DTOs for the node-admin control API |
+| `rdm-core` | the Node RPC protocol contract: framing, outcomes, reserved codes and protocol traits, with no transport dependency |
+| `rdm-core` | the generic Mesh entity: exact-node identity, process incarnation, membership, endpoint freshness, RuntimeFact and connection projections |
+| `rdm-transport` | the gossip substrate on Iroh: the membership digest book, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
+| `rdm-transport` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
+| `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
+| `rdm-client` | the typed client and DTOs for the node-admin control API |
 | `rafka-test-scenario` | provider-neutral scenario, evidence and replay contracts |
-| `rafka-node-rpc-testkit` | the generic RPC proof node, proof protocols and probes |
+| `rdm-test` | the generic RPC proof node, proof protocols and probes |
 
-`rafka-chaos`, the fault backends with typed outcomes, is an RDM proof package used by
+the chaos kit (`rdm-test`'s `faults` modules), the fault backends with typed outcomes, is an RDM proof package used by
 `rafka-test-scenario`. RDM packages import no Rafka domain crate.
 
 ---
@@ -194,7 +194,7 @@ The node, mesh and fabric ids and the node's transport `endpoint_id` are defined
 [§2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it); leadership
 ordering over them is [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
 BuildId, DeploymentId and IncarnationId are minted like every other id, bare 12-character Crockford60
-(`rafka-mesh-entity/src/ids.rs`); there is one id type. Transition ids, provider handles and
+(`rdm-core/src/ids.rs`); there is one id type. Transition ids, provider handles and
 control-domain values are not ids: they are the provider's or the pipeline's own strings.
 
 ---
@@ -412,7 +412,7 @@ No Build is current before it is recoverably durable.
 
 Control-plane state lives behind the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6). In RDM's file adapter they open under `<store_dir>/fabrics/<name>` and one store root per fabric, `<store_dir>/<fabric_id>/{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, status/<mesh>/}`, where `<mesh>` is the mesh's logical name. One writer per item: the fabric-primary writes `fabric/` (the fabric's identity, immutable) and `fabric/builds/`, every Build record; each mesh-primary its `meshes/<mesh>`, `nodes/<mesh>/` (where `is_primary` and `is_fabric_primary` record the election's result) and `status/<mesh>/`; each node its own `connections/<node>/`. The Build journal holds one record per fact at the fact's own key: one row at `build_id`, one at `(build_id, mesh, attempt)`, one claim at `(build_id, mesh, attempt)`, one receipt per step of an attempt. No record is written twice and no two writers write one key. The generic code knows the interfaces, never a specific database; Rafka binds its system topics to them.
 
-`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rafka-node-admin-core`).
+`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rdm-admin`).
 
 Restarting every node-admin at once must not erase the facts needed to reconstruct the Fabric and continue an active Build; gossip or another live admin is never the only persistence.
 
@@ -462,7 +462,7 @@ pub struct Transition<'a> {
 }
 ```
 
-`LifecycleTransitionPipeline` runs a `Transition` through its built hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`). `transition_id` is internal to one transition execution and keys its once-only hook receipts; the Status calls do not carry it, and their natural idempotency keys are defined in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm).
+`LifecycleTransitionPipeline` runs a `Transition` through its built hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rdm-admin`). `transition_id` is internal to one transition execution and keys its once-only hook receipts; the Status calls do not carry it, and their natural idempotency keys are defined in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm).
 
 Application work enters a lifecycle only through [Fabric and node hooks](fabric-node-hooks.md). What an Applied reply means beside gossip is [gossip.md §10](gossip.md#10-status-dissemination-versus-status-certainty); what proves a runtime dead is [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
 
@@ -585,7 +585,7 @@ Leadership may recover before every application hook is complete. A resolved pri
 The target dependency is deliberately one-way:
 
 ```text
-RDM rafka-node-admin-core
+RDM rdm-admin
     Build/Reconciler + drift trigger
     RuntimeFact + current runtime metadata + provider-control-domain adoption contract
     the leadership election
@@ -633,7 +633,7 @@ A compatibility wrapper is allowed only when it delegates to the imported mechan
 
 Framework mechanisms are proven once by the Mesh product feature that owns them; a downstream Rafka application feature consumes those guarantees and tests only the application semantics it adds ([mesh product taxonomy §4](/home/admin/rafka-v2/docs/eng/mesh-product-taxonomy.md#4-prove-framework-mechanics-once)).
 
-RDM's role executables, `test-roles`' `rafka-broker`, `rafka-gateway` and `rafka-compute` and the `rafka-consumer-fixture` executables, are role processes on `rafka-node-base` that carry no Rafka product behaviour; they are not Rafka's product roles. A generic proof runs node-admins, the RPC proof nodes of `rafka-node-rpc-testkit` and these role processes, and asserts no Rafka customer or product state; that proof stays in Rafka.
+RDM's role executables, the demo's `rshape-broker`, `rshape-gateway`, `rshape-compute` and `rshape-node-admin` (`demo/`), are role processes on `rdm-node` that carry no Rafka product behaviour; they are not Rafka's product roles. A generic proof runs node-admins, the RPC proof nodes of `rdm-test` and these role processes, and asserts no Rafka customer or product state; that proof stays in Rafka.
 
 The RDM-generic proofs of this page's mechanisms:
 
