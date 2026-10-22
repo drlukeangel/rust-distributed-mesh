@@ -2153,7 +2153,7 @@ mod tests {
         let fabric_id = FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), own.clone(), other.clone()] }));
-        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1", Arc::new(crate::fabric_handover::SeatCutOff::default())));
+        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1"));
         let authority = authority_with_store(&admin, topology, fabric_id, status.clone());
         for n in [&own, &other] {
             assert_eq!(authority.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
@@ -2192,7 +2192,7 @@ mod tests {
         let fabric_id = FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
-        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1", Arc::new(crate::fabric_handover::SeatCutOff::default())));
+        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1"));
         let authority = Arc::new(authority_with_store(&admin, topology, fabric_id.clone(), status.clone()));
         // The join door, its accepted report's Pending recorded by this authority as boot wires it.
         let replies: Arc<Mutex<Vec<R>>> = Arc::default();
@@ -2312,58 +2312,6 @@ mod tests {
         assert!(!cut_held(), "the next commanded join's accepted report begins the birth's next cycle");
         assert_eq!(pending_rows().await, one_pending, "one Pending row of the birth, its new cycle's");
         assert_eq!(serve("a retry of the next commanded join").await, R::AlreadyApplied, "a retry of the next commanded join belongs to its Pending");
-    }
-
-    /// CONTRACT (i146 Q39, Luke 2026-10-17: a late delivery to the old holder is refused by its store
-    /// and records nothing; R14 item 4: a seat transfer cuts off the moving seat's writes; this
-    /// authority's commit: "A refused put answers `NotReady` naming the store and holds nothing"): a
-    /// node's declaration that reaches its mesh's old primary after the mesh-primary seat moved, while
-    /// that admin's view still names it the holder, is refused by its status store's seat cut-off. It
-    /// is answered `NotReady` naming the cut-off, no declared row is written and nothing is held
-    /// applied, so a repeat is refused the same way. The new holder applies the same declaration once
-    /// and answers its repeat `AlreadyApplied`. Must NOT happen: the old holder recording the
-    /// declaration, or the new holder applying it twice.
-    #[tokio::test]
-    async fn a_declaration_late_to_the_old_mesh_primary_is_refused_by_its_store_and_the_new_holder_applies_it_once() {
-        let admin = |name: &str, primary: bool| {
-            let mut n = node(name);
-            n.kind = NodeKind::NodeAdmin;
-            n.is_primary = primary;
-            n.status = crate::model::NodeStatus::ReadyForTraffic;
-            n
-        };
-        let (old, new) = (admin("mesh1.admin.1", true), admin("mesh1.admin.2", false));
-        let mut rpc = node("mesh1.rpc.1");
-        rpc.kind = NodeKind::RpcNode;
-        let fabric_id = FabricId::mint();
-        let view = |old_holds: bool| {
-            let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process };
-            let nodes = vec![crate::model::Node { is_primary: old_holds, ..old.clone() }, crate::model::Node { is_primary: !old_holds, ..new.clone() }, rpc.clone()];
-            Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes }))
-        };
-        // The old holder's view still names it the holder; its store took the seat move's cut-off.
-        let moved = Arc::new(crate::fabric_handover::SeatCutOff::default());
-        let reason = "the mesh-primary seat of mesh1 moved to mesh1.admin.2 (seat move 2)".to_string();
-        moved.apply(&crate::fabric_handover::WriteCutOff::Set { reason: reason.clone(), mesh_seat: true, fabric_seat: false });
-        moved.apply(&crate::fabric_handover::WriteCutOff::Committed { reason: reason.clone(), mesh_seat: true, fabric_seat: false });
-        let old_store = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1", moved));
-        let old_holder = authority_with_store(&old, view(true), fabric_id.clone(), old_store.clone());
-        let new_store = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1", Arc::new(crate::fabric_handover::SeatCutOff::default())));
-        let new_holder = authority_with_store(&new, view(false), fabric_id.clone(), new_store.clone());
-
-        let started = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
-        for attempt in ["the late delivery", "its repeat"] {
-            match old_holder.apply(Some(rpc.clone()), &started).await {
-                R::NotReady { reason: why } => assert!(why.contains("status.storage refused") && why.contains(&reason), "{attempt}: refused naming the store's cut-off: {why}"),
-                other => panic!("{attempt} to the old holder is refused by its store, not {other:?}"),
-            }
-            assert!(crate::status_storage::StatusStorage::node_declared(&*old_store).await.unwrap().is_empty(), "{attempt}: the old holder wrote no declared row");
-            assert_eq!(old_holder.declared.lock().unwrap().node(&rpc.node_id, rpc.incarnation_id.as_ref().unwrap()), None, "{attempt}: the old holder holds nothing applied");
-        }
-        assert_eq!(new_holder.apply(Some(rpc.clone()), &started).await, R::Applied, "the new holder applies the declaration");
-        assert_eq!(new_holder.apply(Some(rpc.clone()), &started).await, R::AlreadyApplied, "once: its repeat is the declaration already applied");
-        let rows = crate::status_storage::StatusStorage::node_declared(&*new_store).await.unwrap();
-        assert_eq!(rows.iter().filter(|r| r.node_id == rpc.node_id).count(), 1, "one declared row, written by the new holder: {rows:?}");
     }
 
     /// A status store whose `Leaving` declared-state put returns only once the `ReadyForTraffic`

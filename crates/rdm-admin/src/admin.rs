@@ -2829,7 +2829,7 @@ mod tests {
     }
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat";
-    /// proposal node-primary-update Part C3 edit 6: the committed seat row is the authority, "primary
+    /// proposal node-primary-update Part C3 edit 6: the written seat row is the authority, "primary
     /// updated" only announces it): the view's seat readers name the holder the
     /// seat records give, whatever its status. A holder that is Leaving (drained and stopped by its
     /// Build) whose yield this observer has not heard yet keeps both seats; once the yield is held

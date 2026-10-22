@@ -15,9 +15,9 @@
 //! dispatches again (start-or-reattach), so no completed step runs twice.
 //!
 //! Before every claim and every dispatch the drive passes three gates: the Build log's sticky seat
-//! fence is not set (a fabric-primary whose committed seat record names another live birth
+//! fence is not set (a fabric-primary whose written seat record names another live birth
 //! dispatches nothing), this admin holds the seat in its view, and its view may authorize anything
-//! at all (a cut-off view dispatches nothing). A seat loss names the holder the committed seat
+//! at all (a cut-off view dispatches nothing). A seat loss names the holder the written seat
 //! record names, never the view's.
 //! An executor that cannot be reached is replaced only on proof of its departure, never on
 //! silence.
@@ -872,7 +872,7 @@ impl DriveEnv {
             (t.holds_fabric_seat(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
         };
         if !held {
-            // Where the seat is comes from the committed seat record, never the view: past the
+            // Where the seat is comes from the written seat record, never the view: past the
             // fence it names this birth, none, or a birth proven gone (no holder).
             let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
             let names = record_holder.as_deref().unwrap_or("none");
@@ -1585,7 +1585,7 @@ impl DriveEnv {
                 biased;
                 _ = self.gate.fence_set(), if !seated_executor => {
                     // The row seated this run's executor: it is the fabric-primary once it has installed
-                    // the committed seats ("the reply opens N's execution gate"), and it says so on this
+                    // the written seats ("the reply opens N's execution gate"), and it says so on this
                     // stream by ending it with SeatMoved naming itself. The callers are sent to it only
                     // then: before, its door would answer them as an admin that is not the
                     // fabric-primary. Any other holder ends the drive at the fence at once.

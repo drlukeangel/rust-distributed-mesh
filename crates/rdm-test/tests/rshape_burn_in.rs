@@ -2377,7 +2377,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
                     && start_ns(sp) >= req
             })
             .min_by_key(|sp| start_ns(sp))
-            .unwrap_or_else(|| panic!("{}: no committed seat row moved the fabric seat from {old_id} to {new_id} after its removal was requested", ev["scenario"]));
+            .unwrap_or_else(|| panic!("{}: no written seat row moved the fabric seat from {old_id} to {new_id} after its removal was requested", ev["scenario"]));
         assert!(start_ns(row) <= e, "{}: an admin announced {new_id} succeeding {old_id} ({e}) before the committed row named it ({})", ev["scenario"], start_ns(row));
         // The decider is the new holder: its own election names it winner over the old holder (`announced`).
         let decider: Vec<&&Value> = announced.iter().copied().filter(|sp| sp["attributes"]["observer"] == new_name.as_str()).collect();
@@ -2399,7 +2399,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
             "election_after_terminate_step_began_ms": terminate_start.map(|t| (e as i128 - t as i128) / 1_000_000),
         }));
     }
-    inv.holds("each fabric-primary hand-off: the old holder's committed seat row named the new fabric-primary, then the new holder's own election named it, before the old birth's process was gone (the host observed its exit); the terminate step's own start is measured beside it", true, json!({"hand_offs": out}));
+    inv.holds("each fabric-primary hand-off: the old holder's written seat row named the new fabric-primary, then the new holder's own election named it, before the old birth's process was gone (the host observed its exit); the terminate step's own start is measured beside it", true, json!({"hand_offs": out}));
     let mut kills = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.kill-and-recover") {
         let (victim, survivor) = (s(&ev["victim_node_id"]), s(&ev["survivor_node_id"]));
@@ -6810,7 +6810,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         let v = f.estate.node_values_at(&st.fp_name()).await;
         let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
         let b = build_attempt(&f.estate, &st, &formation).await;
-        // The restart moves the carrier's seat to the second gateway first, and the committed seat move
+        // The restart moves the carrier's seat to the second gateway first, and the written seat move
         // moves its attempt's revision: the stop and start may complete under the next attempt.
         (b["state"] == "complete" && b["attempt"].as_u64().is_some_and(|x| x >= attempt_c)).then_some(n)
     })

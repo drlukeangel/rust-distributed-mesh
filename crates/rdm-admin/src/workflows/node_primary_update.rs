@@ -1,10 +1,10 @@
 //! Node primary update workflow (`docs/architecture/lifecycles/node-primary-update.md`).
 //!
-//! Transfers the primary seat (mesh-primary or fabric-primary) to an eligible successor,
-//! cutting off writes from the former holder and installing the new seat holder.
+//! Moves the primary (mesh-primary or fabric-primary) to an eligible successor: the primary finishes
+//! the writes it has issued, then calls its successor, which installs itself.
 
 pub use crate::election::{elect, Candidate, ElectionLog, Incumbency, Moving};
 pub use crate::fabric_handover::{
-    update_operation, CutOffWrites, HandoverDoor, ProjectView, SourceFailure,
-    UpdateLocks, UpdateMemo, WriteCutOff,
+    update_operation, FinishWrites, HandoverDoor, ProjectView, SourceFailure,
+    UpdateLocks, UpdateMemo,
 };

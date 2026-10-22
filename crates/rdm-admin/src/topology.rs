@@ -196,7 +196,7 @@ impl Topology {
     /// The single primary of a cohort, when exactly one member holds it: the seat the election
     /// resolved from the seat records this view was decided against, whatever the holder's status.
     /// A holder keeps its seat until its explicit yield or a proven loss is held (R-EL1; the
-    /// committed seat row is the authority, R-EL1a), so a ConnectionsDeleting, Leaving or silent holder is
+    /// written seat row is the authority, R-EL1a), so a ConnectionsDeleting, Leaving or silent holder is
     /// still the one named here. A caller that needs an admin it can reach checks the holder's
     /// status itself.
     pub fn cohort_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {

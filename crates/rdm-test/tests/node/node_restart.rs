@@ -281,15 +281,13 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     estate.record_trace_url(&trace);
 }
 
-/// CONTRACT (node-primary-update.md steps 4-6; node-restart.md): a mesh's primary node-admin restarted
-/// through `node.restart` first moves its mesh seat to the mesh's other admin (its write cut-off, the
-/// seat row, the successor installed) and runs on as a member. Restarting that admin moves the seat
-/// back: the row names the first admin the successor, which installs itself as its mesh's row writer
-/// from that revision, so the cut-off its own earlier transfer left on its mesh's rows is lifted
-/// (`via-writes-restored`, naming the row's operation) before it answers, and it writes the second
-/// admin's stop rows. Both restarts complete, each admin the same birth, ready for traffic. Must NOT
-/// happen: a row refused under the first admin's earlier cut-off ("this store's writes are cut off"),
-/// or the second restart's stop not admitted.
+/// CONTRACT (node-primary-update.md steps 3-6; node-restart.md): a mesh's primary node-admin restarted
+/// through `node.restart` first moves its mesh-primary role to the mesh's other admin (its issued
+/// writes finished, the row, the successor installed) and runs on as a member. Restarting that admin
+/// moves the role back: the row names the first admin the successor, which installs itself and is its
+/// mesh's writer from that moment, and it writes the second admin's stop rows. Both restarts complete,
+/// each admin the same birth, ready for traffic. Must NOT happen: the second restart's stop not
+/// admitted, or the role not back on the first admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows() {
     let test = "a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows";
@@ -319,12 +317,9 @@ async fn a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows()
 
     estate.stop().await;
     let spans = estate.spans();
-    let cut: Vec<&Value> = spans.iter().filter(|sp| sp["attributes"].as_object().is_some_and(|a| a.values().any(|v| v.as_str().is_some_and(|v| v.contains("this store's writes are cut off"))))).collect();
-    assert!(cut.is_empty(), "no row is refused under an earlier cut-off: {cut:#?}");
-    let restored: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-writes-restored").into_iter().filter(|sp| attr(sp, "reason").contains(&operations[1]) && attr(sp, "reason").starts_with(&name(&first))).collect();
-    assert_eq!(restored.len(), 1, "{} restores its mesh seat's writes once, when the second restart's row installs it: {restored:#?}", name(&first));
-    assert_eq!(attr(restored[0], "mesh_seat"), "true", "{:?}", restored[0]);
-    let trace = restored[0]["trace_id"].as_str().unwrap_or_default().to_string();
+    let back: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "operation").contains(&operations[1])).collect();
+    assert_eq!(back.len(), 1, "the second restart writes one row moving the role back to {}: {back:#?}", name(&first));
+    let trace = back[0]["trace_id"].as_str().unwrap_or_default().to_string();
     println!("seat given back: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }

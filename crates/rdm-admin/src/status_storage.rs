@@ -581,28 +581,14 @@ pub struct MemoryStatusStorage {
     /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
     /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
     events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
-    /// The mesh of the admin whose store this is: its rows are the mesh-primary seat's to write,
-    /// every other mesh's the fabric-primary seat's.
+    /// The mesh of the admin whose store this is: its own rows are the fields above.
     own_mesh: String,
-    /// The seats' cut-off every write reads.
-    cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
 }
 
 impl MemoryStatusStorage {
-    /// An empty store of an admin of `own_mesh`, whose writes are cut off by `cut_off`.
-    pub fn of_mesh(own_mesh: &str, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
-        Self { own_mesh: own_mesh.to_string(), cut_off, ..Self::default() }
-    }
-
-    /// A write to this store's own `store`: refused while the mesh-primary seat's writes are cut off.
-    fn own_write(&self, store: &str) -> Result<(), StorageError> {
-        self.cut_off.mesh_write(|| format!("status/{}/{store}", self.own_mesh))
-    }
-
-    /// A write to `store` among the status rows of `mesh`: refused while the seat that writes that
-    /// mesh's rows is cut off.
-    fn row_write(&self, mesh: &str, store: &str) -> Result<(), StorageError> {
-        self.cut_off.mesh_row_write(&self.own_mesh, mesh, || format!("status/{mesh}/{store}"))
+    /// An empty store of an admin of `own_mesh`.
+    pub fn of_mesh(own_mesh: &str) -> Self {
+        Self { own_mesh: own_mesh.to_string(), ..Self::default() }
     }
 
     /// The declared-state rows this store put among the status rows of the mesh named `mesh`
@@ -629,7 +615,6 @@ impl MemoryStatusStorage {
 #[async_trait]
 impl StatusStorage for MemoryStatusStorage {
     async fn put_mesh_status(&self, row: &MeshStatusRow) -> Result<(), StorageError> {
-        self.own_write("meshes")?;
         let mut m = self.meshes.lock().unwrap();
         if !m.contains(row) {
             m.push(row.clone());
@@ -640,7 +625,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(fold_meshes(self.meshes.lock().unwrap().clone()))
     }
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError> {
-        self.own_write("fabric")?;
         let mut e = self.events.lock().unwrap();
         if !e.contains(row) {
             e.push(row.clone());
@@ -661,12 +645,10 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(rows)
     }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
-        self.own_write("declared")?;
         self.declared.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
     }
     async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-        self.own_write("declared")?;
         let mut d = self.declared.lock().unwrap();
         for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
             d.remove(&k);
@@ -677,7 +659,6 @@ impl StatusStorage for MemoryStatusStorage {
         if mesh == self.own_mesh {
             return self.put_node_declared(row).await;
         }
-        self.row_write(mesh, "declared")?;
         self.declared_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
@@ -685,7 +666,6 @@ impl StatusStorage for MemoryStatusStorage {
         if mesh == self.own_mesh {
             return self.remove_node_declared(node_id, incarnation_id).await;
         }
-        self.row_write(mesh, "declared")?;
         if let Some(rows) = self.declared_named.lock().unwrap().get_mut(mesh) {
             for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
                 rows.remove(&k);
@@ -697,7 +677,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.declared.lock().unwrap().values().cloned().collect())
     }
     async fn put_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
-        self.own_write("operations")?;
         self.operations.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
     }
@@ -705,12 +684,10 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.operations.lock().unwrap().values().cloned().collect())
     }
     async fn remove_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
-        self.own_write("operations")?;
         self.operations.lock().unwrap().remove(&row.key());
         Ok(())
     }
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
-        self.own_write("silence")?;
         self.silences.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
     }
@@ -718,7 +695,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.silences.lock().unwrap().values().cloned().collect())
     }
     async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
-        self.own_write("exits")?;
         self.exits.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
     }
@@ -729,7 +705,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.meshes_named.lock().unwrap().get(mesh).is_some_and(|rows| rows.contains(row)) || self.meshes.lock().unwrap().contains(row))
     }
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "meshes")?;
         let mut named = self.meshes_named.lock().unwrap();
         let rows = named.entry(mesh.to_string()).or_default();
         if !rows.contains(row) {
@@ -743,7 +718,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(named.or_else(|| self.exits.lock().unwrap().get(&key).cloned()))
     }
     async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "exits")?;
         self.exits_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
@@ -752,7 +726,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.held_running_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
     }
     async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "held-running")?;
         self.held_running_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
@@ -760,7 +733,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.certs_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
     }
     async fn put_node_cert_of(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "node-certs")?;
         self.certs_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
@@ -768,7 +740,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.cert_receipts_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
     }
     async fn put_node_cert_receipt_of(&self, mesh: &str, row: &NodeCertReceiptRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "node-cert-receipts")?;
         self.cert_receipts_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
@@ -776,7 +747,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.issuers_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
     }
     async fn put_mesh_issuer_of(&self, mesh: &str, row: &MeshIssuerRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "issuers")?;
         self.issuers_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
@@ -784,12 +754,10 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.issuer_receipts_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
     }
     async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &MeshIssuerReceiptRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "issuer-receipts")?;
         self.issuer_receipts_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
     async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-        self.row_write(mesh, "held-running")?;
         let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
         if let Some(rows) = self.held_running_named.lock().unwrap().get_mut(mesh) {
             rows.remove(&key);
@@ -801,12 +769,10 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.os_stopped_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
     }
     async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "os-stopped")?;
         self.os_stopped_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
     async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
-        self.row_write(mesh, "os-stopped")?;
         let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
         Ok(self.os_stopped_named.lock().unwrap().get_mut(mesh).and_then(|rows| rows.remove(&key)).is_some())
     }
@@ -818,7 +784,6 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.data_dir_lost_at.lock().unwrap().get(mesh).and_then(|rows| rows.get(&name.to_string()).cloned()))
     }
     async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "data-dir-lost")?;
         self.data_dir_lost_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         self.data_dir_lost_at.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.name.to_string(), row.clone());
         Ok(())
@@ -831,13 +796,11 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.data_dir_unreadable_at.lock().unwrap().get(mesh).and_then(|rows| rows.get(&name.to_string()).cloned()))
     }
     async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
-        self.row_write(mesh, "data-dir-unreadable")?;
         self.data_dir_unreadable_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         self.data_dir_unreadable_at.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.name.to_string(), row.clone());
         Ok(())
     }
     async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError> {
-        self.row_write(mesh, "data-dir-unreadable")?;
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
         if let Some(rows) = self.data_dir_unreadable_named.lock().unwrap().get_mut(mesh) {
             rows.remove(&key);
@@ -916,9 +879,6 @@ pub struct FileStatusStorage {
     /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`, `fabric`,
     /// `declared`, ...), by mesh and directory, opened on first use.
     others: Mutex<std::collections::BTreeMap<(String, &'static str), std::sync::Arc<FileRecords>>>,
-    /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
-    /// other mesh's status rows, those opened later included, refuse writes naming it.
-    others_cut_off: Mutex<Option<String>>,
 }
 
 #[cfg(feature = "file-backend")]
@@ -950,13 +910,20 @@ impl FileStatusStorage {
             root: root.clone(),
             writer: writer.clone(),
             others: Mutex::new(std::collections::BTreeMap::new()),
-            others_cut_off: Mutex::new(None),
         })
     }
 
-    /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
-    /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 16] {
+    /// Finishes every write of the status rows this store has issued, its own mesh's and every other
+    /// mesh's it opened (node-primary-update.md step 3).
+    pub async fn finish_issued_writes(&self) {
+        let others: Vec<std::sync::Arc<FileRecords>> = self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        for s in self.own_records().into_iter().chain(others.iter().map(|s| &**s)) {
+            s.finish_issued_writes().await;
+        }
+    }
+
+    /// Every status row store of this store's own mesh.
+    fn own_records(&self) -> [&FileRecords; 16] {
         [
             &self.meshes,
             &self.fabric,
@@ -978,7 +945,7 @@ impl FileStatusStorage {
     }
 
     /// The `dir` status rows (`meshes`, `exits`, `fabric`, ...) of another mesh `mesh` on the shared
-    /// root, opened outside the lock and kept once under it (the cut-off read under the same lock).
+    /// root, opened outside the lock and kept once under it.
     /// `declared` is opened straight to the disk, as this mesh's own is ([`Self::open`]): Q54, an
     /// Applied declaration is durable even before state-commit, among another mesh's rows too.
     async fn other(&self, mesh: &str, dir: &'static str) -> Result<std::sync::Arc<FileRecords>, StorageError> {
@@ -992,11 +959,7 @@ impl FileStatusStorage {
             _ => self.root.records(&base, dir, &self.writer).await?,
         });
         let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-        let m = others.entry(key).or_insert(opened).clone();
-        if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            m.cut_off(reason);
-        }
-        Ok(m)
+        Ok(others.entry(key).or_insert(opened).clone())
     }
 
     /// Put the declared-state fact `row` into `store`, the `declared` rows of the mesh named `mesh`.
@@ -1010,54 +973,6 @@ impl FileStatusStorage {
         result
     }
 
-    /// The fabric-primary seat moves (R14 item 4): cut off this store's writes to every other mesh's
-    /// status rows, those it opens later included, and wait for every write already issued to them.
-    pub async fn cut_off_other_meshes(&self, reason: &str) {
-        let opened: Vec<std::sync::Arc<FileRecords>> = {
-            let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-            *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
-            others.values().cloned().collect()
-        };
-        let stores: Vec<&FileRecords> = opened.iter().map(|m| &**m).collect();
-        crate::record_store::cut_off_and_drain(&stores, reason).await;
-    }
-
-    /// Why the other meshes' rows are cut off ([`Self::cut_off_other_meshes`]), while they are.
-    pub fn other_meshes_cut_off(&self) -> Option<String> {
-        self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing. The
-    /// first store whose kept rows could not be written is named; every store is lifted.
-    pub async fn lift_other_meshes(&self) -> Result<(), StorageError> {
-        let opened: Vec<std::sync::Arc<FileRecords>> = {
-            let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-            *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            others.values().cloned().collect()
-        };
-        let mut first = Ok(());
-        for s in opened {
-            if let (Err(e), true) = (s.lift_cut_off().await, first.is_ok()) {
-                first = Err(e);
-            }
-        }
-        first
-    }
-
-    /// The seat transfer [`Self::cut_off_other_meshes`] was set for committed: every row the other
-    /// meshes' status stores still hold (written as acting primary before the fabric's first
-    /// state-commit) is dropped, never written. Returns each store that dropped rows, with how many.
-    pub async fn drop_other_meshes(&self) -> Vec<(String, usize)> {
-        let opened: Vec<std::sync::Arc<FileRecords>> = self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
-        let mut dropped = Vec::new();
-        for s in opened {
-            let n = s.drop_held().await;
-            if n > 0 {
-                dropped.push((s.store_name(), n));
-            }
-        }
-        dropped
-    }
 }
 
 #[cfg(feature = "file-backend")]

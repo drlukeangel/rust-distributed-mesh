@@ -201,22 +201,15 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     eprintln!("RESTART-CONVERGED installed v{} trace {} forwarded v{} trace {} withheld {}", s(&converged[0]["attributes"]["topology_version"]), s(&converged[0]["trace_id"]), s(&forwarded[0]["attributes"]["topology_version"]), s(&forwarded[0]["trace_id"]), withheld.len());
 }
 
-/// CONTRACT (node-primary-update.md "The new holder's process is gone after the row": "The ordinary
-/// rule then seats whoever it seats, the holder included. A holder the rule seats again writes its seat
-/// record at the next revision first and announces it second (`Seated`), for each seat the rule gives
-/// back and no other, and restores only those seats' writes under the new revision"; R-PU2 recovery
-/// order 3; `WriteCutOff::Restore`): a mesh-primary node-admin restarted through `node.restart` first
-/// hands its mesh seat to its mesh's other admin by node.primary.update, and its own stores' mesh-seat
-/// writes stay cut off from that row (`WriteCutOff::Committed`). When that successor's process is then
-/// gone, provider-confirmed, the ordinary rule seats the restarted admin again by its own election row:
-/// from that row's revision it is its mesh's row writer, so its mesh-seat writes are restored and the
-/// successor's recovery completes under it: the exit-proof row is put, and a new node stands ready at
-/// the successor's path.name.
+/// CONTRACT (node-primary-update.md failure contract, "The successor is unheard after the update": the
+/// ordinary election then names whoever it names, the old primary included, and the successor's node
+/// goes through node recovery like any unheard member): a mesh-primary node-admin restarted through
+/// `node.restart` first hands the mesh-primary role to its mesh's other admin by node.primary.update.
+/// When that successor's process is then gone, the election names the restarted admin again, and the
+/// successor's recovery completes under it: a new node stands ready at the successor's path.name.
 ///
 /// What must NOT happen (the twelve soaks at 768dfaee, `mock_soak_authority_preserves_continuous_invariants`
-/// round 17, mesh2.admin.2-n88v5zcrvdkd): the re-seated primary's every mesh-row write refused by its own
-/// earlier transfer's cut-off (`this store's writes are cut off: the mesh-primary seat(s) of ... are
-/// updating to ... by node.primary.update:...:node.restart:...`), 338 refused exit-proof puts, and no
+/// round 17, mesh2.admin.2-n88v5zcrvdkd): the restarted primary's mesh-row writes refused, and no
 /// re-birth in 150 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_its_mesh_rows() {
@@ -251,9 +244,9 @@ async fn a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_i
     })
     .await;
     let holder_pid = estate.pid_of(&holder).await;
-    let cut_off = wait_for(&format!("{holder}'s evidence records its mesh-seat writes cut off at its restart's seat row"), Duration::from_secs(10), || {
+    let handed = wait_for(&format!("{holder}'s evidence records its restart's row"), Duration::from_secs(10), || {
         let spans = spans_of(&estate, holder_pid);
-        let found = named(&spans, "rdm.node_admin.seat.update.via-writes-cut-off").into_iter().find(|x| s(&x["attributes"]["operation"]).ends_with(&format!("node.restart:{holder}"))).cloned();
+        let found = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().find(|x| s(&x["attributes"]["operation"]).ends_with(&format!("node.restart:{holder}"))).cloned();
         async move { found }
     })
     .await;
@@ -277,17 +270,12 @@ async fn a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_i
     let recovered_ms = killed_at.elapsed().as_millis();
     estate.stop().await;
 
-    // The holder's own record: its election row seated it again, its mesh-seat writes were restored
-    // after that row, and no mesh-row write of the recovery was refused by the cut-off.
+    // The holder's own record: its election row named it again after its restart's row.
     let spans = spans_of(&estate, holder_pid);
     let start = |x: &Value| x["start_unix_nano"].as_u64().unwrap_or_default();
-    let election = named(&spans, "rdm.node_admin.seat.update.via-election-row").into_iter().filter(|x| start(x) > start(&cut_off) && s(&x["attributes"]["seats"]).starts_with("mesh-primary")).cloned().collect::<Vec<_>>();
+    let election = named(&spans, "rdm.node_admin.seat.update.via-election-row").into_iter().filter(|x| start(x) > start(&handed) && s(&x["attributes"]["seats"]).starts_with("mesh-primary")).cloned().collect::<Vec<_>>();
     assert!(!election.is_empty(), "{holder} wrote its own election row for {away}'s mesh seat after its restart's seat row: {}", serde_json::to_string(&named(&spans, "rdm.node_admin.seat.update.via-election-row")).unwrap_or_default());
-    let restored = named(&spans, "rdm.node_admin.seat.update.via-writes-restored").into_iter().filter(|x| start(x) > start(&election[0]) && x["attributes"]["mesh_seat"] == "true").cloned().collect::<Vec<_>>();
-    assert!(!restored.is_empty(), "{holder}'s mesh-seat writes are restored after its election row seated it again (node-primary-update.md): restored={}", serde_json::to_string(&named(&spans, "rdm.node_admin.seat.update.via-writes-restored")).unwrap_or_default());
-    let refused: Vec<&Value> = spans.iter().filter(|x| start(x) > start(&election[0]) && serde_json::to_string(&x["attributes"]).unwrap_or_default().contains("writes are cut off")).collect();
-    assert!(refused.is_empty(), "no write of {holder}'s after its election row was refused by its earlier transfer's cut-off: {}", serde_json::to_string(&refused).unwrap_or_default());
-    let trace_id = s(&restored[0]["trace_id"]);
+    let trace_id = s(&election[0]["trace_id"]);
     estate.record_trace_url(&trace_id);
     eprintln!("SEATED-AGAIN-TRACE {trace_id} holder={holder} successor={successor} reborn={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));
 }

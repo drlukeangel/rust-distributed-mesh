@@ -77,31 +77,19 @@ enum ClaimPublished {
     Refused(String),
 }
 
-/// Whether the writer of a store still owns the rows it held when its scratchpad is published:
-/// `Err` names the seat its writer no longer holds (R14 item 2: the writers are exactly the writer
-/// ladder), and the rows it held are dropped, named, never written and never read again. A store
-/// with no gate is its writer's own.
-pub type PublishGate = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
-
 /// The scratchpad side of one store on the fabric's store root (states.md, Rounds: "Before
 /// state-commit, RDM holds its rows in the scratchpad; state-commit publishes the required held
 /// rows to the configured stores").
 struct Held {
     /// The store's directory under the store root: how a publication names it.
     store: String,
-    /// `true` while every write is held: until the scratchpad is published, and past it only while a
-    /// seat transfer that cut the store off has neither committed nor been lifted (the rows are
-    /// still its writer's until it does). Decided under the store's write lock, so a write and the
-    /// publication are ordered.
+    /// `true` while every write is held: until the scratchpad is published. Decided under the store's
+    /// write lock, so a write and the publication are ordered.
     holding: std::sync::Mutex<bool>,
     /// The rows held, by key, only while `holding`: this writer's own writes, not yet on the disk,
     /// so its reads answer them over the disk. Empty once the store writes to the disk: from then
     /// on every read is the disk's.
     rows: std::sync::Mutex<std::collections::BTreeMap<String, HeldRow>>,
-    /// Set when the scratchpad was published while the store was cut off: a lift of the cut-off
-    /// publishes what it holds then.
-    owed: std::sync::Mutex<bool>,
-    gate: std::sync::OnceLock<PublishGate>,
 }
 
 /// The records of one store under `<base>/<dir>/`, one `<key>.json` each.
@@ -115,9 +103,6 @@ struct Records {
     /// lock is held until the disk operation finishes whatever happens to the caller: taking it
     /// once waits for every write this store issued (R14 item 4).
     write: std::sync::Arc<tokio::sync::Mutex<()>>,
-    /// Set when this store's writer gave up its authority (a seat transfer's cut-off): every write
-    /// granted the lock from then on is refused by name, a write queued before it included.
-    cut_off: std::sync::Mutex<Option<String>>,
     /// The incarnation of the process writing through this store: its temp files are named by it,
     /// so two writers' temp files never share a name (R14 item 5).
     writer: String,
@@ -146,7 +131,7 @@ impl FileRecords {
     /// [`Self::open`], holding every write in `scratchpad` until it is published; named `store` in
     /// the publication. A scratchpad already published opens the store straight to the disk.
     pub async fn open_held(base: &Path, dir: &str, writer: &crate::model::IncarnationId, scratchpad: &Scratchpad, store: String) -> Result<Self, StorageError> {
-        let held = Held { store, holding: std::sync::Mutex::new(true), rows: Default::default(), owed: std::sync::Mutex::new(false), gate: std::sync::OnceLock::new() };
+        let held = Held { store, holding: std::sync::Mutex::new(true), rows: Default::default() };
         let records = Self::opened(base, dir, writer, Some(held)).await?;
         if !scratchpad.enrol(std::sync::Arc::new(records.clone())) {
             *records.held().expect("opened held").holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
@@ -158,18 +143,11 @@ impl FileRecords {
         let dir = base.join(dir);
         let made = dir.clone();
         blocking_io(move || std::fs::create_dir_all(&made)).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-        Ok(Self(std::sync::Arc::new(Records { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), cut_off: std::sync::Mutex::new(None), writer: writer.to_string(), held })))
+        Ok(Self(std::sync::Arc::new(Records { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), writer: writer.to_string(), held })))
     }
 
     fn held(&self) -> Option<&Held> {
         self.0.held.as_ref()
-    }
-
-    /// The gate this store's publication passes before it writes what it holds (set once).
-    pub fn set_publish_gate(&self, gate: PublishGate) {
-        if let Some(h) = self.held() {
-            let _ = h.gate.set(gate);
-        }
     }
 
     /// The store's directory under the store root (its publication name), else its directory.
@@ -350,16 +328,9 @@ impl FileRecords {
     /// Store `record` under `key`, replacing what was there: held in the scratchpad while the store
     /// holds its writes; otherwise temp file, fsync, rename, directory fsync, on the blocking pool.
     pub async fn write<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
-        self.write_gated(key, format, record, || Ok(())).await
-    }
-
-    /// [`Self::write`] whose `gate` is asked under the write lock, before the write is held or reaches
-    /// the disk: a refusal is neither held nor written.
-    pub async fn write_gated<T: Serialize>(&self, key: &str, format: &str, record: &T, gate: impl FnOnce() -> Result<(), StorageError>) -> Result<(), StorageError> {
         let path = self.path(key);
         let bytes = Self::encode(&path, format, record)?;
         let held = self.writer(&path).await?;
-        gate()?;
         if self.hold(key, HeldRow::Put(bytes.clone())) {
             return Ok(());
         }
@@ -481,55 +452,15 @@ impl FileRecords {
         blocking_io(move || file.try_exists()).await.map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })
     }
 
-    /// The write lock, owned so the caller moves it into its disk job, and the cut-off checked
-    /// once it is granted: a write queued before the cut-off and granted the lock after it is
-    /// refused by name.
-    async fn writer(&self, file: &Path) -> Result<tokio::sync::OwnedMutexGuard<()>, StorageError> {
-        let held = self.0.write.clone().lock_owned().await;
-        if let Some(reason) = self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            return Err(StorageError::CutOff { file: file.display().to_string(), reason });
-        }
-        Ok(held)
+    /// The write lock, owned so the caller moves it into its disk job.
+    async fn writer(&self, _file: &Path) -> Result<tokio::sync::OwnedMutexGuard<()>, StorageError> {
+        Ok(self.0.write.clone().lock_owned().await)
     }
 
     /// Wait for every write this store issued: the write lock taken once and released. Each
     /// write holds the lock until its disk job finishes, so this returns only once they have.
-    pub async fn drain(&self) {
+    pub async fn finish_issued_writes(&self) {
         drop(self.0.write.lock().await);
-    }
-
-    /// Refuse every write granted the lock from now on, naming `reason`.
-    pub fn cut_off(&self, reason: String) {
-        *self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
-    }
-
-    /// Why this store's writes are cut off, while they are.
-    pub fn cut_off_reason(&self) -> Option<String> {
-        self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Lift the cut-off: the transfer it was set for committed nothing, so this store's writer
-    /// keeps its authority over its keys, and the rows it held through a publication made while it
-    /// was cut off are written now.
-    pub async fn lift_cut_off(&self) -> Result<(), StorageError> {
-        *self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let owed = self.held().is_some_and(|h| std::mem::take(&mut *h.owed.lock().unwrap_or_else(|e| e.into_inner())));
-        if owed {
-            self.publish_held().await?;
-        }
-        Ok(())
-    }
-
-    /// The seat transfer this store was cut off for committed: its writer's authority over the
-    /// store's keys ended at the seat row (R14 item 4), so every row it still holds is dropped,
-    /// never written and never read again. Returns how many rows were dropped.
-    pub async fn drop_held(&self) -> usize {
-        let Some(h) = self.held() else { return 0 };
-        let _one = self.0.write.lock().await;
-        let dropped = std::mem::take(&mut *h.rows.lock().unwrap_or_else(|e| e.into_inner())).len();
-        *h.holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        *h.owed.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        dropped
     }
 
     /// Remove the record under `key`, if any: held in the scratchpad while the store holds its
@@ -554,9 +485,7 @@ impl FileRecords {
     /// Write what this store holds to the disk and write to the disk from now on (the scratchpad's
     /// publication): under the write lock, so no write slips between. A held row leaves the held
     /// rows once its file is written; a write that fails ends the publication by name, the rows it
-    /// had not written still held. A store whose gate says its writer no longer owns its rows drops
-    /// them, named. A store cut off by a seat transfer that has neither committed nor been lifted
-    /// goes on holding its rows, named: the commit drops them, a lift publishes them.
+    /// had not written still held.
     async fn publish_held(&self) -> Result<StorePublished, StorageError> {
         let Some(h) = self.held() else { return Ok(StorePublished::default()) };
         let guard = self.0.write.clone().lock_owned().await;
@@ -565,21 +494,6 @@ impl FileRecords {
             return Ok(done);
         }
         let rows = h.rows.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(reason) = self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            if !rows.is_empty() {
-                *h.owed.lock().unwrap_or_else(|e| e.into_inner()) = true;
-                done.held = rows.len();
-                done.why_held = Some(format!("cut off: {reason}"));
-                return Ok(done);
-            }
-        }
-        if let Some(Err(why)) = h.gate.get().map(|gate| gate()) {
-            h.rows.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            *h.holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
-            done.dropped = rows.len();
-            done.why_dropped = Some(why);
-            return Ok(done);
-        }
         let this = self.clone();
         let (written, stands, refused) = blocking_io(move || {
             let _held = guard;
@@ -636,15 +550,6 @@ pub struct StorePublished {
     pub store: String,
     /// The rows written to the store root.
     pub written: usize,
-    /// The rows dropped, never written: their writer no longer owns their keys.
-    pub dropped: usize,
-    /// Why the rows were dropped.
-    pub why_dropped: Option<String>,
-    /// The rows still held: a seat transfer cut the store off and has neither committed nor been
-    /// lifted.
-    pub held: usize,
-    /// Why the rows are still held.
-    pub why_held: Option<String>,
     /// The held claims whose row the publication found standing at their key (the same row, put by
     /// another writer of the same identity): nothing written for them.
     pub stands: usize,
@@ -698,16 +603,6 @@ impl Publication {
         self.stores.iter().map(|s| s.written).sum()
     }
 
-    /// The rows dropped, never written.
-    pub fn dropped(&self) -> usize {
-        self.stores.iter().map(|s| s.dropped).sum()
-    }
-
-    /// The rows still held by a store cut off by a seat transfer not yet decided.
-    pub fn held(&self) -> usize {
-        self.stores.iter().map(|s| s.held).sum()
-    }
-
     /// The held claims whose row stood at their key already, nothing written for them.
     pub fn stands(&self) -> usize {
         self.stores.iter().map(|s| s.stands).sum()
@@ -718,8 +613,7 @@ impl Publication {
         self.stores.iter().map(|s| s.refused.len()).sum()
     }
 
-    /// `<store>=<written>` for each store that wrote rows, `<store> dropped <n>: <why>` for each that
-    /// dropped them, `<store> held <n>: <why>` for each still holding them, `<store> stands <n>` for
+    /// `<store>=<written>` for each store that wrote rows, `<store> stands <n>` for
     /// each whose held claims found their row standing and `<store> refused <n>: <key>: <why>; ...` for
     /// each whose held claims were refused, comma-separated.
     pub fn summary(&self) -> String {
@@ -727,12 +621,6 @@ impl Publication {
         for s in &self.stores {
             if s.written > 0 {
                 parts.push(format!("{}={}", s.store, s.written));
-            }
-            if s.dropped > 0 {
-                parts.push(format!("{} dropped {}: {}", s.store, s.dropped, s.why_dropped.as_deref().unwrap_or("")));
-            }
-            if s.held > 0 {
-                parts.push(format!("{} held {}: {}", s.store, s.held, s.why_held.as_deref().unwrap_or("")));
             }
             if s.stands > 0 {
                 parts.push(format!("{} stands {}", s.store, s.stands));
@@ -768,9 +656,7 @@ impl Scratchpad {
     }
 
     /// Publish: every store enrolled writes what it holds to the store root and writes there from
-    /// now on; a store opened from now on writes there from its open. A store whose writer no longer
-    /// owns its rows drops them, named; one cut off by a seat transfer not yet decided goes on
-    /// holding them, named, until the transfer commits (dropped) or is lifted (written). A write
+    /// now on; a store opened from now on writes there from its open. A write
     /// that fails ends the publication with its error, naming the file: what it had not written is
     /// still held, and a later publication writes it.
     pub async fn publish(&self) -> Result<Publication, StorageError> {
@@ -782,22 +668,11 @@ impl Scratchpad {
         let mut out = Publication::default();
         for store in stores {
             let done = store.publish().await?;
-            if done.written > 0 || done.dropped > 0 || done.held > 0 || done.stands > 0 || !done.refused.is_empty() {
+            if done.written > 0 || done.stands > 0 || !done.refused.is_empty() {
                 out.stores.push(done);
             }
         }
         Ok(out)
-    }
-}
-
-/// Cut off every store of `stores` with `reason`, then take each one's write lock once: every write
-/// already issued has finished when this returns, and every later one is refused by name.
-pub async fn cut_off_and_drain(stores: &[&FileRecords], reason: &str) {
-    for s in stores {
-        s.cut_off(reason.to_string());
-    }
-    for s in stores {
-        s.drain().await;
     }
 }
 
@@ -984,41 +859,8 @@ mod tests {
             assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was parked");
             assert!(r.0.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
             release.send(()).unwrap();
-            r.drain().await;
+            r.finish_issued_writes().await;
             assert_eq!(r.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"), "the drain returned before the cancelled write landed");
-        });
-    }
-
-    /// CONTRACT (R14 item 4): a write queued on the lock before the cut-off and granted it after the
-    /// cut-off is refused by name; it never reaches the disk.
-    #[test]
-    fn a_write_queued_before_the_cut_off_and_granted_after_it_is_refused_by_name() {
-        one_blocking_thread().block_on(async {
-            let d = tempdir("records-cut-off");
-            let r = std::sync::Arc::new(FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap());
-            let release = park_the_blocking_pool();
-            // The first write holds the lock across its (parked) disk job.
-            let first = tokio::spawn({
-                let r = r.clone();
-                async move { r.write("a", "thing/1", &"one".to_string()).await }
-            });
-            tokio::task::yield_now().await;
-            // The second is queued on the lock before the cut-off.
-            let queued = tokio::spawn({
-                let r = r.clone();
-                async move { r.write("b", "thing/1", &"two".to_string()).await }
-            });
-            tokio::task::yield_now().await;
-            assert!(!queued.is_finished(), "the queued write did not wait on the lock");
-            r.cut_off("the seats moved to mesh1.admin.2 by take-seats:b1".into());
-            release.send(()).unwrap();
-            first.await.unwrap().unwrap();
-            let refused = queued.await.unwrap();
-            assert!(
-                matches!(&refused, Err(StorageError::CutOff { file, reason }) if file.ends_with("b.json") && reason.contains("take-seats:b1")),
-                "a write queued before the cut-off and granted the lock after it must be refused by name: {refused:?}"
-            );
-            assert_eq!(r.read::<String>("b", "thing/1").await.unwrap(), None, "the refused write reached the disk");
         });
     }
 
@@ -1172,67 +1014,6 @@ mod tests {
             }
             assert_eq!(std::fs::read(&file).unwrap(), foreign, "{key}: the unrecognised row stands");
         }
-    }
-
-    /// CONTRACT (R14 items 2 and 4): at its scratchpad's publication a store whose gate says its
-    /// writer no longer owns its rows drops them, named, and writes none; a store cut off by a seat
-    /// transfer that has neither committed nor been lifted goes on holding its rows, named, still read
-    /// as its writer's own. A lift writes what it held; a commit drops it, named by the count, and
-    /// nothing dropped is read again. What must NOT happen: a row whose writer's authority ended kept
-    /// to be read in place of the disk, or a row lost while its writer still owns its key.
-    #[tokio::test]
-    async fn a_moved_writer_drops_its_held_rows_and_a_cut_off_store_holds_them_until_the_transfer_decides() {
-        let d = tempdir("records-decided");
-        let w = crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("held")).unwrap();
-        let pad = Scratchpad::new();
-        let gated = FileRecords::open_held(&d, "gated", &w, &pad, "gated".into()).await.unwrap();
-        let lifted = FileRecords::open_held(&d, "lifted", &w, &pad, "lifted".into()).await.unwrap();
-        let committed = FileRecords::open_held(&d, "committed", &w, &pad, "committed".into()).await.unwrap();
-        gated.set_publish_gate(std::sync::Arc::new(|| Err("fabric-primary seat: the holder is mesh2.admin.1".to_string())));
-        gated.write("p", "thing/1", &1u32).await.unwrap();
-        lifted.write("a", "thing/1", &2u32).await.unwrap();
-        committed.write("b", "thing/1", &3u32).await.unwrap();
-        lifted.cut_off("take-seats:a".into());
-        committed.cut_off("take-seats:b".into());
-        let published = pad.publish().await.unwrap();
-        assert_eq!((published.written(), published.dropped(), published.held()), (0, 1, 2), "{published:?}");
-        assert_eq!(published.summary(), "gated dropped 1: fabric-primary seat: the holder is mesh2.admin.1,lifted held 1: cut off: take-seats:a,committed held 1: cut off: take-seats:b");
-        for store in ["gated", "lifted", "committed"] {
-            assert!(files(&d.join(store)).is_empty(), "{store}: nothing reached the disk");
-        }
-        assert!(!gated.holding(), "a store whose rows were dropped writes to the disk from now on");
-        assert_eq!(gated.read::<u32>("p", "thing/1").await.unwrap(), None, "a dropped row is never read");
-        assert!(lifted.holding() && committed.holding(), "a store cut off by an undecided transfer goes on holding");
-        assert_eq!(lifted.read::<u32>("a", "thing/1").await.unwrap(), Some(2), "a row held through an undecided cut-off is still its writer's");
-        lifted.lift_cut_off().await.unwrap();
-        assert_eq!(files(&d.join("lifted")), vec!["a.json"], "a lifted cut-off writes the row its writer held");
-        assert!(!lifted.holding());
-        assert_eq!(committed.drop_held().await, 1, "the commit drops the row the store held");
-        assert!(files(&d.join("committed")).is_empty() && !committed.holding());
-        assert_eq!(committed.read::<u32>("b", "thing/1").await.unwrap(), None, "a row dropped at the commit is never read");
-        let refused = committed.write("c", "thing/1", &4u32).await;
-        assert!(matches!(&refused, Err(StorageError::CutOff { reason, .. }) if reason == "take-seats:b"), "a write after the commit is refused by the cut-off: {refused:?}");
-    }
-
-    /// CONTRACT (R14 item 2: "Keys never overlap across writers"; states.md, Rounds): a store whose
-    /// writer does not own its rows when its scratchpad is published writes none of them and holds
-    /// none of them: after the publication every read and list answers the disk, where the key's one
-    /// writer puts the row. What must NOT happen: a row held at the publication read in place of the
-    /// row the key's writer later put on the disk.
-    #[tokio::test]
-    async fn a_row_held_by_a_writer_that_does_not_own_its_key_is_never_read_in_place_of_the_disk() {
-        let d = tempdir("records-shadow");
-        let pad = Scratchpad::new();
-        let other = FileRecords::open_held(&d, "fabric", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("mesh2-admin-1")).unwrap(), &pad, "fabric".into()).await.unwrap();
-        other.set_publish_gate(std::sync::Arc::new(|| Err("fabric-primary seat: held by mesh1.admin.1".to_string())));
-        other.write("pointer", "thing/1", &"3qcfk1kq47m9".to_string()).await.unwrap();
-        pad.publish().await.unwrap();
-        assert!(!other.holding(), "the publication ended the store's holding");
-        // The key's one writer puts its row on the disk after the publication.
-        FileRecords::open(&d, "fabric", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("mesh1-admin-1")).unwrap()).await.unwrap().write("pointer", "thing/1", &"h3t6eck82y1w".to_string()).await.unwrap();
-        assert_eq!(other.read::<String>("pointer", "thing/1").await.unwrap().as_deref(), Some("h3t6eck82y1w"), "a row held at the publication was read in place of the row the key's writer put on the disk");
-        assert_eq!(other.list::<String>("thing/1").await.unwrap(), vec!["h3t6eck82y1w"], "a row held at the publication hid the disk's row from a list");
-        assert!(other.holds("pointer").await.unwrap(), "the disk holds the key");
     }
 
     /// CONTRACT (R14 item 5): every writer on the shared root names its temp file by the key and its

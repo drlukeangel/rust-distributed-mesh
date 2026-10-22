@@ -648,8 +648,8 @@ fn refused<T>(what: &str, call: Result<T, CallEnd>) -> CallEnd {
 /// node.primary.update span is ever written (the approved proposal
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C1: "Before the initial fabric first reaches
 /// ready-for-traffic, every call is refused `fabric-not-ready` (R-PB1)"; "Refused before the row ...
-/// nothing changed ... Nothing was cut off"): no command (`seat.update.via-primary-update`), no "primary
-/// updating" (`via-primary-updating`), no cut-off (`via-writes-cut-off`), no row
+/// nothing changed"): no command (`seat.update.via-primary-update`), no "primary
+/// updating" (`via-primary-updating`), no issued writes finished for it (`via-issued-writes-finished`), no row
 /// (`via-seat-row-written`), no install (`via-primary-updated`, `via-seats-installed`).
 /// What must NOT happen: a seat or a row moved while the Fabric row, the Mesh rows and the Node rows live
 /// only in their holders' scratchpads.
@@ -739,7 +739,7 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     for seat_span in [
         "rdm.node_admin.seat.update.via-primary-update",
         "rdm.node_admin.seat.update.via-primary-updating",
-        "rdm.node_admin.seat.update.via-writes-cut-off",
+        "rdm.node_admin.primary.update.via-issued-writes-finished",
         "rdm.node_admin.seat.update.via-seat-row-written",
         "rdm.node_admin.seat.update.via-primary-updated",
         "rdm.node_admin.seat.update.via-seats-installed",

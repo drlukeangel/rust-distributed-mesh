@@ -184,7 +184,7 @@ pub struct FabricBuildStateAdapter {
     joined: std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>,
     /// The authority gate every fabric-primary mutation passes (ruling R-A2).
     authority: Authority,
-    /// The gate of this admin's drift-lane opens and claims (R-BI7): the committed seat record of its
+    /// The gate of this admin's drift-lane opens and claims (R-BI7): the written seat record of its
     /// own mesh's primary seat, never the fabric seat's, so an admin that yielded the fabric seat
     /// still opens and claims its own mesh's drift attempts while it holds its mesh's seat.
     mesh_seat_gate: Authority,
@@ -209,7 +209,7 @@ pub enum SeatRecord {
     },
 }
 
-/// Where a Build log reads its authority: the committed seat record, and a receiver that wakes each
+/// Where a Build log reads its authority: the written seat record, and a receiver that wakes each
 /// time a seat record is held.
 #[derive(Clone)]
 pub struct SeatSource {
@@ -235,7 +235,7 @@ impl SeatSource {
 pub struct Authority {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
-    /// The committed seat record this birth's authority is read from.
+    /// The written seat record this birth's authority is read from.
     seat: SeatSource,
 }
 

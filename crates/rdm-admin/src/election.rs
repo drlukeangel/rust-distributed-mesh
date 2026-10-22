@@ -88,7 +88,7 @@ pub struct Incumbency {
     /// provider found their runtime exited, a departure was heard, or a later birth announced it
     /// replaced them. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
     pub lost: HashSet<IncarnationId>,
-    /// Each mesh primary seat a committed seat move left vacant, by mesh name, with the revision it
+    /// Each mesh primary seat a written seat move left vacant, by mesh name, with the revision it
     /// was left at (i144 Q51: a takeover vacates the lost mesh's primary seat): the ordinary rule
     /// fills it at the next revision.
     pub vacant: BTreeMap<String, u64>,

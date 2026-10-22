@@ -773,9 +773,9 @@ fn fabric_primaries(nodes: &[Value]) -> String {
     crate::elections::advertised_fabric_primaries(nodes).join(",")
 }
 
-/// The fabric's committed seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>.json`
+/// The fabric's written seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>.json`
 /// (`seat-move/1`), folded as every reader folds them (Q109), in
-/// their order: the durable fact a hand-back being owed is read from (Q104: the committed seat move on
+/// their order: the durable fact a hand-back being owed is read from (Q104: the written seat move on
 /// the store root, never a view). A row that cannot be read is left out by name in `unread`.
 fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMove>, Vec<String>) {
     let dir = root.join(rdm_admin::fabric_storage::SEAT_MOVES_DIR);
@@ -802,7 +802,7 @@ fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMov
     (rdm_admin::fabric_storage::fold(&moves), unread)
 }
 
-/// The path.name the fabric seat belongs to, read from the committed seat moves and named from the
+/// The path.name the fabric seat belongs to, read from the written seat moves and named from the
 /// view's births: while the fabric seat's latest move is a takeover, its hand-back is owed and its home
 /// is the path.name of the birth it was taken from (fabric-recovery.md "The loss of the fabric-primary
 /// while a node-admin lives" step 4; Q107 (4): the seat is temporary, handed back to the node at the
@@ -1695,7 +1695,7 @@ impl Driver {
         let nodes0 = self.estate.node_values().await;
         let (seats_before, detail_before) = seats(&nodes0);
         let fp_before = fabric_primaries(&nodes0);
-        // Where the fabric seat belongs as the hold begins, from the committed seat moves: a hand-back
+        // Where the fabric seat belongs as the hold begins, from the written seat moves: a hand-back
         // owed then (fabric-recovery.md step 4) takes the seat home during the hold, which no stall did.
         let (moves, unread) = seat_moves(&self.estate.fabric_store_root());
         let home = fabric_home(&moves, &nodes0).unwrap_or_else(|| fp_before.clone());
@@ -2338,7 +2338,7 @@ mod tests {
     /// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4:
     /// once the node at the lost fabric-primary's path.name has been ReadyForTraffic for one floor, the
     /// holder hands every seat back, "the seats return only that way"; Q107 (4): the fabric seat taken
-    /// is temporary; Q104: whether a hand-back is owed is read from the committed seat move on the store
+    /// is temporary; Q104: whether a hand-back is owed is read from the written seat move on the store
     /// root): the seat's home is the first fabric-primary's path.name while the takeover's hand-back is
     /// owed, whoever is advertised. At `0afae287` (step 205) the hold of mesh1.broker.2 began with the
     /// hand-back owed; the driver took mesh2.admin.1, the temporary holder, as home, and judged the

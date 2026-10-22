@@ -470,7 +470,7 @@ fn at_ns(sp: &Value) -> u64 {
 /// 1. P claims the attempt the update runs in for itself (C1 step 1: "The holder is commanded from
 ///    above, as a step of the Build"; `build.update.via-claim-decision` at P, won, before its row), says
 ///    "primary updating" (`via-announce-primary-updating`, sent on the backbone and its mesh channel),
-///    cuts off the writes of both seats (`via-writes-cut-off`, the fabric seat included) and writes the
+///    finishes the writes it has issued (`primary.update.via-issued-writes-finished`) and writes the
 ///    ONE committed row (`seat.update.via-seat-row-written` at P: holder P, successor H, both seats at
 ///    their next epochs, the attempt P claimed).
 /// 2. H, P's same-mesh successor, installs from the row and answers node.primary.updated
@@ -494,7 +494,7 @@ fn at_ns(sp: &Value) -> u64 {
 /// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
 /// sender cuts gossip"): P's "primary updated" is withheld on both channels (the fault door's
 /// `announcement` cut) and the replace stops P right behind it. No observer is left without a
-/// primary: every node holds the committed seats naming H through the read, the replay or the
+/// primary: every node holds the written seats naming H through the read, the replay or the
 /// surviving publisher.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts() {
@@ -546,13 +546,12 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
         assert_eq!(found.len(), 1, "one {name}: {found:#?}");
         found[0].clone()
     };
-    // C1 steps 2-5 at P: the pre-check named H, "primary updating", the cut-off, the ONE row.
+    // C1 steps 2-5 at P: the pre-check named H, "primary updating", its issued writes finished, the ONE row.
     let updating = one("rdm.node_admin.seat.update.via-primary-updating", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
     assert_eq!((attr(&updating, "seat").as_str(), attr(&updating, "successor").as_str(), attr(&updating, "outcome").as_str()), ("mesh-primary+fabric-primary", h_name.as_str(), "updated"), "P moved both its seats to H ({h_name}): {updating:#?}");
     let said_updating = one("rdm.mesh.seat.update.via-announce-primary-updating", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
     assert_eq!((attr(&said_updating, "backbone").as_str(), attr(&said_updating, "mesh_channel").as_str()), ("sent", "sent"), "{said_updating:#?}");
-    let cut_off = one("rdm.node_admin.seat.update.via-writes-cut-off", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
-    assert_eq!(attr(&cut_off, "fabric_seat"), "true", "the fabric seat's writes were cut off too: {cut_off:#?}");
+    let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
     let row = one("rdm.node_admin.seat.update.via-seat-row-written", &|sp| attr(sp, "build_id") == build && attr(sp, "node") == p);
     assert!(attr(&row, "holder").contains(&p_id) && attr(&row, "successor").contains(&h_id), "the row moves P's seats to H ({h_name}, {h_id}): {row:#?}");
     assert_eq!((num(&row, "mesh_revision").is_some(), num(&row, "fabric_revision").is_some()), (true, true), "both seats moved in the one row: {row:#?}");
@@ -590,7 +589,7 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     let h_rows: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "node") != p && attr(sp, "holder").contains(&p_id)).collect();
     assert!(h_rows.is_empty(), "the successor wrote a seat row for P: {h_rows:#?}");
     // The order of the sequence (C1 steps 3-8).
-    assert!(at_ns(&said_updating) <= at_ns(&cut_off) && sp_end(&cut_off) <= row_at, "P said primary updating, then cut off its writes, then wrote the row");
+    assert!(at_ns(&said_updating) <= at_ns(&finished) && sp_end(&finished) <= row_at, "P said primary updating, then finished its issued writes, then wrote the row");
     assert!(sp_end(&row) <= at_ns(&installed), "H installed only after P's row");
     assert!(sp_end(&installed) <= at_ns(&p_said), "P said primary updated only after H answered");
     assert!(sp_end(&p_said) <= sp_end(&p_attempt), "P's attempt ended only after it said primary updated");
@@ -614,14 +613,14 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     // An observer's view resolves the seats from what gossip has brought it, eventually: one whose
     // view lost P before the committed row naming H arrived resolves nobody until it does. The cell
     // asserts no moment of that (Q90's row, c6a8211f: a cell never asserts when gossip arrives); the
-    // property is the eventual one below, every node holding the committed seats naming H.
-    // Every other node holds the committed seats naming H though P's frame never left it: through the
+    // property is the eventual one below, every node holding the written seats naming H.
+    // Every other node holds the written seats naming H though P's frame never left it: through the
     // replay or the surviving publisher (each node's seat record, whichever path brought it).
     for other in names().into_iter().filter(|x| *x != p && *x != h_name) {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "successor").contains(&h_id)).collect();
         let seated: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announcement").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "holder").contains(&h_id)).collect();
         let held = heard.iter().chain(seated.iter()).any(|sp| matches!(attr(sp, "outcome").as_str(), "held" | "same"));
-        assert!(held, "{other} holds the committed seats naming H ({h_name}, {h_id}) with P's frame withheld: primary updated {heard:#?}, seated {seated:#?}");
+        assert!(held, "{other} holds the written seats naming H ({h_name}, {h_id}) with P's frame withheld: primary updated {heard:#?}, seated {seated:#?}");
         eprintln!("seat at {other}: {:?}", heard.iter().chain(seated.iter()).map(|sp| format!("{} via {} {} trace {}", s(&sp["name"]), attr(sp, "via"), attr(sp, "outcome"), s(&sp["trace_id"]))).collect::<Vec<_>>());
     }
     // P was the fabric-primary driving the Build: its drive ends at its row (seat-lost), its committed

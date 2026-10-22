@@ -203,7 +203,7 @@ impl Context {
         Ok(a)
     }
 
-    /// The committed seat revision in a status sequence.
+    /// The written seat revision in a status sequence.
     pub fn seat_revision(&self) -> Option<u64> { self.sequence.as_deref()?.split_once('.').and_then(|(r, _)| scalar(r).ok()) }
 }
 

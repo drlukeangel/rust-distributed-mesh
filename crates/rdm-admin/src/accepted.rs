@@ -477,7 +477,7 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// successor"): the fabric seat's latest committed move on the store root is the takeover `taken`
 /// (`crate::fabric_storage::fabric_seat_taken_from`: its `t`, the lost birth and the holder it seated),
 /// and the node at the lost birth's path.name, or that mesh's primary, is a ReadyForTraffic node-admin
-/// other than that holder. Whether it is still owed is read from the committed seat move, never from
+/// other than that holder. Whether it is still owed is read from the written seat move, never from
 /// the observed view (Q104): `None` once a later move committed (the hand-back's row), and for a
 /// fabric seat no takeover moved.
 pub fn handback_due(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>) -> Option<PathName> {

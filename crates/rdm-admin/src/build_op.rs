@@ -47,7 +47,7 @@ pub struct BuildDoor {
     pub env: Arc<DriveEnv>,
     /// The executor's door for `build.attempt.run`.
     pub run: Arc<RunDoor>,
-    /// The seat records this admin holds: a committed seat transfer installs into it before the
+    /// The seat records this admin holds: a written seat transfer installs into it before the
     /// executor's next step runs, so it names this birth the fabric-primary before the view does.
     pub seats: SeatBook,
     /// This admin's exact birth (with `env.door.node_id`): what the seat book is read against.
@@ -477,7 +477,7 @@ impl BuildDoor {
     #[allow(clippy::too_many_arguments)]
     async fn attempt_run(&self, id: BuildId, attempt: u32, executor: String, context: CallContext, intent: Vec<Vec<u8>>, operations: Vec<Vec<u8>>, hand_off_to: Option<String>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         // The caller of `build.attempt.run` is the fabric-primary that drives the Build. When this
-        // executor took that seat during the run (a committed seat transfer of the attempt's own
+        // executor took that seat during the run (a written seat transfer of the attempt's own
         // SeatTransfer step), the caller is no longer the driver: its seat row fenced it and its
         // stream ends here with the typed new-seat frame naming this admin, never with a write into
         // a stream the old driver stopped. The run goes on in its own task; this admin's own drive

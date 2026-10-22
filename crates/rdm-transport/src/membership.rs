@@ -1005,7 +1005,7 @@ struct HeldSeats {
     /// The last update held together: replayed as one `PrimaryUpdated` while its seats are the records held.
     together: Option<(LifecycleOp, Vec<CommittedSeat>)>,
     receipts: crate::receive_order::SeatReceipts,
-    /// Seats a committed seat move left with no holder, by seat and mesh: the move's revision (i144 Q51:
+    /// Seats a written seat move left with no holder, by seat and mesh: the move's revision (i144 Q51:
     /// a takeover vacates the lost mesh's primary seat). Only a record of a later revision fills one.
     vacant: HashMap<(Seat, String), u64>,
 }
@@ -1055,7 +1055,7 @@ impl HeldSeats {
     }
 }
 
-/// The seat and the mesh a committed seat's record is held under.
+/// The seat and the mesh a written seat's record is held under.
 fn committed_key(c: &CommittedSeat) -> (Seat, String) {
     (c.seat.kind(), c.mesh_key().unwrap_or(c.holder.mesh.as_str()).to_string())
 }
@@ -1185,7 +1185,7 @@ impl SeatBook {
         self.inner.lock().unwrap().fabric.clone()
     }
 
-    /// Leave `seat` of `mesh` vacant at `revision`, as a committed seat move with no holder did (i144
+    /// Leave `seat` of `mesh` vacant at `revision`, as a written seat move with no holder did (i144
     /// Q51: a takeover vacates the lost mesh's primary seat): its record goes, and only a record of a later
     /// revision fills it. `false` when the record held, or a vacancy, is already at `revision` or later.
     pub fn vacate(&self, seat: Seat, mesh: &str, revision: u64) -> bool {
@@ -4087,7 +4087,7 @@ impl Backbone {
     /// Completion needs neither gossip delivery nor the holder's survival"). The holder's own "primary
     /// updated" was best-effort, and from its stop's transport cut it says nothing more, so this
     /// primary says it, once per update, before the stop's own status event: every node holds the
-    /// committed seat before it holds the former holder stopped. Nothing is said when this admin is
+    /// written seat before it holds the former holder stopped. Nothing is said when this admin is
     /// not `op`'s mesh's primary, or holds no update whose former holder is that exact birth (a
     /// holder that never moved a seat, or an update a later record superseded). Returns whether it
     /// said it.

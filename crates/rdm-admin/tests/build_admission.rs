@@ -45,7 +45,7 @@ struct Held {
     /// Part C1 step 8, mesh-delete.md step 1), so every gated write after the acceptance is refused `SeatYielded`.
     moves_at_accept: AtomicBool,
     /// The seat moved: every gated write is refused `SeatYielded`, as `fabric_builds.rs` `enter_naming`
-    /// refuses once the committed seat record names another holder.
+    /// refuses once the written seat record names another holder.
     moved: AtomicBool,
 }
 

@@ -15,7 +15,7 @@ use rdm_admin::admin::Records;
 use rdm_admin::election::{resolve_with, Incumbency};
 use rdm_admin::build_facts_read::{BuildFactsDoor, BuildFactsSlot};
 use rdm_admin::build_op::{BuildDoor, BuildSlot};
-use rdm_admin::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView, WriteCutOff};
+use rdm_admin::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView};
 use rdm_admin::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricStorage, FabricStorageError, FileFabricStorage, MemoryFabricStorage, MoveCause, MoveCommit, MovedSeat, SeatMove, SeatMoveRow, SeatTransferRow};
 use rdm_admin::model::{EndpointId, Fabric, Mesh, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
@@ -108,20 +108,20 @@ impl Spans {
     }
 }
 
-/// The holder's write cut-off, every issued write finished (C1 step 4).
-const CUT_OFF: &str = "rdm.node_admin.seat.update.via-writes-cut-off";
+/// The primary finished the writes it issued, before its row (node-primary-update.md step 3).
+const WRITES_FINISHED: &str = "rdm.node_admin.primary.update.via-issued-writes-finished";
 /// The holder's one committed row (C1 step 5).
 const ROW_WRITTEN: &str = "rdm.node_admin.seat.update.via-seat-row-written";
 /// The successor installed from the row and answered node.primary.updated (C1 step 6).
 const UPDATED: &str = "rdm.node_admin.seat.update.via-primary-updated";
-/// The commander installed the committed seats from the answer.
+/// The commander installed the written seats from the answer.
 const INSTALLED: &str = "rdm.node_admin.seat.update.via-seats-installed";
 /// A refusal of the primitive, at the holder or the successor.
 const REJECTED: &str = "rdm.node_admin.seat.reject.via-primary-update";
 /// The look at the successor's exact birth after a call that did not answer node.primary.updated:
 /// node-recovery's tickle ladder, then at most one retry of the call (C1 failure contract).
 const LADDER: &str = "rdm.node_admin.seat.resolve.via-successor-ladder";
-/// "primary updating", said by the holder before its cut-off (C1 step 3).
+/// "primary updating", said by the holder before it finishes its issued writes (C1 step 3).
 const ANNOUNCE_UPDATING: &str = "rdm.mesh.seat.update.via-announce-primary-updating";
 /// "primary updated", said by the holder once the successor answered node.primary.updated (C1 step 7;
 /// R-MT1: "NA2 updates itself and answers node.primary.updated; NA1 gossips that the primary updated to NA2").
@@ -154,9 +154,9 @@ struct Admin {
     /// birth, as the admin sets its own before its door fills): one store shared by every admin of a
     /// fabric, its rows keyed by the mesh each names (R14).
     status: Arc<MemoryStatusStorage>,
-    /// Every write cut-off the holder's SeatTransfer step applied, in order.
-    cut_offs: Arc<Mutex<Vec<WriteCutOff>>>,
-    /// Holds the cut-off open while `false`: a write still issued when the step cuts off.
+    /// How many times the holder finished the writes it issued (node-primary-update.md step 3).
+    finishes: Arc<std::sync::atomic::AtomicUsize>,
+    /// Holds the finish open while `false`: a write still issued when the holder finishes its writes.
     writes_finish: tokio::sync::watch::Sender<bool>,
     /// Holds the admin's view projection while `false`: an admin that wrote or took a seat and has
     /// not answered yet (what a process that dies there leaves).
@@ -175,6 +175,13 @@ struct Admin {
     /// The admin's nodes.storage: the runtime row of each birth its ladder's provider rung reads.
     nodes: Arc<MemoryNodesStorage>,
     _router: Router,
+}
+
+impl Admin {
+    /// How many times this admin finished the writes it issued (node-primary-update.md step 3).
+    fn finished(&self) -> usize {
+        self.finishes.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// The error a [`FailingStorage`] answers for a method it is told to fail.
@@ -250,9 +257,6 @@ impl FabricStorage for FailingStorage {
     async fn seat_moves(&self) -> Result<Vec<SeatMove>, FabricStorageError> {
         self.check("seat_moves")?;
         self.inner.seat_moves().await
-    }
-    fn set_seat_source(&self, seat: rdm_admin::fabric_builds::SeatSource) {
-        self.inner.set_seat_source(seat)
     }
 }
 
@@ -357,7 +361,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
-    let cut_offs: Arc<Mutex<Vec<WriteCutOff>>> = Arc::default();
+    let finishes: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
     let (writes_finish, writes_gate) = tokio::sync::watch::channel(true);
     let (view_open, view_gate) = tokio::sync::watch::channel(true);
     // The cell's view is set by hand, not projected from digests: the projection re-runs the one
@@ -405,10 +409,10 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         decisions: Arc::default(),
         builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
         project_view,
-        cut_off_writes: {
-            let cut_offs = cut_offs.clone();
-            Arc::new(move |c: WriteCutOff| {
-                cut_offs.lock().unwrap().push(c);
+        finish_writes: {
+            let finishes = finishes.clone();
+            Arc::new(move || {
+                finishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let mut gate = writes_gate.clone();
                 Box::pin(async move {
                     let _ = gate.wait_for(|open| *open).await;
@@ -421,7 +425,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, client, resolver, resolved, storage, status, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, ready_on_ping, provider, nodes, _router: router }, ep)
+    (Admin { door, client, resolver, resolved, storage, status, finishes, writes_finish, view_open, server, facts_slot, build_slot, ready_on_ping, provider, nodes, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -608,7 +612,7 @@ impl rdm_admin::executor::OperationRunner for NoRuns {
 }
 
 /// `a`'s Build door over the Build log `builds` and the Fabric identity holder `accepted`: its
-/// control plane reads the view `a`'s handover door projects (so a committed seat names `a` the
+/// control plane reads the view `a`'s handover door projects (so a written seat names `a` the
 /// fabric-primary there too), its seat book is `a`'s, and the incumbent it reads an unheard
 /// re-submitted Build from is the one `a`'s committed transfer names.
 async fn build_door(a: &Admin, builds: Arc<rdm_admin::build_state::MemoryBuildStateAdapter>, accepted: Arc<rdm_admin::accepted::AcceptedStore>) -> Arc<BuildDoor> {
@@ -892,7 +896,7 @@ fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
         let moved = f.p.door.update_primary(Moving::BothSeats, None, "b1", 1, &op, None).await.expect("both seats move");
         assert_eq!(moved, committed_both(&f.n, 4, 8));
         for a in [&f.p, &f.n] {
-            assert_eq!((a.door.membership.seats().mesh("mesh1"), a.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "{} holds both committed seats", a.resolved.name);
+            assert_eq!((a.door.membership.seats().mesh("mesh1"), a.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "{} holds both written seats", a.resolved.name);
         }
         let rows = rdm_admin::fabric_storage::seat_transfers(&*f.n.storage).await.unwrap();
         assert_eq!(rows.len(), 1, "one row moves both seats: {rows:?}");
@@ -908,8 +912,8 @@ fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
         let target = rdm_admin::seat_watch::fabric_seat_record(f.p.door.membership.seats().fabric().as_ref(), &p_birth, &Default::default(), |id| view.own(id).map(|n| n.name.to_string()));
         assert!(matches!(&target, rdm_admin::fabric_builds::SeatRecord::Moved { to: Some(to), .. } if to == "mesh1.admin.2"), "P's seat record names N to its Build log: {target:?}");
         let at = |n: &str| spans.position(n).unwrap_or_else(|| panic!("no {n} span among {:?}", spans.names()));
-        assert!(at(ANNOUNCE_UPDATING) < at(CUT_OFF), "P says the primary is updating before its cut-off");
-        assert!(at(CUT_OFF) < at(ROW_WRITTEN), "P cuts off its writes before it writes the row");
+        assert!(at(ANNOUNCE_UPDATING) < at(WRITES_FINISHED), "P says the primary is updating before it finishes its issued writes");
+        assert!(at(WRITES_FINISHED) < at(ROW_WRITTEN), "P finishes its issued writes before it writes the row");
         assert!(at(ROW_WRITTEN) < at(UPDATED), "N installs only after P's row");
         assert!(at(UPDATED) < at(ANNOUNCE_UPDATED), "P says the primary updated once N answered node.primary.updated");
         let said: Vec<String> = spans.named(ANNOUNCE_UPDATED).iter().map(|f| f["node"].clone()).collect();
@@ -1003,39 +1007,37 @@ fn a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the
     });
 }
 
-/// CONTRACT (proposal Part C1 step 4, R14 item 4: "NA1 sets its write cut-off and drains every store
-/// write already issued"; step 5: "The writer writes the one seat row"): the fabric-primary X commands
-/// P; while P's cut-off is held open (a write still on the disk) no seat row exists and X's command is
-/// unanswered; once the write finished, P writes the one row and N's node.primary.updated is X's answer. What
-/// must NOT happen: the seat row written while an old-seat write is still issued, or a commit with no
-/// cut-off.
+/// CONTRACT (node-primary-update.md step 3: "NA1 finishes the writes it has issued before it calls
+/// NA2"): the fabric-primary X commands P; while a write P issued is still on the disk no row exists, N
+/// is not called and X's command is unanswered; once the write finished, P writes the one row and N's
+/// node.primary.updated is X's answer. What must NOT happen: the row written or N called while a write
+/// P issued is still unfinished.
 #[test]
-fn the_holder_cuts_off_its_seat_writes_before_it_writes_the_seat_row() {
+fn the_primary_finishes_the_writes_it_issued_before_it_calls_its_successor() {
     let cap = crate::mesh_delete_resume::capture();
     let op = "node.stop:mesh1.admin.1";
     let trace_id = cap.run(async {
-        let root = tracing::info_span!("rdm.test.seat.update.via-primary-update-cut-off");
+        let root = tracing::info_span!("rdm.test.primary.update.via-issued-writes-finished");
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
-        tracing::Instrument::instrument(the_holder_cuts_off(op), root).await;
+        tracing::Instrument::instrument(the_primary_finishes_its_writes(op), root).await;
         trace_id
     });
     println!("trace_id={trace_id}");
     let spans = cap.spans();
     let ours = |name: &str| spans.iter().filter(|s| s["name"] == name && s["attributes"]["operation"] == op).collect::<Vec<_>>();
-    let cut_off = ours(CUT_OFF);
-    assert_eq!(cut_off.len(), 1, "one cut-off span for the update: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
-    assert_eq!(cut_off[0]["attributes"]["fabric_seat"], "false");
+    let finished = ours(WRITES_FINISHED);
+    assert_eq!(finished.len(), 1, "one finish of the issued writes for the update: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
     let written = ours(ROW_WRITTEN);
     assert_eq!(written.len(), 1, "one row for the update");
     assert_eq!(written[0]["attributes"]["node"], "mesh1.admin.1", "the holder writes the row");
     let installed = ours(UPDATED);
     assert_eq!(installed.len(), 1, "one install at the successor");
-    for s in [cut_off[0], written[0], installed[0]] {
-        assert_eq!(s["trace_id"].as_str(), Some(trace_id.as_str()), "the holder's cut-off and row and the successor's install are the cell's own story: {s:?}");
+    for s in [finished[0], written[0], installed[0]] {
+        assert_eq!(s["trace_id"].as_str(), Some(trace_id.as_str()), "the primary's finish and row and the successor's install are the cell's own story: {s:?}");
     }
 }
 
-async fn the_holder_cuts_off(op: &'static str) {
+async fn the_primary_finishes_its_writes(op: &'static str) {
     let f = commanded_fabric().await;
     f.p.writes_finish.send_replace(false);
     let call = tokio::spawn({
@@ -1046,26 +1048,22 @@ async fn the_holder_cuts_off(op: &'static str) {
             out.reply().map(|r| r.value().clone())
         })
     });
-    until("P cuts off its seat writes", || !f.p.cut_offs.lock().unwrap().is_empty()).await;
-    assert!(
-        matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { reason, mesh_seat: true, fabric_seat: false }] if reason.contains(op) && reason.contains("mesh1")),
-        "one cut-off naming the update, the mesh seat only: {:?}",
-        f.p.cut_offs.lock().unwrap()
-    );
-    assert!(rdm_admin::fabric_storage::seat_transfers(&*f.p.storage).await.unwrap().is_empty(), "the seat row was written while a write of the old seat was still issued");
+    until("P finishes the writes it issued", || f.p.finished() == 1).await;
+    assert!(rdm_admin::fabric_storage::seat_transfers(&*f.p.storage).await.unwrap().is_empty(), "the row was written while a write P issued was still unfinished");
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N was called while a write P issued was still unfinished");
     assert!(!call.is_finished(), "P answered before its issued writes finished");
     f.p.writes_finish.send_replace(true);
     let reply = call.await.unwrap();
     assert_eq!(reply, Some(updated(committed_mesh(&f.n, 4))), "N's node.primary.updated is the answer");
-    assert_eq!(rdm_admin::fabric_storage::seat_transfers(&*f.n.storage).await.unwrap().len(), 1, "one row, written after the cut-off");
-    assert!(matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }]), "the committed row ends P's authority over the cut-off writes: {:?}", f.p.cut_offs.lock().unwrap());
+    assert_eq!(rdm_admin::fabric_storage::seat_transfers(&*f.n.storage).await.unwrap().len(), 1, "one row, written after P's issued writes finished");
+    assert_eq!(f.p.finished(), 1, "P finished its issued writes once");
     let _ = (&f.m, &f.x);
 }
 
 /// CONTRACT (proposal Part C1 failure contract: "An identical retry of the call replays the committed
 /// result before any revision check; a call with a conflicting payload for the same operation is refused
 /// by name"; C3 edit 5): a lost reply is retried with the identical call and answered with the same
-/// committed seat before any stale-seat check (mesh1's seat is already at 4): the fabric-primary's
+/// written seat before any stale-seat check (mesh1's seat is already at 4): the fabric-primary's
 /// identical command to P, its own command door, and P's identical node.primary.update to N each
 /// replay the row. The same operation with a conflicting payload (another revision) is RejectedConflict
 /// at N. Nothing commits twice.
@@ -1164,13 +1162,13 @@ async fn an_identical_retry_answers_the_same_seat_and_another_payload_is_refused
     assert_eq!(send(&f.p, &f.n, primary_update(&f.p, &f.n, 5, "b1", 1, op)).await, Reply::RejectedConflict { operation: op.into() }, "a conflicting payload for the committed operation");
     assert_eq!(rdm_admin::fabric_storage::seat_transfers(&*f.n.storage).await.unwrap().len(), 1);
     assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "one revision committed");
-    assert_eq!(f.x.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "the fabric-primary installed the committed seat");
+    assert_eq!(f.x.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "the fabric-primary installed the written seat");
 }
 
 /// CONTRACT (proposal Part C1: "the holder's ... call"; node-rpc-envelope.md, lost replies: a holder
 /// keeps serving after the row): the fabric-primary's reply was lost and P's Node RPC server has since
 /// stopped taking new calls (as node.connections.delete makes it): the identical command is still
-/// answered from the row with the same committed seat, never refused, and nothing
+/// answered from the row with the same written seat, never refused, and nothing
 /// commits twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retry_after_the_holder_stopped_taking_new_calls_is_answered_from_the_row() {
@@ -1221,10 +1219,10 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
 
 /// CONTRACT (proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "refused by name,
 /// `cannot transfer: no secondary of type <node_type> in mesh <mesh>` ... The holder stays primary,
-/// nothing is cut off, no row is written"; C2 search step 3: "neither found: refused by name, `cannot
+/// no row is written"; C2 search step 3: "neither found: refused by name, `cannot
 /// transfer fabric seat: no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary
 /// ReadyForTraffic`"): each refused by its exact text under the holder's reject span `no-successor`,
-/// nothing cut off, no row, every seat where it was:
+/// no writes finished for it, no row, every seat where it was:
 /// - P, the fabric-primary, commands X (mesh2's only node-admin) to update mesh2's seat: Q7's text for mesh2;
 /// - X, the fabric-primary and mesh2's only node-admin, moving both its seats while P is a Ready
 ///   mesh-primary of mesh1: the mesh seat has no secondary, Q7's text for mesh2;
@@ -1240,13 +1238,13 @@ fn a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_move
         let f = seats_fabric().await;
         let only = Request::UpdatePrimary { fabric: "fabric1".into(), holder: birth(&f.x), seats: vec![SeatRevision { seat: WireSeat::MeshPrimary { mesh: "mesh2".into() }, expected_revision: 1 }], build_id: "b2".into(), attempt: 1, operation: "node.primary.update:b2:node.restart:mesh2.admin.1".into() };
         assert_eq!(send(&f.p, &f.x, only).await, Reply::RejectedNoSuccessor { reason: mesh2.into() });
-        assert!(f.x.cut_offs.lock().unwrap().is_empty(), "nothing is cut off: {:?}", f.x.cut_offs.lock().unwrap());
+        assert_eq!(f.x.finished(), 0, "refused before the row: X finishes no writes for it");
         assert_eq!(f.x.door.membership.seats().mesh("mesh2"), Some(holder_of(&f.x, 1)), "X keeps mesh2's seat");
         let g = commanded_fabric().await;
         let r = g.x.door.update_primary(Moving::BothSeats, None, "b3", 1, &update_operation(Seat::MeshPrimary, "b3", 1, "node.stop:mesh2.admin.1"), None).await;
         assert_eq!(r, Err(Reply::RejectedNoSuccessor { reason: mesh2.into() }), "the mesh seat has no secondary though mesh1 has a Ready primary");
         assert_eq!((g.x.door.membership.seats().mesh("mesh2"), g.x.door.membership.seats().fabric()), (Some(holder_of(&g.x, 1)), Some(holder_of(&g.x, 7))), "X keeps both seats");
-        assert!(g.x.cut_offs.lock().unwrap().is_empty());
+        assert_eq!(g.x.finished(), 0);
         // The fabric's only node-admin of its only mesh.
         let (lone, _) = admin(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000004", true).await;
         *lone.door.topology.write().await = view(vec![node_of(&lone, NodeStatus::ReadyForTraffic, true)]);
@@ -1256,14 +1254,14 @@ fn a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_move
         assert_eq!(both, Err(Reply::RejectedNoSuccessor { reason: lone_text.into() }), "both searches named");
         let outside = lone.door.update_primary(Moving::FabricSeatOutside, None, "b5", 1, &update_operation(Seat::FabricPrimary, "b5", 1, "mesh.delete:mesh1"), None).await;
         assert_eq!(outside, Err(Reply::RejectedNoSuccessor { reason: lone_text.into() }), "mesh.delete of the only mesh");
-        assert!(lone.cut_offs.lock().unwrap().is_empty() && rdm_admin::fabric_storage::seat_transfers(&*lone.storage).await.unwrap().is_empty(), "nothing cut off, no row");
+        assert!(lone.finished() == 0 && rdm_admin::fabric_storage::seat_transfers(&*lone.storage).await.unwrap().is_empty(), "no writes finished for it, no row");
         assert_eq!((lone.door.membership.seats().mesh("mesh1"), lone.door.membership.seats().fabric()), (Some(holder_of(&lone, 3)), Some(holder_of(&lone, 7))), "the lone admin keeps both seats");
         let named = refusals(&spans);
         for text in [mesh2, mesh2, lone_text, lone_text] {
             assert!(named.iter().any(|(side, reason, detail)| side == "holder" && reason == "no-successor" && detail == text), "no holder reject span no-successor with {text:?}: {named:?}");
         }
         assert_eq!(named.len(), 4, "{named:?}");
-        assert!(spans.named(ROW_WRITTEN).is_empty() && spans.named(CUT_OFF).is_empty(), "nothing cut off, no row");
+        assert!(spans.named(ROW_WRITTEN).is_empty() && spans.named(WRITES_FINISHED).is_empty(), "no writes finished for it, no row");
         assert!(rdm_admin::fabric_storage::seat_transfers(&*f.x.storage).await.unwrap().is_empty() && rdm_admin::fabric_storage::seat_transfers(&*g.x.storage).await.unwrap().is_empty());
         let _ = (&f.m, &f.n, &g.m, &g.n, &g.p);
     });
@@ -1293,7 +1291,7 @@ async fn a_fabric_seat_moved_outside_its_mesh_leaves_the_holder_mesh_primary() {
     let _ = (&f.m, &f.n);
 }
 
-/// CONTRACT (elections §4.4: the committed seat record is authoritative resolver input; proposal C2
+/// CONTRACT (elections §4.4: the written seat record is authoritative resolver input; proposal C2
 /// Q1): the one row is the resolver's input on both sides. When P's node.primary.update moving both
 /// seats answers, P's view and N's view both name N as mesh1's primary and the fabric-primary. What
 /// must NOT happen: either view still naming P after the row.
@@ -1454,13 +1452,12 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
 /// answer, so P asks the provider, which proves N's runtime exited. P puts N's exit-proof row (proof
 /// `provider`) and retries nothing: N's seat vacates and P's view seats the ordinary rule's choice,
 /// the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone (P itself, in this
-/// fabric). Seated again, P installs mesh1's seat at the next revision over the row's (revision 5) and
-/// restores that seat's writes (ruling R-PU2 recovery order 2-3). P's update ends naming the failure,
+/// fabric). Seated again, P installs mesh1's seat at the next revision over the row's (revision 5)
+/// (ruling R-PU2 recovery order 2). P's update ends naming the failure,
 /// `Incomplete` on the wire, and X's command is answered by P with it, X installing nothing. X's next
 /// attempt sends the identical command: P reads its row, finds N's exit proven and calls N no more: no
 /// second update under the operation. What must NOT happen: a retry or a second look at a birth proven
-/// exited, X's own deadline ending its command before P answers, a cut-off lifted under the old
-/// revision, a second row, or the row rewritten.
+/// exited, X's own deadline ending its command before P answers, a second row, or the row rewritten.
 #[test]
 fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rule_and_is_called_no_more() {
     let cap = trace_capture("fabric-handover");
@@ -1502,7 +1499,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         assert_ne!(field("call"), "", "the look names how P's call ended: {:?}", looks[0]);
         let exit = p.door.records.exit_row_of_birth("mesh1", &n.resolved.node_id, &n.resolved.incarnation, "N").await.unwrap().expect("P put N's exit-proof row among mesh1's status rows");
         assert_eq!(exit.proof, "provider");
-        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: false, .. }]), "the row ended P's writes of the cut-off stores, and P seated again restores mesh1's seat only: {:?}", p.cut_offs.lock().unwrap());
+        assert_eq!(p.finished(), 1, "P finished its issued writes once, before its row");
         assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 5)), "P holds mesh1's seat at the next revision over the row's");
         assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an incomplete update");
         let primary = p.door.topology.read().await.cohort_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string());
@@ -1614,18 +1611,16 @@ fn assert_seated_again_order(spans: &Spans, expected_seats: &[(&str, &str)]) {
 /// provider-confirmed, after the committed row, the transfer step fails with "the new holder's process
 /// is gone, provider-confirmed, after the committed row", the Build is Failed under R-BI4, and the
 /// ordinary rule seats whoever it seats, P included; recovery order (1) record the exit proof, the
-/// ordinary rule resolves, (2) install the resulting leadership revision, (3) "If P holds a seat again,
-/// restore only that seat's write scope under the new revision", (5) that run's node.primary.update is
+/// ordinary rule resolves, (2) install the resulting leadership revision, (5) that run's node.primary.update is
 /// keyed by `(build_id, run)` (`node.primary.update:<build_id>:<run>:<op>`), and the resubmit's new run
 /// excludes P and the gone birth and names the next ReadyForTraffic node): P holds both seats and moves
 /// them to N by one row in run 1 of Build b1. N installs and its process is gone; P's ladder confirms
 /// N's process gone via the provider and puts its exit-proof row. The ordinary rule seats P in both
 /// seats again: P's update ends `Failed { step, reason }` with the five facts, P holds both seats at
-/// the next revisions (mesh 5, fabric 9), writes each seat's record before announcing it, and restores
-/// both seats' writes. The caller's resubmit opens run 2: its update is a new transfer key, P is its
+/// the next revisions (mesh 5, fabric 9) and writes each seat's record before announcing it. The caller's resubmit opens run 2: its update is a new transfer key, P is its
 /// holder again and its pre-check excludes P and the gone N and names M, which installs and answers.
-/// Must NOT happen: an `Incomplete` end, the row rewritten or reused to pick another successor, P's
-/// cut-off left in place over seats it holds, or run 2 answered from run 1's row.
+/// Must NOT happen: an `Incomplete` end, the row rewritten or reused to pick another successor, or run
+/// 2 answered from run 1's row.
 #[test]
 fn a_holder_seated_again_after_the_new_holders_process_is_gone_fails_the_step_restores_its_seats_and_the_next_run_names_a_third_node() {
     let cap = trace_capture("fabric-handover");
@@ -1642,8 +1637,7 @@ fn a_holder_seated_again_after_the_new_holders_process_is_gone_fails_the_step_re
         assert_eq!((view.cohort_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()), fabric_primary_of(&view)), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "the ordinary rule seats P in both seats again");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.p, 5)), Some(holder_of(&f.p, 9))), "P holds both seats under the next revision over the row's");
         assert_seated_again_order(&spans, &[("mesh-primary", "5"), ("fabric-primary", "9")]);
-        let cut_offs = f.p.cut_offs.lock().unwrap().clone();
-        assert!(matches!(cut_offs.as_slice(), [WriteCutOff::Set { mesh_seat: true, fabric_seat: true, .. }, WriteCutOff::Committed { mesh_seat: true, fabric_seat: true, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: true, .. }]), "P restores the writes of both seats it holds again: {cut_offs:?}");
+        assert_eq!(f.p.finished(), 1, "P finished its issued writes once, before its row");
         let next = tokio::time::timeout(std::time::Duration::from_secs(20), f.p.door.move_own_seats(Moving::BothSeats, "b1", 2, &run2, None)).await.expect("run 2's transfer ends");
         assert_eq!(next, Ok(committed_both(&f.m, 6, 10)), "run 2's transfer excludes P and the gone N and names M");
         assert_eq!(f.m.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.m, 6)), "M installed run 2's row");
@@ -1653,15 +1647,14 @@ fn a_holder_seated_again_after_the_new_holders_process_is_gone_fails_the_step_re
     println!("cell=holder_gone_after_row_seated_again trace_id={trace_id}");
 }
 
-/// CONTRACT (ruling R-PU2 cell 2: when the new holder's process is gone after the row and another
-/// candidate wins under the ordinary rule, P's cut-off stays in place): mesh1's M has the lowest NodeId
+/// CONTRACT (ruling R-PU2 cell 2: the new holder's process is gone after the row and another candidate
+/// wins under the ordinary rule): mesh1's M has the lowest NodeId
 /// and is not ReadyForTraffic when P, holding both seats, moves them to N. M is ReadyForTraffic by the
 /// time N, having installed, has its process confirmed gone by the provider: the ordinary rule seats M
 /// in both seats. P's update ends `Failed` naming M as who the ordinary rule seated; P holds neither
-/// seat, installs no revision of its own and its cut-off stays. Must NOT happen: a restore of a seat P
-/// does not hold, or P's book naming P.
+/// seat and installs no revision of its own. Must NOT happen: P's book naming P.
 #[test]
-fn a_new_holders_process_gone_with_another_candidate_winning_fails_the_step_and_the_holders_cut_off_stays() {
+fn a_new_holders_process_gone_with_another_candidate_winning_fails_the_step() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
@@ -1679,42 +1672,10 @@ fn a_new_holders_process_gone_with_another_candidate_winning_fails_the_step_and_
         let view = f.p.door.topology.read().await.clone();
         assert_eq!((view.cohort_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()), fabric_primary_of(&view)), (Some("mesh1.admin.3".into()), Some("mesh1.admin.3".into())), "the ordinary rule seats M");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "P installs no revision naming itself");
-        let cut_offs = f.p.cut_offs.lock().unwrap().clone();
-        assert!(matches!(cut_offs.as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { mesh_seat: true, fabric_seat: true, .. }]), "P's cut-off stays: {cut_offs:?}");
+        assert_eq!(f.p.finished(), 1, "P finished its issued writes once, before its row");
         let _ = &spans;
     });
     println!("cell=holder_gone_after_row_another_wins trace_id={trace_id}");
-}
-
-/// CONTRACT (ruling R-PU2 recovery order 3: "the mesh seat restores the mesh rows, the fabric seat
-/// restores fabric/ and topology-Build acceptance, never one for the other"; cell 3: "a dual-seat
-/// holder recovering one seat and not the other"): P holds both seats and moves them to N. After the
-/// row X, mesh2's primary, holds the fabric seat at the next revision over the row's (its record held in
-/// P's book). N's process is confirmed gone by the provider: the ordinary rule seats P in mesh1's seat
-/// and keeps X in the fabric seat. P holds mesh1's seat at revision 5, writes and announces only mesh1's
-/// seat, and restores the mesh seat's writes only. Must NOT happen: the fabric seat's writes restored,
-/// or a record of P in the fabric seat.
-#[test]
-fn a_dual_seat_holder_seated_again_in_one_seat_restores_that_seats_writes_and_not_the_others() {
-    let cap = trace_capture("fabric-handover");
-    let spans = cap.spans.clone();
-    let _file = SpanFile(spans.clone());
-    let (trace_id, ()) = cap.story("holder_gone_after_row_one_seat_regained", async {
-        let f = seats_fabric().await;
-        let run1 = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
-        let end = p_moves_to_n_and_n_gone(&f, 1, &run1, || async {
-            seat_at(&f.p, Seat::FabricPrimary, &holder_of(&f.x, 9)).await;
-        })
-        .await;
-        holder_gone_after_row(&end, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh2.admin.1 (000000000001)"]);
-        let view = f.p.door.topology.read().await.clone();
-        assert_eq!((view.cohort_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()), fabric_primary_of(&view)), (Some("mesh1.admin.1".into()), Some("mesh2.admin.1".into())), "P is seated in mesh1's seat again, X keeps the fabric seat");
-        assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.p, 5)), Some(holder_of(&f.x, 9))));
-        assert_seated_again_order(&spans, &[("mesh-primary", "5")]);
-        let cut_offs = f.p.cut_offs.lock().unwrap().clone();
-        assert!(matches!(cut_offs.as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { mesh_seat: true, fabric_seat: true, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: false, .. }]), "the mesh seat's writes are restored, the fabric seat's stay cut: {cut_offs:?}");
-    });
-    println!("cell=holder_gone_after_row_one_seat_regained trace_id={trace_id}");
 }
 
 /// CONTRACT (ruling R-PU2 cell 4: "interruption before the terminal failure is recorded, the next
@@ -1723,8 +1684,7 @@ fn a_dual_seat_holder_seated_again_in_one_seat_restores_that_seats_writes_and_no
 /// Failed receipt is never recorded (the executor interrupted there). The next attempt of the same run
 /// carries the same transfer key: P replays from its row, reads N's exit-proof row and ends with the
 /// same Failed step and five facts, calling N no more and writing no second row. Must NOT happen: an
-/// `Incomplete` end, a second look or call at N, a second row, or a second cut-off over P's restored
-/// seats.
+/// `Incomplete` end, a second look or call at N, or a second row.
 #[test]
 fn the_next_attempt_after_an_interruption_resumes_from_the_exit_proof_row_and_fails_the_step() {
     let cap = trace_capture("fabric-handover");
@@ -1737,13 +1697,12 @@ fn the_next_attempt_after_an_interruption_resumes_from_the_exit_proof_row_and_fa
         holder_gone_after_row(&first, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh1.admin.1 (000000000002)"]);
         let n_id = f.n.resolved.node_id.to_string();
         let calls_to_n = || spans.named(CALL).into_iter().filter(|c| c.get("op").map(String::as_str) == Some("33") && c.get("target").is_some_and(|t| t.contains(&n_id))).count();
-        let (calls_before, cuts_before) = (calls_to_n(), f.p.cut_offs.lock().unwrap().len());
+        let (calls_before, finished_before) = (calls_to_n(), f.p.finished());
         let resumed = tokio::time::timeout(std::time::Duration::from_secs(20), f.p.door.move_own_seats(Moving::BothSeats, "b1", 2, &run1, None)).await.expect("the resumed attempt ends");
         holder_gone_after_row(&resumed, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh1.admin.1 (000000000002)"]);
         assert_eq!((calls_to_n(), spans.named(LADDER).len()), (calls_before, 1), "N is called and looked at no more");
         assert_eq!(rdm_admin::fabric_storage::seat_transfers(&*f.p.storage).await.unwrap().len(), 1, "no second row");
-        let cut_offs = f.p.cut_offs.lock().unwrap().clone();
-        assert!(cut_offs[cuts_before..].iter().all(|c| matches!(c, WriteCutOff::Restore { mesh_seat: true, fabric_seat: true, .. })), "the resumed attempt cuts nothing off again: {cut_offs:?}");
+        assert_eq!(f.p.finished(), finished_before, "the resumed attempt writes no row, so finishes no writes for one");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.p, 5)), Some(holder_of(&f.p, 9))));
     });
     println!("cell=holder_gone_after_row_resumed trace_id={trace_id}");
@@ -1756,8 +1715,8 @@ fn the_next_attempt_after_an_interruption_resumes_from_the_exit_proof_row_and_fa
 /// reason's text"): the fabric-primary X (`mesh2.admin.1`) commands P (`mesh1.admin.1`) on `0x21` to
 /// move mesh1's seat in run 1. P writes the row naming N (`mesh1.admin.2`) at revision 4; N installs
 /// and its process is gone before it answers. P's ladder confirms N's process gone via the provider,
-/// puts N's exit-proof row, reseats P in mesh1's seat at revision 5 (record before announcement),
-/// restores P's mesh writes, and answers X on `0x21` with `NodePrimaryUpdateReply::Failed { step,
+/// puts N's exit-proof row, reseats P in mesh1's seat at revision 5 (record before announcement)
+/// and answers X on `0x21` with `NodePrimaryUpdateReply::Failed { step,
 /// reason }` recording all five facts. X fails the step on the `Failed` variant. On the resubmit's new
 /// run (run 2), X commands P again; P excludes P and the gone N and moves mesh1's seat to M
 /// (`mesh1.admin.3`) at revision 6.
@@ -1790,39 +1749,6 @@ fn a_commanded_update_whose_new_holders_process_is_gone_after_the_row_answers_th
         assert_eq!(f.x.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.m, 6)), "X installed M from run 2's answer");
     });
     println!("cell=commanded_holder_gone_after_row trace_id={trace_id}");
-}
-
-/// CONTRACT (ruling R-PU2 recovery order 3, at the stores: "restore only that seat's write scope ...
-/// never one for the other; writes queued or stamped under the old revision stay cut"): a dual-seat
-/// holder's stores are cut off for its transfer and the row commits; the mesh seat is restored, the
-/// fabric seat is not. A mesh status write lands; a Fabric record write is still refused naming the
-/// transfer.
-#[test]
-fn a_restore_of_the_mesh_seat_gives_back_the_mesh_rows_and_not_the_fabric_record() {
-    use rdm_admin::storage_backend::SeatStores;
-    use rdm_admin::status_storage::{MeshStatusRow, StatusStorage as _};
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let d = std::env::temp_dir().join(format!("seat-stores-restore-{}", NodeId::mint()));
-        let root = rdm_admin::store_root::StoreRoot::at(&d.join("store"));
-        let inc = IncarnationId::mint();
-        let stores = SeatStores {
-            mesh: Arc::new(rdm_admin::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
-            nodes: Arc::new(rdm_admin::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
-            fabric: Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
-            status: Arc::new(rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
-        };
-        let reason = "the mesh-primary+fabric-primary seat(s) of mesh1.admin.1 are updating to mesh1 000000000003 by node.primary.update:b1:1:node.stop:mesh1.admin.1";
-        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
-        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
-        stores.apply(WriteCutOff::Restore { reason: "mesh1's seat is mesh1.admin.1's again at epoch 5".into(), mesh_seat: true, fabric_seat: false }).await;
-        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic }).await.expect("the restored mesh seat writes its mesh's status rows");
-        match rdm_admin::fabric_storage::claim_identity(&*stores.fabric, &FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
-            Err(e) => assert!(e.to_string().contains("node.primary.update:b1:1:node.stop:mesh1.admin.1"), "the fabric seat stays cut, naming the transfer: {e}"),
-            Ok(claim) => panic!("a Fabric record write while the fabric seat is not this holder's: {claim:?}"),
-        }
-        let _ = std::fs::remove_dir_all(&d);
-    });
 }
 
 /// CONTRACT (proposal Part C1 failure contract: "After the row, the successor is the committed holder
@@ -1948,188 +1874,6 @@ async fn the_holders_build_decisions_are_held_while_it_writes_the_seat_row() {
     let _ = (&f.m, &f.x);
 }
 
-/// CONTRACT (R14 item 4: "the holder cuts off its writes to the stores its moving seats authorize,
-/// drains them, then writes the seat row"; node-identity-and-state.md §4.3: the mesh-primary writes
-/// every status of its mesh): a moving mesh seat cuts off the mesh's status rows on the fabric's
-/// store root with its Mesh row, Node rows and contacts: a status write after the cut-off is refused
-/// by name, naming the transfer; a lift gives the writes back.
-#[test]
-fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
-    use rdm_admin::fabric_handover::WriteCutOff;
-    use rdm_admin::storage_backend::SeatStores;
-    use rdm_admin::status_storage::{MeshStatusRow, StatusStorage};
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let d = std::env::temp_dir().join(format!("seat-stores-{}", rdm_admin::model::NodeId::mint()));
-        let root = rdm_admin::store_root::StoreRoot::at(&d.join("store"));
-        let inc = rdm_admin::model::IncarnationId::mint();
-        let stores = SeatStores {
-            mesh: std::sync::Arc::new(rdm_admin::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
-            nodes: std::sync::Arc::new(rdm_admin::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
-            fabric: std::sync::Arc::new(rdm_admin::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
-            status: std::sync::Arc::new(rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
-        };
-        let row = MeshStatusRow { mesh_id: rdm_admin::model::MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic };
-        stores.apply(WriteCutOff::Set { reason: "node.primary.update:b1:node.stop:mesh1.admin.1".into(), mesh_seat: true, fabric_seat: false }).await;
-        match stores.status.put_mesh_status(&row).await {
-            Err(rdm_admin::storage_error::StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.primary.update:b1:node.stop:mesh1.admin.1"), "{reason}"),
-            other => panic!("a status write after the moving seat's cut-off: {other:?}"),
-        }
-        stores.apply(WriteCutOff::Lift).await;
-        stores.status.put_mesh_status(&row).await.expect("a lift gives the status writes back");
-        let _ = std::fs::remove_dir_all(&d);
-    });
-}
-
-/// CONTRACT (proposal Part C1 step 4: "The mesh seat's cut-off covers the mesh's rows (`meshes/<mesh>`,
-/// `nodes/<mesh>/`); the fabric seat's covers `fabric/` and Build acceptance"; Part C2: "Under
-/// mesh.delete the mesh seat does not move at all ... the incumbent stays mesh-primary until its own
-/// node.delete"): node.fabric-primary.update moving the fabric seat alone cuts off the fabric seat's
-/// stores and none of the holder's mesh. Through the cut-off a Fabric record write is refused naming the
-/// transfer, while the holder, still its mesh's primary, writes its mesh's status row (the Leaving row
-/// mesh.delete's leave writes next); after the row commits it still writes its mesh's status and Mesh
-/// rows. What must NOT happen: the holder's mesh rows cut off by a move of the fabric seat alone, so the
-/// mesh.delete it precedes refuses delete-mesh on its own Leaving row.
-#[test]
-fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
-    use rdm_admin::storage_backend::SeatStores;
-    use rdm_admin::status_storage::{MeshStatusRow, StatusStorage as _};
-    use rdm_admin::storage::MeshStorage as _;
-    use rdm_core::status::MeshState;
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let d = std::env::temp_dir().join(format!("seat-stores-fabric-alone-{}", NodeId::mint()));
-        let root = rdm_admin::store_root::StoreRoot::at(&d.join("store"));
-        let inc = IncarnationId::mint();
-        let stores = SeatStores {
-            mesh: Arc::new(rdm_admin::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
-            nodes: Arc::new(rdm_admin::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
-            fabric: Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
-            status: Arc::new(rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
-        };
-        let reason = "the fabric-primary seat(s) of mesh1.admin.1 are updating to mesh2 000000000002 by node.fabric-primary.update:b1:mesh.delete:mesh1";
-        let mesh_id = MeshId::mint();
-        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: false, fabric_seat: true }).await;
-        match rdm_admin::fabric_storage::claim_identity(&*stores.fabric, &FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
-            Err(e) => assert!(e.to_string().contains("node.fabric-primary.update:b1:mesh.delete:mesh1"), "the refusal names the transfer: {e}"),
-            Ok(claim) => panic!("a Fabric record write after the fabric seat's cut-off: {claim:?}"),
-        }
-        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Leaving }).await.expect("the holder writes its mesh's Leaving row through the fabric seat's cut-off");
-        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: false, fabric_seat: true }).await;
-        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.expect("the holder, still mesh1's primary, writes its mesh's status row after the row");
-        rdm_admin::storage::claim_mesh(&*stores.mesh, &rdm_admin::storage::MeshRecord { mesh_id, name: "mesh1".into(), dead: true }).await.expect("the holder writes its Mesh row after the row").expect("mesh1 is a free name");
-        let _ = std::fs::remove_dir_all(&d);
-    });
-}
-
-/// CONTRACT (R14 item 4; proposal Part C1 step 5: "From this write the holder is no longer
-/// primary"): a holder that opened its stores before the fabric's first state-commit holds what
-/// it writes in its scratchpad. A seat transfer cuts those stores off; once its seat row commits,
-/// every row the moving seats' stores still hold (the Mesh row, the mesh's status rows and, the
-/// fabric seat moving too, the Fabric identity) is dropped: never read again, and a later
-/// publication writes none of them. What must NOT happen: a row whose writer's authority ended
-/// kept and read in place of the store root, or written there after the seat row.
-#[test]
-fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
-    use rdm_admin::fabric_handover::WriteCutOff;
-    use rdm_admin::storage_backend::SeatStores;
-    use rdm_admin::fabric_storage::FabricStorage as _;
-    use rdm_admin::status_storage::{MeshStatusRow, StatusStorage};
-    use rdm_admin::storage::MeshStorage as _;
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let d = std::env::temp_dir().join(format!("seat-stores-held-{}", rdm_admin::model::NodeId::mint()));
-        let pad = rdm_admin::record_store::Scratchpad::new();
-        let root = rdm_admin::store_root::StoreRoot::held_at(&d.join("store"), pad.clone());
-        let inc = rdm_admin::model::IncarnationId::mint();
-        let stores = SeatStores {
-            mesh: std::sync::Arc::new(rdm_admin::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
-            nodes: std::sync::Arc::new(rdm_admin::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
-            fabric: std::sync::Arc::new(rdm_admin::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
-            status: std::sync::Arc::new(rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
-        };
-        rdm_admin::storage::claim_mesh(&*stores.mesh, &rdm_admin::storage::MeshRecord { mesh_id: rdm_admin::model::MeshId::mint(), name: "mesh1".into(), dead: false }).await.unwrap().unwrap();
-        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: rdm_admin::model::MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic }).await.unwrap();
-        rdm_admin::fabric_storage::claim_identity(&*stores.fabric, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
-        assert!(stores.mesh.mesh("mesh1").await.unwrap().is_some(), "the holder reads the Mesh row it holds");
-        let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by node.primary.update:b1:node.stop:mesh1.admin.1";
-        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
-        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
-        assert!(stores.mesh.mesh("mesh1").await.unwrap().is_none(), "a Mesh row dropped at the commit is never read");
-        assert!(stores.fabric.fabric().await.unwrap().is_none(), "a Fabric identity dropped at the commit is never read");
-        let published = pad.publish().await.unwrap();
-        assert_eq!((published.written(), published.dropped(), published.held()), (0, 0, 0), "nothing the holder held is published after the seat row: {published:?}");
-        fn files(dir: &std::path::Path, out: &mut Vec<String>) {
-            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                if e.path().is_dir() {
-                    files(&e.path(), out);
-                } else {
-                    out.push(e.path().display().to_string());
-                }
-            }
-        }
-        let mut on_root = Vec::new();
-        files(&d.join("store"), &mut on_root);
-        assert!(on_root.is_empty(), "no row reached the store root: {on_root:?}");
-        let _ = std::fs::remove_dir_all(&d);
-    });
-}
-
-/// CONTRACT (R14 items 2 and 4; R13: the fabric-primary writes another mesh's rows only as acting
-/// primary of a mesh with no primary, an authority its fabric seat gives it; mesh-delete.md step 7):
-/// a holder that opened its stores before the fabric's first state-commit holds the rows it wrote as
-/// acting primary of mesh2 (mesh2's Node row and its Mesh status row) in its scratchpad. Once a seat
-/// transfer moving the fabric seat commits, every one of them is dropped: never read again, and a
-/// later publication writes none of them. What must NOT happen: a row its writer held as acting
-/// primary kept after the fabric seat moved, read in place of the store root or written there.
-#[test]
-fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_primary_of_another_mesh() {
-    use rdm_admin::fabric_handover::WriteCutOff;
-    use rdm_admin::storage_backend::SeatStores;
-    use rdm_admin::status_storage::{MeshStatusRow, StatusStorage as _};
-    use rdm_admin::storage::{NodeRow, NodesStorage as _};
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        let d = std::env::temp_dir().join(format!("seat-stores-acting-{}", NodeId::mint()));
-        let pad = rdm_admin::record_store::Scratchpad::new();
-        let root = rdm_admin::store_root::StoreRoot::held_at(&d.join("store"), pad.clone());
-        let inc = IncarnationId::mint();
-        let stores = SeatStores {
-            mesh: std::sync::Arc::new(rdm_admin::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
-            nodes: std::sync::Arc::new(rdm_admin::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
-            fabric: std::sync::Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
-            status: std::sync::Arc::new(rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
-        };
-        let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-        let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rdm_core::status::MeshState::Dead };
-        stores.nodes.put_node_row(&row).await.unwrap();
-        stores.status.put_mesh_status_of("mesh2", &dead).await.unwrap();
-        assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), Some(row.clone()), "the holder reads the mesh2 Node row it holds");
-        assert!(stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "the holder reads the mesh2 status row it holds");
-        let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by node.primary.update:b1:node.stop:mesh1.admin.1";
-        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
-        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
-        assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), None, "a mesh2 Node row dropped at the commit is never read");
-        assert!(!stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "a mesh2 status row dropped at the commit is never read");
-        let published = pad.publish().await.unwrap();
-        assert_eq!((published.written(), published.dropped(), published.held()), (0, 0, 0), "nothing the holder held as acting primary is published after the seat row: {published:?}");
-        let mut on_root = Vec::new();
-        let mut dirs = vec![d.join("store")];
-        while let Some(dir) = dirs.pop() {
-            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                if e.path().is_dir() {
-                    dirs.push(e.path());
-                } else {
-                    on_root.push(e.path().display().to_string());
-                }
-            }
-        }
-        assert!(on_root.is_empty(), "no row reached the store root: {on_root:?}");
-        let _ = std::fs::remove_dir_all(&d);
-    });
-}
-
-
 /// The commanded seats fabric with every admin over one [`FailingStorage`], the fabric's one store
 /// root (R14), which is returned.
 async fn failing_seats() -> (Seats, Arc<FailingStorage>) {
@@ -2145,21 +1889,18 @@ async fn failing_seats() -> (Seats, Arc<FailingStorage>) {
     (s, store)
 }
 
-/// CONTRACT (proposal Part C1 failure contract: "The seat-row write fails between the drain and the
-/// commit ... A named error is a confirmed non-commit: the step fails by name naming the error, and
-/// NA1 lifts its cut-off under the unchanged epoch, because a primary that cannot write is a worse
-/// state than a failed step"; Part E: "seat-row write fails after the drain: the step fails naming the
-/// error and NA1 writes again under the unchanged epoch"; CLAUDE.md error rule): the fabric-primary X
+/// CONTRACT (node-primary-update.md failure contract, "Refused before the row": refused by name,
+/// nothing changed, the Build's step fails by name; CLAUDE.md error rule): the fabric-primary X
 /// commands P.
-/// - The store cannot read the operation's row: P refuses `RejectedSourceFailed` naming it before
-///   anything is cut off.
-/// - The store refuses P's row after the cut-off: P answers `RejectedSourceFailed` naming the row and the
-///   store's error, lifts its cut-off (`Set` then `Lift`) and is still mesh1's primary at epoch 3; N
-///   is never called. Once the store writes again, X's next attempt of the same update has P write
-///   the row under the unchanged epoch: the seat moves to N at 4.
+/// - The store cannot read the operation's row: P refuses `RejectedSourceFailed` naming it before it
+///   finishes any write for the update.
+/// - The store refuses P's row after P finished its issued writes: P answers `RejectedSourceFailed`
+///   naming the row and the store's error and is still mesh1's primary at revision 3; N is never
+///   called. Once the store writes again, X's next attempt of the same update has P write the row under
+///   the unchanged revision: N is primary at 4.
 /// Each refusal is the holder's reject span `source-failed` with the three fields.
 #[test]
-fn a_seat_row_write_that_fails_after_the_cut_off_fails_the_step_by_name_and_the_holder_writes_again_under_the_unchanged_epoch() {
+fn a_row_write_that_fails_fails_the_step_by_name_and_the_primary_writes_again_under_the_unchanged_revision() {
     let cap = crate::mesh_delete_resume::capture();
     let seats_op = "node.stop:mesh1.admin.1";
     let (replies, trace_id) = cap.run(async {
@@ -2172,16 +1913,16 @@ fn a_seat_row_write_that_fails_after_the_cut_off_fails_the_step_by_name_and_the_
                 let (s, store) = failing_seats().await;
                 store.failing("seat_moves");
                 replies.push(("row-read", send(&s.x, &s.p, update_mesh_seat(&s.p, 3, "b1", seats_op)).await));
-                assert!(s.p.cut_offs.lock().unwrap().is_empty() && unmoved(&s), "nothing is cut off or moved");
+                assert!(s.p.finished() == 0 && unmoved(&s), "refused before the row: nothing is finished or moved");
                 let (s, store) = failing_seats().await;
                 store.failing("put_seat_move");
                 replies.push(("row-put", send(&s.x, &s.p, update_mesh_seat(&s.p, 3, "b1", seats_op)).await));
-                assert!(matches!(s.p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Lift]), "the cut-off is lifted when the row was not written: {:?}", s.p.cut_offs.lock().unwrap());
-                assert!(unmoved(&s), "no seat moves: P is still primary under the unchanged epoch");
-                // The store writes again: the next attempt writes the row under the unchanged epoch.
+                assert_eq!(s.p.finished(), 1, "P finished its issued writes before the row it could not write");
+                assert!(unmoved(&s), "P is still primary under the unchanged revision");
+                // The store writes again: the next attempt writes the row under the unchanged revision.
                 store.mended("put_seat_move");
                 replies.push(("again", send(&s.x, &s.p, update_mesh_seat(&s.p, 3, "b1", seats_op)).await));
-                assert_eq!(s.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&s.n, 4)), "the seat moves at the epoch after the unchanged one");
+                assert_eq!(s.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&s.n, 4)), "N is primary at the revision after the unchanged one");
                 let _ = (&s.m, &s.x);
                 replies
             },
@@ -2299,16 +2040,15 @@ fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
 
 /// CONTRACT (proposal Part C1: "Before the initial fabric first reaches ready-for-traffic, every call
 /// is refused `fabric-not-ready` (R-PB1)"; failure contract: "Refused before the row ...: refused by
-/// name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing is
-/// restored"; states.md "The initial fabric before ready-for-traffic": the ready-for-traffic row among
+/// name, nothing changed, the Build's step fails by name"; states.md "The initial fabric before ready-for-traffic": the ready-for-traffic row among
 /// the mesh's status rows is the durable fact): P, the holder, holds the initial fabric in state-sync
 /// and its mesh's status rows on the store root hold no ready-for-traffic row. The fabric-primary's
 /// command is refused `RejectedFabricNotReady` naming the state, under the holder's reject span
-/// `fabric-not-ready`, before anything: no "primary updating", no cut-off, no row, P still primary, N
+/// `fabric-not-ready`, before anything: no "primary updating", no writes finished, no row, P still primary, N
 /// installs nothing. The root then holds the ready row while P's view still holds state-sync (the
 /// fabric state gossip brings can lag the row): the identical command is decided on the row (P's
 /// `rdm.node_admin.fabric.update.via-first-ready`, reason `ready-for-traffic-row-on-store-root`), P
-/// writes the row and N answers node.primary.updated. What must NOT happen: an announcement, a cut-off
+/// writes the row and N answers node.primary.updated. What must NOT happen: an announcement, a finish
 /// or a row before the fabric first reached ready-for-traffic, or a refusal once the root holds the
 /// ready row.
 #[test]
@@ -2325,8 +2065,8 @@ fn the_holder_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_o
         let r = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
         assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "holder" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
-        assert!(spans.named(ANNOUNCE_UPDATING).is_empty() && spans.named(CUT_OFF).is_empty() && spans.named(ROW_WRITTEN).is_empty(), "nothing is said, cut off or written: {:?}", spans.names());
-        assert!(f.p.cut_offs.lock().unwrap().is_empty(), "no cut-off: {:?}", f.p.cut_offs.lock().unwrap());
+        assert!(spans.named(ANNOUNCE_UPDATING).is_empty() && spans.named(WRITES_FINISHED).is_empty() && spans.named(ROW_WRITTEN).is_empty(), "nothing is said, finished or written: {:?}", spans.names());
+        assert_eq!(f.p.finished(), 0, "no writes finished for the refused update");
         assert!(rdm_admin::fabric_storage::seat_transfers(&*f.p.storage).await.unwrap().is_empty(), "no row");
         assert_eq!(f.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "P is still primary");
         assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N installs nothing");
@@ -2512,10 +2252,10 @@ fn a_takeover_before_the_initial_fabric_first_reaches_ready_for_traffic_is_refus
 /// seat move on the store root, and a repeated hand-back for the same committed successor answers
 /// `AlreadyApplied`, as a repeated takeover does): X (mesh2) holds the fabric seat at revision 7 and
 /// hands it back to P (`mesh1.admin.1`) over a store whose answer to the row's write is lost: the row
-/// stands on the store root, X hears `RejectedSourceFailed`, lifts its cut-off and its seat book still
+/// stands on the store root, X hears `RejectedSourceFailed` and its seat book still
 /// names it. The hand-back repeated under the next run's operation finds the fabric seat's latest move
 /// is its row to P: it writes nothing, X's seat book takes the row, P installs from it, and the answer
-/// is `AlreadyApplied` naming the committed seat. Once X holds the row, the same repeat answers
+/// is `AlreadyApplied` naming the written seat. Once X holds the row, the same repeat answers
 /// `AlreadyApplied` again. One hand-back row throughout. What must NOT happen: the repeat refused
 /// (`not-authority` from a book that moved, a conflict from a book left behind) or a second row.
 #[test]
@@ -2574,7 +2314,7 @@ fn a_primary_update_command_from_an_endpoint_no_view_holds_is_decided_on_the_sea
         let op = "node.stop:mesh1.admin.1";
         assert_eq!(send(&stranger, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await, updated(committed_mesh(&f.n, 4)), "the command is decided on the seat it names");
         for a in [&f.p, &f.n] {
-            assert_eq!(a.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{} holds N's committed seat", a.resolved.name);
+            assert_eq!(a.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{} holds N's written seat", a.resolved.name);
         }
         assert_eq!(spans.named(ROW_WRITTEN).len(), 1);
         assert!(refusals(&spans).is_empty(), "nothing is refused: {:?}", refusals(&spans));
@@ -2587,7 +2327,7 @@ fn a_primary_update_command_from_an_endpoint_no_view_holds_is_decided_on_the_sea
 /// call's revision"): a seat whose revision is `u64::MAX` cannot advance. The fabric-primary's command naming
 /// mesh1's seat at `u64::MAX` is refused `RejectedRevisionOverflow { seat, revision: u64::MAX }` by the
 /// holder, its reject span naming the reason `revision-overflow`, the seat and the revision. Nothing commits:
-/// no row, no cut-off, the seat where it was.
+/// no row, no writes finished for it, the seat where it was.
 #[test]
 fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
     let cap = crate::mesh_delete_resume::capture();
@@ -2601,7 +2341,7 @@ fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
                 s.p.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&s.p, u64::MAX));
                 let reply = send(&s.x, &s.p, update_mesh_seat(&s.p, u64::MAX, "b1", seats_op)).await;
                 assert!(rdm_admin::fabric_storage::seat_transfers(&*s.p.storage).await.unwrap().is_empty(), "no seat-transfer row is written");
-                assert!(s.p.cut_offs.lock().unwrap().is_empty(), "no write is cut off for an update that cannot commit: {:?}", s.p.cut_offs.lock().unwrap());
+                assert_eq!(s.p.finished(), 0, "no writes are finished for an update refused before its row");
                 assert_eq!(s.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&s.p, u64::MAX)), "P's seat did not move");
                 let _ = (&s.m, &s.n);
                 reply
@@ -2618,7 +2358,7 @@ fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
     assert_eq!(refused.len(), 1, "one refusal of the seat update: {refused:?}");
     assert_eq!(refused[0]["attributes"]["reason"], "revision-overflow");
     assert!(refused[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains("mesh-primary") && d.contains("18446744073709551615")), "{refused:?}");
-    for name in [ROW_WRITTEN, CUT_OFF, UPDATED] {
+    for name in [ROW_WRITTEN, WRITES_FINISHED, UPDATED] {
         assert!(in_trace(&spans, &trace_id, name).is_empty(), "nothing commits: {name}");
     }
 }
@@ -2769,7 +2509,7 @@ fn committed_rpc(m: &Member, revision: u64) -> Vec<CommittedSeat> {
 /// updated". P and B2 hold the committed record; P's view names B2 and keeps naming it on a later
 /// round although B1, the lowest rpc NodeId, is alive and ready. An identical retry replays from the
 /// one row.
-/// Must NOT happen: a cut-off of P's writes, a row written by B1 or B2, B1 writing or announcing
+/// Must NOT happen: a row written by B1 or B2, B1 writing or announcing
 /// anything, two rows, or a later round handing the seat back to the lower NodeId.
 #[test]
 fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_its_committed_row() {
@@ -2780,7 +2520,7 @@ fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_it
         let b1 = f.p.door.topology.read().await.members().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let moved = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc seat moves");
-        assert_eq!(moved, committed_rpc(f.b2(), 3), "B2 answered node.primary.updated with the committed seat");
+        assert_eq!(moved, committed_rpc(f.b2(), 3), "B2 answered node.primary.updated with the written seat");
         assert_eq!(f.p.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "P, the row writer, holds the committed record");
         assert_eq!(f.b2().door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B2 installed itself from the row");
         let rows = rdm_admin::fabric_storage::seat_transfers(&*f.p.storage).await.unwrap();
@@ -2804,7 +2544,7 @@ fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_it
         assert_eq!(nodes(ANNOUNCE_UPDATED), vec!["mesh1.admin.1".to_string()], "P says updated; B1 and B2 announce nothing");
         assert_eq!(nodes(HOLDER_CALL), vec!["mesh1.rpc.1".to_string()], "B1, the holder, makes the call");
         assert_eq!(nodes(UPDATED), vec!["mesh1.rpc.2".to_string()], "B2, the successor, installs");
-        assert!(spans.named(CUT_OFF).is_empty() && f.p.cut_offs.lock().unwrap().is_empty(), "a non-admin holder has no mesh rows: nothing is cut off");
+        assert!(spans.named(WRITES_FINISHED).is_empty() && f.p.finished() == 0, "a non-admin primary has no mesh rows to finish writing");
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         // An identical retry replays the committed result from the one row.
         let again = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("the retry replays");
@@ -2820,7 +2560,7 @@ fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_it
 /// ruled: "it can come from the FP for some reason, but as a proxy command"): X, the fabric-primary,
 /// commands the update of mesh1's rpc seat held by B1. Its command goes to P, mesh1's primary, which
 /// pre-checks, writes the row, commands B1 and answers X with B2's node.primary.updated; X installs the
-/// committed seat and its view names B2.
+/// written seat and its view names B2.
 /// Must NOT happen: X calling B1 or B2, or X's view naming B1 after the answer.
 #[test]
 fn the_fabric_primary_commands_an_rpc_cohorts_primary_update_only_through_its_mesh_primary() {
@@ -2832,7 +2572,7 @@ fn the_fabric_primary_commands_an_rpc_cohorts_primary_update_only_through_its_me
         let op = update_operation(Seat::Cohort(RPC), "b2", 1, "node.restart:mesh1.rpc.1");
         let moved = f.x.door.command_update_primary(&b1, "b2", 1, &op).await.expect("the proxied update moves the seat");
         assert_eq!(moved, committed_rpc(f.b2(), 3));
-        assert_eq!(f.x.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "X installed the committed seat from the answer");
+        assert_eq!(f.x.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "X installed the written seat from the answer");
         assert_eq!(f.x.door.topology.read().await.cohort_primary("mesh1", RPC).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
         let commanded: Vec<(String, String)> = spans.named(COMMAND).iter().map(|f| (f["node"].clone(), f.get("to").cloned().unwrap_or_default())).collect();
         assert_eq!(commanded, vec![("mesh2.admin.1".to_string(), "mesh1.admin.1".to_string())], "X commands P, mesh1's primary, never the rpc holder");
@@ -2869,7 +2609,7 @@ fn a_retry_of_a_commanded_cohort_update_replays_from_the_row_once_the_mesh_prima
 /// CONTRACT (proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update`
 /// commanded for a cohort with no other node of that type in the mesh is refused by name, `cannot
 /// transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available. The
-/// holder stays primary, nothing is cut off, no row is written"): B1 is mesh1's only rpc node. P's
+/// holder stays primary, no row is written"): B1 is mesh1's only rpc node. P's
 /// pre-check names no successor and refuses by Q7's text before anything.
 /// Must NOT happen: "primary updating" said, a row written, B1 commanded, or the record moved.
 #[test]

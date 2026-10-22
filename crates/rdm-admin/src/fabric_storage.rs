@@ -194,7 +194,7 @@ pub struct SeatMoveRow {
     pub by: rdm_core::handover::HandoverBirth,
 }
 
-/// A committed seat move: its place `t` in the fabric-wide sequence, and its row.
+/// A written seat move: its place `t` in the fabric-wide sequence, and its row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatMove {
     /// Its place in the sequence, from 1.
@@ -377,55 +377,19 @@ pub trait FabricStorage: Send + Sync {
     async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError>;
     /// Every seat move this storage holds, in order of `t`, as written.
     async fn seat_moves(&self) -> Result<Vec<SeatMove>, FabricStorageError>;
-    /// The committed fabric seat record this storage reads (set once at boot, once membership holds
-    /// the seat records): the `fabric/` rows it holds before the fabric's first state-commit (its
-    /// Fabric identity, written while it held the fabric seat) are written only while the record
-    /// still says this writer holds the fabric seat; a writer whose seat moved first drops them,
-    /// named (R14 item 2).
-    fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource);
 }
 
 /// A fabric store held in memory.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
     moves: Mutex<Vec<SeatMove>>,
-    /// The fabric-primary seat's cut-off the identity writes read.
-    cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
-    /// The committed fabric seat record the identity writes read, once set.
-    seat: std::sync::OnceLock<crate::fabric_builds::SeatSource>,
-}
-
-impl std::fmt::Debug for MemoryFabricStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryFabricStorage").field("identity", &self.identity).field("moves", &self.moves).field("cut_off", &self.cut_off).field("seat", &self.seat.get().map(|_| "set")).finish()
-    }
 }
 
 impl MemoryFabricStorage {
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// An empty store whose identity writes are cut off by `cut_off` (the fabric-primary seat's scope).
-    pub fn cut_off_by(cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
-        Self { cut_off, ..Self::default() }
-    }
-
-    /// A write of the Fabric identity or its name (`fabric/<what>`): refused while the fabric-primary
-    /// seat's writes are cut off, and, once the seat record is read, while it names another live
-    /// birth (`NotSeatHolder`, naming it). Before the record is set (Day 0's claim, ahead of
-    /// membership) no record governs the write.
-    fn identity_write(&self, what: &str) -> Result<(), FabricStorageError> {
-        self.cut_off.fabric_write(|| format!("{FABRIC_DIR}/{what}"))?;
-        match self.seat.get().map(|s| (s.read)()) {
-            Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => Err(FabricStorageError::NotSeatHolder {
-                file: format!("{FABRIC_DIR}/{what}"),
-                reason: format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here")),
-            }),
-            _ => Ok(()),
-        }
     }
 }
 
@@ -434,20 +398,15 @@ impl FabricStorage for MemoryFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         Ok(self.identity.lock().unwrap().clone())
     }
-    fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
-        let _ = self.seat.set(seat);
-    }
     // The identity slot is this store's claim of the name too: one fabric per memory store.
     async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
         Ok(self.identity.lock().unwrap().clone().filter(|i| i.name == name))
     }
     async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
-        self.identity_write("name")?;
         *self.identity.lock().unwrap() = Some(identity.clone());
         Ok(())
     }
     async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
-        self.identity_write("name")?;
         let mut held = self.identity.lock().unwrap();
         if held.as_ref().is_some_and(|i| i.name == name) {
             *held = None;
@@ -455,7 +414,6 @@ impl FabricStorage for MemoryFabricStorage {
         Ok(())
     }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
-        self.identity_write("identity")?;
         *self.identity.lock().unwrap() = Some(identity.clone());
         Ok(())
     }
@@ -524,36 +482,6 @@ pub struct FileFabricStorage {
     /// `<store root>/seat-moves/`: one key per seat move, `<T>`, and the moves this process holds
     /// until the fabric's first state-commit.
     moves: std::sync::Arc<MoveStore>,
-    writer: crate::model::IncarnationId,
-    /// Where this writer reads whether it holds the fabric seat: the committed fabric seat record
-    /// (`crate::admin::fabric_seat_source`). Set once at start.
-    seat: SeatSlot,
-}
-
-#[cfg(feature = "file-backend")]
-/// The fabric seat source a [`FileFabricStorage`] reads when its held `fabric/` rows are published.
-#[derive(Default, Clone)]
-struct SeatSlot(std::sync::Arc<std::sync::OnceLock<crate::fabric_builds::SeatSource>>);
-
-#[cfg(feature = "file-backend")]
-impl SeatSlot {
-    /// Whether the writer born as `writer` may write `fabric/`: the committed fabric seat record
-    /// names it, names none (Day 0, before any record) or names a birth proven gone. `Err` says why
-    /// not.
-    fn open(&self, writer: &crate::model::IncarnationId) -> Result<(), String> {
-        match self.0.get().map(|s| (s.read)()) {
-            None => Err(format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", writer.as_str())),
-            Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => Err(format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here"))),
-            Some(crate::fabric_builds::SeatRecord::Open { .. }) => Ok(()),
-        }
-    }
-}
-
-#[cfg(feature = "file-backend")]
-impl std::fmt::Debug for SeatSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.get().is_some() { "SeatSlot(set)" } else { "SeatSlot(unset)" })
-    }
 }
 
 #[cfg(feature = "file-backend")]
@@ -586,15 +514,14 @@ impl FileFabricStorage {
             refuse_retired(&dir, &format!("the seat-transfer row format {REFUSED_TRANSFER_FORMAT} is retired: every seat move is one row of the fabric's sequence under {SEAT_MOVES_DIR}/ ({SEAT_MOVE_FORMAT})")).await?;
         }
         let moves = MoveStore::open(root, writer).await?;
-        Ok(Self { names, records, moves, writer: writer.clone(), seat: SeatSlot::default() })
+        Ok(Self { names, records, moves })
     }
 
-    /// The records the fabric-primary seat writes (R14 item 2): the fabric's claim of its name, and
-    /// the Fabric identity and shutdown. What a node.fabric-primary.update moving that seat cuts off,
-    /// and what a publication writes only while the committed fabric seat record names this writer.
-    /// Seat moves are the fabric's one sequence: each commits by its own insert.
-    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 2] {
-        [&self.names, &self.records]
+    /// Finishes every write of the fabric's name claim and identity this store has issued
+    /// (node-primary-update.md step 3).
+    pub async fn finish_issued_writes(&self) {
+        self.names.finish_issued_writes().await;
+        self.records.finish_issued_writes().await;
     }
 }
 
@@ -603,13 +530,6 @@ impl FileFabricStorage {
 impl FabricStorage for FileFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await
-    }
-    fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
-        let _ = self.seat.0.set(seat);
-        for store in self.fabric_primary_records() {
-            let (slot, writer) = (self.seat.clone(), self.writer.clone());
-            store.set_publish_gate(std::sync::Arc::new(move || slot.open(&writer)));
-        }
     }
     async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
         self.names.read(name_key(&self.names, name)?, NAME_FORMAT).await
@@ -930,8 +850,6 @@ mod tests {
     async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
         let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();
-        // The fabric seat holder: no seat record governs this fixture's writer.
-        s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         assert_eq!(crate::fabric_storage::claim_identity(&s, &fabric).await.unwrap(), Ok(FabricClaim::Written));
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();

@@ -105,7 +105,7 @@ fn primary_updated(mesh_revision: u64, fabric_revision: u64) -> Frame {
 /// 'primary updated' after `node.primary.updated`, each naming operation, cohort, both exact births
 /// and the epochs"): `PrimaryUpdated` is variant 23, where the retired `SeatedTogether` stood, the next
 /// after `NodeStopped` (22): the update's lifecycle op (its subject is the holder the seat moved from)
-/// and every committed seat (its cohort, the successor's exact birth, the committed epoch). What must
+/// and every written seat (its cohort, the successor's exact birth, the committed epoch). What must
 /// NOT happen: a field moved, a variant inserted before the end.
 #[test]
 fn primary_updated_matches_the_frozen_wire_schema() {

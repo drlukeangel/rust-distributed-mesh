@@ -169,15 +169,6 @@ pub trait MeshStorage: Send + Sync {
 pub struct MemoryMeshStorage {
     rows: Mutex<BTreeMap<String, MeshRecord>>,
     in_flight: Mutex<BTreeMap<String, InFlight>>,
-    /// The mesh-primary seat's cut-off its Mesh row writes read.
-    cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
-}
-
-impl MemoryMeshStorage {
-    /// An empty store whose Mesh row writes are cut off by `cut_off` (the mesh-primary seat's scope).
-    pub fn cut_off_by(cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
-        Self { cut_off, ..Self::default() }
-    }
 }
 
 #[async_trait]
@@ -186,7 +177,6 @@ impl MeshStorage for MemoryMeshStorage {
         Ok(self.rows.lock().unwrap().get(name).cloned())
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.cut_off.mesh_write(|| format!("meshes/{}", record.name))?;
         self.rows.lock().unwrap().insert(record.name.clone(), record.clone());
         Ok(())
     }
@@ -279,9 +269,9 @@ impl FileMeshStorage {
         Ok(s)
     }
 
-    /// The records the mesh-primary seat writes (its Mesh row): what a seat transfer cuts off.
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 1] {
-        [&self.rows]
+    /// Finishes every write of the Mesh rows this store has issued (node-primary-update.md step 3).
+    pub async fn finish_issued_writes(&self) {
+        self.rows.finish_issued_writes().await;
     }
 }
 
@@ -611,24 +601,6 @@ pub struct MemoryNodesStorage {
     ids: Mutex<BTreeMap<NodeId, PathName>>,
     /// The node row's tags index: per label, the nodes carrying it, kept with `rows` under its lock.
     tags: Mutex<BTreeMap<String, BTreeSet<NodeId>>>,
-    /// The mesh of the admin whose store this is: its rows are the mesh-primary seat's to write,
-    /// every other mesh's the fabric-primary seat's.
-    own_mesh: String,
-    /// The seats' cut-off the node row and contact writes read.
-    cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
-}
-
-impl MemoryNodesStorage {
-    /// An empty store of an admin of `own_mesh`, whose node row and contact writes are cut off by
-    /// `cut_off`.
-    pub fn of_mesh(own_mesh: &str, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
-        Self { own_mesh: own_mesh.to_string(), cut_off, ..Self::default() }
-    }
-
-    /// A write of a row of `mesh` to `file`: refused while the seat that writes it is cut off.
-    fn row_write(&self, mesh: &str, file: impl FnOnce() -> String) -> Result<(), StorageError> {
-        self.cut_off.mesh_row_write(&self.own_mesh, mesh, file)
-    }
 }
 
 /// The tags index after `node_id`'s labels `leaving` go and `arriving` come.
@@ -680,18 +652,15 @@ impl NodesStorage for MemoryNodesStorage {
         Ok(self.contacts.lock().unwrap().values().cloned().collect())
     }
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.row_write(&record.name.mesh, || format!("nodes/{}/contacts/{}", record.name.mesh, record.node_id))?;
         self.contacts.lock().unwrap().insert(record.node_id.clone(), record.clone());
         Ok(())
     }
-    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
-        self.row_write(mesh, || format!("nodes/{mesh}/contacts/{node_id}"))?;
+    async fn remove_contact(&self, _mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
         self.contacts.lock().unwrap().remove(node_id);
         Ok(())
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
         let mut rows = self.rows.lock().unwrap();
-        self.row_write(&row.name.mesh, || format!("nodes/{}/{}", row.name.mesh, row.name))?;
         let previous = rows.insert(row.name.to_string(), row.clone());
         index_put(&mut self.ids.lock().unwrap(), previous.as_ref(), row);
         let (leaving, arriving) = row.tag_moves(previous.as_ref());
@@ -706,7 +675,6 @@ impl NodesStorage for MemoryNodesStorage {
     }
     async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError> {
         let mut rows = self.rows.lock().unwrap();
-        self.row_write(&name.mesh, || format!("nodes/{}/{name}", name.mesh))?;
         let Some(removed) = rows.remove(&name.to_string()) else { return Ok(()) };
         let mut ids = self.ids.lock().unwrap();
         if ids.get(&removed.node_id) == Some(name) {
@@ -766,9 +734,6 @@ struct MeshNodes {
     writer: IncarnationId,
     /// Each label's rows of the tags index this store has read or written, opened on first use.
     labels: Mutex<BTreeMap<String, FileRecords>>,
-    /// Set while a seat transfer cuts this mesh's rows off: a label's rows opened meanwhile are cut
-    /// off at their open, named.
-    labels_cut_off: Mutex<Option<String>>,
 }
 
 #[cfg(feature = "file-backend")]
@@ -783,7 +748,6 @@ impl MeshNodes {
             base,
             writer: writer.clone(),
             labels: Mutex::new(BTreeMap::new()),
-            labels_cut_off: Mutex::new(None),
         })
     }
 
@@ -794,13 +758,7 @@ impl MeshNodes {
         all
     }
 
-    /// A label's rows opened from now on are cut off naming `reason` (`None`: they are not).
-    fn cut_off_labels(&self, reason: Option<String>) {
-        *self.labels_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = reason;
-    }
-
-    /// `label`'s rows of the tags index, written: opened on first use (its directory made), cut off
-    /// at its open while this mesh's rows are cut off.
+    /// `label`'s rows of the tags index, written: opened on first use (its directory made).
     async fn label(&self, label: &str) -> Result<FileRecords, StorageError> {
         tag_key(label, &self.base.display().to_string())?;
         if let Some(l) = self.labels.lock().unwrap_or_else(|e| e.into_inner()).get(label) {
@@ -808,11 +766,7 @@ impl MeshNodes {
         }
         let opened = self.root.records(&self.base, &format!("tags/{label}"), &self.writer).await?;
         let mut labels = self.labels.lock().unwrap_or_else(|e| e.into_inner());
-        let l = labels.entry(label.to_string()).or_insert(opened).clone();
-        if let Some(reason) = self.labels_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            l.cut_off(reason);
-        }
-        Ok(l)
+        Ok(labels.entry(label.to_string()).or_insert(opened).clone())
     }
 
     /// The nodes of this mesh carrying `label`: its rows of the tags index, read from the label's
@@ -902,9 +856,6 @@ pub struct FileNodesStorage {
     mine: (String, std::sync::Arc<MeshNodes>),
     /// Every other mesh's rows this admin has read or written, opened on first use.
     others: Mutex<BTreeMap<String, std::sync::Arc<MeshNodes>>>,
-    /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
-    /// other mesh's rows, those opened later included, refuse writes naming it.
-    others_cut_off: Mutex<Option<String>>,
     /// Every write of a row is one at a time: a row and its index entries are written together.
     row_writes: tokio::sync::Mutex<()>,
 }
@@ -922,7 +873,6 @@ impl FileNodesStorage {
             writer: writer.clone(),
             mine: (own_mesh.to_string(), std::sync::Arc::new(MeshNodes::open(root, own_mesh, writer).await?)),
             others: Mutex::new(BTreeMap::new()),
-            others_cut_off: Mutex::new(None),
             row_writes: tokio::sync::Mutex::new(()),
         })
     }
@@ -933,21 +883,17 @@ impl FileNodesStorage {
         FileRecords::open(own_data_dir, "nodes", writer).await?.read("self", NODE_FORMAT).await
     }
 
-    /// The records the mesh-primary seat writes (its own mesh's members' Node rows, their id index,
-    /// contacts and the label rows of their tags index opened so far): what a seat transfer cuts off
-    /// (R14 item 4).
-    pub fn mesh_primary_records(&self) -> Vec<FileRecords> {
-        self.mine.1.stores()
-    }
-
-    /// While a seat transfer cuts the mesh-primary seat's records off (`Some(reason)`), a label's
-    /// rows of this admin's own mesh opened meanwhile are cut off at their open; `None` lifts it.
-    pub fn cut_off_own_labels(&self, reason: Option<String>) {
-        self.mine.1.cut_off_labels(reason);
+    /// Finishes every write of the Node rows, their indexes and contacts this store has issued, its own
+    /// mesh's and every other mesh's it opened (node-primary-update.md step 3).
+    pub async fn finish_issued_writes(&self) {
+        let opened: Vec<std::sync::Arc<MeshNodes>> = std::iter::once(self.mine.1.clone()).chain(self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned()).collect();
+        for s in opened.iter().flat_map(|m| m.stores()) {
+            s.finish_issued_writes().await;
+        }
     }
 
     /// The rows of `mesh` on the shared root: a mesh this store has not opened yet is opened on the
-    /// blocking pool, outside the lock, and kept once under it (the cut-off read under the same lock).
+    /// blocking pool, outside the lock, and kept once under it.
     async fn mesh(&self, mesh: &str) -> Result<std::sync::Arc<MeshNodes>, StorageError> {
         if mesh == self.mine.0 {
             return Ok(self.mine.1.clone());
@@ -957,71 +903,7 @@ impl FileNodesStorage {
         }
         let opened = std::sync::Arc::new(MeshNodes::open(&self.root, mesh, &self.writer).await?);
         let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-        let m = others.entry(mesh.to_string()).or_insert(opened).clone();
-        if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            m.cut_off_labels(Some(reason.clone()));
-            for s in m.stores() {
-                s.cut_off(reason.clone());
-            }
-        }
-        Ok(m)
-    }
-
-    /// The fabric-primary seat moves (R14 item 4): cut off this store's writes to every mesh's rows
-    /// but its own, those it opens later included, and wait for every write already issued to them.
-    pub async fn cut_off_other_meshes(&self, reason: &str) {
-        let opened: Vec<std::sync::Arc<MeshNodes>> = {
-            let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-            *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
-            others.values().cloned().collect()
-        };
-        for m in &opened {
-            m.cut_off_labels(Some(reason.to_string()));
-        }
-        let stores: Vec<FileRecords> = opened.iter().flat_map(|m| m.stores()).collect();
-        crate::record_store::cut_off_and_drain(&stores.iter().collect::<Vec<_>>(), reason).await;
-    }
-
-    /// Why the other meshes' rows are cut off ([`Self::cut_off_other_meshes`]), while they are.
-    pub fn other_meshes_cut_off(&self) -> Option<String> {
-        self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing. The
-    /// first store whose kept rows could not be written is named; every store is lifted.
-    pub async fn lift_other_meshes(&self) -> Result<(), StorageError> {
-        let opened: Vec<std::sync::Arc<MeshNodes>> = {
-            let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-            *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            others.values().cloned().collect()
-        };
-        let mut first = Ok(());
-        for m in opened {
-            m.cut_off_labels(None);
-            for s in m.stores() {
-                if let (Err(e), true) = (s.lift_cut_off().await, first.is_ok()) {
-                    first = Err(e);
-                }
-            }
-        }
-        first
-    }
-
-    /// The seat transfer [`Self::cut_off_other_meshes`] was set for committed: every row the other
-    /// meshes' stores still hold is dropped, never written. Returns each store that dropped rows, with
-    /// how many.
-    pub async fn drop_other_meshes(&self) -> Vec<(String, usize)> {
-        let opened: Vec<std::sync::Arc<MeshNodes>> = self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
-        let mut dropped = Vec::new();
-        for m in opened {
-            for s in m.stores() {
-                let n = s.drop_held().await;
-                if n > 0 {
-                    dropped.push((s.store_name(), n));
-                }
-            }
-        }
-        dropped
+        Ok(others.entry(mesh.to_string()).or_insert(opened).clone())
     }
 
     /// Every mesh that holds rows on the shared root, by name.
@@ -1345,7 +1227,6 @@ mod tests {
     /// is keyed by node id); a `Deleted` row tombstones every label its row carries; a release of the
     /// only row a node holds tombstones its labels. A label no row ever carried reads as carried by
     /// none and makes no directory; a key that is not a label is refused by name and nothing is read.
-    /// A label opened while the mesh-primary seat's records are cut off is cut off at its open.
     #[tokio::test]
     async fn the_tags_index_is_one_file_per_label_and_node_kept_with_every_row_write_and_read_per_label() {
         let d = crate::test_support::tempdir("tags-index");
@@ -1383,12 +1264,6 @@ mod tests {
         assert!(other.tagged("blue").await.unwrap().is_empty());
         assert!(!root.dir().join("nodes").join("mesh1").join("tags").join("blue").exists(), "a read makes no directory");
         assert!(matches!(other.tagged("../rows").await, Err(StorageError::Unrecognised { reason, .. }) if reason.contains("\"../rows\"")), "a key that is not a label is refused by name");
-        // While a seat transfer cuts the mesh-primary seat's records off, a label's rows opened then
-        // are cut off at their open: the write of its index row is refused by name, never written.
-        n1.cut_off_own_labels(Some("the mesh-primary seat moves".into()));
-        let green = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), tags: tags(&["green"]), ..row("mesh1.rpc.2") };
-        assert!(matches!(n1.put_node_row(&green).await, Err(StorageError::CutOff { reason, .. }) if reason == "the mesh-primary seat moves"), "a label opened during the cut-off is cut off");
-        assert!(files("mesh1", "green").is_empty(), "nothing of the cut-off label is written");
     }
 
     /// CONTRACT (node-replace.md Inherited: the successor inherits the retained predecessor row's tags,
@@ -1491,33 +1366,6 @@ mod tests {
         let (fa, fb, reader) = (open("mesh1.rpc.2").await, open("mesh2.rpc.1").await, open("mesh1.admin.1").await);
         check(&fa, &fb, &reader, "file").await;
         assert!(!root.connections_to(&a.source.node_id).exists(), "a read of a node nobody connects to makes no directory on the root");
-    }
-
-    /// CONTRACT (R14 item 4 on the shared root): the fabric-primary seat also authorizes rows of
-    /// meshes other than its own (the fabric-primary writes them; after R13, as acting primary of a
-    /// mesh with no primary). When that seat moves, the holder's writes to every other mesh's rows are
-    /// cut off and drained with the rest, the rows of a mesh this store first opens after the cut-off
-    /// included, and a lift gives them back; its own mesh's rows follow the mesh seat's cut-off.
-    #[tokio::test]
-    async fn a_moving_fabric_seat_cuts_off_the_holders_writes_to_every_other_meshs_rows() {
-        let d = crate::test_support::tempdir("other-meshes-cut-off");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let n = FileNodesStorage::open(&d, &root, "mesh1", &IncarnationId::mint()).await.unwrap();
-        // The same node's rows each time: a put of another node's row at a live key is refused
-        // NameHeld by its claim before any write, and this cell is about the cut-off.
-        let rows: BTreeMap<&str, NodeRow> = ["mesh2.rpc.1", "mesh3.rpc.1"].into_iter().map(|name| (name, row(name))).collect();
-        n.put_node_row(&rows["mesh2.rpc.1"]).await.unwrap();
-        n.cut_off_other_meshes("seat transfer node.connections.delete:mesh1.admin.1").await;
-        for name in ["mesh2.rpc.1", "mesh3.rpc.1"] {
-            match n.put_node_row(&rows[name]).await {
-                Err(StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.connections.delete:mesh1.admin.1"), "{reason}"),
-                other => panic!("{name}: a row write after the fabric seat's cut-off answered {other:?}"),
-            }
-            assert!(matches!(n.put_contact(&node(name)).await, Err(StorageError::CutOff { .. })), "{name}: a contact write after the cut-off");
-        }
-        n.put_node_row(&row("mesh1.rpc.1")).await.expect("its own mesh's rows follow the mesh seat's cut-off, not this one");
-        n.lift_other_meshes().await.unwrap();
-        n.put_node_row(&rows["mesh3.rpc.1"]).await.expect("a lifted cut-off gives the writes back");
     }
 
     #[tokio::test]

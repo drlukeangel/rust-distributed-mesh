@@ -1127,7 +1127,7 @@ mod tests {
     }
 
     /// CONTRACT (mesh-investigation.md step 1: "probe 1 contacts mesh-x's current exact
-    /// mesh-primary first, then mesh-x's other node-admins"; R-EL1a: the committed seat record is
+    /// mesh-primary first, then mesh-x's other node-admins"; R-EL1a: the written seat record is
     /// the authority on who holds a seat): a probe carries `ProbeNodeState` first to the exact birth
     /// the held mesh-primary seat record names, then to each other node-admin in path order. The
     /// record leads even where the view marks another admin primary or another path sorts first, and

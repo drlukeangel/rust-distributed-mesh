@@ -699,7 +699,7 @@ pub enum BuildStateError {
         node: String,
         /// The record that moved the seat, in words.
         by: String,
-        /// The admin (path.name) a committed seat transfer moved the seat to, when it named one.
+        /// The admin (path.name) a written seat transfer moved the seat to, when it named one.
         to: Option<String>,
     },
 }
@@ -712,7 +712,7 @@ impl std::fmt::Display for BuildStateError {
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
             Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
             Self::LaneTaken { at } => write!(f, "the lane key {at} holds another writer's fact"),
-            Self::SeatYielded { node, by, .. } => write!(f, "{node} no longer holds the fabric-primary seat: the committed seat row moved it ({by}); its Build log decides nothing any more"),
+            Self::SeatYielded { node, by, .. } => write!(f, "{node} no longer holds the fabric-primary seat: the written seat row moved it ({by}); its Build log decides nothing any more"),
             Self::AttemptTaken { build_id, attempt, held, wanted } => {
                 write!(f, "attempt {attempt} of Build {build_id} is already open for {held}; this open asked for {wanted} and lost the number")
             }

@@ -162,7 +162,7 @@ pub mod transfer {
     }
 
     impl CommittedSeat {
-        /// The committed seat of the record `holder` holds for `seat`.
+        /// The written seat of the record `holder` holds for `seat`.
         pub fn of(seat: super::Seat, holder: &SeatHolder) -> Self {
             Self { seat: Seat::of(seat, &holder.mesh), holder: HandoverBirth { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation.clone() }, revision: holder.revision }
         }

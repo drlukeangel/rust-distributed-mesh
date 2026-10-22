@@ -2546,7 +2546,7 @@ async fn an_owed_hand_back_refused_by_a_store_read_is_planned_again_on_the_next_
 }
 
 /// CONTRACT (fabric-recovery.md step 4; Q104 on Architect 2's review: whether a hand-back is still owed
-/// is read from the committed seat move on the store root, never from the observed view): the
+/// is read from the written seat move on the store root, never from the observed view): the
 /// hand-back's row commits and its answer is lost: the store holds the row, and the winner, which
 /// heard a failed write, still names itself the fabric-primary in its view; its attempt ends Failed.
 /// The next drift pass reads the fabric seat's latest move from the store, finds the transfer done
@@ -2569,11 +2569,11 @@ async fn a_hand_back_committed_with_its_answer_lost_is_recognized_on_the_next_pa
 }
 
 /// CONTRACT (fabric-recovery.md step 4: the holder hands every seat it took back; Q104 on Architect 2's
-/// review: whether a hand-back is owed is read from the committed seat move on the store root): after
+/// review: whether a hand-back is owed is read from the written seat move on the store root): after
 /// a takeover the store names the winner the fabric seat's holder, while the lost fabric-primary, heard
 /// again and Ready at its path.name, still names itself the fabric-primary in its own view until it
 /// hears the takeover. Its drift pass, one floor after it is Ready, opens no hand-back attempt: only
-/// the holder the committed seat move names owes the hand-back. What must NOT happen: the lost birth
+/// the holder the written seat move names owes the hand-back. What must NOT happen: the lost birth
 /// opening an attempt to hand the seat to itself (the container cell at a7ccadb3: mesh1.admin.1
 /// opened six such attempts).
 #[tokio::test]
@@ -2591,5 +2591,5 @@ async fn the_lost_fabric_primary_whose_view_still_names_it_the_holder_opens_no_h
     let mut started = HashSet::new();
     assert_eq!(hand_back_pass(&e, &lost, &hb, &mut started).await, None, "{lost}'s first pass");
     tokio::time::sleep(rdm_core::cadence::staleness_floor() + std::time::Duration::from_millis(200)).await;
-    assert_eq!(hand_back_pass(&e, &lost, &hb, &mut started).await, None, "{lost}, which the committed seat move does not name the holder, opens no hand-back to itself");
+    assert_eq!(hand_back_pass(&e, &lost, &hb, &mut started).await, None, "{lost}, which the written seat move does not name the holder, opens no hand-back to itself");
 }

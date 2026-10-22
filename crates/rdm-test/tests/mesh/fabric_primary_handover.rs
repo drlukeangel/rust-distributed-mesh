@@ -443,7 +443,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // seat, node.fabric-primary.update runs first with this mesh excluded from the successor search";
     // "Under mesh.delete the mesh seat does not move at all: the row commits the fabric seat to the
     // outside mesh-primary and the incumbent stays mesh-primary until its own node.delete". In order at
-    // mesh1's primary, the holder and its mesh's row writer: "primary updating", the cut-off, the ONE row
+    // mesh1's primary, the holder and its mesh's row writer: "primary updating", its issued writes finished, the ONE row
     // under mesh1 moving the fabric seat alone; the outside successor installs from it and answers
     // node.primary.updated under the holder's call; the holder says "primary updated"; the leave's owner
     // installs the row (`via-fabric-seat-updated`) before DeleteMesh and every stop.
@@ -466,8 +466,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!((attr_s(&updating, "node"), attr_s(&updating, "seat"), attr_s(&updating, "successor"), attr_s(&updating, "outcome")), (final_name.clone(), "fabric-primary".to_string(), fabric_primary.clone(), "updated".to_string()), "mesh1's primary moved the fabric seat alone to the outside successor: {updating}");
     let said_updating = one("rdm.mesh.seat.update.via-announce-primary-updating");
     assert_eq!((attr_s(&said_updating, "node"), attr_s(&said_updating, "backbone"), attr_s(&said_updating, "mesh_channel")), (final_name.clone(), "sent".to_string(), "sent".to_string()), "{said_updating}");
-    let cut_off = one("rdm.node_admin.seat.update.via-writes-cut-off");
-    assert_eq!((attr_s(&cut_off, "mesh_seat").as_str(), attr_s(&cut_off, "fabric_seat").as_str()), ("false", "true"), "the holder cut off the fabric seat's writes and none of its mesh's (Part C1 step 4): {cut_off}");
+    let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished");
     let row = one("rdm.node_admin.seat.update.via-seat-row-written");
     assert_eq!(attr_s(&row, "node"), final_name, "the holder, mesh1's row writer, wrote the row: {row}");
     assert!(!attr_s(&row, "fabric_revision").is_empty() && attr_s(&row, "mesh_revision").is_empty(), "the row moves the fabric seat alone; mesh1's seat stays with its primary: {row}");
@@ -481,7 +480,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!((attr_s(&said_updated, "node"), attr_s(&said_updated, "backbone"), attr_s(&said_updated, "mesh_channel")), (final_name.clone(), "sent".to_string(), "sent".to_string()), "the holder said primary updated: {said_updated}");
     let seat_updated = one("rdm.node_admin.seat.update.via-fabric-seat-updated");
     assert_eq!((attr_s(&seat_updated, "departing"), attr_s(&seat_updated, "fabric_revision")), ("mesh1".to_string(), attr_s(&row, "fabric_revision")), "the leave's owner installed the fabric seat's row: {seat_updated}");
-    assert!(start_ns(&said_updating) <= start_ns(&cut_off) && end_ns(&cut_off) <= start_ns(&row), "primary updating, the cut-off, then the row");
+    assert!(start_ns(&said_updating) <= start_ns(&finished) && end_ns(&finished) <= start_ns(&row), "primary updating, the issued writes finished, then the row");
     assert!(end_ns(&row) <= start_ns(&installed) && end_ns(&installed) <= start_ns(&said_updated), "the row, the successor's install, then primary updated");
     assert!(end_ns(&row) <= start_ns(&seat_updated) && end_ns(&seat_updated) < first_member_stop, "the row is installed by the leave's owner before DeleteMesh and every stop");
     assert!(named(&spans, "rdm.node_admin.seat.reject.via-primary-update").is_empty(), "no node.primary.update was refused");

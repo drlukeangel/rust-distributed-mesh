@@ -57,7 +57,7 @@ pub struct SeatUpdate {
 }
 
 impl SeatUpdate {
-    /// The committed seat it names.
+    /// The written seat it names.
     pub fn committed(&self) -> CommittedSeat {
         CommittedSeat { seat: self.seat.clone(), holder: self.successor.clone(), revision: self.revision }
     }
@@ -146,7 +146,7 @@ impl NodePrimaryUpdateRequest {
 pub enum NodePrimaryUpdateReply {
     /// node.primary.updated: the successor installed the committed row, every seat at its revision.
     PrimaryUpdated {
-        /// The committed seats: each seat, its committed holder's exact birth and its revision.
+        /// The written seats: each seat, its committed holder's exact birth and its revision.
         revisions: Vec<CommittedSeat>,
     },
     /// The operation's committed row names another payload: the row decides.
@@ -262,7 +262,7 @@ pub enum NodePrimaryUpdateReply {
     /// nothing is written again (elections §5: "repeated calls for the same takeover and committed
     /// successor answer `AlreadyApplied`").
     AlreadyApplied {
-        /// The committed seat: the fabric seat, its committed holder's exact birth and its revision.
+        /// The written seat: the fabric seat, its committed holder's exact birth and its revision.
         revisions: Vec<CommittedSeat>,
     },
 }
@@ -358,7 +358,7 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// Two seats, each with two exact births and a revision, a fabric name, a Build id and an operation
     /// identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
-    /// One reply: an enum tag and at most one reason string, two committed seats (a seat, an exact
+    /// One reply: an enum tag and at most one reason string, two written seats (a seat, an exact
     /// birth and a revision each), a source failure's three fields or an absent record's two, within
     /// their budgets.
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
