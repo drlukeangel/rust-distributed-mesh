@@ -49,7 +49,7 @@ line that would need one is listed in §6 as his call.
 | cohort | the nodes of one type in one mesh (`(mesh, node_type)`); its primary is the node-type primary of that mesh, a node of that type, a node-admin only for the `node-admin` type | Q107 (1): "every cohort `(mesh, node_type)` runs one election"; `node-rpc-envelope.md` JoinNode `types` |
 | mesh-primary seat, fabric seat; "holds the seat" | being the mesh-primary, being the fabric-primary | the terms themselves |
 | holder | the primary (mesh-primary, fabric-primary, node-type primary) | the terms themselves |
-| seat row, seat move, committed seat row, `seat-moves/<T>…` | the Mesh row's primaries and the fabric row's mesh, each written once by `node.primary.update` or `node.fabric-primary.update` (the update sequence below); `is_primary` and `is_fabric_primary` are answered from them, never written on a node row | `node-rpc-envelope.md:362-363`: "`is_primary` … `node.primary.update`; never a put", "`is_fabric_primary` … `node.fabric-primary.update`" |
+| seat row, seat move, committed seat row, `seat-moves/<T>…` | nothing: who is primary is the election's result; the mesh-primary records it as `is_primary` and `is_fabric_primary` on node rows, and the write records the role without granting it | `node-rpc-envelope.md:362-363`; node-primary-update.md |
 | committed (seat, row, transfer, takeover) | written; one writer writes the row | Q109 A: one writer per row, the storage decides nothing |
 | takeover, take seats, `TakeSeats` | take over | Luke's verb ("taken over fabric-primary", 2026-10-20); 26 page lines already use it |
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
@@ -295,7 +295,7 @@ the hold around it, never the investigation.
 | `a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone` | a primary change is published across the backbone | same |
 | `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` | the cut-off view and the hung hold | goes with landings 3 and 5 |
 | `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | both stay as proofs: the decision step (Q89, §3 step 2) and the hand-back (§3 step 3) of the fabric-primary to the first primary's mesh, together with the node at that path.name being its mesh-primary, once it has been ReadyForTraffic for one floor (Q107 (4)); only the cell's cut-off-view assertions go |
-| `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof: a same-mesh successor's one Mesh row write moves both primaries, the fabric row unchanged (§3 step 1), landed before the successor acts |
+| `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof of the operation: a same-mesh successor becomes both primaries at one boundary and records both on its own row before it acts (node-primary-update.md) |
 | `a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_decided_after` | the Build lane's in-flight claim against the seat row | goes with landing 2 |
 
 The cut-off view's cell and the in-flight claim's cell go with their machinery. The four proofs that
