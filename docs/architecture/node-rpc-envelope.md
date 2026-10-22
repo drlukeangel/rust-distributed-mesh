@@ -5,7 +5,7 @@
 This page owns the Node RPC wire: the op ledger, the target, the context, every op's request/reply
 schema and positional order, the reserved stream codes, the typed object → wire mapping, the
 Build carrier `0x20` schema, the RPC runtime span names, and caller execution and certainty. It is
-the sole op registry and schema authority; other documents link to the ledger or a schema here
+the sole op registry and schema owner; other documents link to the ledger or a schema here
 and describe usage and policy.
 Transport connections are keyed by `endpoint_id`; `fabric_id` identifies the logical Fabric.
 
@@ -41,7 +41,7 @@ A frame's delivery identity is `(sender, delivery_seq)`, minted by its sender, t
 per-receiver sequence the sending birth never reuses. Every frame carries the sender's
 `forget_below`, the lowest `delivery_seq` it still holds unacked toward that receiver and a promise
 never to resend anything below it; the receiver forgets duplicate state only below that watermark or
-on the sender birth's proven exit or accepted removal, never by time elapsed. Until then a resend keeps
+on the sender birth's re-creation or accepted removal, never by time elapsed. Until then a resend keeps
 its identity and cannot dispatch again. A carried call keeps its origin's identity: the duplicate
 window is per origin birth, never per carrier. An Owed request's carried attempt is a Forward of its own
 toward the carrier, with a new identity each attempt, and names the request's identity in `owed`, which
@@ -310,27 +310,27 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [Status 0x1B](#status-op-0x1b-rdm) `LeaveMesh`, answered `MeshLeft { left }`; node.stop and node.delete end their live part with it, and inside a stop it is the stop's own step and this frame is not sent | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code, never exit proof |
-| [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `exit-proven { code }` (recorded as the birth's exit proof) or `unavailable { reason }`; no event | — (typed provider result; no Node RPC) |
+| [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
+| [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
 | node.get | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) for one exact subject; node.get answers one node by id, the nodes of a mesh, or the nodes that carry given tag labels, all of the given labels or any of them; a node's tags are its own property (node.tags.get/create/delete), and the tag filter names a label, matches every node that carries it, and is read through the node store's tags index | Current; stopped answers CurrentParked; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`; `fabric-not-ready` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
 | node.connections.get/[delete](lifecycles/node-connections-delete.md) | Held-connection read; `node.connections.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connections.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connections.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
 | node.tags.get/create/delete | A node's tags are its own property, not config. `node.tags.get` answers the node's labels; `node.tags.create { label \\| [labels] }` adds one label or a list; `node.tags.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connections.delete`. One item or a list, uniform: a single item is the same as a list of one. Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put of that key, so creating a label the node already carries is ignored and writes no duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
-| [node.cert.renew](lifecycles/node-cert-renew.md) | The issuing authority to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.cert.renew](lifecycles/node-cert-renew.md) | The mesh-primary, as issuer, to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.issuer.update](lifecycles/node-issuer-update.md) | The fabric-primary to one node-admin, exact birth, the mesh-primary directly and any other admin as a forwarded call through the mesh-primary ([Forward 0x1A](#forward-op-0x1a-core)): [Status 0x1B](#status-op-0x1b-rdm) `UpdateIssuer { node_id, incarnation, key, cert }`, answered `IssuerUpdated`; refused by name for another mesh or another birth | node.issuer.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) | The fabric-primary to one node, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoots { node_id, incarnation, roots, phase }`, answered `RootsUpdated`; a set that drops a root the node still admits a chain under is refused `root-still-chained` | node.roots.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | node.cert.get | A field of node.get: `NodeView.cert { issued_at, expires_at, issuer_expires_at }` on the `Nodes` reply, from the birth's cert row ([fabric-certs.md](fabric-certs.md#tracking)) | read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.connections.admit](lifecycles/node-connections-admit.md) | The acceptor's verification of the dialer's member cert on the first bi-stream of an inbound connection of a registered product ALPN; RDM framing, not a Node RPC op | `admitted` or `refused { reason }`, a connection fact ([connections.md](connections.md#12-connection-state)) | — (typed connection fact; no Node RPC) |
 | mesh.get, mesh.update, mesh.nodes.get, mesh.config.get/update | mesh.get answers one mesh, or every mesh of a fabric; mesh.update puts the full mesh meta as a blind put and never changes status; mesh.nodes.get answers the mesh's members; mesh.config.get/update hold the application's attributes on the mesh row, as node.config does on a node; a mesh's tags are its own property, mesh.tags.get / mesh.tags.create { label \| [labels] } / mesh.tags.delete { All \| [labels] }, the same shape and label grammar as node.tags; dedicated request mapping is open | read result / mesh.updated / mesh.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | A single call to the fabric-primary with a new root secret, the trust anchor; starts the root rotation's phases; refused `rotation-in-progress` or `root-already-trusted` by name; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | fabric.root.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| fabric.get, fabric.update, fabric.meshes.get, fabric.nodes.get, fabric.config.get/update | fabric.get answers from memory: the fabric row, its seats with their committed revisions, and, while a fabric-seat takeover is held because the store could not commit it (elections §5), `takeover { lost: { mesh, node_id, incarnation }, expected_revision, winner, proposer, since, reason }`, absent otherwise; fabric.update puts the full fabric meta as a blind put and never changes status; fabric.meshes.get lists the meshes; fabric.nodes.get answers the fabric topology; fabric.config.get/update hold the application's attributes on the fabric row; dedicated request mapping is open | read result / fabric.updated / fabric.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
-| [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh holds the fabric-primary seat; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| fabric.get, fabric.update, fabric.meshes.get, fabric.nodes.get, fabric.config.get/update | fabric.get answers from memory: the fabric row, the mesh whose mesh-primary is the fabric-primary and that primary's revision; fabric.update puts the full fabric meta as a blind put and never changes status; fabric.meshes.get lists the meshes; fabric.nodes.get answers the fabric topology; fabric.config.get/update hold the application's attributes on the fabric row; dedicated request mapping is open | read result / fabric.updated / fabric.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
+| [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh's mesh-primary is the fabric-primary; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.delete](lifecycles/fabric-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow, one Build the fabric-primary drives: every mesh removed leaf-inward, its own mesh last | fabric.deleted from the fabric-primary, still alive; its own node.delete is a separate call from outside the fabric | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the holder to its successor's exact birth, carrying the committed seat row | node.primary.updated { revisions }; RejectedConflictingPayload; `fabric-not-ready`; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
-| [node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) | the same call, the fabric seat as the `fabric` entry of `seats` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
+| [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; `fabric-not-ready`; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
+| [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build and drives topology Builds; a mesh-primary drives drift attempts of the current Build inside its mesh. [ClaimAttempt 0x1C](#buildclaim-op-0x1c-rdm) is the attempt claim; [FetchBuildFacts 0x1F](#build-facts-op-0x1f-rdm) is the facts read | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 | build.attempt.run | [Build 0x20](#build-op-0x20-rdm); fabric-primary calls the named executor with the won claim | receipt replay, current Blocked, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 
@@ -359,8 +359,8 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its members' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
-| `is_primary` | the committed seat record | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
-| `is_fabric_primary` | the committed seat record | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
+| `is_primary` | the Mesh row's primaries | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
+| `is_fabric_primary` | the fabric row's mesh and the Mesh row | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
 | connections | — (data plane, never a property) | `node.connections.delete { All \| [ids] }` | — | `node.connections.deleted` |
 
 `node.get` answers the whole node. Nothing above is PATCH: a rename replaces the name, a tag command adds or removes whole labels on their own rows, a config update replaces the whole map, and each runs once through the one writer.
@@ -390,7 +390,7 @@ A stopped node's control service stays reachable through its bound endpoint
 ([States](lifecycles/states.md#stopped-nodes)); that reachability is separate from this door.
 
 The router refuses every op, Ping included, with typed NotReady until the Node RPC door
-is ready. A node-admin waits until its Status authority is filled and its view holds it;
+is ready. A node-admin waits until its primary is filled and its view holds it;
 an rpc node waits until it joins its mesh. The rejection span is
 `rdm.node_rpc.request.reject.via-not-ready`. This door is the generic serving gate, not a
 fabric traffic-opening declaration. Source:
@@ -472,7 +472,7 @@ Every canonical call emits `rdm.node_rpc.request.update.via-call` on the caller 
 `code`, `detail`. `code` is the standard gRPC name from §25. `detail` names the typed result
 or refusal, or the typed local delivery reason; explanation text stays in `reason` and never
 selects a code. Both attributes come from the typed outcome. An owner's bound lapsing is
-`DEADLINE_EXCEEDED`, including before commit; resolver Unknown is `NOT_FOUND`, while a proven
+`DEADLINE_EXCEEDED`, including before commit; resolver Unknown is `NOT_FOUND`, while a re-created
 receiver-gone is `UNAVAILABLE`; a lost connection after commit is `UNKNOWN`, while HandlerFault
 and a real PROTOCOL_VIOLATION are `INTERNAL`.
 With propagated context, the server shares the caller's TraceId and its ParentSpanId is the
@@ -670,7 +670,7 @@ pub enum NotSentCause {
 pub enum ResolveFailure { Unknown, Gone, Unavailable }
 ```
 
-The `cause` field is appended after `reason` in each of these two variants. It is filled from the inner call’s typed outcome, never from its explanation. The origin rebuilds the typed `NotSentReason` or `IndeterminateReason` from `cause` and keeps `reason` as explanation. A proven receiving birth’s exit is `UNAVAILABLE` with detail `receiver-gone`; an owner’s bound lapsing is `DEADLINE_EXCEEDED`, before or after commit; a lost reply or non-fault reset after commit is `UNKNOWN`. `INTERNAL_RPC_FAILURE` is `INTERNAL`. The carrier’s own `CarrierEdgeLost` and failed inner dial are `UNAVAILABLE`; `NotForwardable` is `FAILED_PRECONDITION`. These codes describe the typed result; they change neither dispatch certainty nor delivery obligations. This is the Q40 Forward-only wire change; the 14 reply positions stand, and no legacy decoder is kept.
+The `cause` field is appended after `reason` in each of these two variants. It is filled from the inner call’s typed outcome, never from its explanation. The origin rebuilds the typed `NotSentReason` or `IndeterminateReason` from `cause` and keeps `reason` as explanation. A receiving birth that was re-created is `UNAVAILABLE` with detail `receiver-gone`; an owner’s bound lapsing is `DEADLINE_EXCEEDED`, before or after commit; a lost reply or non-fault reset after commit is `UNKNOWN`. `INTERNAL_RPC_FAILURE` is `INTERNAL`. The carrier’s own `CarrierEdgeLost` and failed inner dial are `UNAVAILABLE`; `NotForwardable` is `FAILED_PRECONDITION`. These codes describe the typed result; they change neither dispatch certainty nor delivery obligations. This is the Q40 Forward-only wire change; the 14 reply positions stand, and no legacy decoder is kept.
 
 The fourth, last request field `remaining_ms` is a postcard varint of whole milliseconds.
 The source measures it immediately before writing the frame, after carrier resolution and
@@ -694,9 +694,9 @@ write happens after the reply and is never on the reply path. Outer and inner ca
 
 Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/status.rs::StatusRequest`.
 
-Direction: upward for declarations; downward for applies and probes. An ordinary node declares to its mesh-primary node-admin. Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own ([node.status](lifecycles/node-status.md)); a mesh-primary declares its mesh state to the fabric-primary. Authority applies/probes the exact node birth; fabric-primary applies mesh state at its bootstrap admin and fabric events at its mesh-primary.
+Direction: upward for declarations; downward for applies and probes. An ordinary node declares to its mesh-primary node-admin. Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own ([node.status](lifecycles/node-status.md)); a mesh-primary declares its mesh state to the fabric-primary. The primary applies/probes the exact node birth; the fabric-primary applies mesh state at its bootstrap admin and fabric events at its mesh-primary.
 
-The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, not-the-writer (`RejectedNotAuthority`), not-handled (`RequestNotHandled`) and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
+The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, not-the-primary (`RejectedNotPrimary`), not-handled (`RequestNotHandled`) and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
 The [node stop pair](#node-stop-command-pair), the
@@ -706,7 +706,7 @@ The lifecycle op pairs in States are carried by 0x1B as separate down (command) 
 
 Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [before_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
 
-Nothing inside the mesh checks who sent a frame or call. `RejectedNotAuthority` says the receiver is not the authority for the call: `ReceiverNotPrimary { needed }` when the receiver does not hold the seat the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all. `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, seat or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
+Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` says the receiver is not the primary for the call: `ReceiverNotPrimary { needed }` when the receiver is not the primary the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all. `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, primary or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
 
 ```rust
 pub enum NodeState {
@@ -797,7 +797,7 @@ pub enum WhichMesh {
 // NodeSelect (Id, Mesh or Tags), TagFilter, NodeView, MeshView, FabricView, ConnectionsView, NodeStatus and
 // MeshDeleteRound are on the generated wire page with their fields.
 
-pub enum NotAuthority {
+pub enum NotPrimary {
     ReceiverNotPrimary { needed: String },
     SenderNotSubject { sender: String },
     SubjectUnknown,
@@ -823,7 +823,7 @@ pub enum StatusReply {
     RejectedStaleIncarnation { held: IncarnationId },
     RejectedStaleMesh { held: MeshId },
     RejectedStaleFabric { held: FabricId },
-    RejectedNotAuthority { why: NotAuthority },
+    RejectedNotPrimary { why: NotPrimary },
     RejectedInvalidNodeTransition { current: NodeState },
     RejectedInvalidMeshTransition { current: MeshState },
     PeerUnresolved { reason: String },
@@ -873,10 +873,10 @@ pub enum StatusReply {
 // The event a Blocked before_ready hook runs again on (fabric-node-hooks.md,
 // "Outcomes and the gate"). Positional order is part of the wire schema.
 pub enum RetryOn {
-    AuthorityChanged,
+    PrimaryChanged,
     TargetReachable { node_id: NodeId },
-    AuthorityReady,
-    AuthorityAddressed,
+    PrimaryReady,
+    PrimaryAddressed,
 }
 ```
 
@@ -969,14 +969,14 @@ fabric-primary recorded ([Mesh delete, resume after the primary's loss](lifecycl
 no missing birth, extra birth or substitution. The fabric-primary validates the final
 primary against the birth it admitted, or the birth its last `RosterAmended` receipt names
 as that primary's replacement, and against its provider domain, not merely its path or
-current seat name. A manifest that names the admitted primary after an amendment, or omits
+current primary's name. A manifest that names the admitted primary after an amendment, or omits
 the amendment, is refused by name.
 
 The workflow identity is `(mesh_id, build_id, attempt, operation)`; the operation is
 `mesh.delete:<mesh_id>`. DeleteMesh answers Applied or AlreadyApplied on admission; that reply is
 not mesh.deleted. The fabric-primary answers MeshDeleted Applied or AlreadyApplied after handoff
 validation. A stale/conflicting round or incomplete manifest is refused by name with a typed Status
-refusal naming the mismatch; authority, stale-mesh, malformed and other Status refusals remain typed. Both
+refusal naming the mismatch; not-primary, stale-mesh, malformed and other Status refusals remain typed. Both
 calls are forwardable under Status rules. A lost handoff or missing exact receipt leaves the
 workflow incomplete, never successful.
 
@@ -987,7 +987,7 @@ mesh-primary's exit; a separate node.delete, with the fabric-primary as executor
 
 Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_claim.rs::BuildClaimRequest`.
 
-Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail), which names the lane key its claim takes, and claims by insert-and-fail on that key; a row whose key holds another entry is void and is released; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
+Direction: upward, to the fabric-primary, which writes every Build record: a mesh-primary claims its mesh's drift attempt through it, and the fabric-primary claims a topology Build's attempt itself. The claim is one record at `(build_id, mesh, attempt)` in the Build journal, written once by the fabric-primary; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself, reporting its receipts up the attempt's stream. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
 
 ```rust
 pub enum BuildClaimRequest {
@@ -996,7 +996,7 @@ pub enum BuildClaimRequest {
 
 pub enum BuildClaimReply {
     Won { context: CallContext },
-    Lost { holder: String },
+    Lost { claimant: String },
     NotOpen { next: Option<u32> },
     NotClaimant { mesh: Option<String>, fabric_primary: Option<String>, mesh_primary: Option<String> },
     BuildInProgress { current_build_id: String, mesh: String, held_by: Option<String> },
@@ -1013,7 +1013,7 @@ pub enum BuildClaimReply {
 
 Direction: upward. An ordinary node calls its mesh-primary node-admin; a node-admin birth
 calls its maker, the node-admin that deploys it. JoinNode is the managed birth's FIRST call after it
-binds port 0 and the OS assigns its port. The deploying authority serves it. Not forwardable: the report is attributed directly to the
+binds port 0 and the OS assigns its port. The deploying primary serves it. Not forwardable: the report is attributed directly to the
 joining birth.
 
 ```rust
@@ -1033,7 +1033,7 @@ The reply alternatives and their complete named fields are:
 JoinReply =
     Joined { answer: Vec<u8> }
   | JoinMismatch { field: String, deployed: String, reported: String }
-  | NotAuthority { primary: Option<String> }
+  | NotPrimary { primary: Option<String> }
   | PeerUnresolved { reason: String }
   | NotReady { reason: String }
   | Busy { reason: String }
@@ -1047,13 +1047,13 @@ JoinReply =
 Joined.answer is postcard-encoded WireJoinAnswer from RDM node-admin-core wire.rs.
 Its decoded JoinAnswer contains served_by, control and statuses. Control contains
 provider, optional Fabric and shutdown facts, optional Build floor, rafka-time, the
-member cert, and, for a birth the authority already holds, the row's name and config; statuses
+member cert, and, for a birth the primary already holds, the row's name and config; statuses
 retain their original authors and change instants. The request uses WireDigest, the
 shared positional digest shape. Request ceiling is 64 KiB; reply ceiling is 4 MiB.
 There are eleven replies in the shown order. DeploymentAbandoned identifies an exact
-birth whose deployment ended before its join arrived; this is not NotAuthority.
+birth whose deployment ended before its join arrived; this is not NotPrimary.
 JoinMismatch names the differing field and its deployed and reported values;
-NotAuthority names the required authority. These are typed replies, not transport faults.
+NotPrimary names the required primary. These are typed replies, not transport faults.
 JoinNode is only a join. It does not re-read topology for an already-held member.
 After acceptance and its `before_ready` hook, the caller reads topology with [GetTopology](#topology-op-0x1e-rdm), in the order [node.start](lifecycles/node-start.md) sets.
 A fabric-primary recovered with durable topology follows [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery) without maker calls; its first topology read targets a node from that map.
@@ -1112,7 +1112,7 @@ pub struct MeshDigest {
 ```
 
 The admin verifies node_id, incarnation, deployment id / RuntimeFact, path and mesh against
-what it deployed. A mismatch is refused by field name. For a birth the authority already
+what it deployed. A mismatch is refused by field name. For a birth the primary already
 holds, the name must be the row's name or the name it last accepted for that exact birth, else
 JoinMismatch names the reported, the row's and the last accepted value; the accepted digest is
 installed under the row's name. A first start's name is checked against its create spec. On acceptance it installs the reported
@@ -1180,18 +1180,18 @@ pub enum TopologyReply {
     Unauthorized { reason: String },
     Started,
     Stored { mesh: String, mesh_id: Option<MeshId>, nodes: Vec<StoredNode> },
-    Seats { seat: Seat, holder: SeatHolder, gone: bool },
-    RafkaTime { ms: u64, seat: Option<Seat> },
+    Primaries { kind: PrimaryKind, primary: Primary, gone: bool },
+    RafkaTime { ms: u64, kind: Option<PrimaryKind> },
 }
 
-// The seat record's types (rafka-mesh-entity seat.rs), distinct from the transfer
-// Seat of op 0x21.
-pub enum Seat {
+// The Mesh row's and the fabric row's primary entry, distinct from the
+// per-type entry of op 0x21.
+pub enum PrimaryKind {
     MeshPrimary,
     FabricPrimary,
 }
 
-pub struct SeatHolder {
+pub struct Primary {
     pub mesh: String,
     pub node_id: NodeId,
     pub incarnation: IncarnationId,
@@ -1290,7 +1290,7 @@ REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
 
 | Call | Direction / caller → server | Request content | Reply / stream |
 |---|---|---|---|
-| build.create | upward, caller → fabric-primary | submitted Build intent or node.create/stop/start/restart/delete workflow; a preset is a Build input; existing build_id for resubmission | Started { build_id }, step frames, Complete or Failed { step, reason }; seat movement ends with SeatMoved, the typed new-seat frame |
+| build.create | upward, caller → fabric-primary | submitted Build intent or node.create/stop/start/restart/delete workflow; a preset is a Build input; existing build_id for resubmission | Started { build_id }, step frames, Complete or Failed { step, reason }; a fabric-primary change ends with FabricPrimaryMoved, the typed frame naming the new one |
 | build.attempt.run | downward, fabric-primary → executor named by executor_for | (build_id, attempt) and the Won claim | replay held Complete receipts, current Blocked if still blocked, then live step frames; a run that stops at another executor's operation ends HandedOff { to }; executor loss ends Indeterminate |
 | build.get | caller → fabric-primary | build_id | read accepted Build and receipts for reattachment after a cut; never progress polling |
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
@@ -1320,22 +1320,22 @@ never a defect and never a new execution (Node RPC §34, §43).
 | Blocked { step, reason } | nonterminal hook blocker, emitted on a new blocker or reason change, never on a timer; replay the current blocker on reattach if still blocked. Its only source is the subject's [Status `Blocked`](#status-op-0x1b-rdm) reply to the executor's ProbeNodeState |
 | AlreadyApplied with terminal frame | resubmission of a completed Build |
 | HandedOff { to } | terminal of build.attempt.run: the run ended at an operation another executor runs; `to` names the fabric-primary of the view the run ends with, and that fabric-primary's next claim picks the executor of the remaining operations |
-| SeatMoved { build_id, fabric_primary }, the typed new-seat frame | deliberate outer-stream end naming the new fabric-primary seat; caller resubmits the same build_id there |
+| FabricPrimaryMoved { build_id, fabric_primary }, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there |
 | NotSent / Indeterminate | transport cut outcome under the request commit cut; executor loss ends the inner call Indeterminate |
 
 Blocked is live progress, **not a durable step outcome**. Durable step outcomes
 remain Complete and Failed. A stream cut cancels neither the fabric-primary's
-Build drive nor the executor's inner run. Only a yielded seat or a failed step ends an
+Build drive nor the executor's inner run. Only a fabric-primary change or a failed step ends an
 attempt. Progress waits on no gossip; Build-channel facts remain durability and
 recovery evidence through the existing publication path.
 
 Resubmission by build_id never creates a second Build. The fabric-primary answers:
-completed → AlreadyApplied with terminal frame; running with a live holder → that
-holder's stream through build.attempt.run reattachment; failed or a proven-lost
-holder → the next attempt. A successor uses the Build projection as its recovery
+completed → AlreadyApplied with terminal frame; running with a live executor → that
+executor's stream through build.attempt.run reattachment; failed or an executor node
+investigation did not reach → the next attempt. A successor uses the Build projection as its recovery
 source. If the fabric-primary dies after claiming but before dispatch, its
-successor dispatches the still-current claimed work; a live holder is reattached,
-not replaced merely because the fabric seat moved. It plans from accepted intent and observed topology and never reruns a
+successor dispatches the still-current claimed work; a live executor is reattached,
+not replaced merely because the fabric-primary changed. It plans from accepted intent and observed topology and never reruns a
 caller-visible step with a Complete receipt. Executor departure proof, never
 silence, is required before claiming the next attempt for its successor.
 
@@ -1351,16 +1351,16 @@ claim validation is the Build-specific execution check.
 build.create refuses by name until the initial fabric has first reached ready-for-traffic: the
 existing `Rejected { reason, detail }` reply with reason `fabric-not-ready`, whose `detail` names
 the refused workflow and the fabric's current status. It refuses a Build that would move a
-fabric-primary or mesh-primary seat, mesh.delete, and every node.stop, node.start, node.restart,
+fabric-primary or mesh-primary, mesh.delete, and every node.stop, node.start, node.restart,
 node.delete and replace recipe a caller submits. The initial accepted Build, which creates the
 fabric's nodes and brings the fabric to ready-for-traffic, runs as usual, and once the fabric is
 ready-for-traffic these are admitted as usual. A refused Build claims no attempt and sends no call.
 [States](lifecycles/states.md#fabric-not-ready) gives the reason. `NotReady` is not this refusal:
 it stays the serving door's answer.
 
-Every dispatch passes the fabric-seat check and the claim decision. A
-fabric-primary that yielded its seat cannot dispatch and refuses SeatYielded { node, by }.
-A cut-off fabric-primary dispatches nothing. A committed seat move ends the outer
+Every dispatch passes the fabric-primary check and the claim decision. A
+node-admin that is fabric-primary no more cannot dispatch and refuses NotFabricPrimary { node, by }.
+A fabric-primary change ends the outer
 stream with SeatMoved, **not Indeterminate**. An accidental transport cut remains
 NotSent or Indeterminate under the existing request commit cut.
 
@@ -1369,7 +1369,7 @@ are idle = staleness floor and keepalive = gossip / 2. The family is not
 forwardable: every call is a stream.
 
 Caller and server emit the [runtime spans](#runtime-spans) with op=0x20; child calls continue
-the outer trace under the same rule. A dispatch refused after the seat check records SeatYielded in
+the outer trace under the same rule. A dispatch refused after the fabric-primary check records NotFabricPrimary in
 its span.
 
 Mechanism:
@@ -1489,7 +1489,7 @@ pub enum BuildReply {
     Rejected { reason: String, detail: String },
     BuildInProgress { current_build_id: String, mesh: Option<String>, held_by: Option<String> },
     AttemptTaken { detail: String },
-    SeatYielded { node: String, by: String },
+    NotFabricPrimary { node: String, by: String },
     CannotDelete { build_id: String, reason: String },
     PeerUnresolved { reason: String },
     NotReady { reason: String },
@@ -1510,59 +1510,59 @@ SeatMoved for AttemptRun; Got for Get; Deleted for Delete.
 ## PrimaryUpdate, op `0x21`, rdm
 
 RDM owns this family. It carries [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md),
-which owns sequencing and the failure contract. Direction: the holder calls its successor's exact birth,
-carrying the committed seat row's content; only node-admins and the nodes of a cohort the mesh-primary
-commands serve it. Every call is unary and not forwardable. Requests use the canonical target and
+which owns sequencing and the failure contract. Direction: the primary calls its successor's exact birth;
+only node-admins and the nodes of a type the mesh-primary commands serve it. Every call is unary and not forwardable. Requests use the canonical target and
 CallContext; replies use the canonical unary reply frame. Field order and enum positions are the order
 shown. Births are exact identities, never names.
 
 ```text
-holder → successor   PrimaryUpdate { seats: [(cohort, holder: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, run, operation }
-successor            reads the row, installs itself as primary from that revision
-successor → holder   PrimaryUpdated { revisions }   (on that call's reply stream)
+primary → successor   PrimaryUpdate { primaries: [(node_type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, run, operation }
+successor             writes or reads the Mesh row, installs itself as primary from that revision
+successor → primary   PrimaryUpdated { revisions }   (on that call's reply stream)
 ```
 
-`seats` carries the committed row's content, one seat or two: the fabric seat is a second entry,
-cohort `fabric`. The row is already committed when the call is made, so the receiver refuses only:
+`primaries` carries the row's content, one entry or two: the fabric-primary is a second entry,
+node type `fabric`. For the `node-admin` type the successor writes the row on this call; for every other
+type the row is already written when the call is made. The receiver refuses only:
 
 - RejectedConflictingPayload: the same operation with different content; the row decides;
 - `fabric-not-ready`: before the initial fabric first reached ready-for-traffic.
 
 There is no RejectedWrongBirth (R-UC1a, R-RX5: a receiver never refuses a call for the node id it
-names), no RejectedStaleSeat and no RejectedNotEligible on the receiver: eligibility is the writer's
+names), no RejectedStaleRevision and no RejectedNotEligible on the receiver: eligibility is the writer's
 pre-check before the row.
 
-`operation` identifies one update and names its committed row (the seat move `seat-moves/<T>` that carries it)
+`operation` identifies one update and names its row (the Mesh row's or the fabric row's write that carries it)
 by (build_id, run): `node.primary.update:<build_id>:<run>:<op>`. The run is the first attempt of the series a
 submission opened: a resume continues it and replays that run's row; a resubmit after Failed opens a new run,
 so a new transfer.
 
 The commanded arm rides the same op: the fabric-primary commands a mesh-primary's update with
-`UpdatePrimary { seat, build_id, run, operation }` on the holder, and the mesh-primary commands another cohort's
-holder the same way. The holder runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,
+`UpdatePrimary { node_type, build_id, run, operation }` on the primary, and the mesh-primary commands another type's
+primary the same way. The primary runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,
 or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when it ends failed; `Incomplete` is never
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
-The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own mesh first), with `TakeOverFabricSeat { fabric, lost: { mesh, node_id, incarnation }, expected_revision, successor, proposer }`. The winner, when its own view names it, commits the takeover's seat move once (`seat-moves/<T>`, kind `takeover`: the fabric seat from `lost` at `expected_revision` to itself at the next revision), and answers `PrimaryUpdated { revisions }`. A repeat for the same takeover and successor answers `AlreadyApplied { revisions }` (`ALREADY_EXISTS`); a proposal naming another winner is `RejectedNotAuthority`, one at a revision its record no longer holds `RejectedStaleSeat`, one the fold refuses `RejectedConflict`; a store that cannot commit answers `RejectedSourceFailed`, and the takeover stays held.
+The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own mesh first), with `TakeOverFabricPrimary { fabric, lost: { mesh, node_id, incarnation }, expected_revision, successor, proposer }`. The winner, when its own view names it, writes its row once (the Mesh row in the lost mesh's own arm, the fabric row from the backbone, [fabric recovery](lifecycles/fabric-recovery.md)) and answers `PrimaryUpdated { revisions }`. A repeat for the same takeover and successor answers `AlreadyApplied { revisions }` (`ALREADY_EXISTS`); a proposal naming another winner is `RejectedNotPrimary`, one at a revision the row no longer holds `RejectedStaleRevision`; a store that cannot write answers `RejectedSourceFailed`, and the step fails by name.
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is
-RejectedConflictingPayload. The holder never treats NotSent or Indeterminate as an answer: it retries the
-identical call, and the row resolves uncertainty. A row naming the successor is the committed result and
+RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: it retries the
+identical call, and the row resolves uncertainty. A row naming the successor is the result and
 the successor installs it; no row means the update never happened.
 
-The holder's full digest
+The primary's full digest
 carries `admin_api_base`, the application contact URL including its bound port. Consumers
-resolve the committed successor's application contact from that exact birth's contact record;
-The holder's digest carries its contact addresses.
+resolve the successor's application contact from that exact birth's contact record;
+The primary's digest carries its contact addresses.
 The two contact fields are explicit: `transport_addr` is the bound QUIC UDP ip:port;
 `admin_api_base` is an application-supplied contact URL with its bound port.
 RDM serves Node RPC; the application contact is independent of that endpoint; consumers cannot derive either port from the other. Contact changes
 are learned from the exact birth's digest.
 
 Spans: the caller emits `rdm.node_rpc.request.update.via-call` with op=0x21; the successor's install and
-every refusal carry the operation, build_id, attempt, both exact births and each seat's revision. A change
+every refusal carry the operation, build_id, attempt, both exact births and each entry's revision. A change
 to these frames is `durable format moved`, with byte fixtures.
 
 ## NodeCommand, op `0x22`, rdm
@@ -1597,7 +1597,7 @@ A refusal before acceptance is one refusal frame. `CommandAccepted` is admission
 lifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`
 records connections-deleting for connections.delete; `NodeStopped` records stopped, `NodeJoined`
 records pending, and `NodeStarted` records ReadyForTraffic after every start gate and before the
-outer Build's Complete. Starting stays the executing authority's overlay. Nothing is written
+outer Build's Complete. Starting stays the executor's overlay. Nothing is written
 before CommandAccepted or for NotSent. There is no separate status declaration for an open start;
 the Q36 owed report remains when no stream is open. A stream lost after acceptance is incomplete.
 The owner records each frame before acknowledging recovery; repeated frames cause no second record.
@@ -1708,7 +1708,7 @@ pub enum ResolveReply {
 
 Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-testkit/src/declare_probe.rs::DeclareRequest`.
 
-Direction: peer. Test clients call a testkit node and ask it to declare upward to the selected authority. Not forwardable. BadTarget is a typed refusal; Answered carries the actual status outcome/reply. Server additionally emits `rdm.node_rpc.declare_probe.serve.via-request`. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
+Direction: peer. Test clients call a testkit node and ask it to declare upward to the selected primary. Not forwardable. BadTarget is a typed refusal; Answered carries the actual status outcome/reply. Server additionally emits `rdm.node_rpc.declare_probe.serve.via-request`. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
 ```rust
 pub enum DeclareTarget {
