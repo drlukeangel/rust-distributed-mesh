@@ -2,7 +2,7 @@
 
 Asked by Luke, 2026-10-21: every place for its removal, and every test that tests it. Generated from origin/main by `git grep` and annotated per line. Rulings: Q109 (storage is persistence only; no seal; no wrapping), Q110 (an unreachable node is re-created; one that comes back is refused and terminated), Q111 (nothing requires proof of termination; node investigation decides).
 
-Annotations: **remove** goes with its ruling; **remove or rewrite** is a statement or code path that waits on or requires proof of termination, rewritten to act on node investigation's verdict; **keep** is node investigation's own provider step, whose verdict now chooses the data dir (Q111); **other meaning** is the word seal used for the op ledger or the hook registry being finalized at boot, a different thing from the Build lane seal, listed for Luke's decision.
+Annotations: **remove** goes with its ruling; **remove or rewrite** is a statement or code path that waits on or requires proof of termination, rewritten to act on node investigation's verdict; **keep** is node investigation's own provider step, whose verdict now chooses the data dir (Q111); Luke, 2026-10-21: "there is no more sealing of anything; if it's still in the code or the docs it's a problem": the op ledger's and the hook registry's sealing at boot go too, word and step; each registry is simply built at boot.
 
 Generated lists are a starting point: the lead reads each line before changing it, and reports a line the pattern missed.
 
@@ -10,35 +10,35 @@ Generated lists are a starting point: the lead reads each line before changing i
 
 ### Pages (19 lines)
 
-- `docs/architecture/build.md:67` [other meaning: registry finalized at boot; Luke to decide] those algorithms. Hooks are registered before sealing, idempotent and bounded, and report
+- `docs/architecture/build.md:67` [remove: no sealing of anything (Luke)] those algorithms. Hooks are registered before sealing, idempotent and bounded, and report
 - `docs/architecture/build.md:413` [remove] Control-plane state lives behind the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's 
-- `docs/architecture/build.md:465` [other meaning: registry finalized at boot; Luke to decide] `LifecycleTransitionPipeline` runs a `Transition` through its sealed hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`
+- `docs/architecture/build.md:465` [remove: no sealing of anything (Luke)] `LifecycleTransitionPipeline` runs a `Transition` through its sealed hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`
 - `docs/architecture/lifecycles/fabric-state-sync.md:9` [remove] the Build facts (each accepted Build, attempt claim, receipt and lane seal), which are written to the
 - `docs/architecture/lifecycles/node-primary-update.md:159` [remove] leadership view is folded from the seat moves. After the row the writer seals the Build lane of each seat
 - `docs/architecture/lifecycles/node-primary-update.md:160` [remove] it moved at the revision it moved from (`lane-seal/1`); the successor appends to that lane only once the
 - `docs/architecture/lifecycles/node-primary-update.md:161` [remove] seal stands, and writes the seal itself when the writer was lost before it.
-- `docs/architecture/node-rpc-envelope.md:184` [other meaning: registry finalized at boot; Luke to decide] The ledger is consulted in exactly one place: the seal, once per process at boot. The core rows
-- `docs/architecture/node-rpc-envelope.md:185` [other meaning: registry finalized at boot; Luke to decide] are built into the contract; a product adds its rows through the server builder. The seal takes
-- `docs/architecture/node-rpc-envelope.md:186` [other meaning: registry finalized at boot; Luke to decide] the ledger and the entries the process serves and builds the sealed catalog, refusing the
-- `docs/architecture/node-rpc-envelope.md:200` [other meaning: registry finalized at boot; Luke to decide] After the seal the ledger is not read again. The target consults the sealed catalog's served
+- `docs/architecture/node-rpc-envelope.md:184` [remove: no sealing of anything (Luke)] The ledger is consulted in exactly one place: the seal, once per process at boot. The core rows
+- `docs/architecture/node-rpc-envelope.md:185` [remove: no sealing of anything (Luke)] are built into the contract; a product adds its rows through the server builder. The seal takes
+- `docs/architecture/node-rpc-envelope.md:186` [remove: no sealing of anything (Luke)] the ledger and the entries the process serves and builds the sealed catalog, refusing the
+- `docs/architecture/node-rpc-envelope.md:200` [remove: no sealing of anything (Luke)] After the seal the ledger is not read again. The target consults the sealed catalog's served
 - `docs/architecture/node-rpc-envelope.md:1547` [remove] The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own
-- `docs/architecture/node-rpc.md:203` [other meaning: registry finalized at boot; Luke to decide] The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rafka-node-rpc-contract`, a product adds its rows through the server builder, and the seal builds the served catalog 
-- `docs/architecture/node-rpc.md:278` [other meaning: registry finalized at boot; Luke to decide] ## 12. Server registration is sealed at boot
-- `docs/architecture/node-rpc.md:287` [other meaning: registry finalized at boot; Luke to decide] The table is sealed **before the mesh endpoint can dispatch its first accepted bi-stream**.
-- `docs/architecture/node-rpc.md:291` [other meaning: registry finalized at boot; Luke to decide] The [seal](node-rpc-envelope.md#the-op-ledger) refuses the process on any ledger fault; the runtime also refuses an invalid configured admission or memory limit and a streaming budget that does not fit the transport inva
-- `docs/architecture/node-rpc.md:329` [other meaning: registry finalized at boot; Luke to decide] - is sealed with the registry.
-- `docs/architecture/node-rpc.md:413` [other meaning: registry finalized at boot; Luke to decide] At registry seal:
-- `docs/architecture/node-rpc.md:943` [other meaning: registry finalized at boot; Luke to decide] A server-streaming op is never forwardable: the [seal](node-rpc-envelope.md#the-op-ledger) refuses a forwardable server-streaming entry.
+- `docs/architecture/node-rpc.md:203` [remove: no sealing of anything (Luke)] The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rafka-node-rpc-contract`, a product adds its rows through the server builder, and the seal builds the served catalog 
+- `docs/architecture/node-rpc.md:278` [remove: no sealing of anything (Luke)] ## 12. Server registration is sealed at boot
+- `docs/architecture/node-rpc.md:287` [remove: no sealing of anything (Luke)] The table is sealed **before the mesh endpoint can dispatch its first accepted bi-stream**.
+- `docs/architecture/node-rpc.md:291` [remove: no sealing of anything (Luke)] The [seal](node-rpc-envelope.md#the-op-ledger) refuses the process on any ledger fault; the runtime also refuses an invalid configured admission or memory limit and a streaming budget that does not fit the transport inva
+- `docs/architecture/node-rpc.md:329` [remove: no sealing of anything (Luke)] - is sealed with the registry.
+- `docs/architecture/node-rpc.md:413` [remove: no sealing of anything (Luke)] At registry seal:
+- `docs/architecture/node-rpc.md:943` [remove: no sealing of anything (Luke)] A server-streaming op is never forwardable: the [seal](node-rpc-envelope.md#the-op-ledger) refuses a forwardable server-streaming entry.
 
 ### Code, production (219 lines)
 
 - `crates/rdm-admin/src/admin/boot.rs` (6)
   - `:194` [remove] /// The Node RPC server a node-admin serves, before it seals: core (Ping, Forward), then the families the
-  - `:593` [other meaning: registry finalized at boot; Luke to decide] // The app's own ops (each behind the gate of its hook), before the catalog seals.
+  - `:593` [remove: no sealing of anything (Luke)] // The app's own ops (each behind the gate of its hook), before the catalog seals.
   - `:601` [remove] .seal(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
-  - `:602` [other meaning: registry finalized at boot; Luke to decide] .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
+  - `:602` [remove: no sealing of anything (Luke)] .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
   - `:887` [remove] journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions, seals: crate::fabric_storage::seals_owed(fabric_storage.clone(), rdm_core::handover::Hand
-  - `:1218` [other meaning: registry finalized at boot; Luke to decide] let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
+  - `:1218` [remove: no sealing of anything (Luke)] let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
 - `crates/rdm-admin/src/build_lanes.rs` (58)
   - `:9` [remove] //! The move of the lane's seat seals the revision it moved from: `lane-seal/1` at the first sequence
   - `:10` [remove] //! the sealer wins. A writer meeting the seal is refused stale and appends nothing past it, and a
@@ -220,53 +220,53 @@ Generated lists are a starting point: the lead reads each line before changing i
   - `:703` [remove] let moves = storage.seat_moves().await.map_err(|e| format!("fabric.storage, the fabric's seat moves could not be read for the seals of {}: {e}", lane.name()))?;
   - `:704` [remove] Ok(moves.iter().flat_map(|m| m.row.seats.iter().filter(|s| s.seat == seat && s.from_revision < below).map(|s| crate::build_state::LaneSeal { revision: s.from_revision, sealed_by: m
 - `crates/rdm-admin/src/lifecycle.rs` (7)
-  - `:15` [other meaning: registry finalized at boot; Luke to decide] //! Hooks are registered before the registry seals. Each run appends a receipt
-  - `:211` [other meaning: registry finalized at boot; Luke to decide] /// Why a hook registry does not seal.
-  - `:229` [other meaning: registry finalized at boot; Luke to decide] /// The hooks registered before the registry seals.
+  - `:15` [remove: no sealing of anything (Luke)] //! Hooks are registered before the registry seals. Each run appends a receipt
+  - `:211` [remove: no sealing of anything (Luke)] /// Why a hook registry does not seal.
+  - `:229` [remove: no sealing of anything (Luke)] /// The hooks registered before the registry seals.
   - `:247` [remove] /// Validate and seal; nothing registers afterwards.
-  - `:248` [other meaning: registry finalized at boot; Luke to decide] pub fn seal(self) -> Result<SealedHooks, Vec<RegistryError>> {
-  - `:267` [other meaning: registry finalized at boot; Luke to decide] /// The sealed registry. Hook order is deterministic: by phase, then
-  - `:336` [other meaning: registry finalized at boot; Luke to decide] /// A pipeline over the sealed `hooks` that appends its receipts to `receipts`.
+  - `:248` [remove: no sealing of anything (Luke)] pub fn seal(self) -> Result<SealedHooks, Vec<RegistryError>> {
+  - `:267` [remove: no sealing of anything (Luke)] /// The sealed registry. Hook order is deterministic: by phase, then
+  - `:336` [remove: no sealing of anything (Luke)] /// A pipeline over the sealed `hooks` that appends its receipts to `receipts`.
 - `crates/rdm-admin/src/wiring.rs` (4)
-  - `:7` [other meaning: registry finalized at boot; Luke to decide] //! of them once, and register hooks before the registry seals, before the admin runs. The product
+  - `:7` [remove: no sealing of anything (Luke)] //! of them once, and register hooks before the registry seals, before the admin runs. The product
   - `:92` [remove] /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
   - `:209` [remove] /// The app's own ops, added to the server before it seals.
-  - `:211` [other meaning: registry finalized at boot; Luke to decide] /// Hooks registered, in order, before the lifecycle registry seals.
+  - `:211` [remove: no sealing of anything (Luke)] /// Hooks registered, in order, before the lifecycle registry seals.
 - `crates/rdm-core/src/catalog.rs` (10)
-  - `:1` [other meaning: registry finalized at boot; Luke to decide] //! The sealed protocol catalog and op ledger (ownership amendment §10–§11,
-  - `:7` [other meaning: registry finalized at boot; Luke to decide] //! legacy adapters into one [`CatalogBuilder`] and seals it once, before the
-  - `:8` [other meaning: registry finalized at boot; Luke to decide] //! first accepted stream is dispatched. The sealed catalog is the only
+  - `:1` [remove: no sealing of anything (Luke)] //! The sealed protocol catalog and op ledger (ownership amendment §10–§11,
+  - `:7` [remove: no sealing of anything (Luke)] //! legacy adapters into one [`CatalogBuilder`] and seals it once, before the
+  - `:8` [remove: no sealing of anything (Luke)] //! first accepted stream is dispatched. The sealed catalog is the only
   - `:11` [remove] //! and no fallthrough to legacy code after seal.
   - `:113` [remove] /// A product's sealed adapter for a pre-Node-RPC family, carried only
-  - `:176` [other meaning: registry finalized at boot; Luke to decide] /// Why a catalog refuses to seal.
+  - `:176` [remove: no sealing of anything (Luke)] /// Why a catalog refuses to seal.
   - `:284` [remove] /// The unsealed composition: core + product protocols + transitional adapters.
   - `:309` [remove] /// Validate and seal. Consumes the builder: nothing can be added after.
-  - `:310` [other meaning: registry finalized at boot; Luke to decide] pub fn seal(self) -> Result<SealedCatalog, Vec<SealError>> {
+  - `:310` [remove: no sealing of anything (Luke)] pub fn seal(self) -> Result<SealedCatalog, Vec<SealError>> {
   - `:371` [remove] /// The one sealed dispatch table of a process. Immutable.
 - `crates/rdm-core/src/dispatch.rs` (1)
-  - `:78` [other meaning: registry finalized at boot; Luke to decide] /// The request direction of a server serving what `catalog` seals.
+  - `:78` [remove: no sealing of anything (Luke)] /// The request direction of a server serving what `catalog` seals.
 - `crates/rdm-node/src/lib.rs` (1)
-  - `:109` [other meaning: registry finalized at boot; Luke to decide] /// it seals. A hook that fails after the node came up Pending ends the process by name.
+  - `:109` [remove: no sealing of anything (Luke)] /// it seals. A hook that fails after the node came up Pending ends the process by name.
 - `crates/rdm-node/src/node.rs` (5)
   - `:315` [remove] /// or carries for others, holds it before the server seals).
   - `:433` [remove] // The process's one client, made before the server seals: the server carries the proof
-  - `:505` [other meaning: registry finalized at boot; Luke to decide] let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
+  - `:505` [remove: no sealing of anything (Luke)] let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
   - `:512` [remove] .seal(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
-  - `:513` [other meaning: registry finalized at boot; Luke to decide] .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
+  - `:513` [remove: no sealing of anything (Luke)] .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
 - `crates/rdm-node/src/node_rpc.rs` (1)
   - `:61` [remove] /// process's one client before it seals).
 - `crates/rdm-node/src/record_store.rs` (1)
   - `:239` [remove] /// [`Self::read`] of a key one of several formats may hold (a lane's fact or its seal): the
 - `crates/rdm-transport/src/server.rs` (9)
-  - `:270` [other meaning: registry finalized at boot; Luke to decide] /// Registration happens at birth; `seal` consumes the builder.
+  - `:270` [remove: no sealing of anything (Luke)] /// Registration happens at birth; `seal` consumes the builder.
   - `:281` [remove] /// Filled at seal for the forward handler, when this node serves it.
-  - `:351` [other meaning: registry finalized at boot; Luke to decide] /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
-  - `:359` [other meaning: registry finalized at boot; Luke to decide] /// process's one sealed catalog (node-rpc-envelope.md §12). The server runs no handler
-  - `:383` [other meaning: registry finalized at boot; Luke to decide] /// Seal the catalog before the first stream is accepted, as `birth`: the
+  - `:351` [remove: no sealing of anything (Luke)] /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
+  - `:359` [remove: no sealing of anything (Luke)] /// process's one sealed catalog (node-rpc-envelope.md §12). The server runs no handler
+  - `:383` [remove: no sealing of anything (Luke)] /// Seal the catalog before the first stream is accepted, as `birth`: the
   - `:386` [remove] pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
-  - `:387` [other meaning: registry finalized at boot; Luke to decide] let catalog = self.catalog.seal()?;
+  - `:387` [remove: no sealing of anything (Luke)] let catalog = self.catalog.seal()?;
   - `:506` [remove] /// One sealed server for the process's one endpoint. The socket a request
-  - `:524` [other meaning: registry finalized at boot; Luke to decide] /// The one sealed effective catalog of this process: what every dispatcher in it serves.
+  - `:524` [remove: no sealing of anything (Luke)] /// The one sealed effective catalog of this process: what every dispatcher in it serves.
 
 ### Tests (147 lines in 94 test functions)
 
