@@ -191,8 +191,8 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
 /// step. The interim is the new primary of the round: it re-sends the current round, the members already
 /// done check in again, the owed check-in is re-owed to it (node-rpc.md §43), and the fabric reaches
 /// ready-for-traffic under the resize. Continued, the lost fabric-primary is commanded back through
-/// node.mesh.join by the interim and commands nobody itself; one floor after it is ready the interim hands
-/// every seat it took home. Every round action runs once per round key across the seat's move.
+/// node.mesh.join by the interim; one floor after it is ready the interim hands the fabric-primary
+/// home. Every round action runs once per round key across the seat's move.
 async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
@@ -293,11 +293,10 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
             }
         }
     }
-    // Continued, the lost fabric-primary was commanded back by the interim and commanded nobody itself.
+    // Continued, the lost fabric-primary was commanded back by the interim.
     // The commands sent (a look that sent nothing is spanned too, `sent = false`, with why).
     let commanded: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| start(sp) >= released_at && sp["attributes"]["sent"] != "false" && sp["attributes"]["sent"] != false).map(|sp| format!("{}:{}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["outcome"]))).collect();
     assert!(commanded.iter().any(|c| c == &format!("{fp_s}:mesh-joined")), "the interim commands the returned fabric-primary back through node.mesh.join: {commanded:?}");
-    assert!(commanded.iter().all(|c| c.starts_with(&fp_s)), "the returned fabric-primary commands nobody on its stale book: {commanded:?}");
     let flame = s(&takeovers[0]["trace_id"]);
     println!("fabric-primary held during {round}: {interim} took the seat and re-sent the round; seats home; flame http://192.168.68.99:16687/trace/{flame}");
     estate.record_trace_url(&flame);

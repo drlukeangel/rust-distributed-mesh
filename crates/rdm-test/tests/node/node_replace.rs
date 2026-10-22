@@ -1486,11 +1486,13 @@ async fn a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_af
     let proof_span = named(&spans, "rdm.node_admin.node.delete.via-exit-proof").into_iter().find(|sp| sp["attributes"]["node"] == fp_name.as_str() && sp["attributes"]["node_id"] == fp["node_id"]).cloned().expect("exit proof span for the hung fabric-primary");
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == fp["node_id"]).collect();
     assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == standby), "the hung birth is recovered once, by {standby}: {recoveries:#?}");
-    // A node-admin of mesh1 lives: the mesh-primary and the fabric-primary move together by the
-    // election, and the backbone rule's take-over never runs (lifecycles/node-primary-update.md: "They
-    // are separated in one case only, no node-admin of that mesh being available to the backbone").
-    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().collect();
-    assert!(takeovers.is_empty(), "no take-over ran with mesh1's standby alive: {takeovers:#?}");
+    // fabric-recovery.md step 2: the successor, the standby of the fabric-primary's own mesh, is
+    // mesh-primary and fabric-primary; "Any other admin that notices tells the successor; the successor
+    // acts only when its own view agrees; repeats answer `AlreadyApplied`": one take-over changed the
+    // primary, the standby's.
+    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| sp["attributes"]["outcome"] == "primary-updated").collect();
+    assert_eq!(takeovers.len(), 1, "one take-over changed the primary: {takeovers:#?}");
+    assert_eq!(s(&takeovers[0]["attributes"]["node"]), standby, "{takeovers:#?}");
     eprintln!(
         "Q89 hung fabric-primary cell: {fp_name} (birth {}) superseded by {standby} (seat {}), held_running={} then terminated and recovered at attempt {attempt}: trace {} | TerminateRuntime {:?} | exit_proof {} | new birth {} | seats home {}",
         s(&fp["node_id"]),

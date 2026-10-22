@@ -1,9 +1,9 @@
 //! Q89 (Luke, 2026-10-20): the loss of the fabric-primary is one playbook, whatever stopped it
 //! (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives"; elections §4.3, §5).
 //! Its seats move at the staleness floor to its own mesh's standby, who publishes the mesh's aggregate
-//! again; the lost fabric-primary, heard again, is commanded back through node.mesh.join by the interim
-//! and commands nobody itself; one floor after the node at its path.name is Ready the interim hands
-//! every seat the row took back to it. The interim holds the seats, never the storage.
+//! again; the lost fabric-primary, heard again, is commanded back through node.mesh.join by the interim;
+//! one floor after the node at its path.name is Ready the interim hands both primaries back to it. The
+//! interim holds the primaries, never the storage.
 use rdm_client::NodeStatus;
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;

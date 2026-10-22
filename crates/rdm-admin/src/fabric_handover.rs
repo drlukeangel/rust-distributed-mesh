@@ -722,6 +722,11 @@ impl HandoverDoor {
         };
         let proof = format!("takeover {{ revision: {t} }}");
         let exit = self.records.put_exit(&node, None, &proof).await;
+        // The view the row's writer is judged on names the lost birth gone from here on: its mesh has no
+        // live primary, and the fabric-primary writes its rows (node-mesh-join.md step 10).
+        if exit.is_ok() {
+            (self.project_view)().await;
+        }
         let deleted = match (&exit, self.records.rows.get()) {
             (Ok(_), Some(rows)) => rows.deleted(&node, &format!("takeover:{t}")).await.map_err(|e| e.to_string()),
             (Ok(_), None) => Err("this admin holds no node-row writer yet".into()),
