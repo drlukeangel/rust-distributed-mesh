@@ -236,7 +236,7 @@ impl FileRecords {
         }
     }
 
-    /// [`Self::read`] of a key one of several formats may hold (a lane's fact or its seal): the
+    /// [`Self::read`] of a key one of several formats may hold: the
     /// format the row was written in and its record, or `None` when none was ever written. A row in a
     /// format outside `formats` is refused by name, never read as no row.
     pub async fn read_tagged(&self, key: &str, formats: &[&str]) -> Result<Option<(String, serde_json::Value)>, StorageError> {

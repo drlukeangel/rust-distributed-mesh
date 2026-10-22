@@ -157,9 +157,7 @@ after, the operation, and the exact birth that wrote it), written at the next `T
 folded every earlier move, whether one seat or both move. Every reader folds the rows in key order and
 ignores a row that does not follow the fold (Q109). The row writer writes it: the holder for the `node-admin`
 cohort, the mesh-primary for every other. An outside successor of the fabric seat reads it there, and the
-leadership view is folded from the seat moves. After the row the writer seals the Build lane of each seat
-it moved at the revision it moved from (`lane-seal/1`); the successor appends to that lane only once the
-seal stands, and writes the seal itself when the writer was lost before it.
+leadership view is folded from the seat moves.
 
 **Both seats on one holder:** when the mesh-seat successor is in the same mesh (search step 1), the one row
 commits both seats to the successor at their next revisions, which makes it mesh-primary and

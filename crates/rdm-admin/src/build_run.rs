@@ -277,9 +277,6 @@ impl BuildStateAdapter for FramedBuilds {
     async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
         self.inner.in_flight_live(held).await
     }
-    async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
-        self.inner.seal_moved(moved, by).await
-    }
     async fn adopt_claim(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<(), BuildStateError> {
         self.inner.adopt_claim(claim).await
     }
@@ -389,9 +386,6 @@ impl BuildStateAdapter for LaneBuilds {
     }
     async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
         self.inner.in_flight_live(held).await
-    }
-    async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
-        self.inner.seal_moved(moved, by).await
     }
     /// A drift attempt's claimant is its executor, the mesh's own primary (R-BI7 caveat 2): an adopted
     /// claim that names none names it.

@@ -272,8 +272,6 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.reject.via-in-flight-unreleased` | `crates/rdm-admin/src/build_drive.rs` | 892 |
 | `rdm.node_admin.build.reject.via-in-flight-unreleased` | `crates/rdm-admin/src/build_run.rs` | 810 |
 | `rdm.node_admin.build.reject.via-invalid-intent` | `crates/rdm-admin/src/control_plane.rs` | 995 |
-| `rdm.node_admin.build.reject.via-lane-unsealed` | `crates/rdm-admin/src/fabric_handover.rs` | 891 |
-| `rdm.node_admin.build.reject.via-lane-unsealed` | `crates/rdm-admin/src/fabric_handover.rs` | 1488 |
 | `rdm.node_admin.build.reject.via-malformed-build-id` | `crates/rdm-admin/src/build_claim.rs` | 256 |
 | `rdm.node_admin.build.reject.via-malformed-build-id` | `crates/rdm-admin/src/build_facts_read.rs` | 59 |
 | `rdm.node_admin.build.reject.via-mesh-id-unknown` | `crates/rdm-admin/src/accepted.rs` | 708 |
@@ -293,7 +291,6 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.reject.via-recipe-unplannable` | `crates/rdm-admin/src/admin/reconcile.rs` | 635 |
 | `rdm.node_admin.build.reject.via-recovery-already-applied` | `crates/rdm-admin/src/control_plane.rs` | 721 |
 | `rdm.node_admin.build.reject.via-stale-claim` | `crates/rdm-admin/src/build_run.rs` | 635 |
-| `rdm.node_admin.build.reject.via-stale-seat` | `crates/rdm-admin/src/build_state.rs` | 2873 |
 | `rdm.node_admin.build.reject.via-stopped-on-request` | `crates/rdm-admin/src/admin/reconcile.rs` | 471 |
 | `rdm.node_admin.build.reject.via-terminate-receipts-unreadable` | `crates/rdm-admin/src/admin/recovery.rs` | 419 |
 | `rdm.node_admin.build.reject.via-terminate-refused` | `crates/rdm-admin/src/admin/recovery.rs` | 404 |
@@ -323,7 +320,6 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-in-flight-void` | `crates/rdm-admin/src/build_state.rs` | 2834 |
 | `rdm.node_admin.build.update.via-incumbent-facts` | `crates/rdm-admin/src/build_op.rs` | 340 |
 | `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 2553 |
-| `rdm.node_admin.build.update.via-lane-sealed` | `crates/rdm-admin/src/build_state.rs` | 2760 |
 | `rdm.node_admin.build.update.via-neighbor-up` | `crates/rdm-admin/src/fabric_builds.rs` | 392 |
 | `rdm.node_admin.build.update.via-node-recovery` | `crates/rdm-admin/src/admin/recovery.rs` | 756 |
 | `rdm.node_admin.build.update.via-node-rpc` | `crates/rdm-admin/src/build_op.rs` | 134 |

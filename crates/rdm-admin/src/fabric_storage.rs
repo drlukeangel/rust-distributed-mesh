@@ -703,22 +703,6 @@ impl crate::record_store::HeldStore for MoveStore {
     }
 }
 
-/// The seals a birth `by` owes on a Build lane before it appends under a revision (Q35): for every
-/// committed move of the lane's seat from an earlier revision, that revision's seal naming the move.
-pub fn seals_owed(storage: std::sync::Arc<dyn FabricStorage>, by: rdm_core::handover::HandoverBirth) -> crate::build_state::SealsOwed {
-    std::sync::Arc::new(move |lane: crate::build_state::LaneId, below: u64| {
-        let (storage, by) = (storage.clone(), by.clone());
-        Box::pin(async move {
-            let seat = match &lane {
-                crate::build_state::LaneId::Fabric => rdm_core::seat::transfer::Seat::FabricPrimary,
-                crate::build_state::LaneId::Mesh(mesh) => rdm_core::seat::transfer::Seat::MeshPrimary { mesh: mesh.clone() },
-            };
-            let moves = crate::fabric_storage::folded_moves(&*storage).await.map_err(|e| format!("fabric.storage, the fabric's seat moves could not be read for the seals of {}: {e}", lane.name()))?;
-            Ok(moves.iter().flat_map(|m| m.row.seats.iter().filter(|s| s.seat == seat && s.from_revision < below).map(|s| crate::build_state::LaneSeal { revision: s.from_revision, sealed_by: m.t, by: by.clone() }).collect::<Vec<_>>()).collect())
-        })
-    })
-}
-
 #[cfg(feature = "file-backend")]
 /// The key of the seat move at `t`: 20-digit zero-padded, so a listing sorts in order.
 /// A seat move's key: its `t`, then its writer's exact birth, so no writer's row replaces another's

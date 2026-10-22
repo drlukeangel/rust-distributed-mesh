@@ -276,9 +276,6 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
     async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         self.inner.claim_attempt(c).await
     }
-    async fn seal_moved(&self, moved: &rdm_admin::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
-        self.inner.seal_moved(moved, by).await
-    }
     async fn in_flight_live(&self, held: &rdm_admin::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
         self.inner.in_flight_live(held).await
     }

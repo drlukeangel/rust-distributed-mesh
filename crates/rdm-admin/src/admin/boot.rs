@@ -884,7 +884,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             crate::build_state::LaneId::Mesh(m) => crate::seat_watch::lane_seat(incumbency.meshes.get(m)),
                         }
                     });
-                    journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions, seals: crate::fabric_storage::seals_owed(fabric_storage.clone(), rdm_core::handover::HandoverBirth { mesh: own_mesh.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) });
+                    journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions });
                 }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
                 // seat change.

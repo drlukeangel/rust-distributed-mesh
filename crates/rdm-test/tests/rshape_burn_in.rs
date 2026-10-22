@@ -6774,7 +6774,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
         let b = build_attempt(&f.estate, &st, &formation).await;
         // The restart moves the carrier's seat to the second gateway first, and the committed seat move
-        // seals its attempt's revision: the stop and start may complete under the next attempt.
+        // moves its attempt's revision: the stop and start may complete under the next attempt.
         (b["state"] == "complete" && b["attempt"].as_u64().is_some_and(|x| x >= attempt_c)).then_some(n)
     })
     .await;

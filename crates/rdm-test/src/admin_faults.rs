@@ -535,9 +535,6 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn in_flight_live(&self, held: &rdm_admin::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
         self.inner.in_flight_live(held).await
     }
-    async fn seal_moved(&self, moved: &rdm_admin::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
-        self.inner.seal_moved(moved, by).await
-    }
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
         self.inner.adopt_claim(claim).await
     }

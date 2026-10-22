@@ -939,13 +939,6 @@ impl HandoverDoor {
             book.take_together(&op, &seats);
             moved
         };
-        // The holder, which committed the move, seals the Build lanes of the seats it moved (Q35):
-        // nothing of its revision commits past the seal. A seal not written is completed by the
-        // successor's next fold before it appends.
-        if let Err(e) = self.builds.seal_moved(&moved, &me).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-lane-unsealed", node = %me_name, operation, t = moved.t, error = %e)
-                .in_scope(|| tracing::info!("the moved seats' Build lanes could not be sealed here: the successor's next fold seals them before it appends"));
-        }
         (self.cut_off_writes)(WriteCutOff::Committed { reason, mesh_seat, fabric_seat }).await;
         tracing::info_span!(
             "rdm.node_admin.seat.update.via-seat-row-written",
@@ -1464,8 +1457,8 @@ impl HandoverDoor {
     /// and its exact runtime uninspectable past the hold proposes it (`proposer`; `None`: this admin
     /// found it itself). This admin writes the takeover's seat move once, when its own view names it
     /// the winner the backbone rule seats with `lost`'s mesh excluded (§4.3): the fabric seat from
-    /// `lost` at `expected` to itself at the next revision, kind `takeover`. Then it seals the fabric
-    /// lane at `expected`, takes the record and announces it. A repeat for the same takeover and
+    /// `lost` at `expected` to itself at the next revision, kind `takeover`. Then it takes the record
+    /// and announces it. A repeat for the same takeover and
     /// successor answers `AlreadyApplied`; before the initial fabric first reaches ready-for-traffic the
     /// takeover is refused `fabric-not-ready`, as every seat move is (R-PB1,
     /// [`Self::refused_before_first_ready`]); a proposal its view or the fold refuses is refused, naming
@@ -1570,8 +1563,7 @@ impl HandoverDoor {
                 None => true,
             };
         let row = crate::fabric_storage::SeatMoveRow { seats, cause: crate::fabric_storage::MoveCause::Takeover, by: me.clone() };
-        // The fence: the takeover's row, then the seal of the lost authority's revision. Nothing of
-        // the lost authority commits past either, and recovery begins only once both stand.
+        // The takeover's row: recovery begins only once it stands.
         let moved = {
             let _decisions = self.decisions.clone().lock_owned().await;
             match crate::fabric_storage::commit_seat_move(&*self.storage, &row).await {
@@ -1589,10 +1581,6 @@ impl HandoverDoor {
         };
         *self.held_takeover.lock().unwrap() = None;
         tracing::Span::current().record("t", moved.t);
-        if let Err(e) = self.builds.seal_moved(&moved, me).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-lane-unsealed", node = %me_name, operation = "takeover", t = moved.t, error = %e)
-                .in_scope(|| tracing::info!("the lost authority's Build lane could not be sealed here: this admin's next append seals it first"));
-        }
         let record = rdm_core::SeatHolder { mesh: me.mesh.clone(), node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), revision: expected + 1 };
         book.take(Seat::FabricPrimary, &record);
         if let Some(h) = &mesh_seat {
@@ -1613,8 +1601,8 @@ impl HandoverDoor {
     /// The lost birth a committed takeover at seat move `t` superseded (i144 Q51): its exit-proof row
     /// written `takeover { revision: t }`, the proof kind every projection reads as gone, and its row at
     /// its `path.name` written `Deleted` (record, config and tags kept), releasing the name its mesh's
-    /// re-created node-admin takes. Its data dir is not touched: only its exit, proven once it returns
-    /// and meets the seal, makes that dir reusable (node-recovery.md `R-FM2`). Each write that cannot be
+    /// re-created node-admin takes. Its data dir is not touched: only its exit, proven once it returns,
+    /// makes that dir reusable (node-recovery.md `R-FM2`). Each write that cannot be
     /// made is named on its own span; the re-creation's claim then meets the name still held.
     async fn release_lost_admin(&self, me_name: &PathName, lost: &HandoverBirth, t: u64) {
         let view = self.topology.read().await.clone();

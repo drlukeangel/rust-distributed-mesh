@@ -6,7 +6,7 @@ Fabric state-sync is the fabric state in which the application does its day-0 an
 work, handed over and answered through the [`sync_state`](../fabric-node-hooks.md#sync_state)
 hook. RDM writes none of its own records during state-sync; they wait in the scratchpad for
 [state-commit](fabric-state-commit.md), except a node's declared state acknowledged as Applied and
-the Build facts (each accepted Build, attempt claim, receipt and lane seal), which are written to the
+the Build facts (each accepted Build, attempt claim and receipt), which are written to the
 shared store root when they are committed ([build.md §5.2](../build.md#52-rafka-adapter)). Rafka's application writes establish the system
 org and seed; those writes are not RDM's fabric-record publication. Every fabric runs
 day 0, by script or by attaching its saved WAL image. State-sync passes through

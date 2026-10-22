@@ -2575,7 +2575,7 @@ async fn a_hand_back_committed_with_its_answer_lost_is_recognized_on_the_next_pa
 /// hears the takeover. Its drift pass, one floor after it is Ready, opens no hand-back attempt: only
 /// the holder the committed seat move names owes the hand-back. What must NOT happen: the lost birth
 /// opening an attempt to hand the seat to itself (the container cell at a7ccadb3: mesh1.admin.1
-/// opened six such attempts, each refused by its sealed fabric lane).
+/// opened six such attempts).
 #[tokio::test]
 async fn the_lost_fabric_primary_whose_view_still_names_it_the_holder_opens_no_hand_back() {
     let e = estate().await;
