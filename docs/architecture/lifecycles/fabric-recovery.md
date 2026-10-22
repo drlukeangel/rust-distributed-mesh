@@ -26,8 +26,12 @@ workflow re-creates that mesh's node-admin. Once the node at that path.name has 
 for one staleness floor and is its mesh's mesh-primary, it is the fabric-primary by the standing rule
 ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)) and the workflow completes.
 No node-admin takes the fabric-primary and keeps it; nothing records who it was, because nothing
-changed it. If the executor is lost, the next lowest ReadyForTraffic mesh-primary resumes the attempt
-from the Build, as any attempt is resumed.
+changed it. The attempt names what it recovers, the lost node-admin's path.name and exact birth, as
+every recovery attempt does ([node recovery](node-recovery.md)); its executor writes this attempt's
+Build records while the fabric-primary is unavailable, the one case in which a node-admin other than
+the fabric-primary writes a Build record ([build.md §5.3](../build.md#53-node-admin-storage-boundaries)).
+If the executor is lost, the next lowest ReadyForTraffic mesh-primary resumes the attempt from its
+recorded progress, as any attempt is resumed.
 
 Inside the fabric-primary's own mesh nothing of this runs: the mesh-primary and the fabric-primary move
 together, the fabric-primary is the mesh-primary of one mesh, an explicit property of that node-admin
