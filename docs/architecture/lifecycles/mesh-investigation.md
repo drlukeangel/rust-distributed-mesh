@@ -10,7 +10,7 @@ mesh is then dead and never restarted. Remote liveness comes only from direct ba
 own call and connection facts, never forwarded topology
 ([Gossip §3.3](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-snapshots-and-the-top-up),
 [held-member repair](../gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)).
-When the unheard mesh holds the fabric seat, every mesh-primary runs this ladder on it, and its decision step
+When the unheard mesh's mesh-primary is the fabric-primary, every mesh-primary runs this ladder on it, and its decision step
 is the backbone rule of [elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary): the fabric-primary's
 loss is [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)'s sequence.
 
@@ -40,28 +40,31 @@ diagnostic spans that open no node.create.
    [Status contract](../node-rpc-envelope.md#status-op-0x1b-rdm)), stop the investigation.
    Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
    unheard interval.
-5. At 60 s the decision step opens; reaching 60 s proves no death. Probes still outstanding
-   finish first, and any terminal decision about a lost runtime still requires exact provider
-   proof; no silence-only path marks the mesh deleted. A node-admin is created into mesh-x in
+5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+   finish first; no silence-only path marks the mesh deleted. A node-admin is created into mesh-x in
    one of two cases only:
    - **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
-     it cannot reach its own node-admin. No answer from any member in either probe, with no exact
-     provider exit proof, means hold, with backbone refeed continuing. Timeout or unreachable
-     alone grants no node.create. Record the verdict before opening the node.create attempt.
-   - **Fully crashed.** Every node of mesh-x, its node-admins included, has crashed while the
-     fabric is alive. No member answers, so carrier-edge-lost cannot arise. The fabric-primary
-     acts on the provider's exact exit proof, never on silence, and creates mesh-x's node-admin in
-     process (members of any mesh with no mesh-primary run in process at the fabric-primary, per the
+     it cannot reach its own node-admin. Record the verdict before opening the node.create attempt.
+   - **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
+     fabric is alive, so carrier-edge-lost cannot arise. The fabric-primary runs
+     [node investigation](node-investigation.md) on mesh-x's node-admins, and the verdict decides
+     (Q111): reached, that node-admin is commanded back through node.mesh.join; any other verdict,
+     the fabric-primary creates mesh-x's node-admin in process (members of any mesh with no
+     mesh-primary run in process at the fabric-primary, per the
      [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm)), on the same accepted Build and
-     mesh-x's own MeshId, with the node.create step 6 describes. A crash does not end a mesh, so
-     this is never a new mesh.
+     mesh-x's own MeshId, with the node.create step 6 describes, over the inherited data dir when
+     the verdict is `exited` and over a newly allocated one otherwise (R-FM2). When mesh-x's
+     mesh-primary is the fabric-primary, this is the backbone rule: the lowest ReadyForTraffic
+     mesh-primary on the backbone is fabric-primary first ([fabric recovery](fabric-recovery.md)),
+     then runs this arm. A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
+     comes back after it was re-created is refused at admission and its runtime terminated (Q110).
 6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
    and mesh-x's own MeshId: a node-admin joining a live mesh. The node.create carries mesh-x's
    MeshId, a seed and the mesh-primary launch mode, and the node-admin never mints a MeshId. It joins
    through its maker and reads topology as [a node-admin joins the live mesh](#a-node-admin-joins-the-live-mesh)
    states. At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded)
-   are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the fully crashed arm on
-   exact provider exit proof, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
+   are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the no-member-answers arm on
+   its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
    Probing itself sends no FabricStatus or MeshStatus.
 7. The joined node-admin, as mesh-x's successor primary, adopts the mesh's held state
    ([fabric authority §7](../fabric-authority.md#7-mesh-primary-takeover-is-hydration-not-transition)) and
@@ -76,7 +79,7 @@ diagnostic spans that open no node.create.
 These probe/verdict spans record investigation evidence. RPC success and the named carried
 outcome come from the [envelope schemas](../node-rpc-envelope.md#schemas); they are not inferred
 from a forwarded topology frame. A node.create of a node-admin is not a terminal receipt for
-an unreachable node-admin. node.delete still requires exact provider exit proof.
+an unreachable node-admin; what became of that node-admin is node investigation's verdict.
 
 | t | Actor | Op/frame | Outcome | Span |
 |---|---|---|---|---|
@@ -85,7 +88,7 @@ an unreachable node-admin. node.delete still requires exact provider exit proof.
 | 30 s | Fabric-primary | no frame | shared mesh silent mark only | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |
 | 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |
 | any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |
-| 60 s | Fabric-primary | the decision step opens (no death proof); outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; unreachable: hold, or node.create in process on exact provider exit proof (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |
+| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |
 | 60 s, carrier-edge-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | the span the code emits today is `rdm.node_admin.mesh.create.via-rebirth` (`mesh`, `at`) |
 | new primary ready-for-traffic | Mesh-x primary; fabric-primary | MeshStatus ready-for-traffic; FabricStatus ready-for-traffic | fabric ready-for-traffic requires [States](states.md#states) completion | readiness evidence and status dissemination below |
 
@@ -117,14 +120,12 @@ sequenceDiagram
         FP->>FP: t=60 s: carrier-edge-lost verdict; mesh-x's MeshId, same Build
         FP->>FP: author FabricStatus degraded
         FP->>P: node.create of a node-admin into mesh-x (a node-admin joining a live mesh)
-        Note over FP,P: node.delete still requires exact runtime exit proof
-    else latest evidence unreachable / no member answers
-        alt provider proves exit (fully crashed mesh)
-            FP->>P: inspect exact runtimes
-            P-->>FP: exact exit proof
+    else no member answers
+        FP->>A: node investigation of mesh-x's node-admins (tickle, then node.runtime.inspect)
+        alt reached
+            FP->>A: node.mesh.join (commanded back)
+        else any other verdict
             FP->>P: node.create of a node-admin in process, same Build, mesh-x's MeshId
-        else no exit proof
-            FP->>FP: hold; backbone refeed continues
         end
     end
 ```
@@ -163,7 +164,7 @@ A pong proves the candidate answered, not that its node-admin is reachable. No r
 carrier-edge-lost and a Current answer are distinct evidence.
 
 No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent mark.
-At the 60 s carrier-edge-lost verdict, or on the fully crashed arm upon exact provider exit proof (both arms, R-DG1),
+At the 60 s carrier-edge-lost verdict, or on the no-member-answers arm's verdict (both arms, R-DG1),
 both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded, and travel as the
 [frame catalog](../gossip.md#31-frame-catalog) states. The joined node-admin, as mesh-primary, later
 authors its MeshStatus readiness after its fresh planned-birth round, which clears the degraded marker on both the
@@ -196,14 +197,14 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    (a 2 s deadline each, at most 8 at once). A reply identifies a live exact birth; no reply
    is "not yet reached", never death. Ready waits for the sweep to finish (RDM's `start_booted` in
    `rafka-node-admin-core`'s admin module and `enter_existing_mesh` in its reenter module).
-   It then becomes ready-for-traffic and takes the mesh-primary seat under the election; as the
+   It then becomes ready-for-traffic and is mesh-primary under the election; as the
    mesh's successor primary it adopts the mesh's held state
    ([fabric authority §7](../fabric-authority.md#7-mesh-primary-takeover-is-hydration-not-transition)).
    A mesh with no live node has no member to ping, so there is no sweep: the node-admin brings
    every member back through [node recovery](node-recovery.md), under the same MeshId.
 5. Every node the sweep did not reach goes to [node recovery](node-recovery.md): the new
-   mesh-primary's tickle, then the provider's exact-exit proof, then recovery only on proof.
-   A missing Ping reply is the trigger, never the proof.
+   mesh-primary's [node investigation](node-investigation.md), then recovery on its verdict.
+   A missing Ping reply is the trigger, never the verdict.
 6. The fabric-primary claims the creation of the missing secondary node-admin on its own log
    and calls the new mesh-primary with `build.attempt.run`; the executor adopts the won claim and
    runs it as an attempt of that same Build. The secondary node-admin calls its maker, obtains
@@ -232,13 +233,13 @@ sequenceDiagram
     L-->>A: reply from live exact birth
     A->>D: one bounded 0x01 Ping
     Note over A,D: no answer hands D to node recovery; it is not death proof
-    A->>D: tickle
-    A->>P: inspect exact runtime
-    P-->>A: exact exit proof or unresolved result
-    alt exit proven
-        A->>FP: one recovery Build: node.delete D, node.create at the same path.name
-    else exit unproven
-        A->>A: keep D unheard; no NodeDeleted
+    A->>D: node investigation: tickle
+    A->>P: node.runtime.inspect
+    P-->>A: verdict
+    alt reached
+        A->>D: node.mesh.join
+    else any other verdict
+        A->>FP: one recovery attempt: node.delete D, node.create at the same path.name
     end
     FP->>FP: claim secondary node-admin attempt of same Build
     FP->>A: build.attempt.run (Won claim)
@@ -253,7 +254,7 @@ sequenceDiagram
 | Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |
 | Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes installed | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |
-| Mesh-primary / provider | node recovery | tickle, exact exit proof, one recovery Build; departure only on proof | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
+| Mesh-primary / provider | node recovery | node investigation, one recovery attempt on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
 | Fabric-primary → new mesh-primary | build.attempt.run | [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm); the fabric-primary claims on its own log, the executor adopts the won claim | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` (op 0x20) |
 
 Call/serve ancestry follows the [runtime spans](../node-rpc-envelope.md#runtime-spans).
@@ -273,14 +274,14 @@ fabric-primary → new mesh-primary           build.attempt.run   (Won claim) cr
 ```
 
 Each body is its envelope schema, linked above. A JoinMismatch or DeploymentAbandoned grants
-no admission. A Ping non-answer hands the member to [node recovery](node-recovery.md); only
-exact provider proof licenses its departure, and no RPC is sent to a birth already proven
-terminal. The joined node-admin reports its status under
+no admission. A Ping non-answer hands the member to [node recovery](node-recovery.md), whose
+investigation decides, and no RPC is sent to a birth it has re-created. The joined node-admin reports
+its status under
 [node status](node-status.md#node-status-declaration). Each node created while the node-admin
 joins publishes its own Digest under the [frame catalog](../gossip.md#31-frame-catalog).
 
 A member deleted while the node-admin joins is node recovery's Build node.delete: its NodeDeleted
-follows the exact provider receipt. It is not a mesh-death event; the mesh keeps its MeshId, and
+follows the step's receipt. It is not a mesh-death event; the mesh keeps its MeshId, and
 topology omission is never death.
 
 
