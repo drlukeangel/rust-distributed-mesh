@@ -199,6 +199,66 @@ These have no life apart from seat. Recommendation: they go with it, in the same
    killed, with nothing kept verifying it. Those lines are rewritten once, in the terms of §3, never in the
    old words.
 
+5. Q110's machinery out (§8): the exit proof as the condition of any primary change or recovery, the
+   hung hold, the held-running and exit rows, and the sticky file whole.
+
 Every landing lands its page lines and code together. Cells that prove the operations stay: a primary
 changes, a mesh keeps repairing, a Build recovers, both storage backends. Cells whose only purpose was a
 removed word's machinery go with it. Nothing removed gets a renamed equivalent.
+
+## 8. Q110: the exit-proof machinery, and the sticky file
+
+Q110 (Luke, 2026-10-21): "node is unreachable, you create a new node; you don't keep verifying forever;
+if it comes back it's denied because its cert doesn't match the node-id that is in the topology anymore,
+then you kill it." Its row still reads "the page text for Luke's yes, then the code": nothing of it has
+landed. What stands in the pages and the code instead is the older rule, that only the provider's proof
+of a runtime's exit lets a primary change or a recovery start, and everything built to produce, hold and
+wait for that proof. All of it goes; the kill stays.
+
+**What goes.**
+
+| Thing | Where | Uses |
+|---|---|---|
+| the exit proof as a condition: `is_proven_gone`, `exit_proof`, `ExitProofs`, `exit_proof_row(s)`, `put_exit_proof`, `nodes_exit_proof`, `exit_row_of_birth` | `election.rs`, `seat_watch.rs`, `seat_revision.rs`, `fabric_handover.rs`, `recovery.rs`, `offline.rs`, `records.rs`, `views.rs` | 41 `exit_proof`, 13 `ExitProofs` |
+| the exit rows: `NodeExitRow`, `put_node_exit(_of)`, the `exits` status directory, format `node-exit/1` | `status_storage.rs:721-746`, `rdm-core/src/status.rs` | 87 `NodeExitRow` |
+| the hung hold (R-FM1): `RDM_HUNG_HOLD_FLOORS`, `held_running`, `NodeHeldRunningRow`, `HeldRunning`, `put/remove_node_held_running_of`, `clear_held_running`, the `held-running` status directory | CLAUDE.md:102, `records.rs`, `status_storage.rs:755`, `rdm-core/src/views.rs:70` | 73 `held_running`, 34 `NodeHeldRunningRow` |
+| the os-stopped verdict as a hold input: `OsStopped`, `NodeOsStoppedRow`, `os_stopped_confirmed`, `put/remove_node_os_stopped_of`, `clear_os_stopped` | `rdm-core/src/views.rs:100`, `status_storage.rs`, `offline.rs` | 118 `OsStopped` |
+| the "proves the exit" role of `TerminateRuntime` and of `node.runtime.inspect`: the wait for the proof after the terminate, the `exit-proven { code }` answer as a precondition | `deployment/pipeline.rs`, `deployment/provider.rs`, `build_drive.rs`, `recovery.rs` | 218 `TerminateRuntime` |
+| the sticky file, whole: `crates/rdm-test/tests/elections/sticky_seat.rs` (747 lines, six cells) | | |
+
+**What stays.** `TerminateRuntime { node_id, incarnation, handle }` as a Build step: it is Q110's "then
+you kill it". `node.runtime.inspect` as node.delete's primitive (an `os-stopped` runtime skips the stop by
+name). R-FM2, the data-dir-lost recovery (`RDM_DATA_DIR_GONE_FLOORS`), which is about an absent data dir,
+not about proof. The provider's exit code where a Build step records what it saw, as a plain fact.
+
+**Pages.** The elections page lines 25, 92, 115, 123, 157, 158, 159, 171, 224, 237 and 256;
+node-runtime-inspect.md ("It is the only thing in the design that proves a runtime is gone", 15 lines);
+node-recovery.md (14 lines: the hold, the terminate "which proves the exit", `held-running`);
+mesh-investigation.md (12 lines); deployment-provider.md (7); states.md, node-primary-update.md,
+mesh-delete.md (5 each); fabric-recovery.md (4); fabric-delete.md (3); node-identity-and-state.md,
+node-rpc-envelope.md, gossip.md, fabric-certs.md (2 each); node-delete.md (1). CLAUDE.md line 102.
+Under Q110 a primary changes in two ways only: it hands over itself by `node.primary.update`, or it is
+unheard past the staleness floor and the lowest Ready node-admin of its mesh takes over and re-creates it
+with a new node id (Q89 says this for the fabric-primary already). An old birth that comes back is refused
+at admission by its cert (Q106's `superseded-birth`), then terminated. Nothing holds, nothing verifies.
+
+**The sticky file's six cells, and what becomes of each.**
+
+| Cell | Proves today | Under the removal |
+|---|---|---|
+| `a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_mesh` | Q89: the mesh's lowest Ready admin takes over | kept as a proof, written again under a name in the terms of §3; the file does not move |
+| `a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone` | a primary change is published across the backbone | same |
+| `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` | the cut-off view and the hung hold | goes with landings 3 and 5 |
+| `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | the decision step stays a proof; "gets it back" is the cut-off view's healing window and goes |
+| `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof, written again in the terms of §3 |
+| `a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_decided_after` | the Build lane's in-flight claim against the seat row | goes with landing 2 |
+
+The two cells of the cut-off view and the one of the in-flight claim go with their machinery. The three
+proofs that remain are proofs of operations (a primary takes over, a primary change is published, a
+hand-over writes one row first) and are written as new cells in a file named by the operation, not by
+"sticky", with no line carried over from this file.
+
+**Open from Q110's row, for Luke:** in RDM standalone the stores are one shared directory, so an old
+node that comes back could write files there before its first connection is refused and it is terminated.
+Under "one writer per item" its writes land at its own birth's keys and every reader folds them away;
+no machinery is proposed for it until telemetry shows a run where it matters.
