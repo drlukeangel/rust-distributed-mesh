@@ -106,7 +106,7 @@ pub async fn run(role: Role, types: &[&str]) -> Result<()> {
 #[cfg(feature = "file-backend")]
 /// [`run`] for a product with a hook before Ready: `before_ready` carries its
 /// `before_ready` hook, and `serve_app` adds the product's own ops to the catalog before
-/// it seals. A hook that fails after the node came up Pending ends the process by name.
+/// it is built. A hook that fails after the node came up Pending ends the process by name.
 pub async fn run_with(
     role: Role,
     types: &[&str],

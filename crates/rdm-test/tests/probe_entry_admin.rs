@@ -56,7 +56,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
         let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
             .carry::<rdm_test::proof_store::ProofStore>()
-            .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
+            .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

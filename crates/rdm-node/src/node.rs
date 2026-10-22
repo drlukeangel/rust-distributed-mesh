@@ -312,7 +312,7 @@ pub async fn wait_for_signal(binary: &str) {
 
 #[cfg(feature = "file-backend")]
 /// [`start`], handing `register` the process's one client too (a product family that calls out,
-/// or carries for others, holds it before the server seals).
+/// or carries for others, holds it before the server is built).
 pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rdm_transport::LiveNodeResolver>, Arc<rdm_transport::NodeRpcClient>) -> ServerBuilder) -> Result<RunningNode> {
     start_with_seams(launch, |b, s| register(b, s.resolver, s.client)).await
 }
@@ -430,7 +430,7 @@ async fn start_booted(
     let bound_addr = ep0.bound_sockets().into_iter().find(|a| a.is_ipv4()).ok_or_else(|| anyhow!("the endpoint bound at {} holds no IPv4 socket", launch.bind_addr))?;
     step.record("bound", tracing::field::display(bound_addr));
     drop(step);
-    // The process's one client, made before the server seals: the server carries the proof
+    // The process's one client, made before the server is built: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
     // This node's own connections: hydrated from its connections storage (the file backend's
     // `connections/<its path.name>/` of the fabric's store root, R14), then kept by what its client
@@ -502,15 +502,15 @@ async fn start_booted(
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node = %launch.name);
     // Every connection this node accepts from a live peer is a recovery trigger for its own dial
     // toward that birth, never a Direct entry (R-CN1).
     let server = serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone())
         .carry::<rdm_core::status::Status>()
         .with_ready_gate(ready.clone())
         .with_delivery(delivery.clone())
-        .seal(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
-        .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
+        .build(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
+        .map_err(|e| anyhow!("protocol catalog refused to build: {e:?}"))?;
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node = %launch.name);
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());

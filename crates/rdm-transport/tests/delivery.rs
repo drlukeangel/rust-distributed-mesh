@@ -296,7 +296,7 @@ async fn served_on(me: Birth, key: SecretKey, ep: iroh::Endpoint, build: impl Fn
             }
         }
     });
-    let server = build(builder).with_delivery(delivery.clone()).seal(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
+    let server = build(builder).with_delivery(delivery.clone()).build(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
@@ -939,7 +939,7 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
         resolver.insert(target.node.clone());
         let delivery = Delivery::with_pacing(b.clone(), pacing());
         let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone()));
-        let server = ServerBuilder::new().ledger(ledger()).carry::<Command>().serve_forward(client).with_delivery(delivery).seal(ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }).unwrap();
+        let server = ServerBuilder::new().ledger(ledger()).carry::<Command>().serve_forward(client).with_delivery(delivery).build(ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }).unwrap();
         let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         carriers.push((router, ResolvedNode { node_id: b.node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.incarnation }));
     }
@@ -1005,7 +1005,7 @@ async fn a_connections_deleting_endpoint_still_receives_an_owed_response() {
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let client = NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone());
-    let server = ServerBuilder::new().ledger(ledger()).with_delivery(delivery.clone()).seal(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
+    let server = ServerBuilder::new().ledger(ledger()).with_delivery(delivery.clone()).build(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     server.begin_connections_delete();
     let mut r = r;

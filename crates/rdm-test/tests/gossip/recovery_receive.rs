@@ -48,7 +48,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
         let server_membership=Membership::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![], &[]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());
-        let rpc=rdm_node::topology_read::serve(ServerBuilder::new(),slot.clone()).seal(ServedBirth{node_id:own.node.node_id.to_string(),incarnation:own.node.incarnation.to_string()}).unwrap();
+        let rpc=rdm_node::topology_read::serve(ServerBuilder::new(),slot.clone()).build(ServedBirth{node_id:own.node.node_id.to_string(),incarnation:own.node.incarnation.to_string()}).unwrap();
         let _server_router=iroh::protocol::Router::builder(server_ep.clone()).accept(iroh_gossip::ALPN,server_gossip.clone()).accept(rdm_transport::ALPN,rpc).spawn();
         let (receiver_ep,receiver_gossip)=endpoint().await;
         let _receiver_router=iroh::protocol::Router::builder(receiver_ep.clone()).accept(iroh_gossip::ALPN,receiver_gossip.clone()).spawn();

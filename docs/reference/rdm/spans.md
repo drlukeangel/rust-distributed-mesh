@@ -144,7 +144,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.node.create.via-accept-loop-started` | `crates/rdm-node/src/node.rs` | 513 |
 | `rdm.mesh.node.create.via-boot` | `crates/rdm-admin/src/admin/boot.rs` | 245 |
 | `rdm.mesh.node.create.via-boot` | `crates/rdm-node/src/node.rs` | 365 |
-| `rdm.mesh.node.create.via-catalog-sealed` | `crates/rdm-node/src/node.rs` | 491 |
+| `rdm.mesh.node.create.via-catalog-built` | `crates/rdm-node/src/node.rs` | 491 |
 | `rdm.mesh.node.create.via-deployment` | `crates/rdm-admin/src/entry.rs` | 43 |
 | `rdm.mesh.node.create.via-deployment` | `crates/rdm-node/src/lib.rs` | 146 |
 | `rdm.mesh.node.create.via-deployment` | `crates/rdm-test/src/bin/rafka_rpc_node.rs` | 26 |

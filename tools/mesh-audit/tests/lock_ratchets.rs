@@ -215,43 +215,43 @@ fn typed_protocol_evidence_fails_untyped_held_evidence() {
 }
 
 #[test]
-fn status_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
+fn status_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-core/src/status.rs", "const REPLY_VARIANTS: u32 = 55;", "const REPLY_VARIANTS: u32 = 56;");
-    only(check(t.root()), Ratchet::StatusResealIsAtomic);
+    only(check(t.root()), Ratchet::StatusWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/status_wire.rs");
-    only(check(f.root()), Ratchet::StatusResealIsAtomic);
+    only(check(f.root()), Ratchet::StatusWireIsAtomic);
 }
 
 #[test]
-fn forward_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
+fn forward_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-core/src/forward.rs", "const REPLY_VARIANTS: u32 = 14;", "const REPLY_VARIANTS: u32 = 15;");
-    only(check(t.root()), Ratchet::ForwardResealIsAtomic);
+    only(check(t.root()), Ratchet::ForwardWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/forward_wire.rs");
-    only(check(f.root()), Ratchet::ForwardResealIsAtomic);
+    only(check(f.root()), Ratchet::ForwardWireIsAtomic);
 }
 
 #[test]
-fn node_command_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
+fn node_command_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 17;", "const REPLY_VARIANTS: u32 = 18;");
-    only(check(t.root()), Ratchet::NodeCommandResealIsAtomic);
+    only(check(t.root()), Ratchet::NodeCommandWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/node_command_wire.rs");
-    only(check(f.root()), Ratchet::NodeCommandResealIsAtomic);
+    only(check(f.root()), Ratchet::NodeCommandWireIsAtomic);
 }
 
 #[test]
-fn transport_header_reseal_is_atomic_fails_a_moved_golden_or_a_moved_bound() {
+fn transport_header_wire_is_atomic_fails_a_moved_golden_or_a_moved_bound() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-core/src/framing.rs", "(47, 88, 37)", "(47, 88, 38)");
-    only(check(t.root()), Ratchet::TransportHeaderResealIsAtomic);
+    only(check(t.root()), Ratchet::TransportHeaderWireIsAtomic);
     let g = Planted::of_tree();
     g.edit("crates/rdm-core/src/framing.rs", r#"format!("3901{BIRTH}0201{BIRTH}0100")"#, r#"format!("3901{BIRTH}0201{BIRTH}0101")"#);
-    only(check(g.root()), Ratchet::TransportHeaderResealIsAtomic);
+    only(check(g.root()), Ratchet::TransportHeaderWireIsAtomic);
 }
 
 #[test]
@@ -451,44 +451,44 @@ fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_doo
 }
 
 #[test]
-fn build_reseal_refuses_a_moved_position_or_a_lost_golden() {
+fn build_wire_refuses_a_moved_position_or_a_lost_golden() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-core/src/build.rs", "const REPLY_VARIANTS: u32 = 26;", "const REPLY_VARIANTS: u32 = 27;");
-    only(check(t.root()), Ratchet::BuildResealIsAtomic);
+    only(check(t.root()), Ratchet::BuildWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/build_wire.rs");
-    only(check(f.root()), Ratchet::BuildResealIsAtomic);
+    only(check(f.root()), Ratchet::BuildWireIsAtomic);
 }
 
 #[test]
-fn store_layout_reseal_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
+fn store_layout_wire_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-admin/src/fabric_storage.rs", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/2\";");
-    only(check(t.root()), Ratchet::StoreLayoutResealIsAtomic);
+    only(check(t.root()), Ratchet::StoreLayoutWireIsAtomic);
     let k = Planted::of_tree();
     k.edit("crates/rdm-admin/src/build_state.rs", "format!(\"{seq:020}\")", "format!(\"{seq:016}\")");
-    only(check(k.root()), Ratchet::StoreLayoutResealIsAtomic);
+    only(check(k.root()), Ratchet::StoreLayoutWireIsAtomic);
     let f = Planted::of_tree();
     f.edit("crates/rdm-admin/src/build_lanes.rs", "fn the_store_layout_is_frozen_byte_for_byte", "fn changed_store_layout_cell");
-    only(check(f.root()), Ratchet::StoreLayoutResealIsAtomic);
+    only(check(f.root()), Ratchet::StoreLayoutWireIsAtomic);
 }
 
 #[test]
-fn handover_reseal_refuses_a_moved_position_or_a_lost_golden() {
+fn handover_wire_refuses_a_moved_position_or_a_lost_golden() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-core/src/handover.rs", "const REPLY_VARIANTS: u32 = 18;", "const REPLY_VARIANTS: u32 = 19;");
-    only(check(t.root()), Ratchet::PrimaryUpdateResealIsAtomic);
+    only(check(t.root()), Ratchet::PrimaryUpdateWireIsAtomic);
     let f = Planted::of_tree();
     f.edit("crates/rdm-core/tests/handover_wire.rs", "fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "fn changed_failed_primary_update_cell");
-    only(check(f.root()), Ratchet::PrimaryUpdateResealIsAtomic);
+    only(check(f.root()), Ratchet::PrimaryUpdateWireIsAtomic);
 }
 
 #[test]
-fn gossip_envelope_reseal_is_atomic_holds_context_goldens_and_receive_controls() {
+fn gossip_envelope_wire_is_atomic_holds_context_goldens_and_receive_controls() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-transport/src/envelope.rs", "pub traceparent: Option<String>", "pub lost_parent: Option<String>");
-    only(check(t.root()), Ratchet::GossipEnvelopeResealIsAtomic);
+    only(check(t.root()), Ratchet::GossipEnvelopeWireIsAtomic);
     let g = Planted::of_tree();
-    g.edit("crates/rdm-transport/tests/digest_frames_wire.rs", "fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling", "fn missing_traced_golden");
-    only(check(g.root()), Ratchet::GossipEnvelopeResealIsAtomic);
+    g.edit("crates/rdm-transport/tests/digest_frames_wire.rs", "fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn missing_traced_golden");
+    only(check(g.root()), Ratchet::GossipEnvelopeWireIsAtomic);
 }

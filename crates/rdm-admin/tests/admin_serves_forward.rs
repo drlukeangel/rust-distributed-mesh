@@ -2,7 +2,7 @@
 //! one-hop carried execution is core (the core families are exactly Ping and Forward), so a peer
 //! that picks an admin as its carrier gets the inner call made and answered, never `Unserved`.
 //!
-//! The server under test is `admin::rpc_server`, the composition `admin::start` seals and
+//! The server under test is `admin::rpc_server`, the composition `admin::start` builds and
 //! serves; the carried target is a real Node RPC server on loopback.
 
 use iroh::protocol::Router;
@@ -66,7 +66,7 @@ async fn rig() -> Rig {
                 Ok(StatusReply::Current { node_id, incarnation, state: NodeState::ReadyForTraffic })
             }
         })
-        .seal(served(&target))
+        .build(served(&target))
         .unwrap();
     let target_ep = rdm_transport::endpoint::bind(target.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let target_addr = target_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -87,7 +87,7 @@ async fn rig() -> Rig {
     connections.hydrate().await.unwrap();
     let node_rpc = rdm_admin::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone());
     let admin_server = rdm_admin::admin::rpc_server(connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
-        .seal(served(&admin_birth))
+        .build(served(&admin_birth))
         .unwrap();
     let admin_router = Router::builder(admin_ep).accept(rdm_transport::ALPN, admin_server.clone()).spawn();
 

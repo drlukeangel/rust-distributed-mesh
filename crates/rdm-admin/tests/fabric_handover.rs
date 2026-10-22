@@ -352,7 +352,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
             })
     };
     let served = rdm_admin::build_facts_read::serve(rdm_admin::fabric_handover::serve(pinged, slot.clone()), facts_slot.clone());
-    let server = rdm_admin::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
+    let server = rdm_admin::build_op::serve(served, build_slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server.clone()).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
@@ -2674,7 +2674,7 @@ async fn member(fabric: &FabricId, mesh: &str, path: &str, node_id: &str) -> Mem
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: rdm_admin::fabric_handover::MemberSlot = Arc::new(OnceLock::new());
-    let server = rdm_admin::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
+    let server = rdm_admin::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };

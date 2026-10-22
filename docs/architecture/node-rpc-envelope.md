@@ -181,9 +181,9 @@ The ledger is the registry of op codes: one row per op, naming its family, its o
 whether it is live or retired. An op is a family: its request enum's variants are the calls. A
 retired op is reserved forever and never reissued.
 
-The ledger is consulted in exactly one place: the seal, once per process at boot. The core rows
-are built into the contract; a product adds its rows through the server builder. The seal takes
-the ledger and the entries the process serves and builds the sealed catalog, refusing the
+The ledger is consulted in exactly one place: the build, once per process at boot. The core rows
+are built into the contract; a product adds its rows through the server builder. The build takes
+the ledger and the entries the process serves and makes the built catalog, refusing the
 process on any of:
 
 - an op of zero;
@@ -197,7 +197,7 @@ process on any of:
 - a forwardable server-streaming entry;
 - a zero request or reply ceiling.
 
-After the seal the ledger is not read again. The target consults the sealed catalog's served
+After the build the ledger is not read again. The target consults the built catalog's served
 entries: the op is looked up for its request ceiling, and an op with no entry is `421`. The
 ledger decides what a process may serve, the catalog decides what it does serve, and the wire
 sees only the catalog.

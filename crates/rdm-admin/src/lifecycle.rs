@@ -12,7 +12,7 @@
 //!   -> AfterTransition hooks
 //! ```
 //!
-//! Hooks are registered before the registry seals. Each run appends a receipt
+//! Hooks are registered before the registry is built. Each run appends a receipt
 //! keyed by `(transition_id, hook_id)`; a retry of the same transition reuses
 //! every `Complete` receipt instead of re-running the hook. A failed blocking
 //! hook leaves the target in its old state, never pretending it reached the
@@ -208,7 +208,7 @@ impl ReceiptLog for MemoryReceiptLog {
     }
 }
 
-/// Why a hook registry does not seal.
+/// Why a hook registry does not build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
     /// Two hooks share an id.
@@ -226,7 +226,7 @@ impl fmt::Display for RegistryError {
     }
 }
 
-/// The hooks registered before the registry seals.
+/// The hooks registered before the registry is built.
 #[derive(Default)]
 pub struct HookRegistry {
     hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
@@ -244,8 +244,8 @@ impl HookRegistry {
         self
     }
 
-    /// Validate and seal; nothing registers afterwards.
-    pub fn seal(self) -> Result<SealedHooks, Vec<RegistryError>> {
+    /// Validate and build; nothing registers afterwards.
+    pub fn build(self) -> Result<Hooks, Vec<RegistryError>> {
         let mut errors = Vec::new();
         let mut ids = BTreeSet::new();
         for (s, _) in &self.hooks {
@@ -257,20 +257,20 @@ impl HookRegistry {
             }
         }
         if errors.is_empty() {
-            Ok(SealedHooks { hooks: self.hooks })
+            Ok(Hooks { hooks: self.hooks })
         } else {
             Err(errors)
         }
     }
 }
 
-/// The sealed registry. Hook order is deterministic: by phase, then
+/// The built registry. Hook order is deterministic: by phase, then
 /// registration order.
-pub struct SealedHooks {
+pub struct Hooks {
     hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
 }
 
-impl SealedHooks {
+impl Hooks {
     fn for_phase(&self, key: TransitionKey, phase: HookPhase, shape: &ShapeFacts) -> Vec<&(LifecycleHookSpec, Arc<dyn LifecycleHook>)> {
         self.hooks
             .iter()
@@ -328,13 +328,13 @@ impl Transition<'_> {
 
 /// Runs a transition through its hooks, its eligibility check and its commit.
 pub struct LifecycleTransitionPipeline {
-    hooks: SealedHooks,
+    hooks: Hooks,
     receipts: Arc<dyn ReceiptLog>,
 }
 
 impl LifecycleTransitionPipeline {
-    /// A pipeline over the sealed `hooks` that appends its receipts to `receipts`.
-    pub fn new(hooks: SealedHooks, receipts: Arc<dyn ReceiptLog>) -> Self {
+    /// A pipeline over the built `hooks` that appends its receipts to `receipts`.
+    pub fn new(hooks: Hooks, receipts: Arc<dyn ReceiptLog>) -> Self {
         Self { hooks, receipts }
     }
 
@@ -477,7 +477,7 @@ mod tests {
         let hooks = HookRegistry::new()
             .register(spec("control-plane", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("control-plane", &log, 0))
             .register(spec("app-bootstrap", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("app-bootstrap", &log, 1))
-            .seal()
+            .build()
             .unwrap();
         let receipts = Arc::new(MemoryReceiptLog::default());
         let p = LifecycleTransitionPipeline::new(hooks, receipts.clone());
@@ -501,7 +501,7 @@ mod tests {
         let hooks = HookRegistry::new()
             .register(spec("control-plane", READY, HookPhase::AfterEligibilityBeforeCommit, true), first.clone())
             .register(spec("app-bootstrap", READY, HookPhase::AfterEligibilityBeforeCommit, true), second.clone())
-            .seal()
+            .build()
             .unwrap();
         let receipts = Arc::new(MemoryReceiptLog::default());
         let p = LifecycleTransitionPipeline::new(hooks, receipts.clone());
@@ -525,7 +525,7 @@ mod tests {
             .register(spec("commit-2", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre-commit-2", &log, 0))
             .register(spec("commit-1", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre-commit-1", &log, 0))
             .register(spec("elig", READY, HookPhase::BeforeEligibility, true), probe("before-eligibility", &log, 0))
-            .seal()
+            .build()
             .unwrap();
         let shape = ShapeFacts { desired_meshes: 1 };
         let mut order_at_commit = Vec::new();
@@ -551,8 +551,8 @@ mod tests {
         assert_eq!(order_at_commit[0], order_at_commit[1]);
     }
 
-    fn hooks_clone(h: &SealedHooks) -> SealedHooks {
-        SealedHooks { hooks: h.hooks.iter().map(|(s, k)| (s.clone(), k.clone())).collect() }
+    fn hooks_clone(h: &Hooks) -> Hooks {
+        Hooks { hooks: h.hooks.iter().map(|(s, k)| (s.clone(), k.clone())).collect() }
     }
 
     /// CONTRACT: a node's Pending -> ReadyForTraffic transition has one id per birth. A retry of
@@ -574,7 +574,7 @@ mod tests {
         let log = Arc::new(Mutex::new(vec![]));
         let hooks = HookRegistry::new()
             .register(spec("pre", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre", &log, 0))
-            .seal()
+            .build()
             .unwrap();
         let p = LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default()));
         let shape = ShapeFacts { desired_meshes: 2 };
@@ -589,7 +589,7 @@ mod tests {
         let log = Arc::new(Mutex::new(vec![]));
         let hooks = HookRegistry::new()
             .register(spec("advisory", READY, HookPhase::AfterEligibilityBeforeCommit, false), probe("advisory", &log, 5))
-            .seal()
+            .build()
             .unwrap();
         let receipts = Arc::new(MemoryReceiptLog::default());
         let p = LifecycleTransitionPipeline::new(hooks, receipts.clone());
@@ -606,7 +606,7 @@ mod tests {
         let flaky = probe("flaky", &log, 2);
         let mut s = spec("flaky", READY, HookPhase::BeforeEligibility, true);
         s.max_attempts = 3;
-        let p = LifecycleTransitionPipeline::new(HookRegistry::new().register(s, flaky.clone()).seal().unwrap(), Arc::new(MemoryReceiptLog::default()));
+        let p = LifecycleTransitionPipeline::new(HookRegistry::new().register(s, flaky.clone()).build().unwrap(), Arc::new(MemoryReceiptLog::default()));
         let shape = ShapeFacts { desired_meshes: 1 };
         assert_eq!(p.transition(run(READY, &shape), || Ok(()), || ()).await, TransitionResult::Committed);
         assert_eq!(flaky.runs.load(Ordering::SeqCst), 3);
@@ -621,7 +621,7 @@ mod tests {
             .register(spec("a", READY, HookPhase::BeforeEligibility, true), probe("a", &log, 0))
             .register(spec("a", READY, HookPhase::AfterTransition, true), probe("a", &log, 0))
             .register(zero, probe("z", &log, 0))
-            .seal()
+            .build()
             .err()
             .unwrap();
         assert_eq!(

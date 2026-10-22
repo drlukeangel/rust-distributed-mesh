@@ -191,7 +191,7 @@ pub(crate) fn provider_image(p: ProviderKind) -> rdm_core::binding::ProviderImag
     }
 }
 
-/// The Node RPC server a node-admin serves, before it seals: core (Ping, Forward), then the families the
+/// The Node RPC server a node-admin serves, before it is built: core (Ping, Forward), then the families the
 /// admin owns as an authority (status, build claim, join).
 pub fn rpc_server(
     connections: Arc<crate::connections_writer::ConnectionsWriter>,
@@ -590,7 +590,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
-    // The app's own ops (each behind the gate of its hook), before the catalog seals.
+    // The app's own ops (each behind the gate of its hook), before the catalog is built.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
         None => rpc_builder,
@@ -598,8 +598,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let rpc_server = rpc_builder
         .with_ready_gate(rpc_ready.clone())
         .with_delivery(delivery)
-        .seal(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
-        .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
+        .build(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .map_err(|e| format!("the admin's protocol catalog refused to build: {e:?}"))?;
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.add.via-alpn-registered", node = %name, alpns = "node-rpc,gossip");
     let router_builder = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
@@ -1215,7 +1215,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             for (spec, hook) in wiring.hooks.drain(..) {
                                 registry = registry.register(spec, hook);
                             }
-                            let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
+                            let hooks = registry.build().map_err(|e| format!("{e:?}"))?;
                             let handover = Arc::new(crate::fabric_handover::HandoverDoor {
                                 provider: provider_dyn.clone(),
                                 nodes: Some(nodes_storage.clone()),

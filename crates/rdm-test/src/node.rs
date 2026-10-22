@@ -38,7 +38,7 @@ pub async fn start(
 }
 
 /// [`start`], handing `register` the process's one client too (a product family that calls out,
-/// or carries for others, holds it before the server seals).
+/// or carries for others, holds it before the server is built).
 pub async fn start_with_client(
     launch: &Launch,
     register: impl FnOnce(

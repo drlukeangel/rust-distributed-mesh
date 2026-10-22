@@ -16,7 +16,7 @@ use crate::client::CarriedIdentity;
 use crate::delivery::{Acceptance, AckOf, Delivery, FrameOut, FrameReader, ReadEnd, RequestArrival, Settled};
 use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use rdm_core::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, OpOwner};
+use rdm_core::catalog::{CatalogBuilder, CatalogEntry, CatalogError, Catalog, Shape, OpOwner};
 use rdm_core::codes::ResetCode;
 use rdm_core::dispatch::{RequestAssembly, ServerAction};
 use rdm_core::framing::TransportHeader;
@@ -267,7 +267,7 @@ impl ServerStats {
     }
 }
 
-/// Registration happens at birth; `seal` consumes the builder.
+/// Registration happens at birth; `build` consumes the builder.
 #[derive(Default)]
 pub struct ServerBuilder {
     pub(crate) catalog: CatalogBuilder,
@@ -278,7 +278,7 @@ pub struct ServerBuilder {
     ready: Option<Arc<AtomicBool>>,
     /// Forwardable protocols this node carries, op -> max inner reply (node-rpc.md §36.1).
     pub(crate) carried: HashMap<u8, usize>,
-    /// Filled at seal for the forward handler, when this node serves it.
+    /// Filled at build for the forward handler, when this node serves it.
     pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
     /// The accept trigger and the resolver that names an accepted peer, when the process runs
     /// direct recovery (R-CN1).
@@ -348,7 +348,7 @@ impl ServerBuilder {
         self
     }
 
-    /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
+    /// Add the ledger rows that reserve ops for other products; each op is named once in the built
     /// catalog.
     pub fn ledger(mut self, rows: impl IntoIterator<Item = rdm_core::catalog::LedgerEntry>) -> Self {
         self.catalog = self.catalog.ledger(rows);
@@ -356,7 +356,7 @@ impl ServerBuilder {
     }
 
     /// Compose a product's transitional adapter (`CatalogEntry::transitional`) into this
-    /// process's one sealed catalog (node-rpc-envelope.md §12). The server runs no handler
+    /// process's one built catalog (node-rpc-envelope.md §12). The server runs no handler
     /// for it: the product's own dispatcher serves the op on its legacy framing and consults
     /// [`NodeRpcServer::catalog`] to refuse what the catalog does not hold. On this server's
     /// own ALPN the op is unserved (`421`), as any catalogued op without a handler is.
@@ -380,11 +380,11 @@ impl ServerBuilder {
         self
     }
 
-    /// Seal the catalog before the first stream is accepted, as `birth`: the
+    /// Build the catalog before the first stream is accepted, as `birth`: the
     /// exact node and incarnation this process is. A request is dispatched only
     /// when its target names this node and a served op.
-    pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
-        let catalog = self.catalog.seal()?;
+    pub fn build(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<CatalogError>> {
+        let catalog = self.catalog.build()?;
         if let Some(table) = &self.carried_table {
             let _ = table.set(self.carried.clone());
         }
@@ -488,7 +488,7 @@ pub struct ServedBirth {
 }
 
 struct Inner {
-    catalog: SealedCatalog,
+    catalog: Catalog,
     handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
     ready: Option<Arc<AtomicBool>>,
@@ -503,7 +503,7 @@ struct Inner {
     delivery: Delivery,
 }
 
-/// One sealed server for the process's one endpoint. The socket a request
+/// One built server for the process's one endpoint. The socket a request
 /// arrives on names nothing: the request's target does.
 #[derive(Clone)]
 pub struct NodeRpcServer {
@@ -521,8 +521,8 @@ fn code(c: ResetCode) -> VarInt {
 }
 
 impl NodeRpcServer {
-    /// The one sealed effective catalog of this process: what every dispatcher in it serves.
-    pub fn catalog(&self) -> &SealedCatalog {
+    /// The one built effective catalog of this process: what every dispatcher in it serves.
+    pub fn catalog(&self) -> &Catalog {
         &self.inner.catalog
     }
 

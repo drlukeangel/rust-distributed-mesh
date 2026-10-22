@@ -140,7 +140,7 @@ fn members_chunks_are_sized_against_the_complete_message() {
 /// Optional tracing pairs move the complete envelope, never its opaque data or identity.
 /// Hand prefix: ten pairs, traceparent name length 11, value length 55; tracestate name 10.
 #[test]
-fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling() {
+fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     const PARENT: &str = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     const STATE: &str = "rojo=00f067aa0ba902b7";
     let mut d = digest("ready-for-traffic");
@@ -155,7 +155,7 @@ fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling() {
     let Frame::Authored { context, .. } = &mut traced else { unreachable!() };
     context.traceparent = Some(PARENT.into()); context.tracestate = Some(STATE.into());
     assert_eq!(traced.encode(), expected);
-    assert_eq!(expected[0], 10, "the complete metadata count is hand-sealed");
+    assert_eq!(expected[0], 10, "the complete metadata count is written by hand");
     assert!(expected.len() <= rdm_transport::membership::MAX_FRAME);
     assert!(expected.len() > 3900);
     assert_eq!(Frame::decode(&expected).unwrap().encode(), expected);

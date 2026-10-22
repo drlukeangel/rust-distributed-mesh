@@ -327,7 +327,7 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     let slot: BuildSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door);
     let server = rdm_admin::build_op::serve(ServerBuilder::new(), slot)
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

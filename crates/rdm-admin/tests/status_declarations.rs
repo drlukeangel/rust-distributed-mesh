@@ -197,7 +197,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
     let _ = slot.set(authority.clone());
     let withhold = Arc::new(ReplyWithhold::default());
     let server = rdm_admin::status_rpc::serve(ServerBuilder::new().withhold_replies(withhold.clone()), slot)
-        .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().to_string() })
+        .build(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = rdm_transport::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -495,7 +495,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
                 Ok(reply)
             }
         })
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
+        .build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -984,7 +984,7 @@ async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Route
     connections.hydrate().await.unwrap();
     let node_rpc = rdm_admin::node_rpc::ProcessNodeRpc::new(live.clone(), ep.clone());
     let server = rdm_admin::admin::rpc_server(connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
+        .build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     (resolved, Router::builder(ep).accept(rdm_transport::ALPN, server).spawn())
 }
@@ -2335,7 +2335,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
                 }).await.expect("the unrecovered progress is resent on a new stream and acknowledged");
                 Ok(N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: None })
             }
-        }).seal(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: rpc.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        }).build(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: rpc.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
         server_delivery.set(server.delivery().clone()).unwrap_or_else(|_| panic!("one responder"));
         let ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -2413,7 +2413,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
                 d.notified().await;
                 Ok(if start { N::NodeStarted } else { N::NodeStopped })
             }
-        }).seal(ServedBirth { node_id: subject.node_id.to_string(), incarnation: subject.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        }).build(ServedBirth { node_id: subject.node_id.to_string(), incarnation: subject.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
         let ep = rdm_transport::endpoint::bind(births["rpc2"].key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
@@ -2488,7 +2488,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
                 }).await.expect("the unrecovered progress is resent on a new stream and acknowledged");
                 Ok(N::NodeStarted)
             }
-        }).seal(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: rpc.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        }).build(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: rpc.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
         server_delivery.set(server.delivery().clone()).unwrap_or_else(|_| panic!("one responder"));
         let ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -2572,7 +2572,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
                 r.notified().await;
                 Ok(N::NodeStarted)
             }
-        }).seal(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
+        }).build(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
         server_delivery.set(server.delivery().clone()).unwrap_or_else(|_| panic!("one responder"));
         let node_ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = node_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -2685,7 +2685,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
             assert!(matches!(out, RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied)), "the owed stop declaration is applied before the terminal exists");
             Ok(N::NodeStopped)
         }
-    }).seal(ServedBirth { node_id: subject.node.node_id.to_string(), incarnation: subject.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+    }).build(ServedBirth { node_id: subject.node.node_id.to_string(), incarnation: subject.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
     let server_delivery = server.delivery().clone();
     responder.set(server.clone()).unwrap_or_else(|_| panic!("one responder"));
     let ep = rdm_transport::endpoint::bind(subject.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

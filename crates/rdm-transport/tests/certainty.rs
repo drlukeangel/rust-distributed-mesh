@@ -54,7 +54,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
     if let Some(l) = echo_cap {
         b = b.limits(Ping::OP, l);
     }
-    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
+    let server = b.build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
     let stats = server.stats();
     let key = SecretKey::generate();
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

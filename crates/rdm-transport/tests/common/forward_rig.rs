@@ -98,7 +98,7 @@ pub struct Node {
     pub resolved: ResolvedNode,
 }
 
-/// A birth's identity, minted before its server seals.
+/// A birth's identity, minted before its server is built.
 pub fn birth() -> (NodeId, IncarnationId) {
     (NodeId::mint(), IncarnationId::mint())
 }
@@ -175,7 +175,7 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })
         })
-        .seal(served(&target_birth))
+        .build(served(&target_birth))
         .unwrap();
     let target = start(target_server, SecretKey::generate(), "mesh1.rpc.3", target_birth).await;
 
@@ -197,7 +197,7 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
         Some(e) => carrier_builder.serve_forward_with_edges(carrier_client.clone(), e),
         None => carrier_builder.serve_forward(carrier_client.clone()),
     }
-    .seal(served(&carrier_birth))
+    .build(served(&carrier_birth))
     .unwrap();
     let carrier = Node {
         router: Router::builder(carrier_ep).accept(rdm_transport::ALPN, carrier_server.clone()).spawn(),

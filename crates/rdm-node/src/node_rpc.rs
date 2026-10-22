@@ -58,7 +58,7 @@ impl ProcessNodeRpc {
     }
 
     /// The same, on a client made earlier (a server that carries for others holds the
-    /// process's one client before it seals).
+    /// process's one client before it is built).
     pub fn with_client(resolver: Arc<LiveNodeResolver>, client: Arc<NodeRpcClient>, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
         let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
         (Self { resolver, client }, feed)

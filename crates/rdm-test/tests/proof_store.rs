@@ -128,8 +128,8 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
         let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
-            .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
-            .expect("the proof store seals");
+            .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
+            .expect("the proof store is built");
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();

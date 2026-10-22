@@ -1,6 +1,6 @@
 //! The proof product's own Node RPC families, composed per role (i143.e11.s8). A family is the
 //! product's: tagged in the product's own ledger rows, served only by the kinds that own it, and
-//! unserved (`421`) everywhere else in the same sealed catalog.
+//! unserved (`421`) everywhere else in the same built catalog.
 
 use rdm_transport::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};

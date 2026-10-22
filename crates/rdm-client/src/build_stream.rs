@@ -474,7 +474,7 @@ mod tests {
                     Ok(BuildReply::SeatMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
                 }
             })
-            .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+            .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
             .unwrap();
         let key = iroh::SecretKey::generate();
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

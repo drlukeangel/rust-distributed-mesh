@@ -189,7 +189,7 @@ async fn node() -> Node {
                 Ok(PingReply::Pong { payload })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let stats = server.stats();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();

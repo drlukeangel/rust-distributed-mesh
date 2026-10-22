@@ -558,8 +558,8 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         }
     };
     let rpc_server = serve_app(serve_commands(rdm_admin::topology_read::serve(rdm_admin::join::serve(rdm_transport::ServerBuilder::new(), join_slot), topology_slot.clone())))
-        .seal(rdm_transport::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.to_string() })
-        .expect("the admin side's catalog seals");
+        .build(rdm_transport::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.to_string() })
+        .expect("the admin side's catalog is built");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     // The admin side publishes its digest as a real node-admin does on joining: a node addresses a

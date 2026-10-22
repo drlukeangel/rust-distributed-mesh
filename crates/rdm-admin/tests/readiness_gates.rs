@@ -61,7 +61,7 @@ fn pipeline(log: &Arc<Mutex<Vec<&'static str>>>) -> LifecycleTransitionPipeline 
     let hooks = HookRegistry::new()
         .register(spec("every-shape", ShapePredicate::Always), Arc::new(Log("every-shape", log.clone())))
         .register(spec("cross-mesh-only", ShapePredicate::MultiMesh), Arc::new(Log("cross-mesh-only", log.clone())))
-        .seal()
+        .build()
         .unwrap();
     LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default()))
 }

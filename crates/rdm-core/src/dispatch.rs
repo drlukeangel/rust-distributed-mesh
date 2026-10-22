@@ -11,7 +11,7 @@
 //! [`crate::outcome`]; [`replay_verdict`] is the rule that no mutating
 //! `Indeterminate` is silently replayed.
 
-use crate::catalog::SealedCatalog;
+use crate::catalog::Catalog;
 use crate::codes::ResetCode;
 use crate::framing::{parse_request_length, parse_request_target, RequestHead, RequestHeader};
 use crate::outcome::{MalformedKind, RpcOutcome};
@@ -60,7 +60,7 @@ pub enum ServerAction {
 
 /// The request direction, fed by the transport.
 pub struct RequestAssembly<'c> {
-    catalog: &'c SealedCatalog,
+    catalog: &'c Catalog,
     buf: Vec<u8>,
     header: Option<RequestHeader>,
     head: Option<(u8, usize, usize)>,
@@ -75,8 +75,8 @@ impl std::fmt::Debug for RequestAssembly<'_> {
 }
 
 impl<'c> RequestAssembly<'c> {
-    /// The request direction of a server serving what `catalog` seals.
-    pub fn new(catalog: &'c SealedCatalog) -> Self {
+    /// The request direction of a server serving what `catalog` builds.
+    pub fn new(catalog: &'c Catalog) -> Self {
         Self { catalog, buf: Vec::new(), header: None, head: None, done: false, rest: Vec::new() }
     }
 
@@ -196,15 +196,15 @@ mod tests {
     use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished};
     use crate::protocol::{DecodeFailure, NodeProtocol};
 
-    fn catalog() -> SealedCatalog {
-        CatalogBuilder::new().serve(CatalogEntry::canonical::<Ping>(OpOwner::Core, Shape::Unary)).seal().unwrap()
+    fn catalog() -> Catalog {
+        CatalogBuilder::new().serve(CatalogEntry::canonical::<Ping>(OpOwner::Core, Shape::Unary)).build().unwrap()
     }
 
     fn a_request() -> RequestHeader {
         RequestHeader::target(Target { node_id: "n1".into(), op: 0x01 })
     }
 
-    fn assembly(c: &SealedCatalog) -> RequestAssembly<'_> {
+    fn assembly(c: &Catalog) -> RequestAssembly<'_> {
         RequestAssembly::new(c)
     }
 

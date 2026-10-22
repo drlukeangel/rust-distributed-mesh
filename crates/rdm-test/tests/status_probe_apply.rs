@@ -1,4 +1,4 @@
-//! The downward exact-node operations at a live rpc node (the 0x1B reseal): a node-admin probes
+//! The downward exact-node operations at a live rpc node (the 0x1B wire change): a node-admin probes
 //! the exact birth and gets its current state; `node.connections.delete { All }` answers
 //! `node.connections.deleted` with its receipt, and the reserved `Reserved6` is refused by name;
 //! `ApplyNodeState` is refused with the held state; a stale incarnation is refused with the one held; an

@@ -67,7 +67,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let maker_key = iroh::SecretKey::generate();
     let expected = iroh::SecretKey::generate().public();
     let (maker_addr, accepted, out) = rt.block_on(async {
-        let server = ServerBuilder::new().seal(ServedBirth { node_id: NodeId::mint().to_string(), incarnation: IncarnationId::mint().to_string() }).unwrap();
+        let server = ServerBuilder::new().build(ServedBirth { node_id: NodeId::mint().to_string(), incarnation: IncarnationId::mint().to_string() }).unwrap();
         let ep = rdm_transport::endpoint::bind(maker_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let maker_addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let target = NodeId::mint();

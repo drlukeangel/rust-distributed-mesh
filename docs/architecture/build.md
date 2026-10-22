@@ -64,7 +64,7 @@ RDM retains Build compilation/reconciliation and attempts, election and authorit
 executor selection, generic lifecycle eligibility/commit/receipts, readiness roots, recovery,
 drift, exact-runtime adoption/death proof, provider-domain execution and connection mechanics.
 Customer seams supply policy or facts; they MUST NOT substitute a second implementation of
-those algorithms. Hooks are registered before sealing, idempotent and bounded, and report
+those algorithms. Hooks are registered before the registry is built, idempotent and bounded, and report
 failure through the lifecycle receipt path. A hook requesting exact synchronous execution
 of gateway-owned application behavior uses a typed Rafka Op on the exact gateway rather than
 importing the gateway implementation. Durable asynchronous job/event contracts and explicitly
@@ -462,7 +462,7 @@ pub struct Transition<'a> {
 }
 ```
 
-`LifecycleTransitionPipeline` runs a `Transition` through its sealed hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`). `transition_id` is internal to one transition execution and keys its once-only hook receipts; the Status calls do not carry it, and their natural idempotency keys are defined in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm).
+`LifecycleTransitionPipeline` runs a `Transition` through its built hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`). `transition_id` is internal to one transition execution and keys its once-only hook receipts; the Status calls do not carry it, and their natural idempotency keys are defined in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm).
 
 Application work enters a lifecycle only through [Fabric and node hooks](fabric-node-hooks.md). What an Applied reply means beside gossip is [gossip.md §10](gossip.md#10-status-dissemination-versus-status-certainty); what proves a runtime dead is [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
 

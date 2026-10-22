@@ -69,7 +69,7 @@ async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildS
     let slot: build_claim::ClaimSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door.clone());
     let server = build_claim::serve(ServerBuilder::new(), slot)
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
+        .build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

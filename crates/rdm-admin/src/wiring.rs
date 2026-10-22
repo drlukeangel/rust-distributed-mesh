@@ -4,7 +4,7 @@
 //! control storage (`FabricStorage`), the Build state (`BuildStateAdapter`), the deployment
 //! provider, the lifecycle events a retirement publishes, and the lifecycle hook registry. A
 //! [`Wiring`] lets an executable that IS a node-admin (a consumer's own, or a testkit's) wrap each
-//! of them once, and register hooks before the registry seals, before the admin runs. The product
+//! of them once, and register hooks before the registry is built, before the admin runs. The product
 //! passes [`Wiring::default`]: nothing is wrapped and no hook is registered. The core carries no
 //! fault code; a decorator that delays, refuses or records lives in the executable that passes it.
 
@@ -89,7 +89,7 @@ pub struct DriftHold {
     pub released: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
-/// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
+/// Adds an app's own Node RPC ops to the server a node-admin builds, before it is built: the app clones
 /// the gate of its [`BeforeReadyHook`](crate::before_ready::BeforeReadyHook) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
@@ -206,9 +206,9 @@ pub struct Wiring {
     /// and the mesh channel joined. The product passes none: the hook passes at once and the admin's
     /// Ready waits on nothing of the app's.
     pub before_ready: crate::before_ready::BeforeReadyHook,
-    /// The app's own ops, added to the server before it seals.
+    /// The app's own ops, added to the server before it is built.
     pub serve_app: Option<ServeApp>,
-    /// Hooks registered, in order, before the lifecycle registry seals.
+    /// Hooks registered, in order, before the lifecycle registry is built.
     pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
     /// The cert material: the fabric's root ([`CertChoice::Ca`]) or no certs by name
     /// ([`CertChoice::NoCerts`]). There is no default: a

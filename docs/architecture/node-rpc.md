@@ -200,7 +200,7 @@ pub trait StreamingNodeProtocol: NodeProtocol {
 
 ## 9. Protocol catalog and op allocation
 
-The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rafka-node-rpc-contract`, a product adds its rows through the server builder, and the seal builds the served catalog once at boot. Op uniqueness, retired ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
+The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rafka-node-rpc-contract`, a product adds its rows through the server builder, and the build makes the served catalog once at boot. Op uniqueness, retired ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
 
 A descriptor is the envelope's `NodeProtocol` declaration plus two runtime facts: unary or server-streaming, and its default admission (§17).
 
@@ -275,7 +275,7 @@ orders above.
 
 ---
 
-## 12. Server registration is sealed at boot
+## 12. Server registration is built at boot
 
 A process registers every served op at boot:
 
@@ -284,11 +284,11 @@ builder.serve::<P>(...)
 builder.serve_stream::<P>(...)
 ```
 
-The table is sealed **before the mesh endpoint can dispatch its first accepted bi-stream**.
+The table is built **before the mesh endpoint can dispatch its first accepted bi-stream**.
 
 It is immutable for the process incarnation.
 
-The [seal](node-rpc-envelope.md#the-op-ledger) refuses the process on any ledger fault; the runtime also refuses an invalid configured admission or memory limit and a streaming budget that does not fit the transport invariant.
+The [build](node-rpc-envelope.md#the-op-ledger) refuses the process on any ledger fault; the runtime also refuses an invalid configured admission or memory limit and a streaming budget that does not fit the transport invariant.
 
 ### 12.1 Type erasure boundary
 
@@ -326,7 +326,7 @@ A readiness guard:
 - cannot call another RPC;
 - cannot select a target;
 - cannot mutate domain state;
-- is sealed with the registry.
+- is built with the registry.
 
 Examples include `NodeReadiness`, system-org-ready, peer-directory coverage and rafka-time adoption.
 
@@ -410,7 +410,7 @@ These are deliberately different keys.
 
 Each protocol declares `MAX_REQUEST_FRAME_BYTES`.
 
-At registry seal:
+At registry build:
 
 ```text
 sum(protocol_admission_limit * MAX_REQUEST_FRAME_BYTES)
@@ -940,7 +940,7 @@ Forwarding is one named op, never a universal wrapper through which every call p
 
 ### 36.3 Streaming forwarding
 
-A server-streaming op is never forwardable: the [seal](node-rpc-envelope.md#the-op-ledger) refuses a forwardable server-streaming entry.
+A server-streaming op is never forwardable: the [build](node-rpc-envelope.md#the-op-ledger) refuses a forwardable server-streaming entry.
 
 ---
 

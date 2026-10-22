@@ -1,5 +1,5 @@
-//! The one sealed effective catalog per process (ownership amendment §12): a product composes its
-//! transitional adapters into the server's catalog, reads the sealed catalog back for its own
+//! The one built effective catalog per process (ownership amendment §12): a product composes its
+//! transitional adapters into the server's catalog, reads the built catalog back for its own
 //! dispatcher, and on this server's ALPN an adapter's op is unserved (421), never dispatched.
 
 use iroh::protocol::Router;
@@ -20,9 +20,9 @@ async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_
             Ok(PingReply::Pong { payload })
         })
         .adapter(CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 64 * 1024))
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
-    // The product's dispatcher reads the same sealed catalog.
+    // The product's dispatcher reads the same built catalog.
     let held = server.catalog().lookup(0x12).expect("the adapter is catalogued");
     assert_eq!(held.owner, OpOwner::Product("rafka".into()));
     assert!(matches!(&held.kind, EntryKind::Transitional { migration_unit } if migration_unit == "i142 U6"));
@@ -54,11 +54,11 @@ async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_
     assert!(out.reply().is_some(), "{out:?}");
 }
 
-/// A transitional entry a product tries to seal under the core owner is refused at seal, by name.
+/// A transitional entry a product tries to build under the core owner is refused at build, by name.
 #[test]
-fn a_core_owned_transitional_entry_is_refused_at_seal() {
+fn a_core_owned_transitional_entry_is_refused_at_build() {
     let mut entry = CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 1024);
     entry.owner = OpOwner::Core;
-    let errors = ServerBuilder::new().adapter(entry).seal(ServedBirth { node_id: "n".into(), incarnation: "i".into() }).err().expect("refused");
-    assert!(errors.iter().any(|e| matches!(e, rdm_core::catalog::SealError::OwnerMismatch { op: 0x12, .. } | rdm_core::catalog::SealError::CoreTransitional { op: 0x12, .. })), "{errors:?}");
+    let errors = ServerBuilder::new().adapter(entry).build(ServedBirth { node_id: "n".into(), incarnation: "i".into() }).err().expect("refused");
+    assert!(errors.iter().any(|e| matches!(e, rdm_core::catalog::CatalogError::OwnerMismatch { op: 0x12, .. } | rdm_core::catalog::CatalogError::CoreTransitional { op: 0x12, .. })), "{errors:?}");
 }

@@ -65,8 +65,8 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let slot: TopologySlot = Arc::new(OnceLock::new());
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = extra(rdm_admin::topology_read::serve(ServerBuilder::new(), slot.clone()))
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
-        .expect("the catalog seals");
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
@@ -292,7 +292,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
                 Ok(TopologyReply::End { meshes: 1 })
             }
         })
-        .seal(ServedBirth { node_id: lid.to_string(), incarnation: linc.to_string() })
+        .build(ServedBirth { node_id: lid.to_string(), incarnation: linc.to_string() })
         .unwrap();
     let _router = Router::builder(lossy_ep.clone()).accept(rdm_transport::ALPN, lossy).spawn();
     let lossy_node = ResolvedNode { node_id: lid.clone(), name: "mesh1.rpc.9".parse().unwrap(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };

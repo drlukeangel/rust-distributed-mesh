@@ -182,7 +182,7 @@ pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter {
 }];
 
 /// Compose this process's catalog beyond the core: the role's own families and the product's
-/// transitional adapters, into the one builder that seals once (i141 PRD §16).
+/// transitional adapters, into the one builder that builds once (i141 PRD §16).
 pub fn compose(
     role: Role,
     served_by: &str,

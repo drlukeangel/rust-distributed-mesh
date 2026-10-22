@@ -212,7 +212,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let server = rdm_admin::status_rpc::serve(core, slot)
         .with_ready_gate(ready.clone())
-        .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().to_string() })
+        .build(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -1274,7 +1274,7 @@ async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
                 }
             }
         })
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
+        .build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = b.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

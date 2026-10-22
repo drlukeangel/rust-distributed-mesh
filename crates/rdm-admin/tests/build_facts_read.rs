@@ -77,8 +77,8 @@ where
             counted.fetch_add(1, Ordering::SeqCst);
             serve(req, sink)
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
-        .expect("the catalog seals");
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };

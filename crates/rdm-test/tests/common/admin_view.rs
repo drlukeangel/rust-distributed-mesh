@@ -102,7 +102,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
                 })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let birth = MeshNode { node_id, name: ADMIN.parse().unwrap(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };

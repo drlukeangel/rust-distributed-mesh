@@ -101,7 +101,7 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
             let ProbeRequest::Probe { payload } = req;
             Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: "mesh1.rpc.1".into(), caller: String::new() })
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let addr = ae.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ae).accept(rdm_transport::ALPN, server).spawn();

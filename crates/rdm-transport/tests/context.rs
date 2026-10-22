@@ -176,7 +176,7 @@ async fn process(name: &str) -> Process {
                 Ok(ProbeReply::Probed { payload })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(endpoint).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
@@ -434,7 +434,7 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
         .ledger(test_ledger())
         .carry::<Probe>()
         .serve_forward(carrier_client)
-        .seal(ServedBirth { node_id: cid.to_string(), incarnation: cinc.to_string() })
+        .build(ServedBirth { node_id: cid.to_string(), incarnation: cinc.to_string() })
         .unwrap();
     let _carrier_router = Router::builder(carrier_ep).accept(rdm_transport::ALPN, carrier_server).spawn();
     let carrier = ResolvedNode { node_id: cid, name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };

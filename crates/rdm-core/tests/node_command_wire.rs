@@ -2,7 +2,7 @@
 //! postcard bytes, its catalog shape (server-streaming, never forwarded), and Status 0x1B still
 //! single-reply and forwarded.
 
-use rdm_core::catalog::{CatalogBuilder, CatalogEntry, OpOwner, SealError, Shape};
+use rdm_core::catalog::{CatalogBuilder, CatalogEntry, OpOwner, CatalogError, Shape};
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
@@ -78,20 +78,20 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
     crate::outcome_codes::check_malformed::<NodeCommand>();
 }
 
-/// CONTRACT (Luke Q7: "NodeCommand seals non-forwardable and streaming; Status still seals
-/// forwardable"; the seal refuses a forwardable stream, `SealError::ForwardableStream`): op 0x22's
-/// catalog entry is server-streaming and not forwardable and seals beside Status 0x1B, which stays a
-/// single reply and forwarded; the same op marked forwardable is refused at the seal.
+/// CONTRACT (Luke Q7: NodeCommand is built non-forwardable and streaming, Status still
+/// forwardable; the build refuses a forwardable stream, `CatalogError::ForwardableStream`): op 0x22's
+/// catalog entry is server-streaming and not forwardable and is built beside Status 0x1B, which stays
+/// a single reply and forwarded; the same op marked forwardable is refused at the build.
 #[test]
-fn node_command_seals_streaming_and_never_forwarded_beside_a_forwarded_status() {
+fn node_command_builds_streaming_and_never_forwarded_beside_a_forwarded_status() {
     let command = CatalogEntry::canonical::<NodeCommand>(OpOwner::Product("rdm".into()), Shape::ServerStreaming);
     let status = CatalogEntry::canonical::<Status>(OpOwner::Product("rdm".into()), Shape::Unary);
     assert_eq!((command.op, command.shape, command.forwardable), (0x22, Shape::ServerStreaming, false), "{command:?}");
     assert_eq!((status.op, status.shape, status.forwardable), (0x1B, Shape::Unary, true), "{status:?}");
-    CatalogBuilder::new().serve(command.clone()).serve(status).seal().expect("NodeCommand seals beside Status");
+    CatalogBuilder::new().serve(command.clone()).serve(status).build().expect("NodeCommand is built beside Status");
     let forwarded = CatalogEntry { forwardable: true, ..command };
-    let refused = CatalogBuilder::new().serve(forwarded).seal().expect_err("a forwarded stream is refused at the seal");
-    assert!(refused.iter().any(|e| matches!(e, SealError::ForwardableStream { op: 0x22, .. })), "{refused:?}");
+    let refused = CatalogBuilder::new().serve(forwarded).build().expect_err("a forwarded stream is refused at the build");
+    assert!(refused.iter().any(|e| matches!(e, CatalogError::ForwardableStream { op: 0x22, .. })), "{refused:?}");
 }
 
 #[test]

@@ -168,7 +168,7 @@ fn every_reply_variant_of_build_classifies_to_one_code() {
 
 /// The failed-state field is appended in place on both receipt and terminal, with no old decoder.
 #[test]
-fn failure_codes_are_appended_and_retained_by_the_build_reseal() {
+fn failure_codes_are_appended_and_retained_by_the_build_wire() {
     use rdm_core::outcome::Code;
     for (code, suffix) in [(Code::Unknown, 2), (Code::DeadlineExceeded, 4), (Code::Unavailable, 14)] {
         let terminal = BuildReply::Failed { build_id: "b".into(), attempt: 2, operation: "o".into(), step: "s".into(), reason: "r".into(), code };

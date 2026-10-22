@@ -508,7 +508,7 @@ async fn process(name: &str) -> Process {
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })
         })
-        .seal(rdm_transport::ServedBirth { node_id: birth.node_id.to_string(), incarnation: birth.incarnation.to_string() })
+        .build(rdm_transport::ServedBirth { node_id: birth.node_id.to_string(), incarnation: birth.incarnation.to_string() })
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let mut rb = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server.clone()).accept(iroh_gossip::ALPN, gossip.clone());

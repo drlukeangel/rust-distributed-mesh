@@ -64,7 +64,7 @@ async fn node() -> Node {
                 }
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };

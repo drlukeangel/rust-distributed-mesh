@@ -1,4 +1,4 @@
-//! Fixed bytes for the coordinated 2026-10-07 status reseal (#2923); the four drain/stop command
+//! Fixed bytes for the coordinated 2026-10-07 status wire change (#2923); the four drain/stop command
 //! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
 //! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
 //! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete round

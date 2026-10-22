@@ -322,7 +322,7 @@ async fn spy_carrier() -> (NodeRpcClient, NodeTarget, Arc<std::sync::Mutex<Vec<u
                 Ok::<_, HandlerFault>(ForwardReply::InnerNotSent { reason: "spy".into(), cause: rdm_core::forward::NotSentCause::Connection })
             }
         })
-        .seal(served(&birth))
+        .build(served(&birth))
         .unwrap();
     let node = start(server, SecretKey::generate(), "mesh1.rpc.2", birth).await;
     let origin = client_with(&[&node.resolved]).await;
@@ -372,7 +372,7 @@ async fn every_inner_indeterminate_cause_crosses_a_carrier_with_its_code() {
             .serve::<Forward, _, _>(OpOwner::Core, move |_peer, _req: ForwardRequest| async move {
                 let typed_inner = cause.into_reason("same explanation".into());
                 Ok::<_, HandlerFault>(ForwardReply::InnerIndeterminate { cause: IndeterminateCause::from_reason(&typed_inner), reason: "same explanation".into() })
-            }).seal(served(&birth)).unwrap();
+            }).build(served(&birth)).unwrap();
         let carrier = start(server, SecretKey::generate(), "mesh1.rpc.2", birth).await;
         let origin = client_with(&[&carrier.resolved]).await;
         let target = NodeTarget::ExactNode(carrier.resolved.node_id.clone());

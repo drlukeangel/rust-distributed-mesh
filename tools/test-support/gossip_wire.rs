@@ -37,7 +37,7 @@ fn stamp(ms: u64) -> String {
 /// that byte is removed and never appears in the expected wire message.
 pub fn golden(f: &Frame, old: &[u8]) -> Vec<u8> { golden_with_trace(f, old, None, None) }
 
-/// The resealed optional standard pairs, supplied as literal expected W3C strings.
+/// The optional standard pairs, supplied as literal expected W3C strings.
 pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Option<&str>) -> Vec<u8> {
     let kinds = ["rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.mesh.status", "rdm.fabric.status", "rdm.seat.seated", "rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened", "rdm.node.stopped", "rdm.node.primary.updated", "rdm.node.primary.updating"];
     let kind = kinds[old[0] as usize];

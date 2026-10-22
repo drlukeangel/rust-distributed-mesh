@@ -46,7 +46,7 @@ async fn process(key: &SecretKey) -> Process {
                 Ok(PingReply::Pong { payload })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+        .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(rdm_transport::ALPN, server.clone()).accept(iroh_gossip::ALPN, gossip).spawn();

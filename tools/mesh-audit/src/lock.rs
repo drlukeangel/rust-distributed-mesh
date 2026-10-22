@@ -30,14 +30,14 @@ pub enum Ratchet {
     PostcardSectionBounds,
     TypedProtocolIdentity,
     TypedProtocolEvidence,
-    StatusResealIsAtomic,
-    ForwardResealIsAtomic,
-    BuildResealIsAtomic,
-    PrimaryUpdateResealIsAtomic,
-    NodeCommandResealIsAtomic,
-    TransportHeaderResealIsAtomic,
-    GossipEnvelopeResealIsAtomic,
-    StoreLayoutResealIsAtomic,
+    StatusWireIsAtomic,
+    ForwardWireIsAtomic,
+    BuildWireIsAtomic,
+    PrimaryUpdateWireIsAtomic,
+    NodeCommandWireIsAtomic,
+    TransportHeaderWireIsAtomic,
+    GossipEnvelopeWireIsAtomic,
+    StoreLayoutWireIsAtomic,
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
@@ -62,14 +62,14 @@ impl Ratchet {
         Self::PostcardSectionBounds,
         Self::TypedProtocolIdentity,
         Self::TypedProtocolEvidence,
-        Self::StatusResealIsAtomic,
-        Self::ForwardResealIsAtomic,
-        Self::BuildResealIsAtomic,
-        Self::PrimaryUpdateResealIsAtomic,
-        Self::NodeCommandResealIsAtomic,
-        Self::TransportHeaderResealIsAtomic,
-        Self::GossipEnvelopeResealIsAtomic,
-        Self::StoreLayoutResealIsAtomic,
+        Self::StatusWireIsAtomic,
+        Self::ForwardWireIsAtomic,
+        Self::BuildWireIsAtomic,
+        Self::PrimaryUpdateWireIsAtomic,
+        Self::NodeCommandWireIsAtomic,
+        Self::TransportHeaderWireIsAtomic,
+        Self::GossipEnvelopeWireIsAtomic,
+        Self::StoreLayoutWireIsAtomic,
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
@@ -95,14 +95,14 @@ impl Ratchet {
             Self::PostcardSectionBounds => "postcard_section_bounds",
             Self::TypedProtocolIdentity => "typed_protocol_identity",
             Self::TypedProtocolEvidence => "typed_protocol_evidence",
-            Self::StatusResealIsAtomic => "status_reseal_is_atomic",
-            Self::BuildResealIsAtomic => "build_reseal_is_atomic",
-            Self::PrimaryUpdateResealIsAtomic => "primary_update_reseal_is_atomic",
-            Self::ForwardResealIsAtomic => "forward_reseal_is_atomic",
-            Self::NodeCommandResealIsAtomic => "node_command_reseal_is_atomic",
-            Self::TransportHeaderResealIsAtomic => "transport_header_reseal_is_atomic",
-            Self::GossipEnvelopeResealIsAtomic => "gossip_envelope_reseal_is_atomic",
-            Self::StoreLayoutResealIsAtomic => "store_layout_reseal_is_atomic",
+            Self::StatusWireIsAtomic => "status_wire_is_atomic",
+            Self::BuildWireIsAtomic => "build_wire_is_atomic",
+            Self::PrimaryUpdateWireIsAtomic => "primary_update_wire_is_atomic",
+            Self::ForwardWireIsAtomic => "forward_wire_is_atomic",
+            Self::NodeCommandWireIsAtomic => "node_command_wire_is_atomic",
+            Self::TransportHeaderWireIsAtomic => "transport_header_wire_is_atomic",
+            Self::GossipEnvelopeWireIsAtomic => "gossip_envelope_wire_is_atomic",
+            Self::StoreLayoutWireIsAtomic => "store_layout_wire_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
@@ -643,7 +643,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 }
             }
         }
-        Ratchet::StatusResealIsAtomic => {
+        Ratchet::StatusWireIsAtomic => {
             require(
                 root,
                 STATUS,
@@ -665,11 +665,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 &mut out,
             );
         }
-        Ratchet::BuildResealIsAtomic => {
+        Ratchet::BuildWireIsAtomic => {
             require(root, "crates/rdm-core/src/build.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 26;", "code: crate::outcome::Code"], ratchet, &mut out);
-            require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_reseal", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
+            require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_wire", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
-        Ratchet::StoreLayoutResealIsAtomic => {
+        Ratchet::StoreLayoutWireIsAtomic => {
             // The store root's layout (Q28 A, Q35 x): the Build lanes' keys and formats, the fabric's
             // seat moves and the in-flight row, frozen byte for byte by one cell; a layout that moves
             // moves them together (`durable format moved`).
@@ -680,11 +680,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "format!(\"{t:020}--{}--{}\", by.node_id, by.incarnation.as_str())"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";", "const IN_FLIGHT: &str = \"in-flight\";"], ratchet, &mut out);
         }
-        Ratchet::PrimaryUpdateResealIsAtomic => {
+        Ratchet::PrimaryUpdateWireIsAtomic => {
             require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 18;", "code: crate::outcome::Code"], ratchet, &mut out);
             require(root, "crates/rdm-core/tests/handover_wire.rs", &["fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
-        Ratchet::ForwardResealIsAtomic => {
+        Ratchet::ForwardWireIsAtomic => {
             require(
                 root,
                 FORWARD,
@@ -705,7 +705,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 &mut out,
             );
         }
-        Ratchet::NodeCommandResealIsAtomic => {
+        Ratchet::NodeCommandWireIsAtomic => {
             require(
                 root,
                 NODE_COMMAND,
@@ -726,7 +726,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 &mut out,
             );
         }
-        Ratchet::TransportHeaderResealIsAtomic => {
+        Ratchet::TransportHeaderWireIsAtomic => {
             // The three kinds in their positions, their goldens byte for byte, and the largest of
             // each: a header that moves moves them together (`wire format moved`).
             require(
@@ -744,11 +744,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 &mut out,
             );
         }
-        Ratchet::GossipEnvelopeResealIsAtomic => {
+        Ratchet::GossipEnvelopeWireIsAtomic => {
             require(root, "crates/rdm-transport/src/envelope.rs", &["pub const TYPES: [&str; 22]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace", "pub const CHUNK_TYPE: &str = \"rdm.gossip.chunk\""], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/membership.rs", &["rdm.mesh.membership.update.via-context-dropped", "crate::set_remote_parent"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/gossip.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.membership.reject.via-chunk-incomplete"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/tests/digest_frames_wire.rs", &["fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/tests/digest_frames_wire.rs", &["fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
             require(root, "crates/rdm-test/tests/gossip/trace_context.rs", &["fn a_received_frames_span_shares_its_authors_trace_id", "fn a_malformed_traceparent_is_dropped_by_name_and_the_frame_applies"], ratchet, &mut out);
         }
         Ratchet::NoJsonOnTheWire => {

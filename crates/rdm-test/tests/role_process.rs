@@ -1,5 +1,5 @@
 //! e11.s2 — a role process on the imported substrate: one endpoint carrying gossip and Node RPC,
-//! one sealed catalog (core + the role's families + the product's transitional adapters), one
+//! one built catalog (core + the role's families + the product's transitional adapters), one
 //! server on the Node RPC ALPN. The cells call the role the way a peer does, over the wire.
 
 use iroh::SecretKey;
@@ -110,7 +110,7 @@ async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() 
     let compute = born("mesh1.compute.1").await;
     let adapter = &LEGACY_ADAPTERS[0];
     let held = compute.running.server.catalog().lookup(adapter.op).expect("the adapter is catalogued");
-    assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "sealed under the ledger's owner");
+    assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "built under the ledger's owner");
     assert!(matches!(&held.kind, EntryKind::Transitional { migration_unit } if migration_unit == adapter.migration_unit));
     let (client, target) = compute.peer().await;
     let (out, _) = client
