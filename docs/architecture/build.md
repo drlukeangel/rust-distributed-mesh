@@ -101,11 +101,11 @@ Rafka imports these RDM packages at one exact revision:
 | `rdm-transport` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
 | `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
 | `rdm-client` | the typed client and DTOs for the node-admin control API |
-| `rafka-test-scenario` | provider-neutral scenario, evidence and replay contracts |
+| `rdm-test-scenario` | provider-neutral scenario, evidence and replay contracts |
 | `rdm-test` | the generic RPC proof node, proof protocols and probes |
 
 the chaos kit (`rdm-test`'s `faults` modules), the fault backends with typed outcomes, is an RDM proof package used by
-`rafka-test-scenario`. RDM packages import no Rafka domain crate.
+`rdm-test-scenario`. RDM packages import no Rafka domain crate.
 
 ---
 

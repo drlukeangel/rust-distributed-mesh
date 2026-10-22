@@ -607,7 +607,7 @@ orchestration layer.
 
 ### 7.1 One node-admin; meshes are channels
 
-There is one node-admin: the `rafka-node-admin` binary, joined to its mesh as `Role::Admin`.
+There is one node-admin: the `rdm-node-admin` binary, joined to its mesh as `Role::Admin`.
 There is no supervisor and no observer role. A mesh is an iroh gossip channel on one network, so any
 node can reach any node. The fabric-primary accepts and drives every Build and dispatches each run
 to `executor_for`'s executor, in its own mesh or another

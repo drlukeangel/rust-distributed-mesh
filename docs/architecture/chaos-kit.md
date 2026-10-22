@@ -13,6 +13,6 @@ acknowledged it) or refused (with the reason; nothing was done).
 - `container_faults`: Docker primitives against the exact containers of a container estate
   (`ContainerEstate` names the Fabric and its containers).
 
-The kit depends on no product crate. `rafka-test-scenario` re-exports it, and `demo/admin-ui`'s
+The kit depends on no product crate. `rdm-test-scenario` re-exports it, and `demo/admin-ui`'s
 Chaos tab drives it. The fabric-primary is never aimed at: the UI refuses a fault or a cut that
 touches it by name (`fabric-primary-is-never-a-target`).

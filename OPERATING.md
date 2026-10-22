@@ -109,7 +109,7 @@ The demo admin UI's reaper polls each entry's `Child::try_wait()` every 5s and
 removes exited ones. Spawned subprocesses are also killed when the admin UI
 itself exits. If you have leftover orphans from an admin UI crash:
 ```powershell
-Get-Process rafka-node-admin,rafka-rpc-node,rshape-node-admin,rshape-broker,rshape-gateway,rshape-compute `
+Get-Process rdm-node-admin,rdm-rpc-node,rshape-node-admin,rshape-broker,rshape-gateway,rshape-compute `
   -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 
