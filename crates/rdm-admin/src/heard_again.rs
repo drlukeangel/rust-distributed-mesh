@@ -27,44 +27,6 @@ fn commanded() -> &'static Mutex<HashMap<(String, String), Instant>> {
     COMMANDED.get_or_init(Default::default)
 }
 
-/// The births this process has commanded back whose command is on its way: sent and not yet
-/// answered. The birth answers it once its join report is accepted, its next cycle published Pending at
-/// the door, and it is on its mesh again (node-mesh-join.md step 10); until then it has not returned
-/// (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 3), and what a
-/// view holds of it is its own last word before the silence (Q87).
-fn on_its_way() -> &'static Mutex<HashMap<rdm_core::NodeId, usize>> {
-    static ON_ITS_WAY: OnceLock<Mutex<HashMap<rdm_core::NodeId, usize>>> = OnceLock::new();
-    ON_ITS_WAY.get_or_init(Default::default)
-}
-
-/// Whether a command back of this process to `node_id` is on its way ([`Returning`]).
-pub fn returning(node_id: &rdm_core::NodeId) -> bool {
-    on_its_way().lock().unwrap().contains_key(node_id)
-}
-
-/// Held while a command back to a birth is on its way; dropped once it is answered, or abandoned.
-pub struct Returning(rdm_core::NodeId);
-
-impl Returning {
-    /// The command back to `node_id` goes out now.
-    pub fn begin(node_id: rdm_core::NodeId) -> Self {
-        *on_its_way().lock().unwrap().entry(node_id.clone()).or_default() += 1;
-        Self(node_id)
-    }
-}
-
-impl Drop for Returning {
-    fn drop(&mut self) {
-        let mut held = on_its_way().lock().unwrap();
-        if let Some(n) = held.get_mut(&self.0) {
-            *n -= 1;
-            if *n == 0 {
-                held.remove(&self.0);
-            }
-        }
-    }
-}
-
 /// What an admin needs to command a birth back: this admin's client, status authority, Build state,
 /// runner (once built) and digest book: one function, run by the offline ladder and the seat watch.
 pub struct HeardAgain {
@@ -209,8 +171,6 @@ async fn command_mesh_join(
             attempt,
             operation,
         };
-        // On its way until answered: the birth has not returned before it is back at the door.
-        let _returning = Returning::begin(node.node_id.clone());
         let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
         match out.reply() {
             Some(r) => r.value().name().to_string(),
