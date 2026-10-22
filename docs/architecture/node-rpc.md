@@ -32,7 +32,7 @@ The generic crates remain siblings. Do not add a mesh-transport -> node-rpc or n
 ~~~mermaid
 flowchart TB
     ME[rdm-core\nidentity/value types] --> MT[rdm-transport\ngossip / Iroh transport]
-    ME --> NR[rafka-node-rpc\nresolver + client/runtime]
+    ME --> NR[rdm-transport\nresolver + client/runtime]
     NC[rdm-core\ndescriptor / framing / outcome] --> NR
     MO[rafka-mesh-ops\nRafka product contracts/codecs] --> PC
 
@@ -55,7 +55,7 @@ One live Iroh Endpoint belongs to one process. Router/ALPN multiplexes gossip an
 
 Rafka owns its product protocol descriptors, codecs, op allocations and request/reply payloads in `rafka-mesh-ops`, and adds its rows to the [op ledger](node-rpc-envelope.md#the-op-ledger) through the server builder. RDM `rdm-core` owns the generic protocol and envelope vocabulary and the core ledger rows. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
 
-### 3.3 rafka-node-rpc
+### 3.3 rdm-transport (the Node RPC runtime)
 
 Owns:
 - NodeResolver contract;

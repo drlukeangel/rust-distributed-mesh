@@ -1,4 +1,4 @@
-# Operating rafkav2
+# Operating RDM
 
 Single-page operator reference: env vars, ports, common commands, troubleshooting.
 
@@ -6,7 +6,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Port | Service |
 |---|---|
-| 19090 | topology-ui REST + HTML |
+| 19090 | the demo admin UI (`demo/admin-ui`) REST + HTML |
 | 16686 | Jaeger UI (`http://localhost:16686`) |
 | 4318  | OTLP/HTTP ingest |
 | 0     | rafka-* iroh endpoint (random ephemeral; override with `RDM_NODE_BIND_ADDR`) |
@@ -26,23 +26,17 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 | `RDM_LINK_SLOW_MS` | `0` | Sleep that many ms before each outbound ping `open_uni`. Chaos `slow_link` |
 | `RDM_LINK_LOSS_PCT` | `0` | Per outbound ping, roll u8%100; if `<` this, emit drop span + skip write. Chaos `lossy_link` |
 | `RDM_AUTO_SHUTDOWN_SECS` | unset (= wait for SIGINT) | Auto-exit after N seconds; used by e2e tests |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Where node-base + topology-ui ship spans |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Where every node and the demo admin UI ship spans |
 | `OTEL_SERVICE_NAME` | (set per binary) | Jaeger service tag |
-| `RUST_LOG` | `info` | tracing filter (e.g. `rafka_node_base=debug,info`) |
+| `RUST_LOG` | `info` | tracing filter (e.g. `rdm_node=debug,info`) |
 
-### Bridge (`rafka-bridge`) additionally reads:
-
-| Env var | Default | Effect |
-|---|---|---|
-| `RDM_BRIDGE_TARGET_MESHES` | `` | Comma-list of mesh IDs this bridge announces it spans; surfaced on `rdm.mesh.bridge.boot_announced` |
-
-### topology-ui reads:
+### The demo admin UI reads:
 
 | Env var | Default | Effect |
 |---|---|---|
 | `RDM_ADMIN_UI_BIND_ADDR` | `127.0.0.1:19090` | HTTP listen addr |
 | `JAEGER_QUERY_URL` | `http://localhost:16686` | Where to ask "what's in the traces" |
-| `CARGO_TARGET_DIR` | derived from own exe path | Where spawned `rafka-*.exe` binaries live |
+| `CARGO_TARGET_DIR` | derived from own exe path | Where the node binaries it spawns live |
 
 ## Demo admin UI tabs (`demo/admin-ui`)
 
@@ -94,14 +88,14 @@ Get-Process rafka-* -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 Then re-run the build.
 
-### topology-ui spawns nodes from the wrong build
-topology-ui derives the binary search root from its own exe path's grandparent
+### The demo admin UI spawns nodes from the wrong build
+The demo admin UI derives the binary search root from its own exe path's grandparent
 (typically `<repo>/target/debug` or `E:/cargo-target-v2/debug`). If you've moved
-the topology-ui binary, set `CARGO_TARGET_DIR` env to match where the node
+the admin UI binary, set `CARGO_TARGET_DIR` env to match where the node
 binaries live.
 
 ### Heartbeat tab shows "NaNs ago"
-You're running an old topology-ui build. Rebuild — `/api/heartbeat` now returns
+You're running an old admin UI build. Rebuild — `/api/heartbeat` now returns
 `age_ms` directly.
 
 ### Soak appears hung in its log file
@@ -110,12 +104,12 @@ every 10 events with explicit flush, plus "soak end:" at completion. Either look
 in the file for those lines, or query Jaeger for `rafka.chaos.primitive.detected`
 spans to see live activity.
 
-### orphan rafka-* processes accumulating
-The topology-ui reaper polls each entry's `Child::try_wait()` every 5s and
-removes exited ones. Spawned subprocesses are also killed when topology-ui
-itself exits. If you have leftover orphans from a topology-ui crash:
+### orphan node processes accumulating
+The demo admin UI's reaper polls each entry's `Child::try_wait()` every 5s and
+removes exited ones. Spawned subprocesses are also killed when the admin UI
+itself exits. If you have leftover orphans from an admin UI crash:
 ```powershell
-Get-Process rafka-broker,rafka-gateway,rafka-compute,rafka-registry,rafka-bridge `
+Get-Process rafka-node-admin,rafka-rpc-node,rshape-node-admin,rshape-broker,rshape-gateway,rshape-compute `
   -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 

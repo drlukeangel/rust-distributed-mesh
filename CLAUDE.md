@@ -70,10 +70,10 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_STALENESS_MS` | `30000` | Background pruner threshold (milliseconds). A `GossipDigest` whose `wall_time_ms` is older than this is removed from the process-global `live_digests` + `topic_membership` maps. Sweeps every 5 seconds. At the default 2s gossip cadence, 30s = 15 missed cycles. Override to tune how aggressively stale peers are evicted from the topology view. |
 | `RDM_SEED_NODES` | _(empty)_ | Comma-separated list of `<node_id_hex>@<host>:<port>` entries to dial on boot. Each seed triggers `rdm.mesh.peer.discovered` + `rdm.mesh.peer.connected` spans. Example: `abc123...@127.0.0.1:14820`. Added Sprint 03. |
 | `RDM_AUTO_SHUTDOWN_SECS` | _(unset = wait for signal)_ | If set, node shuts down cleanly after this many seconds. Verification hook only — used to produce a clean process exit (and thus flush OTLP spans) in environments where Ctrl+C delivery is unreliable (e.g. Windows child process). |
-| `RDM_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | TCP address the `rafka-topology-ui` HTTP server binds to. Override to expose on a different interface or port. |
+| `RDM_ADMIN_UI_BIND_ADDR` | `127.0.0.1:19090` | TCP address the demo admin UI (`demo/admin-ui`) HTTP server binds to. Override to expose on a different interface or port. |
 | `RDM_NODE_ADMIN_API_BASE` | _(unset)_ | The node-admin control API the Admin UI drives (the URL node-admin prints). The UI submits every topology change there as a Build through `rdm-client`; unset, its spawn/restart/remove/bootstrap routes answer `503 no-node-admin`. |
-| `JAEGER_QUERY_URL` | `http://localhost:16686` | Base URL of the Jaeger Query API. Used by `rafka-topology-ui` (chunk 2+) to fetch trace data for the boot-waterfall panel. |
-| `CARGO_TARGET_DIR` | `./target` | Read by `rafka-topology-ui` to locate node binaries for spawn. Set to `E:/cargo-target-sprint-02` in local dev so the UI can find debug builds without a separate install step. |
+| `JAEGER_QUERY_URL` | `http://localhost:16686` | Base URL of the Jaeger Query API. Used by the demo admin UI (`demo/admin-ui`) to fetch trace data for the boot-waterfall panel. |
+| `CARGO_TARGET_DIR` | `./target` | Read by the gate and cell scripts and the demo admin UI to locate node binaries. Never exported by hand in a lane (see Lanes). |
 | `RDM_DEPLOYMENT` | `prod` | One of `dev`, `staging`, `prod`. Gates all `RDM_DEV_*` overrides. Defaults to `prod` so a production manifest gets safe behavior without explicit setting. |
 | `RDM_DEV_CPU_BUDGET` | _(measured via sysinfo)_ | Override the reported `cpu_budget` field in `GossipDigest` (cores, fractional). Honored only when `RDM_DEPLOYMENT != prod`. Used by per-crate `.env.dev` to give heterogeneous test brokers different CPU profiles. |
 | `RDM_DEV_RAM_BUDGET` | _(measured via sysinfo)_ | Override reported `ram_budget` in GB. Same gating as `RDM_DEV_CPU_BUDGET`. |
@@ -110,6 +110,6 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_CERT_RENEW_AT` | `0.67` | Fabric policy: the fraction of a cert's TTL after which its issuer renews it (`node.cert.renew`, `mesh.issuer.renew`), with a fixed jitter of up to 5 % of the TTL. |
 | `RDM_INHERITED_DATA_DIR` | `0` | Written by `rafka-node-admin` into a launched node's environment (`1` when created over an existing `data_dir`, `0` when created over a newly allocated `data_dir`), surfaced to `before_ready` as `BeforeReadyCtx::inherited` (`R-FM2`). |
 
-**Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives OTLP/HTTP on `localhost:4318`; the nodes' exporter posts spans and log records there. Jaeger UI: `http://localhost:16686`.
+**Infrastructure context (Sprint 01):** The shared OTLP collector receives OTLP/HTTP on `localhost:4318`; the nodes' exporter posts spans and log records there. Jaeger UI: `http://localhost:16686`.
 
 ---
