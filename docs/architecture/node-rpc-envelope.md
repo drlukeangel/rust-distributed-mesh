@@ -213,7 +213,7 @@ sees only the catalog.
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete; build.create refuses `fabric-not-ready` until the initial fabric has first reached ready-for-traffic ([Build refusals](#fabric-not-ready-refusal)) |
-| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`; the takeover's `TakeOverFabricSeat`, `AlreadyApplied`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
+| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
@@ -1545,7 +1545,7 @@ or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when i
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
-The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own mesh first), with `TakeOverFabricPrimary { fabric, lost: { mesh, node_id, incarnation }, expected_revision, successor, proposer }`. The winner, when its own view names it, is fabric-primary (with the mesh-primary in the lost mesh's own arm, [fabric recovery](lifecycles/fabric-recovery.md)) and answers `PrimaryUpdated { revisions }` on that: the role changes and the answer completes the takeover. Its next `Digest` carries the change and it records it on its own row afterwards, under the same persistence behavior as any primary change (node-primary-update.md step 5); a store that cannot write is a named storage error that undoes no role and rejects no completed takeover. A repeat for the same takeover and successor answers `AlreadyApplied { revisions }` (`ALREADY_EXISTS`); a proposal naming another winner is `RejectedNotPrimary`, one at a revision the recorded primary no longer holds `RejectedStaleRevision`. `RejectedSourceFailed` is not an answer of this op.
+There is no take-over op. The loss of the fabric-primary is the [fabric recovery](lifecycles/fabric-recovery.md) workflow, an attempt of the current Build run by an executor that does not become fabric-primary; the fabric-primary is the node at the lost primary's path.name throughout, and the re-created node-admin is fabric-primary by the election once Ready for one floor and its mesh's mesh-primary.
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is

@@ -131,18 +131,16 @@ ReadyForTraffic node-admins of the fabric-primary's mesh
 There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric-primary stays
 in its mesh while that mesh has a Ready node-admin: when it hands over or is unheard past the staleness
 floor, the lowest ReadyForTraffic node-admin NodeId of the same mesh takes both (Q89) and records both
-on its own row; if only Pending admins survive it waits. The fabric-primary leaves the mesh in one case only: no
+on its own row; if only Pending admins survive it waits. The fabric-primary never leaves its mesh. When no
 node-admin of the mesh answers [mesh investigation](lifecycles/mesh-investigation.md)'s ladder by its
-decision step. Then the lowest ReadyForTraffic mesh-primary on the backbone is fabric-primary
-temporarily, records it on its own row, and stays mesh-primary of its own mesh
-([fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)).
-It re-creates the lost mesh's node-admins (mesh investigation's fully-crashed arm, run by it): over the
-inherited data dir when the investigation's provider step found the old runtime exited, otherwise over a
-newly allocated data dir with a new endpoint key, `inherited = false` ([node recovery](lifecycles/node-recovery.md),
-R-FM2). Once the node at the lost fabric-primary's path.name, returned or re-created, has been Ready for
-one staleness floor and is its mesh's mesh-primary, the temporary fabric-primary hands back by
-`node.fabric-primary.update`, and each records its own row. The fabric-primary returns only that
-way.
+decision step, the lowest ReadyForTraffic mesh-primary on the backbone runs the
+[fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)
+workflow as its executor, without becoming fabric-primary: it re-creates the lost mesh's node-admin
+(over the inherited data dir when the investigation's provider step found the old runtime exited,
+otherwise over a newly allocated data dir with a new endpoint key, `inherited = false`,
+[node recovery](lifecycles/node-recovery.md), R-FM2), the fabric is `degraded` meanwhile, and once the
+node at the lost fabric-primary's path.name has been Ready for one staleness floor and is its mesh's
+mesh-primary, it is the fabric-primary by this rule and records it on its own row.
 
 Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
 write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)

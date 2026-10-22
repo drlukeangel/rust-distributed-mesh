@@ -11,8 +11,8 @@ own call and connection facts, never forwarded topology
 ([Gossip §3.3](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-snapshots-and-the-top-up),
 [held-member repair](../gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)).
 When the unheard mesh's mesh-primary is the fabric-primary, every mesh-primary runs this ladder on it, and its decision step
-is the backbone rule of [elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary): the fabric-primary's
-loss is [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)'s sequence.
+opens the [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives) workflow at the
+lowest ReadyForTraffic mesh-primary, its executor, which does not become fabric-primary.
 
 One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
 since the fabric-primary's last valid direct backbone receipt from mesh-x. Only that receipt starts
@@ -54,9 +54,9 @@ diagnostic spans that open no node.create.
      [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm)), on the same accepted Build and
      mesh-x's own MeshId, with the node.create step 6 describes, over the inherited data dir when
      the verdict is `exited` and over a newly allocated one otherwise (R-FM2). When mesh-x's
-     mesh-primary is the fabric-primary, this is the backbone rule: the lowest ReadyForTraffic
-     mesh-primary on the backbone is fabric-primary first ([fabric recovery](fabric-recovery.md)),
-     then runs this arm. A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
+     mesh-primary is the fabric-primary, this arm is the [fabric recovery](fabric-recovery.md)
+     workflow, run by the lowest ReadyForTraffic mesh-primary on the backbone as its executor,
+     which does not become fabric-primary. A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
      comes back after it was re-created is refused at admission and its runtime terminated (Q110).
 6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
    and mesh-x's own MeshId: a node-admin joining a live mesh. The node.create carries mesh-x's

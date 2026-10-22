@@ -344,7 +344,7 @@ These facts describe reconciliation execution. The current Build is read from th
 RDM proves the contract without inventing a broker-backed database:
 
 - `MemoryBuildStateAdapter` for unit/functional proof;
-- fabric-projected **active** Build facts for a takeover by another primary;
+- fabric-projected **active** Build facts for the fabric recovery workflow's executor;
 - local-file journal for same-node-admin restart, replay, and evidence artifacts.
 
 Neighbor/catch-up does not ship every completed birth receipt forever. Single-writer safety comes from one writer per record: the fabric-primary writes every Build record (acceptance, attempts, claims, step receipts, results) through the configured Build storage; a mesh-primary runs its mesh's attempt and reports each receipt up the attempt's `build.attempt.run` stream, and writes only its own mesh's rows. With that come idempotent operation keys and stable logical topology identities. When an unheard peer mesh is heard again, the election converges and the current fabric-primary reconciles reality rather than trusting attempt history.

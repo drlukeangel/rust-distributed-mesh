@@ -16,9 +16,9 @@ one writer of its mesh's rows ([node-identity-and-state.md §2.7](../node-identi
 records it as `is_primary` on the node's row, and as `is_fabric_primary` on a node-admin's own row for the
 fabric-primary. **The write records the role; it does not grant it.** The mesh-primary and the
 fabric-primary move together: a same-mesh successor becomes both, and records both on its own row. They
-are separated in one case only, no node-admin of that mesh being available to the backbone
-([fabric recovery](fabric-recovery.md)), or under mesh.delete of that mesh
-([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
+are never separated: a mesh with no node-admin available to the backbone is the
+[fabric recovery](fabric-recovery.md) workflow, whose executor is not fabric-primary, and under mesh.delete
+the fabric-primary moves to another mesh first ([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
 seat row, no move log, nothing to fold.
 
 ## Operation contract

@@ -73,14 +73,14 @@ the terms, and this page points at them rather than restating them:
   [node-identity-and-state.md §2.7 and §2.8](../../architecture/node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it);
 - the election, a heard primary kept, the staleness-floor rule, the hand-over:
   [fabric-node-lifecycle-elections.md](../../architecture/fabric-node-lifecycle-elections.md);
-- the loss of the fabric-primary, the combined move, the one backbone exception and the hand-back as an
-  attempt of the current Build: [fabric-recovery.md](../../architecture/lifecycles/fabric-recovery.md);
+- the loss of the fabric-primary: the fabric recovery workflow, whose executor never becomes fabric-primary,
+  and the fabric-primary back by the election: [fabric-recovery.md](../../architecture/lifecycles/fabric-recovery.md);
 - the one decision about an unheard node: [node-investigation.md](../../architecture/lifecycles/node-investigation.md),
   run from [node-recovery.md](../../architecture/lifecycles/node-recovery.md) and
   [mesh-investigation.md](../../architecture/lifecycles/mesh-investigation.md);
 - the fabric-primary as the writer of every Build record, each at its own key: [build.md §5.3](../../architecture/build.md#53-node-admin-storage-boundaries);
 - the wire in the terms (`NotPrimary`, `RejectedNotPrimary`, `Primaries`, `FabricPrimaryMoved`,
-  `NotFabricPrimary`, `TakeOverFabricPrimary`, `PrimaryUpdate { primaries }`):
+  `NotFabricPrimary`, `PrimaryUpdate { primaries }`):
   [node-rpc-envelope.md](../../architecture/node-rpc-envelope.md);
 - the fabric-primary page, formerly "fabric authority": [fabric-primary.md](../../architecture/fabric-primary.md).
 
