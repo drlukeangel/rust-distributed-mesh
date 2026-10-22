@@ -93,10 +93,10 @@ where
             record.add_attribute(k, v);
         }
         if let Some(file) = meta.file() {
-            record.add_attribute("code.filepath", file.to_string());
+            record.add_attribute("code.file.path", file.to_string());
         }
         if let Some(line) = meta.line() {
-            record.add_attribute("code.lineno", line as i64);
+            record.add_attribute("code.line.number", line as i64);
         }
         // The nearest enclosing span the span exporter records: its ids are what the collector
         // joins this line to.

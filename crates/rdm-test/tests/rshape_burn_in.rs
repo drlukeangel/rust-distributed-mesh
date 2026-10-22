@@ -2655,7 +2655,7 @@ fn check_imported_mechanism(f: &Formed, spans: &[Value], inv: &mut Invariants) -
     for fam in families {
         let rows = named(spans, fam);
         for sp in &rows {
-            let path = s(&sp["attributes"]["code.filepath"]);
+            let path = s(&sp["attributes"]["code.file.path"]);
             assert_eq!(sp["service"], "rshape-node-admin", "{fam}: emitted by a process other than the consumer's imported node-admin: {sp}");
             assert!(path.contains("/rust-distributed-mesh-") && path.contains(&format!("/{short}/crates/")), "{fam}: its source is {path}, not the pinned RDM checkout of {short}");
         }
