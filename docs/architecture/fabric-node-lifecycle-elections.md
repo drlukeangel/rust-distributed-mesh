@@ -2,11 +2,13 @@
 
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
-This page owns elections for fabric, mesh and node leadership: the seats, the sticky holder, the
-seat watch and the committed seat records the resolver takes as input. Other pages consume the
-resolved primary and link here.
+This page owns the leadership election for the fabric-primary, each mesh-primary and each node-type
+primary: the one rule, its inputs (the Mesh row, the fabric row and the current member facts), the
+staleness-floor rule, and the hand-over by [node.primary.update](lifecycles/node-primary-update.md).
+Other pages consume the elected primary and link here.
 
-RDM's `rafka-node-admin-core` implements the one LeadershipResolver; Rafka binds its facts and projections to it and consumes the resolved leadership view.
+RDM's `rafka-node-admin-core` implements the one election; Rafka binds its facts to it and consumes the
+elected primaries.
 
 ---
 
@@ -15,18 +17,25 @@ RDM's `rafka-node-admin-core` implements the one LeadershipResolver; Rafka binds
 There are no election ballots, terms, coordinator messages, quorum votes, or incumbent leases.
 
 ~~~text
-held seat record + current candidate facts
-    -> the holder keeps the seat while it holds it
-    -> on a vacancy: eligible candidates of the holder's mesh
+the Mesh row's primary + current candidate facts
+    -> the primary stays primary while it is heard
+    -> unheard past the staleness floor, or no primary: eligible candidates of that type in that mesh
     -> lowest complete NodeId
-    -> resolved primary
+    -> the elected primary
 ~~~
 
-Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §4.3's staleness-floor rule; every other seat moves only on yield, a committed transfer or a proven loss, or with the fabric seat, when both are held by the lost mesh's node-admin and one takeover row moves both.
+Equal candidate facts and equal rows produce equal winners. Every primary moves in two ways only: it
+hands over by [node.primary.update](lifecycles/node-primary-update.md) (`node.fabric-primary.update` for the
+fabric-primary), or it is unheard past the staleness floor and is superseded by the rule above (Q107 (1),
+Q89). Nothing else moves a primary, and nothing waits for proof of anything (Q111).
 
-A published is_primary or is_fabric_primary bit is a projection of this result. It never creates authority by advertisement.
+A published `is_primary` or `is_fabric_primary` bit is a projection of this result and of the rows it is
+written on. It never makes a primary by advertisement.
 
-A peer mesh that goes unheard may temporarily produce different local candidate sets. A failed RPC, a failed dial, gossip silence or an unheard peer mesh does not itself prove a candidate dead and does not license destructive recovery. Membership/runtime recovery owns convergence and exact-death proof.
+A peer mesh that goes unheard may temporarily produce different local candidate sets. A failed RPC, a
+failed dial, gossip silence or an unheard peer mesh does not itself say what happened to a candidate and
+does not license destructive recovery: [node investigation](lifecycles/node-recovery.md) decides that
+(Q111).
 
 ---
 
@@ -40,9 +49,11 @@ eligible = current MemberStatus::ReadyForTraffic
 
 Eligibility is current ReadyForTraffic and nothing else.
 
-How a node becomes ReadyForTraffic is lifecycle policy, not election policy. A node-admin must satisfy the authority-capable hydration gates owned by [build.md](build.md) before lifecycle makes it Ready.
+How a node becomes ReadyForTraffic is lifecycle policy, not election policy. A node-admin must satisfy
+the hydration gates owned by [build.md](build.md) before lifecycle makes it Ready.
 
-A node that is starting, pending, connections-deleting, connections-deleted, stopping, stopped or deleting, and deleted births, are not new ordinary election candidates.
+A node that is starting, pending, connections-deleting, connections-deleted, stopping, stopped or
+deleting, and deleted births, are not new ordinary election candidates.
 
 Ready time is not priority.
 
@@ -50,11 +61,10 @@ Ready time is not priority.
 
 ## 3. Election key
 
-A seat stays with its holder until that holder is proven unable to hold it. The
-holder record — the seat's exact birth `(mesh, node_id, incarnation)` and its revision — is an
-election input: it is gossiped when a seat changes hands and handed to a joiner in its entry.
-When a seat is vacant, the winner among eligible candidates is the **lowest complete canonical
-NodeId**.
+A primary stays primary while it is heard. The Mesh row's entry for it — its exact birth `(mesh,
+node_id, incarnation)` and its revision — is an election input: it is gossiped when a primary changes
+and handed to a joiner in its entry. When the primary is unheard past the staleness floor, or there is
+none, the winner among eligible candidates is the **lowest complete canonical NodeId**.
 
 NodeId is the fixed-width 12-character lowercase Crockford60 product identity. Compare the complete value.
 
@@ -76,108 +86,128 @@ current Build
 Build attempt
 ~~~
 
-Restart of the same logical node preserves NodeId. Permanent logical replacement mints a new NodeId, so replacement does not inherit election rank.
+Restart of the same logical node preserves NodeId. Permanent logical replacement mints a new NodeId, so
+replacement does not inherit election rank.
 
 ---
 
 ## 4. Election hierarchy
 
-### 4.1 In-mesh cohorts
+### 4.1 The nodes of one type in one mesh
 
-For every (mesh, node_type) cohort, the one imported resolver applies the same eligibility/key rule. A node's type is its `node_type` field ([node identity](node-identity-and-state.md)), never its name. Each cohort's primary is that node's `is_primary`.
+For the nodes of every type in every mesh, the one election applies the same eligibility/key rule. A
+node's type is its `node_type` field ([node identity](node-identity-and-state.md)), never its name. That
+type's primary in that mesh is the node-type primary, and that node's `is_primary`; the Mesh row names
+it.
 
 Ordinary nodes publish current facts. They do not author election outcomes.
 
-A node-admin investigating a silent seat holder runs node recovery's
-[tickle ladder](lifecycles/node-recovery.md#numbered-end-to-end-sequence). Only the provider's exit proof vacates a seat; no probe outcome does. The one exception is the fabric seat (§4.3, §5).
+A primary unheard past the staleness floor is superseded by the lowest ReadyForTraffic node of its type
+in its mesh, which writes the Mesh row at the next revision ([node.primary.update](lifecycles/node-primary-update.md)).
+The mesh-primary then runs [node investigation](lifecycles/node-recovery.md) on the unheard node, whatever
+its type, and that verdict decides what becomes of it (Q111): reached, it is commanded back as a member;
+anything else, it is re-created.
 
 ### 4.2 Mesh primary
 
 ~~~text
-(mesh, `node-admin`) cohort winner == mesh primary
+(mesh, `node-admin`) winner == mesh primary
 ~~~
 
-There is no second mesh-primary election.
+There is no second mesh-primary election. The mesh-primary writes the mesh's rows.
 
 ### 4.3 Fabric primary
 
-The fabric-primary candidate set is every ReadyForTraffic node-admin on the backbone, the
-`(backbone, node-admin)` cohort, under the same rule: lowest complete NodeId, a living holder kept.
+The fabric-primary is the mesh-primary of one mesh: the fabric row names that mesh
+([node.primary.update](lifecycles/node-primary-update.md)). The mesh-primary and the fabric-primary move
+together, under the same rule: lowest complete NodeId, a heard primary kept.
 
 ~~~text
-ReadyForTraffic node-admins on the backbone
+ReadyForTraffic node-admins of the fabric-primary's mesh
     -> same election rule
-    -> fabric primary
+    -> mesh primary, and fabric primary with it
 ~~~
 
-There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric seat
-stays in its holder's mesh while that mesh has a Ready node-admin: when the holder yields or its
-exact birth is proven gone, the lowest ReadyForTraffic node-admin NodeId of the same mesh fills it,
-and if only Pending admins survive the seat waits. A fabric-primary unheard past the
-staleness floor is superseded (Q89): the lowest ReadyForTraffic node-admin of its own mesh writes the seat
-row at the next revision, every seat the holder held in the one row, and publishes it; the seat leaves the
-mesh only when no node-admin of the mesh answers mesh investigation's ladder by its decision step: then
-the lowest ReadyForTraffic mesh-primary on the backbone writes it, and its mesh holds the seat
-([fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)). The new fabric-primary re-creates the lost mesh's node-admin
-([mesh investigation](lifecycles/mesh-investigation.md)'s fully-crashed arm, run by it): over the
-inherited data dir only with exit proof of the old birth; otherwise over a newly allocated data dir
-with a new endpoint key, `inherited = false` ([node recovery](lifecycles/node-recovery.md), R-FM2),
-since an expired hold and no inspection establish no ownership of the old dir. Once the node at the lost
-fabric-primary's path.name, returned or re-created, has been Ready for one staleness floor, the holder hands
-every seat it took back to it by the committed handover of §4.4, naming it as the successor. The seats
-return only that way.
+There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric-primary stays
+in its mesh while that mesh has a Ready node-admin: when it hands over or is unheard past the staleness
+floor, the lowest ReadyForTraffic node-admin NodeId of the same mesh takes both (Q89), by one Mesh row
+write; if only Pending admins survive it waits. The fabric-primary leaves the mesh in one case only: no
+node-admin of the mesh answers [mesh investigation](lifecycles/mesh-investigation.md)'s ladder by its
+decision step. Then the lowest ReadyForTraffic mesh-primary on the backbone writes the fabric row naming
+its own mesh, stays mesh-primary of its own mesh, and is fabric-primary temporarily
+([fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)).
+It re-creates the lost mesh's node-admins (mesh investigation's fully-crashed arm, run by it): over the
+inherited data dir when the investigation's provider step found the old runtime exited, otherwise over a
+newly allocated data dir with a new endpoint key, `inherited = false` ([node recovery](lifecycles/node-recovery.md),
+R-FM2). Once the node at the lost fabric-primary's path.name, returned or re-created, has been Ready for
+one staleness floor and is its mesh's mesh-primary, the temporary fabric-primary hands back by
+`node.fabric-primary.update`, one fabric row write naming that mesh. The fabric-primary returns only that
+way.
 
-Only the resolved fabric-primary may accept a Fabric topology change. The election chooses **who may write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) defines **what topology is accepted**.
+Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
+write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)
+defines **what topology is accepted**.
 
 ---
 
 <a id="44-explicit-committed-fabric-handover-r-a2--r-st2"></a>
+<a id="44-explicit-committed-fabric-handover"></a>
 
-### 4.4 Explicit committed fabric handover
+### 4.4 The commanded hand-over of the fabric-primary
 
-[node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) commits a transfer of the fabric
-seat while the incumbent mesh's node-admins remain alive; its selection is this page's leadership calculation, with the departing mesh excluded under mesh.delete, or the successor the holder names (the node at the path.name that lost the seat, returned or re-created, §4.3). The committed
-next-revision seat record is authoritative input to the resolver: the incumbent keeps its
-mesh-primary seat and yields fabric authority. The transfer needs no incumbent-mesh death,
-infers no death from silence and turns no announcement into authority.
+[node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate)
+moves the fabric-primary while the incumbent mesh's node-admins remain alive; its selection is this page's
+election, with the departing mesh excluded under mesh.delete, or the successor the fabric-primary names
+(the node at the path.name that lost it, returned or re-created, §4.3). The next-revision row is the
+election's input: under mesh.delete the incumbent stays mesh-primary and is fabric-primary no more. The
+hand-over needs no incumbent-mesh death, infers nothing from silence and turns no announcement into a
+fact.
 
-A Build that runs `node.connections.delete { scope: All }` on, stops, restarts or replaces a seat holder
-follows the [node.primary.update](lifecycles/node-primary-update.md) sequence: the holder, commanded from
-above, writes the one committed seat row, then calls node.primary.update on its successor. The holder's
-one committed seat row is the same authoritative resolver input as the handover record, and the holder's
-execution authority ends at the row's revision.
+A Build that runs `node.connections.delete { scope: All }` on, stops, restarts or replaces a primary
+follows the [node.primary.update](lifecycles/node-primary-update.md) sequence: the primary, commanded
+from above, calls node.primary.update on its successor, and the one row is written. The row is the same
+election input as any other, and the old primary writes the mesh's rows no more from the row's revision.
 
 ## 5. Day 0, preemption, restart, and replacement
 
-Day 0 ([fabric.create](lifecycles/fabric-create.md)) is not a special primary assignment. The first Ready node-admin is simply the only eligible node-admin, so the ordinary rule yields the initial mesh-primary and fabric-primary seats.
+Day 0 ([fabric.create](lifecycles/fabric-create.md)) is not a special primary assignment. The first Ready
+node-admin is simply the only eligible node-admin, so the ordinary rule makes it the initial
+mesh-primary and fabric-primary.
 
-For every seat:
-- a living holder keeps its seat unless a committed takeover has superseded it; a lower-NodeId candidate that later becomes Ready never displaces it;
-- silence, an observer-inferred Dead, a `held-running` hold or an unheard route is not proof of death: nothing is terminated or re-born on it, and a holder keeps its seat through it. The fabric-primary alone is superseded at the staleness floor by §4.3, every seat it held in one row, and gets them back by the hand-back of §4.3;
-- for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step proves the exit; the seat moves only once that exit proof is recorded, never before the proof;
-- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; its seats move by §4.3, and the holder that took them runs the hold (`RDM_HUNG_HOLD_FLOORS`) and the terminate as for any `held-running` member; watching admins record `held-running { since, verdicts }` on its status row (surfaced on `node.get` and `fabric.get`). The winner begins recovery only after its seat row is written, and a takeover whose row cannot be written stays held. A held takeover is surfaced on `fabric.get` as `takeover { lost, expected_revision, winner, proposer, since, reason }` until it commits or the holder is proven gone and the ordinary rule fills the seat. Every mesh-primary that notices tells the winner (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row;
-- a holder that yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh;
-- restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the holder;
+For every primary:
+- a heard primary stays primary; a lower-NodeId candidate that later becomes Ready never displaces it;
+- silence past the staleness floor supersedes it (§4.1, §4.3); nothing is terminated on silence. What
+  became of the unheard node is [node investigation](lifecycles/node-recovery.md)'s verdict (Q111): reached,
+  it is commanded back as a member through node.mesh.join; anything else, it is re-created at its
+  path.name with a new node.id (Q110), and an old birth that comes back is refused at admission and its
+  runtime terminated;
+- a primary that hands over gives the primary to the lowest ReadyForTraffic NodeId of its type in its
+  mesh;
+- restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the
+  primary;
 - replacement mints a new NodeId and may or may not win.
 
-Election movement never changes the current Build, never changes accepted topology, and never mints a Build: the current accepted Build is read LIFO from `builds.storage` (R-BI3, R-BI4).
+Election movement never changes the current Build, never changes accepted topology, and never mints a
+Build: the current accepted Build is read LIFO from `builds.storage` (R-BI3, R-BI4).
 
 ---
 
 <a id="6-fabric-shutdown-does-not-invent-another-election"></a>
 
-## 6. fabric.delete moves no seat
+## 6. fabric.delete moves no primary
 
-A seat moves only by its holder's yield, a committed transfer (§4.4), a proven loss, or, for the fabric seat alone, §4.3's staleness-floor rule, never by a status (§5), so [fabric.delete](lifecycles/fabric-delete.md) moves no seat: each mesh-primary keeps
-its seat until it is itself deleted, and the fabric-primary keeps the fabric seat to the end.
+A primary moves only by its own hand-over or the staleness-floor rule, never by a status (§5), so
+[fabric.delete](lifecycles/fabric-delete.md) moves no primary: each mesh-primary stays mesh-primary until
+it is itself deleted, and the fabric-primary stays fabric-primary to the end.
 
 ---
 
 ## 7. Publication and consumption
 
-Election inputs travel through current membership/topology dissemination. The resolved result may also be published for fast consumption.
+Election inputs travel through current membership/topology dissemination. The elected result may also be
+published for fast consumption.
 
-Consumers do not reconstruct the algorithm. They consume the imported leadership view.
+Consumers do not reconstruct the algorithm. They consume the elected primary.
 
 ~~~text
 WRONG:
@@ -189,11 +219,12 @@ WRONG:
     -> runs its own comparator
 
 RIGHT:
-    imported LeadershipResolver resolves primary
-    -> consumer uses LeadershipView
+    the one election elects the primary
+    -> consumer uses the elected primary
 ~~~
 
-Any architecture document that needs "current mesh primary" or "current fabric primary" should link this document and consume that resolved view.
+Any architecture document that needs "current mesh primary" or "current fabric primary" should link this
+document and consume that elected primary.
 
 ---
 
@@ -201,48 +232,53 @@ Any architecture document that needs "current mesh primary" or "current fabric p
 
 Election has no separate repair protocol.
 
-Held-member repair, exact runtime/lifecycle facts, and control-state hydration restore the candidate view. When observers again hold the same current candidate facts, the resolver returns the same winner.
+Held-member repair, exact runtime/lifecycle facts, and control-state hydration restore the candidate
+view. When observers again hold the same current candidate facts, the election returns the same winner.
 
-A failed join, failed RPC, failed dial, silence, or provider-domain mismatch is not election evidence that a candidate is gone.
+A failed join, failed RPC, failed dial, silence, or provider-domain mismatch is not election evidence
+that a candidate is gone.
 
 ---
 
 ## 9. Required invariants
 
 1. This file is the only normative election specification.
-2. One imported LeadershipResolver implementation exists.
+2. One election implementation exists.
 3. Ordinary election eligibility is current ReadyForTraffic.
-4. A held seat stays with its holder; for a vacancy the complete canonical NodeId is the only ordering key.
-5. Node-admin cohort winner and mesh primary are one seat.
-6. Fabric-primary candidates are current mesh-primary node-admins.
-7. Primary advertisements are projections, never independent authority.
-8. Equal candidate sets and equal seat records yield equal winners.
+4. A heard primary stays primary; for a vacancy the complete canonical NodeId is the only ordering key.
+5. The `node-admin` winner of a mesh and its mesh-primary are one.
+6. The fabric-primary is a mesh-primary; its candidates are its mesh's node-admins, else the
+   mesh-primaries on the backbone.
+7. Primary advertisements are projections, never a fact of their own.
+8. Equal candidate sets and equal rows yield equal winners.
 9. Day 0 uses the ordinary rule.
 10. Restart preserves NodeId; permanent logical replacement does not.
 11. Election movement never changes accepted topology or mints a Build.
-12. Failed reachability is never destructive death proof.
-13. A seat moves only by its holder's yield, a committed transfer or a proven loss, never by a status; fabric.delete moves none.
-14. Rafka product/domain code consumes LeadershipView; it never keeps a second comparator or election state machine.
+12. Failed reachability decides nothing; node investigation does.
+13. A primary moves only by its own hand-over or the staleness-floor rule, never by a status;
+    fabric.delete moves none.
+14. Rafka product/domain code consumes the elected primary; it never keeps a second comparator or
+    election state machine.
 
 ---
 
 ## 10. Implementation boundary
 
-Conceptually, for one seat:
+Conceptually, for the nodes of one type in one mesh:
 
 ~~~rust
-fn elect<'a>(holder: Option<&SeatHolder>, candidates: &'a [Node]) -> Option<&'a Node> {
-    if let Some(h) = holder {
-        match candidates.iter().find(|n| n.node_id == h.node_id) {
-            _ if h.is_proven_gone() => {}                                // proven gone: a vacancy
-            None => return None,                                         // holder not yet heard: the seat waits
-            Some(n) if n.incarnation == h.incarnation => return Some(n), // a living holder keeps its seat
-            Some(_) => {}                                                // a later birth replaced it: a vacancy
+fn elect<'a>(primary: Option<&Primary>, candidates: &'a [Node]) -> Option<&'a Node> {
+    if let Some(p) = primary {
+        match candidates.iter().find(|n| n.node_id == p.node_id) {
+            _ if p.unheard_past_floor() => {}                              // unheard past the floor: a vacancy
+            None => return None,                                           // primary not yet heard: it waits
+            Some(n) if n.incarnation == p.incarnation => return Some(n),   // a heard primary stays primary
+            Some(_) => {}                                                  // a later birth replaced it: a vacancy
         }
     }
     candidates
         .iter()
-        .filter(|n| holder.map_or(true, |h| n.mesh == h.mesh))
+        .filter(|n| primary.map_or(true, |p| n.mesh == p.mesh))
         .filter(|n| n.status == MemberStatus::ReadyForTraffic)
         .min_by_key(|n| n.node_id)
 }
@@ -251,12 +287,13 @@ fn elect<'a>(holder: Option<&SeatHolder>, candidates: &'a [Node]) -> Option<&'a 
 Exact Rust names may differ. The contract does not:
 
 ~~~text
-held seat record, holder living -> that holder
-held seat record, holder not yet heard -> the seat waits for it
-vacant (holder yielded or proven gone, or no record)
-       -> current ReadyForTraffic candidates of the holder's mesh
+the Mesh row's primary, heard -> that primary
+the Mesh row's primary, not yet heard -> it waits
+vacant (handed over, unheard past the floor, or no row)
+       -> current ReadyForTraffic candidates of that type in that mesh
        -> lowest complete NodeId
-       -> one resolved primary
+       -> one elected primary
 ~~~
 
-RDM owns the resolver. Rafka binds facts and consumes the result. No downstream document or implementation gets another election algorithm.
+RDM owns the election. Rafka binds facts and consumes the result. No downstream document or
+implementation gets another election algorithm.
