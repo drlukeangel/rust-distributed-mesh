@@ -228,17 +228,14 @@ impl MemberDoor {
         if node_type != kind.node_type() {
             return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {}, not of the type {node_type} the command names", kind.node_type()), rdm_core::outcome::Code::FailedPrecondition);
         }
+        // Commanded by its mesh-primary, it runs the update (a receiver never refuses a call for the birth it
+        // names, R-RX5). The revision the successor's entry takes is the next after the record of its type
+        // this node holds; holding none, it reads its mesh-primary's topology first, as a starting node does.
         let book = self.membership.seats();
-        let mine = |book: &SeatBook| book.cohort(&mesh, kind).filter(|h| h.is_birth(&self.node_id, &self.incarnation));
-        // Its record comes on its mesh-primary's projection (step 5); one not heard yet is read from the
-        // mesh-primary that commands it, as a starting node reads its topology, never waited for.
-        if mine(book).is_none() {
+        if book.cohort(&mesh, kind).is_none() {
             self.read_own_mesh(me, &mesh).await;
         }
-        let Some(held) = mine(book) else {
-            let reason = format!("{me} is not the {node_type} primary of {mesh} in its view, its mesh-primary's topology read included: it names {}", book.cohort(&mesh, kind).map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
-            return rdm_core::reply::handover::bounded_failed(STEP, &reason, rdm_core::outcome::Code::FailedPrecondition);
-        };
+        let revision = book.cohort(&mesh, kind).map_or(0, |r| r.revision) + 1;
         // Step 2: the election over the nodes of its type in its mesh, itself excluded.
         let members: Vec<rdm_core::MeshDigest> = self.membership.book.all().into_iter().filter(|d| d.node.name.mesh == mesh && d.node.name.kind == kind && d.node.node_id != self.node_id).collect();
         let candidates: Vec<rdm_core::election::Candidate<'_>> = members.iter().map(|d| rdm_core::election::Candidate { node_id: &d.node.node_id, ready: d.status == MemberStatus::ReadyForTraffic }).collect();
@@ -247,7 +244,7 @@ impl MemberDoor {
         };
         let successor = Birth { node_id: winner.node.node_id.clone(), incarnation: winner.node.incarnation.clone() };
         tracing::Span::current().record("successor", winner.node.name.to_string().as_str());
-        let entries = vec![(node_type.to_string(), self.me_birth(), successor.clone(), held.revision + 1)];
+        let entries = vec![(node_type.to_string(), self.me_birth(), successor.clone(), revision)];
         // Step 4: the call on the successor's exact birth.
         match call_successor(&self.client, &successor.node_id, &entries, build_id, run, operation).await {
             Ok(revisions) => {
