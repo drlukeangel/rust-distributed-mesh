@@ -68,4 +68,10 @@ postcard = { version = "1", features = ["alloc"] }
 serde_json = "1"
 # The state-sync cell's desired shape (FabricDesired, MeshDesired) on the testkit's process estate.
 rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
+# The consumer's own tracing subscriber (the one-trace primer): RDM's spans through the consumer's
+# OpenTelemetry layer, at the versions RDM's own lock holds.
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["testing"] }
+tracing-opentelemetry = "0.32"
+tracing-subscriber = "0.3"
 

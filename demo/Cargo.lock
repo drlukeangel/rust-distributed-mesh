@@ -3024,6 +3024,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "postcard",
  "rdm-admin",
  "rdm-client",
@@ -3034,6 +3036,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
