@@ -1,0 +1,1594 @@
+# Removal inventory: the seal (Q109) and proof of termination (Q111)
+
+Asked by Luke, 2026-10-21: every place for its removal, and every test that tests it. Generated from origin/main by `git grep` and annotated per line. Rulings: Q109 (storage is persistence only; no seal; no wrapping), Q110 (an unreachable node is re-created; one that comes back is refused and terminated), Q111 (nothing requires proof of termination; node investigation decides).
+
+Annotations: **remove** goes with its ruling; **remove or rewrite** is a statement or code path that waits on or requires proof of termination, rewritten to act on node investigation's verdict; **keep** is node investigation's own provider step, whose verdict now chooses the data dir (Q111); **other meaning** is the word seal used for the op ledger or the hook registry being finalized at boot, a different thing from the Build lane seal, listed for Luke's decision.
+
+Generated lists are a starting point: the lead reads each line before changing it, and reports a line the pattern missed.
+
+## A. The seal (Q109)
+
+### Pages (19 lines)
+
+- `docs/architecture/build.md:67` [other meaning: registry finalized at boot; Luke to decide] those algorithms. Hooks are registered before sealing, idempotent and bounded, and report
+- `docs/architecture/build.md:413` [remove] Control-plane state lives behind the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's 
+- `docs/architecture/build.md:465` [other meaning: registry finalized at boot; Luke to decide] `LifecycleTransitionPipeline` runs a `Transition` through its sealed hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`
+- `docs/architecture/lifecycles/fabric-state-sync.md:9` [remove] the Build facts (each accepted Build, attempt claim, receipt and lane seal), which are written to the
+- `docs/architecture/lifecycles/node-primary-update.md:159` [remove] leadership view is folded from the seat moves. After the row the writer seals the Build lane of each seat
+- `docs/architecture/lifecycles/node-primary-update.md:160` [remove] it moved at the revision it moved from (`lane-seal/1`); the successor appends to that lane only once the
+- `docs/architecture/lifecycles/node-primary-update.md:161` [remove] seal stands, and writes the seal itself when the writer was lost before it.
+- `docs/architecture/node-rpc-envelope.md:184` [other meaning: registry finalized at boot; Luke to decide] The ledger is consulted in exactly one place: the seal, once per process at boot. The core rows
+- `docs/architecture/node-rpc-envelope.md:185` [other meaning: registry finalized at boot; Luke to decide] are built into the contract; a product adds its rows through the server builder. The seal takes
+- `docs/architecture/node-rpc-envelope.md:186` [other meaning: registry finalized at boot; Luke to decide] the ledger and the entries the process serves and builds the sealed catalog, refusing the
+- `docs/architecture/node-rpc-envelope.md:200` [other meaning: registry finalized at boot; Luke to decide] After the seal the ledger is not read again. The target consults the sealed catalog's served
+- `docs/architecture/node-rpc-envelope.md:1547` [remove] The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own
+- `docs/architecture/node-rpc.md:203` [other meaning: registry finalized at boot; Luke to decide] The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rafka-node-rpc-contract`, a product adds its rows through the server builder, and the seal builds the served catalog 
+- `docs/architecture/node-rpc.md:278` [other meaning: registry finalized at boot; Luke to decide] ## 12. Server registration is sealed at boot
+- `docs/architecture/node-rpc.md:287` [other meaning: registry finalized at boot; Luke to decide] The table is sealed **before the mesh endpoint can dispatch its first accepted bi-stream**.
+- `docs/architecture/node-rpc.md:291` [other meaning: registry finalized at boot; Luke to decide] The [seal](node-rpc-envelope.md#the-op-ledger) refuses the process on any ledger fault; the runtime also refuses an invalid configured admission or memory limit and a streaming budget that does not fit the transport inva
+- `docs/architecture/node-rpc.md:329` [other meaning: registry finalized at boot; Luke to decide] - is sealed with the registry.
+- `docs/architecture/node-rpc.md:413` [other meaning: registry finalized at boot; Luke to decide] At registry seal:
+- `docs/architecture/node-rpc.md:943` [other meaning: registry finalized at boot; Luke to decide] A server-streaming op is never forwardable: the [seal](node-rpc-envelope.md#the-op-ledger) refuses a forwardable server-streaming entry.
+
+### Code, production (219 lines)
+
+- `crates/rdm-admin/src/admin/boot.rs` (6)
+  - `:194` [remove] /// The Node RPC server a node-admin serves, before it seals: core (Ping, Forward), then the families the
+  - `:593` [other meaning: registry finalized at boot; Luke to decide] // The app's own ops (each behind the gate of its hook), before the catalog seals.
+  - `:601` [remove] .seal(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
+  - `:602` [other meaning: registry finalized at boot; Luke to decide] .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
+  - `:887` [remove] journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions, seals: crate::fabric_storage::seals_owed(fabric_storage.clone(), rdm_core::handover::Hand
+  - `:1218` [other meaning: registry finalized at boot; Luke to decide] let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
+- `crates/rdm-admin/src/build_lanes.rs` (58)
+  - `:9` [remove] //! The move of the lane's seat seals the revision it moved from: `lane-seal/1` at the first sequence
+  - `:10` [remove] //! the sealer wins. A writer meeting the seal is refused stale and appends nothing past it, and a
+  - `:11` [remove] //! reader reconstructs the lane from its keys in order, each revision up to its seal, never past it.
+  - `:13` [remove] use crate::build_state::{rev_dir, seq_key, BuildFact, LaneId, LaneKey, LaneSeal, REV_PREFIX};
+  - `:21` [remove] /// The format of a revision's seal at its lane key.
+  - `:22` [remove] pub const SEAL_FORMAT: &str = "lane-seal/1";
+  - `:38` [remove] /// The revision's seal.
+  - `:39` [remove] Seal(LaneSeal),
+  - `:47` [remove] /// The revision is sealed: nothing was written, and nothing of it is written again.
+  - `:48` [remove] Sealed {
+  - `:49` [remove] /// The seal's key.
+  - `:51` [remove] /// The seal.
+  - `:52` [remove] seal: LaneSeal,
+  - `:59` [remove] /// What a seal of a revision came to ([`Lanes::seal`]).
+  - `:61` [remove] pub struct Sealed {
+  - `:62` [remove] /// The seal's key.
+  - `:64` [remove] /// The seal standing there.
+  - `:65` [remove] pub seal: LaneSeal,
+  - `:66` [remove] /// The facts of the revision the seal found below it and read past, in order.
+  - `:76` [remove] /// The seal, once read: its sequence and record.
+  - `:77` [remove] sealed: Option<(u64, LaneSeal)>,
+  - `:91` [remove] sealed: Option<(u64, LaneSeal)>,
+  - `:130` [remove] let opened = Rev { store, next: 1, sealed: None };
+  - `:168` [remove] /// sequence to its first unwritten one or its seal. [`Self::peek_new`], then [`Self::take`].
+  - `:180` [remove] if rev.sealed.is_some() {
+  - `:183` [remove] let (from, mut next, mut sealed, mut facts) = (rev.next, rev.next, None, Vec::new());
+  - `:192` [remove] Entry::Seal(s) => {
+  - `:193` [remove] sealed = Some((next, s));
+  - `:203` [remove] revs.push(RevRead { revision, from, next, sealed, facts });
+  - `:216` [remove] if rev.next != r.from || rev.sealed.is_some() {
+  - `:220` [remove] rev.sealed = r.sealed;
+  - `:226` [remove] /// The seal of `revision` of `lane` this process has read, with its key.
+  - `:227` [remove] pub fn seal_of(&self, lane: &LaneId, revision: u64) -> Option<(LaneKey, LaneSeal)> {
+  - `:228` [remove] self.held(lane, revision).and_then(|r| r.sealed.map(|(seq, s)| (LaneKey { lane: lane.clone(), revision, seq }, s)))
+  - `:238` [remove] /// `At` its key; `Sealed` when the revision's seal stands there (refused stale, nothing written);
+  - `:242` [remove] if let Some((seq, seal)) = rev.sealed.clone() {
+  - `:243` [remove] return Ok(Appended::Sealed { at: LaneKey { lane: lane.clone(), revision, seq }, seal });
+  - `:256` [remove] Some(Entry::Seal(seal)) => {
+  - `:257` [remove] rev.sealed = Some((rev.next, seal.clone()));
+  - `:259` [remove] Ok(Appended::Sealed { at: key, seal })
+  - `:266` [remove] /// Seal `seal.revision` of `lane` at the first sequence the seal wins, after [`Self::read_new`] of
+  - `:267` [remove] /// the lane: the seal standing there and its key (this one, or one already standing, and then
+  - `:268` [remove] /// nothing is written), with every fact of the revision the seal found below it and read past,
+  - `:270` [remove] pub async fn seal(&self, lane: &LaneId, seal: &LaneSeal) -> Result<Sealed, StorageError> {
+  - `:271` [remove] let revision = seal.revision;
+  - `:275` [remove] if let Some((seq, standing)) = rev.sealed.clone() {
+  - `:276` [remove] return Ok(Sealed { at: LaneKey { lane: lane.clone(), revision, seq }, seal: standing, passed });
+  - `:280` [remove] if rev.store.insert_claimed(&seq_key(rev.next), SEAL_FORMAT, seal, move |standing: Option<&LaneSeal>| match standing {
+  - `:282` [remove] Some(_) => Err(format!("{at} holds another seal")),
+  - `:284` [remove] rev.sealed = Some((rev.next, seal.clone()));
+  - `:286` [remove] return Ok(Sealed { at: key, seal: seal.clone(), passed });
+  - `:288` [remove] // The key holds an entry the seal did not see: the old writer's last fact (below the
+  - `:289` [remove] // seal, so it commits) or another sealer's seal. Read on and seal after it.
+  - `:291` [remove] Some(Entry::Seal(standing)) => {
+  - `:292` [remove] rev.sealed = Some((rev.next, standing.clone()));
+  - `:294` [remove] return Ok(Sealed { at: key, seal: standing, passed });
+  - `:301` [remove] None => return Err(StorageError::Io { file: format!("{}/{key}.json", self.root.dir().display()), reason: "the lane key was live at the seal's insert and holds nothing at the read a
+  - `:314` [remove] let decoded = if format == FACT_FORMAT { serde_json::from_value(record).map(Entry::Fact) } else { serde_json::from_value(record).map(Entry::Seal) };
+- `crates/rdm-admin/src/build_run.rs` (4)
+  - `:280` [remove] async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+  - `:281` [remove] self.inner.seal_moved(moved, by).await
+  - `:393` [remove] async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+  - `:394` [remove] self.inner.seal_moved(moved, by).await
+- `crates/rdm-admin/src/build_state.rs` (94)
+  - `:678` [remove] /// from the store): the seat record names another live birth, or the revision is sealed. Nothing
+  - `:681` [remove] /// The lane key the write met (its seal's), or the lane when no key was reached.
+  - `:685` [remove] /// The record or seal that refused it, in words.
+  - `:1125` [remove] /// Seal, after the committed seat move `moved`, the Build lane of every seat it moved at the
+  - `:1126` [remove] /// revision it moved from (Q35: "Whoever commits the move seals, after its seat-move row stands"),
+  - `:1127` [remove] /// written by `by`, the move's writer. A log held in one process has no lanes to seal.
+  - `:1128` [remove] async fn seal_moved(&self, _moved: &crate::fabric_storage::SeatMove, _by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+  - `:1969` [remove] /// fact is written under revision 0 and no seal is owed.
+  - `:1971` [remove] /// Each lane's sealed revisions: nothing of one is written again.
+  - `:1972` [remove] sealed: Mutex<BTreeMap<LaneId, std::collections::BTreeSet<u64>>>,
+  - `:2003` [remove] /// lane whose seat record names another live birth is refused stale, naming the record; the seals
+  - `:2004` [remove] /// owed on the lane before its revision are taken; and a fact of a sealed revision is refused
+  - `:2005` [remove] /// stale, naming the seal.
+  - `:2014` [remove] (seat.revision, (seats.seals)(lane.clone(), seat.revision).await.map_err(BuildStateError::Io)?)
+  - `:2018` [remove] let mut sealed = self.sealed.lock().unwrap();
+  - `:2019` [remove] let revisions = sealed.entry(lane.clone()).or_default();
+  - `:2022` [remove] return Err(stale(lane.name(), Some(revision), format!("revision {revision} of {} is sealed: a seat move moved the lane's seat from it", lane.name())));
+  - `:2081` [remove] /// once at boot): which lanes it reads, the revision each lane is written under and the seals
+  - `:2095` [remove] /// The seals owed on a lane before an append under a later revision.
+  - `:2096` [remove] pub seals: SealsOwed,
+  - `:2175` [remove] self.set_lane_seats(seats.revisions, seats.seals);
+  - `:2271` [remove] async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, _by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+  - `:2272` [remove] let mut sealed = self.sealed.lock().unwrap();
+  - `:2279` [remove] sealed.entry(lane).or_default().insert(s.from_revision);
+  - `:2356` [remove] /// The seal of one revision of a lane (`lane-seal/1`): nothing of `revision` commits past it.
+  - `:2358` [remove] pub struct LaneSeal {
+  - `:2359` [remove] /// The revision sealed.
+  - `:2362` [remove] pub sealed_by: u64,
+  - `:2363` [remove] /// The exact birth that wrote the seal.
+  - `:2386` [remove] /// write of a revision a seat move sealed is refused at the seal.
+  - `:2395` [remove] /// The seals a birth owes on a lane before it appends under `revision` (Q35: "the successor appends
+  - `:2396` [remove] /// only once both stand"; a crash between the seat-move row and its seal is completed by the next
+  - `:2398` [remove] /// move. A revision an election stepped holds no seal: its holder is proven gone.
+  - `:2399` [remove] pub type SealsOwed = Arc<dyn Fn(LaneId, u64) -> futures_util::future::BoxFuture<'static, Result<Vec<LaneSeal>, String>> + Send + Sync>;
+  - `:2416` [remove] seals: std::sync::OnceLock<SealsOwed>,
+  - `:2430` [remove] /// The time the holding turn spent in the lane store's own calls (its reads, appends, seals and
+  - `:2431` [remove] /// the seals it owes), in nanoseconds: what its span names apart from its wait.
+  - `:2540` [remove] seals: std::sync::OnceLock::new(),
+  - `:2621` [remove] /// Set the seat revision this birth writes each lane under, and the seals it owes before it
+  - `:2623` [remove] /// revision 0 and no seal is owed (a log no seat record governs).
+  - `:2624` [remove] pub fn set_lane_seats(&self, revisions: LaneRevisions, seals: SealsOwed) {
+  - `:2626` [remove] let _ = self.seals.set(seals);
+  - `:2629` [remove] /// The lanes this journal writes through: the seal of a moved seat's lane is written there.
+  - `:2746` [remove] /// Read `lane` to its end and seal every earlier revision of it a committed seat move moved and no
+  - `:2747` [remove] /// seal closes yet (the seal its mover owes, completed by this fold), so nothing of this birth's
+  - `:2752` [remove] let Some(seals) = self.seals.get() else { return Ok(()) };
+  - `:2753` [remove] for seal in self.lane(seals(lane.clone(), revision)).await.map_err(BuildStateError::Io)? {
+  - `:2754` [remove] if self.lanes.seal_of(lane, seal.revision).is_none() {
+  - `:2755` [remove] self.seal(w, lane, &seal, revision).await?;
+  - `:2761` [remove] /// Write `seal` on `lane` (or meet the one standing), spanned, taking the facts it read past.
+  - `:2762` [remove] async fn seal(&self, w: &Derived, lane: &LaneId, seal: &LaneSeal, writes_under: u64) -> Result<(), BuildStateError> {
+  - `:2763` [remove] let sealed = self.lane(self.lanes.seal(lane, seal)).await.map_err(lane_io)?;
+  - `:2764` [remove] tracing::info_span!("rdm.node_admin.build.update.via-lane-sealed", lane = %lane.name(), revision = seal.revision, at = %sealed.at, sealed_by = sealed.seal.sealed_by, by = %format!(
+  - `:2765` [remove] .in_scope(|| tracing::info!("a revision a committed seat move moved is sealed: nothing of it commits past the seal"));
+  - `:2766` [remove] self.take_read(w, sealed.passed);
+  - `:2771` [remove] /// stale, named, when this birth no longer holds the lane's seat or the revision is sealed;
+  - `:2786` [remove] crate::build_lanes::Appended::Sealed { at, seal } => Err(stale(at.to_string(), Some(revision), format!("revision {revision} is sealed by seat move {} ({}:{}:{})", seal.sealed_by, s
+  - `:2812` [remove] /// key past a seal is never left empty, since the seal takes the first free key). Void when the
+  - `:2813` [remove] /// key holds any other entry, the seal included.
+  - `:2839` [remove] .in_scope(|| tracing::info!("the mesh's in-flight row names a lane key that holds another entry: its claim never committed below the seal, and the row is released"));
+  - `:2857` [remove] let refuse = |file: PathBuf| BuildStateError::Io(format!("{}: the Build journal format {REFUSED_JOURNAL_FILE} is retired: this build reads the Build lanes, one key per fact under r
+  - `:3016` [remove] async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+  - `:3017` [remove] let w = self.turn("seal_moved").await;
+  - `:3026` [remove] self.seal(&w, &lane, &LaneSeal { revision: s.from_revision, sealed_by: moved.t, by: by.clone() }, s.revision).await?;
+  - `:4385` [remove] seals: Arc::new(|_, _| Box::pin(async { Ok(Vec::new()) })),
+  - `:4390` [remove] /// live birth is refused stale, naming the record, and a fact of a revision a seat move sealed
+  - `:4409` [remove] sealed_log.seal_moved(&moved, &by).await.unwrap();
+  - `:4412` [remove] other => panic!("an acceptance under a revision a seat move sealed is refused stale, not {other:?}"),
+  - `:4420` [remove] /// and one under a revision a seat move sealed is refused `StaleSeat` at that revision; neither
+  - `:4432` [remove] /// A Build log on the store root at `dir` writing every lane under `revision`, owing the seals
+  - `:4436` [remove] j.set_lane_seats(Arc::new(move |_| LaneSeat { revision, holds: Ok(()) }), crate::fabric_storage::seals_owed(storage.clone(), by));
+  - `:4440` [remove] /// CONTRACT (Q35 x cells: "a crash between the row and the seal: the successor does not append, the
+  - `:4441` [remove] /// next fold completes the seal"; Q28 A: "An old-authority writer's next append under N meets the
+  - `:4442` [remove] /// seal and is refused by name (`RejectedStaleSeat` from the store, spanned)"): the holder writes
+  - `:4444` [remove] /// before it seals. The successor, writing under revision 1, does not append before revision 0 is
+  - `:4445` [remove] /// sealed: its next fold writes the seal the move owes (naming the move and the successor) after
+  - `:4448` [remove] /// holder's facts, then the successor's, and nothing of revision 0 past its seal. Must NOT happen:
+  - `:4449` [remove] /// the successor's fact before revision 0's seal, or an old-authority fact committing after it.
+  - `:4451` [remove] async fn a_crash_between_the_seat_move_and_its_seal_is_sealed_by_the_successors_next_fold_and_the_old_writer_is_refused_stale() {
+  - `:4458` [remove] // The holder commits the move of mesh1's seat 0 -> 1; its process is gone before its seal.
+  - `:4470` [remove] let capture = crate::span_capture::Capture::new("e6-1-crash-between-row-and-seal");
+  - `:4482` [remove] "the seal stands after the holder's last fact, and the successor's claim at revision 1's first key"
+  - `:4484` [remove] let seal: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meshes/mesh1/builds/rev-00000000000000000000/00000000000000000002.json")).unwrap()).unwrap();
+  - `:4485` [remove] assert_eq!((seal["format"].as_str(), seal["record"]["revision"].as_u64(), seal["record"]["sealed_by"].as_u64()), (Some(crate::build_lanes::SEAL_FORMAT), Some(0), Some(1)), "{seal}"
+  - `:4486` [remove] let sealed = capture.named("rdm.node_admin.build.update.via-lane-sealed");
+  - `:4487` [remove] assert_eq!(sealed.len(), 1, "{sealed:?}");
+  - `:4488` [remove] eprintln!("span rdm.node_admin.build.update.via-lane-sealed trace_id={} {:?}", sealed[0].trace_id, sealed[0].attributes);
+  - `:4490` [remove] assert!(matches!(&refused, BuildStateError::StaleSeat { at, revision: Some(0), detail } if at.ends_with("rev-00000000000000000000/00000000000000000002") && detail.contains("sealed 
+  - `:4494` [remove] assert_eq!(lane_files(&dir).len(), 4, "nothing written past the seal");
+  - `:4573` [remove] /// that key is not in the lane below the seal"): a claim decided with its mesh's in-flight row names
+  - `:4576` [remove] /// entry (the seal that closed its claimant's revision) is void: it is released, spanned, and the
+  - `:4599` [remove] // Its claimant's revision is sealed at that key: the row is void.
+  - `:4604` [remove] j.lanes().seal(&LaneId::Fabric, &LaneSeal { revision: 0, sealed_by: 1, by: birth("mesh1", "200000000000", "n") }).await.unwrap();
+  - `:4605` [remove] assert!(!j.in_flight_live(&void).await.unwrap(), "the key holds the seal");
+- `crates/rdm-admin/src/fabric_builds.rs` (2)
+  - `:613` [remove] async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+  - `:614` [remove] self.local.seal_moved(moved, by).await
+- `crates/rdm-admin/src/fabric_handover.rs` (11)
+  - `:942` [remove] // The holder, which committed the move, seals the Build lanes of the seats it moved (Q35):
+  - `:943` [remove] // nothing of its revision commits past the seal. A seal not written is completed by the
+  - `:945` [remove] if let Err(e) = self.builds.seal_moved(&moved, &me).await {
+  - `:946` [remove] tracing::info_span!("rdm.node_admin.build.reject.via-lane-unsealed", node = %me_name, operation, t = moved.t, error = %e)
+  - `:947` [remove] .in_scope(|| tracing::info!("the moved seats' Build lanes could not be sealed here: the successor's next fold seals them before it appends"));
+  - `:1467` [remove] /// `lost` at `expected` to itself at the next revision, kind `takeover`. Then it seals the fabric
+  - `:1573` [remove] // The [banned word]: the takeover's row, then the seal of the lost authority's revision. Nothing of
+  - `:1592` [remove] if let Err(e) = self.builds.seal_moved(&moved, me).await {
+  - `:1593` [remove] tracing::info_span!("rdm.node_admin.build.reject.via-lane-unsealed", node = %me_name, operation = "takeover", t = moved.t, error = %e)
+  - `:1594` [remove] .in_scope(|| tracing::info!("the lost authority's Build lane could not be sealed here: this admin's next append seals it first"));
+  - `:1617` [remove] /// and meets the seal, makes that dir reusable (node-recovery.md `R-FM2`). Each write that cannot be
+- `crates/rdm-admin/src/fabric_storage.rs` (5)
+  - `:693` [remove] /// The seals a birth `by` owes on a Build lane before it appends under a revision (Q35): for every
+  - `:694` [remove] /// committed move of the lane's seat from an earlier revision, that revision's seal naming the move.
+  - `:695` [remove] pub fn seals_owed(storage: std::sync::Arc<dyn FabricStorage>, by: rdm_core::handover::HandoverBirth) -> crate::build_state::SealsOwed {
+  - `:703` [remove] let moves = storage.seat_moves().await.map_err(|e| format!("fabric.storage, the fabric's seat moves could not be read for the seals of {}: {e}", lane.name()))?;
+  - `:704` [remove] Ok(moves.iter().flat_map(|m| m.row.seats.iter().filter(|s| s.seat == seat && s.from_revision < below).map(|s| crate::build_state::LaneSeal { revision: s.from_revision, sealed_by: m
+- `crates/rdm-admin/src/lifecycle.rs` (7)
+  - `:15` [other meaning: registry finalized at boot; Luke to decide] //! Hooks are registered before the registry seals. Each run appends a receipt
+  - `:211` [other meaning: registry finalized at boot; Luke to decide] /// Why a hook registry does not seal.
+  - `:229` [other meaning: registry finalized at boot; Luke to decide] /// The hooks registered before the registry seals.
+  - `:247` [remove] /// Validate and seal; nothing registers afterwards.
+  - `:248` [other meaning: registry finalized at boot; Luke to decide] pub fn seal(self) -> Result<SealedHooks, Vec<RegistryError>> {
+  - `:267` [other meaning: registry finalized at boot; Luke to decide] /// The sealed registry. Hook order is deterministic: by phase, then
+  - `:336` [other meaning: registry finalized at boot; Luke to decide] /// A pipeline over the sealed `hooks` that appends its receipts to `receipts`.
+- `crates/rdm-admin/src/wiring.rs` (4)
+  - `:7` [other meaning: registry finalized at boot; Luke to decide] //! of them once, and register hooks before the registry seals, before the admin runs. The product
+  - `:92` [remove] /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
+  - `:209` [remove] /// The app's own ops, added to the server before it seals.
+  - `:211` [other meaning: registry finalized at boot; Luke to decide] /// Hooks registered, in order, before the lifecycle registry seals.
+- `crates/rdm-core/src/catalog.rs` (10)
+  - `:1` [other meaning: registry finalized at boot; Luke to decide] //! The sealed protocol catalog and op ledger (ownership amendment §10–§11,
+  - `:7` [other meaning: registry finalized at boot; Luke to decide] //! legacy adapters into one [`CatalogBuilder`] and seals it once, before the
+  - `:8` [other meaning: registry finalized at boot; Luke to decide] //! first accepted stream is dispatched. The sealed catalog is the only
+  - `:11` [remove] //! and no fallthrough to legacy code after seal.
+  - `:113` [remove] /// A product's sealed adapter for a pre-Node-RPC family, carried only
+  - `:176` [other meaning: registry finalized at boot; Luke to decide] /// Why a catalog refuses to seal.
+  - `:284` [remove] /// The unsealed composition: core + product protocols + transitional adapters.
+  - `:309` [remove] /// Validate and seal. Consumes the builder: nothing can be added after.
+  - `:310` [other meaning: registry finalized at boot; Luke to decide] pub fn seal(self) -> Result<SealedCatalog, Vec<SealError>> {
+  - `:371` [remove] /// The one sealed dispatch table of a process. Immutable.
+- `crates/rdm-core/src/dispatch.rs` (1)
+  - `:78` [other meaning: registry finalized at boot; Luke to decide] /// The request direction of a server serving what `catalog` seals.
+- `crates/rdm-node/src/lib.rs` (1)
+  - `:109` [other meaning: registry finalized at boot; Luke to decide] /// it seals. A hook that fails after the node came up Pending ends the process by name.
+- `crates/rdm-node/src/node.rs` (5)
+  - `:315` [remove] /// or carries for others, holds it before the server seals).
+  - `:433` [remove] // The process's one client, made before the server seals: the server carries the proof
+  - `:505` [other meaning: registry finalized at boot; Luke to decide] let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
+  - `:512` [remove] .seal(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
+  - `:513` [other meaning: registry finalized at boot; Luke to decide] .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
+- `crates/rdm-node/src/node_rpc.rs` (1)
+  - `:61` [remove] /// process's one client before it seals).
+- `crates/rdm-node/src/record_store.rs` (1)
+  - `:239` [remove] /// [`Self::read`] of a key one of several formats may hold (a lane's fact or its seal): the
+- `crates/rdm-transport/src/server.rs` (9)
+  - `:270` [other meaning: registry finalized at boot; Luke to decide] /// Registration happens at birth; `seal` consumes the builder.
+  - `:281` [remove] /// Filled at seal for the forward handler, when this node serves it.
+  - `:351` [other meaning: registry finalized at boot; Luke to decide] /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
+  - `:359` [other meaning: registry finalized at boot; Luke to decide] /// process's one sealed catalog (node-rpc-envelope.md §12). The server runs no handler
+  - `:383` [other meaning: registry finalized at boot; Luke to decide] /// Seal the catalog before the first stream is accepted, as `birth`: the
+  - `:386` [remove] pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
+  - `:387` [other meaning: registry finalized at boot; Luke to decide] let catalog = self.catalog.seal()?;
+  - `:506` [remove] /// One sealed server for the process's one endpoint. The socket a request
+  - `:524` [other meaning: registry finalized at boot; Luke to decide] /// The one sealed effective catalog of this process: what every dispatcher in it serves.
+
+### Tests (147 lines in 94 test functions)
+
+- `crates/rdm-admin/src/build_lanes.rs` `lanes` (lines 341)
+- `crates/rdm-admin/src/build_lanes.rs` `the_store_layout_is_frozen_byte_for_byte` (lines 351, 359)
+- `crates/rdm-admin/src/build_lanes.rs` `a_lane_read_catching_up_on_forty_facts_makes_one_blocking_call_for_their_revision` (lines 459, 461, 462, 463, 464, 465)
+- `crates/rdm-admin/src/build_lanes.rs` `an_old_writer_meeting_the_seal_is_refused_stale_and_the_lane_is_read_in_order_to_each_seal` (lines 469, 474, 476, 478, 479, 481, 482, 485…)
+- `crates/rdm-admin/src/build_lanes.rs` `before_the_first_state_commit_a_lane_fact_and_a_claim_stand_on_the_root_and_a_seal_refuses_the_old_writer` (lines 524, 525, 526)
+- `crates/rdm-admin/src/lifecycle.rs` `a_failing_blocking_hook_prevents_the_commit` (lines 480)
+- `crates/rdm-admin/src/lifecycle.rs` `a_retry_reuses_receipts_and_reruns_only_the_failed_hook` (lines 504)
+- `crates/rdm-admin/src/lifecycle.rs` `hook_order_is_deterministic_by_phase_then_registration` (lines 528)
+- `crates/rdm-admin/src/lifecycle.rs` `ineligible_targets_do_not_commit_or_run_pre_commit_hooks` (lines 577)
+- `crates/rdm-admin/src/lifecycle.rs` `a_non_blocking_failure_is_recorded_but_does_not_block` (lines 592)
+- `crates/rdm-admin/src/lifecycle.rs` `retry_policy_allows_bounded_attempts_within_one_run` (lines 609)
+- `crates/rdm-admin/src/lifecycle.rs` `the_registry_refuses_bad_registrations_by_name` (lines 624)
+- `crates/rdm-admin/tests/admin_serves_forward.rs` `?` (lines 5)
+- `crates/rdm-admin/tests/admin_serves_forward.rs` `rig` (lines 69, 90)
+- `crates/rdm-admin/tests/build_claim.rs` `seat` (lines 72)
+- `crates/rdm-admin/tests/build_facts_read.rs` `node_serving` (lines 80, 81)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_hand_back_committed_with_its_answer_lost_is_recognized_on_the_next_pass_and_writes_nothing_again` (lines 2578)
+- `crates/rdm-admin/tests/fabric_handover.rs` `admin_over` (lines 353)
+- `crates/rdm-admin/tests/fabric_handover.rs` `member` (lines 2675)
+- `crates/rdm-admin/tests/node_objects.rs` `serve` (lines 330)
+- `crates/rdm-admin/tests/node_rpc_objects.rs` `serve` (lines 93)
+- `crates/rdm-admin/tests/readiness_gates.rs` `pipeline` (lines 64)
+- `crates/rdm-admin/tests/status_declarations.rs` `rig_with_book` (lines 203)
+- `crates/rdm-admin/tests/status_declarations.rs` `serve_node_with` (lines 501)
+- `crates/rdm-admin/tests/status_declarations.rs` `carrier_admin` (lines 993)
+- `crates/rdm-admin/tests/status_declarations.rs` `a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once` (lines 2346)
+- `crates/rdm-admin/tests/status_declarations.rs` `lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failure` (lines 2424)
+- `crates/rdm-admin/tests/status_declarations.rs` `a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once` (lines 2499)
+- `crates/rdm-admin/tests/status_declarations.rs` `start_after_a_stop_with_the_pending_recorded_at_the_join` (lines 2583)
+- `crates/rdm-admin/tests/status_declarations.rs` `a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_declaration` (lines 2696)
+- `crates/rdm-admin/tests/status_rpc.rs` `rig_with` (lines 215)
+- `crates/rdm-admin/tests/status_rpc.rs` `scripted_member` (lines 1277)
+- `crates/rdm-admin/tests/topology_read.rs` `node` (lines 68, 69)
+- `crates/rdm-admin/tests/topology_read.rs` `a_snapshot_missing_a_chunk_is_never_installed` (lines 295)
+- `crates/rdm-client/src/build_stream.rs` `a_build_stream_whose_carrier_was_dropped_still_delivers_every_frame_to_its_terminal` (lines 477)
+- `crates/rdm-core/src/catalog.rs` `core_echo_seals_and_serves_only_what_it_registered` (lines 407)
+- `crates/rdm-core/src/catalog.rs` `a_duplicate_tag_refuses_the_seal` (lines 418)
+- `crates/rdm-core/src/catalog.rs` `a_retired_tag_refuses_the_seal` (lines 426)
+- `crates/rdm-core/src/catalog.rs` `an_unledgered_tag_or_a_wrong_owner_refuses_the_seal` (lines 436, 454)
+- `crates/rdm-core/src/catalog.rs` `transitional_adapters_compose_beside_core_with_no_fallthrough` (lines 463, 467)
+- `crates/rdm-core/src/catalog.rs` `structural_rules_are_named` (lines 489, 491, 493, 497)
+- `crates/rdm-core/src/catalog.rs` `op_zero_is_reserved_and_never_sealed` (lines 507)
+- `crates/rdm-core/src/catalog.rs` `the_testkit_range_holds_only_testkit_families_and_they_live_nowhere_else` (lines 530, 538, 543)
+- `crates/rdm-core/src/dispatch.rs` `catalog` (lines 200)
+- `crates/rdm-core/tests/node_command_wire.rs` `replies_match_the_frozen_seventeen_variant_wire_schema` (lines 81, 82, 83, 84)
+- `crates/rdm-core/tests/node_command_wire.rs` `node_command_seals_streaming_and_never_forwarded_beside_a_forwarded_status` (lines 91, 93)
+- `crates/rdm-test/src/admin_faults.rs` `seal_moved` (lines 538, 539)
+- `crates/rdm-test/src/families.rs` `?` (lines 3)
+- `crates/rdm-test/src/lib.rs` `a_knob_rewrite_never_touches_the_file_a_reader_holds_open` (lines 185)
+- `crates/rdm-test/src/node.rs` `start` (lines 41)
+- `crates/rdm-test/src/rig.rs` `admin_side_taking_joins_seated` (lines 561, 562)
+- `crates/rdm-test/tests/common/admin_view.rs` `serve` (lines 105)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `seat_moves` (lines 104)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_at_the_decision_step_through_one_takeover_row` (lines 156, 157, 158)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `two_mesh_primaries_noticing_the_lost_fabric_primary_together_commit_one_takeover` (lines 249, 251, 252, 254)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `an_old_fabric_primary_resumed_after_the_takeover_commits_nothing_past_the_seal` (lines 278, 279, 280, 295)
+- `crates/rdm-test/tests/gossip/recovery_receive.rs` `a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back` (lines 51)
+- `crates/rdm-test/tests/node_start_sequence.rs` `seal_moved` (lines 279, 280)
+- `crates/rdm-test/tests/probe_entry_admin.rs` `a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_node_rpc` (lines 59)
+- `crates/rdm-test/tests/probe_root_span.rs` `forty_probe_runs_direct_and_carried_each_export_their_root_span` (lines 91, 106)
+- `crates/rdm-test/tests/proof_store.rs` `proof_holder_applies_cas_reports_exact_executing_birth` (lines 131, 132)
+- `crates/rdm-test/tests/role_process.rs` `?` (lines 2)
+- `crates/rdm-test/tests/role_process.rs` `the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn` (lines 113)
+- `crates/rdm-test/tests/rpc/apply_cuts.rs` `rig` (lines 210, 211)
+- `crates/rdm-test/tests/rpc/scheduler_replay.rs` `node` (lines 192)
+- `crates/rdm-test/tests/rpc/shared_dial.rs` `node` (lines 38)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `cutback_restart_run` (lines 6777)
+- `crates/rdm-test/tests/transport_diag.rs` `a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs` (lines 70)
+- `crates/rdm-transport/tests/catalog_seam.rs` `?` (lines 1, 2)
+- `crates/rdm-transport/tests/catalog_seam.rs` `a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_alpn` (lines 23, 25, 57)
+- `crates/rdm-transport/tests/catalog_seam.rs` `a_core_owned_transitional_entry_is_refused_at_seal` (lines 62)
+- `crates/rdm-transport/tests/certainty.rs` `rig` (lines 57)
+- `crates/rdm-transport/tests/common/forward_rig.rs` `test_ledger` (lines 101)
+- `crates/rdm-transport/tests/common/forward_rig.rs` `rig_with` (lines 178, 200)
+- `crates/rdm-transport/tests/common/mod.rs` `node` (lines 123)
+- `crates/rdm-transport/tests/connection_cut.rs` `a_cut_closes_every_accepted_connection_but_the_spared_peers_and_the_endpoint_still_takes_a_fresh_dial` (lines 38)
+- `crates/rdm-transport/tests/connection_observer.rs` `accepted` (lines 104)
+- `crates/rdm-transport/tests/connections.rs` `process` (lines 511)
+- `crates/rdm-transport/tests/context.rs` `process` (lines 179)
+- `crates/rdm-transport/tests/context.rs` `a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_hop` (lines 437)
+- `crates/rdm-transport/tests/delivery.rs` `served_on` (lines 299)
+- `crates/rdm-transport/tests/delivery.rs` `a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_origin_identity` (lines 942)
+- `crates/rdm-transport/tests/delivery.rs` `a_connections_deleting_endpoint_still_receives_an_owed_response` (lines 1008)
+- `crates/rdm-transport/tests/digest_frames_wire.rs` `the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling` (lines 158)
+- `crates/rdm-transport/tests/exited_birth.rs` `a_call_to_an_exited_birth_dials_nothing_and_the_successor_is_dialled` (lines 33)
+- `crates/rdm-transport/tests/flood.rs` `rig` (lines 54)
+- `crates/rdm-transport/tests/forward.rs` `spy_carrier` (lines 325)
+- `crates/rdm-transport/tests/forward.rs` `every_inner_indeterminate_cause_crosses_a_carrier_with_its_code` (lines 375)
+- `crates/rdm-transport/tests/moved_birth.rs` `birth` (lines 47)
+- `crates/rdm-transport/tests/one_endpoint.rs` `process` (lines 49)
+- `crates/rdm-transport/tests/pool.rs` `node` (lines 67)
+- `crates/rdm-transport/tests/ready_gate.rs` `a_closed_ready_gate_refuses_ping_typed_and_an_open_gate_serves_it` (lines 34)
+- `crates/rdm-transport/tests/settled_replies.rs` `settled_waits_for_the_replies_dispatched_before_it_and_for_no_later_one` (lines 38)
+- `crates/rdm-transport/tests/streaming.rs` `rig` (lines 173)
+
+## B. Proof of termination (Q111)
+
+### Pages (128 lines)
+
+- `docs/architecture/build.md:157` [remove or rewrite: requires proof of termination] Workflow input is execution state, not topology: node.restart on an exact birth (node id and incarnation) and node recovery (`node.delete` then `node.create` at the same path.name, keyed on the exited birth) carry the ex
+- `docs/architecture/build.md:275` [remove or rewrite: requires proof of termination] [Node recovery](lifecycles/node-recovery.md) owns who detects the loss, proves the exit and submits the recovery.
+- `docs/architecture/build.md:340` [remove or rewrite: requires proof of termination] These facts describe reconciliation execution. The current Build is read from them newest first (§4, `current_build()` over the acceptance-order index, with `newest_accepted_at_ms()` as the acceptance high-water mark of 
+- `docs/architecture/deployment-provider.md:214` [remove or rewrite: requires proof of termination] | `Exited { code }` | the exact runtime ended | the only proof that the concrete runtime can no longer accept work | the caller writes the birth's exit-proof row durably before anything else, then its page continues (rec
+- `docs/architecture/deployment-provider.md:215` [remove or rewrite: requires proof of termination] | `Unknown` | the inspection could not tell | neither life nor exit | recorded as uncertainty; no hold, no terminate, no exit proof is inferred; the next tick asks again |
+- `docs/architecture/deployment-provider.md:217` [remove or rewrite: requires proof of termination] `OsStopped` changes state only through the operating system. Entering it from `Running` cancels an open R-FM1 hold: the `held-running` row is removed and its pending `TerminateRuntime` is void; a runtime that resumes but
+- `docs/architecture/deployment-provider.md:226` [remove or rewrite: requires proof of termination] - **Inspect reads the live thread group, not the leader.** A process is gone only once every task of its thread group has exited: during `exit_group` the leader can read as a zombie while sibling threads still hold the g
+- `docs/architecture/deployment-provider.md:239` [remove or rewrite: requires proof of termination] ### 2.8 Exit proof
+- `docs/architecture/deployment-provider.md:241` [remove or rewrite: requires proof of termination] Once a handle is adopted or spawned, the provider's `Exited` for that exact handle is the proof that the concrete runtime can no longer accept work, and the only one. A RuntimeFact's presence proves neither running nor g
+- `docs/architecture/deployment-provider.md:270` [remove or rewrite: requires proof of termination] A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the
+- `docs/architecture/deployment-provider.md:280` [remove or rewrite: requires proof of termination] - **Gone.** The inherited directory itself is absent (`NotFound` on the directory). When it stays absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2, to ride out a remount), the mesh-primary records `data-
+- `docs/architecture/deployment-provider.md:281` [remove or rewrite: requires proof of termination] - **Broken.** The directory exists but `node-key` is missing, unreadable or corrupt. `PrepareStorage` fails by name without minting a key, records `data-dir-unreadable { path, cause }` on the exited birth, and the mesh-p
+- `docs/architecture/deployment-provider.md:298` [remove or rewrite: requires proof of termination] | `rdm.node_admin.node.resolve.via-provider-inspection` | the caller of node.runtime.inspect | node, node_id, incarnation_id, inspector, handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), exit_code,
+- `docs/architecture/fabric-mesh-node-lifecycles.md:86` [keep: the investigation's provider step] | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) (primitive) | The provider's answer about the exact runtime handle, the only exit proof; run by delete, recovery, investigation, mesh.delete and fabric.delete 
+- `docs/architecture/fabric-node-lifecycle-elections.md:25` [remove or rewrite: requires proof of termination] Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §4.3's staleness-floor rule and the store's authority [banned word]; every other seat moves only on yie
+- `docs/architecture/fabric-node-lifecycle-elections.md:92` [remove or rewrite: requires proof of termination] [tickle ladder](lifecycles/node-recovery.md#numbered-end-to-end-sequence). Only the provider's exit proof vacates a seat; no probe outcome does. The one exception is the fabric seat (§4.3, §5).
+- `docs/architecture/fabric-node-lifecycle-elections.md:115` [remove or rewrite: requires proof of termination] exact birth is proven gone, the lowest ReadyForTraffic node-admin NodeId of the same mesh fills it,
+- `docs/architecture/fabric-node-lifecycle-elections.md:123` [remove or rewrite: requires proof of termination] inherited data dir only with exit proof of the old birth; otherwise over a newly allocated data dir
+- `docs/architecture/fabric-node-lifecycle-elections.md:157` [remove or rewrite: requires proof of termination] - for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step prov
+- `docs/architecture/fabric-node-lifecycle-elections.md:158` [remove or rewrite: requires proof of termination] - for a hung fabric-primary (`R-FM1`), no node below it commands its termination; its seats move by §4.3, and the holder that took them runs the hold (`RDM_HUNG_HOLD_FLOORS`) and the terminate as for any `held-running` m
+- `docs/architecture/fabric-node-lifecycle-elections.md:159` [remove or rewrite: requires proof of termination] - a holder that yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh;
+- `docs/architecture/fabric-node-lifecycle-elections.md:171` [remove or rewrite: requires proof of termination] A seat moves only by its holder's yield, a committed transfer (§4.4), a proven loss, or, for the fabric seat alone, §4.3's staleness-floor rule under the store's [banned word], never by a status (§5), so [fabric.delete](lifecycl
+- `docs/architecture/fabric-node-lifecycle-elections.md:224` [remove or rewrite: requires proof of termination] 13. A seat moves only by its holder's yield, a committed transfer or a proven loss, never by a status; fabric.delete moves none.
+- `docs/architecture/fabric-node-lifecycle-elections.md:237` [remove or rewrite: requires proof of termination] _ if h.is_proven_gone() => {}                                // proven gone: a vacancy
+- `docs/architecture/fabric-node-lifecycle-elections.md:256` [remove or rewrite: requires proof of termination] vacant (holder yielded or proven gone, or no record)
+- `docs/architecture/gossip.md:156` [remove or rewrite: requires proof of termination] | [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone Members.in_flight; peer mesh channels | mesh-primary from matching stop-st
+- `docs/architecture/gossip.md:166` [remove or rewrite: requires proof of termination] | `NodeDeleted { op: LifecycleOp, forwarded_by }` | executor's own mesh channel; backbone Members.deleted | the mesh executor, after exact provider proof that the runtime is terminal; none for a mesh's last admin after m
+- `docs/architecture/gossip.md:355` [remove or rewrite: requires proof of termination] and the stop does not wait for its delivery (R-NS2). The fabric-primary stops it, proves its exit
+- `docs/architecture/gossip.md:800` [remove or rewrite: requires proof of termination] A deletion is recorded only from exact provider proof:
+- `docs/architecture/gossip.md:998` [remove or rewrite: requires proof of termination] A deletion is published only from proof. `NodeDeleted` for an exact birth is emitted by the executor that holds the operation, after the provider's exact inspection says the runtime is terminal. Holding a claim does not 
+- `docs/architecture/gossip.md:1038` [remove or rewrite: requires proof of termination] 34. `NodeDeleted` is never emitted without exact provider proof; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no holder until a new birth, and the current
+- `docs/architecture/lifecycles/fabric-delete.md:18` [remove or rewrite: requires proof of termination] | Executor | The fabric-primary executes each other mesh-primary's node.delete and proves its exit |
+- `docs/architecture/lifecycles/fabric-delete.md:22` [remove or rewrite: requires proof of termination] | Exit proof | Every runtime the workflow deletes has its exact provider exit proof. The fabric-primary's own delete is the one exception: nobody is left in the fabric to prove it |
+- `docs/architecture/lifecycles/fabric-delete.md:34` [remove or rewrite: requires proof of termination] mesh-primary. The fabric-primary is the executor and proves its exit.
+- `docs/architecture/lifecycles/fabric-delete.md:39` [remove or rewrite: requires proof of termination] the fabric to prove the exit. This is the one exception to exit proof.
+- `docs/architecture/lifecycles/fabric-delete.md:53` [remove or rewrite: requires proof of termination] fabric-primary is the executor and proves its exit
+- `docs/architecture/lifecycles/fabric-delete.md:58` [remove or rewrite: requires proof of termination] in the fabric to prove the exit
+- `docs/architecture/lifecycles/fabric-delete.md:65` [remove or rewrite: requires proof of termination] provider exit proof: a runtime inside the workflow that cannot be proven exited is never
+- `docs/architecture/lifecycles/fabric-delete.md:67` [remove or rewrite: requires proof of termination] cannot prove exited is named in `Failed { step, reason }`.
+- `docs/architecture/lifecycles/fabric-recovery.md:50` [remove or rewrite: requires proof of termination] (`R-FM1`); proven exited, [node recovery](node-recovery.md) re-creates it at the same path.name over the
+- `docs/architecture/lifecycles/fabric-recovery.md:52` [remove or rewrite: requires proof of termination] `takeover { revision }` proof releases its name and it is re-created over a new data dir, `inherited = false`
+- `docs/architecture/lifecycles/fabric-recovery.md:101` [remove or rewrite: requires proof of termination] FP->>P: node recovery for non-answers; exact exit proof required
+- `docs/architecture/lifecycles/fabric-recovery.md:116` [remove or rewrite: requires proof of termination] | Recovered own-mesh primary | Ping / node recovery | same own-mesh sweep and exact-runtime exit proof as a node-admin joining a live mesh | `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-s
+- `docs/architecture/lifecycles/fabric-recovery.md:133` [remove or rewrite: requires proof of termination] execution. A Ping non-answer does not prove exit; node recovery's provider check supplies exact
+- `docs/architecture/lifecycles/fabric-recovery.md:134` [remove or rewrite: requires proof of termination] exit proof, and no RPC is sent to a birth already proven terminal. Restored members report status
+- `docs/architecture/lifecycles/fabric-recovery.md:179` [remove or rewrite: requires proof of termination] release its name: its row is written Deleted with exit proof `takeover { revision }`, and the mesh's re-created
+- `docs/architecture/lifecycles/fabric-recovery.md:180` [remove or rewrite: requires proof of termination] node-admin takes the name. A lost birth an admin can inspect keeps its name until the provider proves its exit.
+- `docs/architecture/lifecycles/mesh-delete.md:7` [remove or rewrite: requires proof of termination] other node-admins. The mesh-primary, still alive, reports `mesh.deleted` from their exit proofs
+- `docs/architecture/lifecycles/mesh-delete.md:23` [remove or rewrite: requires proof of termination] | Terminal event | `mesh.deleted`, reported by the mesh-primary, still alive, from its members' exact exit proofs |
+- `docs/architecture/lifecycles/mesh-delete.md:45` [remove or rewrite: requires proof of termination] 5. `mesh.deleted`: when every member has its exact exit proof, the mesh-primary, still alive,
+- `docs/architecture/lifecycles/mesh-delete.md:55` [remove or rewrite: requires proof of termination] fabric-primary stops it, proves its exit and writes its row deleted as the writer of a mesh
+- `docs/architecture/lifecycles/mesh-delete.md:95` [remove or rewrite: requires proof of termination] ← node.deleted            from exact provider exit proof; nothing published
+- `docs/architecture/lifecycles/mesh-delete.md:123` [remove or rewrite: requires proof of termination] The mesh-primary's report, after every member has its exact exit proof, is its own call to the
+- `docs/architecture/lifecycles/mesh-delete.md:217` [remove or rewrite: requires proof of termination] P-->>M: exact Exited
+- `docs/architecture/lifecycles/mesh-delete.md:233` [remove or rewrite: requires proof of termination] P-->>F: exact Exited
+- `docs/architecture/lifecycles/mesh-delete.md:254` [remove or rewrite: requires proof of termination] | Member delete | mesh-primary and each member | [node.delete](node-delete.md#observability-contract) per member; exact Exited receipt | outer operation plus `node.delete:<path.name>` |
+- `docs/architecture/lifecycles/mesh-delete.md:256` [remove or rewrite: requires proof of termination] | Mesh-primary delete | fabric-primary | node.delete with the fabric-primary as executor; exact Exited; row deleted | its own Build and trace |
+- `docs/architecture/lifecycles/mesh-investigation.md:49` [remove or rewrite: requires proof of termination] provider exit proof, means hold, with backbone refeed continuing. Timeout or unreachable
+- `docs/architecture/lifecycles/mesh-investigation.md:53` [remove or rewrite: requires proof of termination] acts on the provider's exact exit proof, never on silence, and creates mesh-x's node-admin in
+- `docs/architecture/lifecycles/mesh-investigation.md:64` [remove or rewrite: requires proof of termination] exact provider exit proof, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
+- `docs/architecture/lifecycles/mesh-investigation.md:79` [remove or rewrite: requires proof of termination] an unreachable node-admin. node.delete still requires exact provider exit proof.
+- `docs/architecture/lifecycles/mesh-investigation.md:88` [remove or rewrite: requires proof of termination] | 60 s | Fabric-primary | the decision step opens (no death proof); outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; unreachable: hold, or node.create in process on exact provider exit pr
+- `docs/architecture/lifecycles/mesh-investigation.md:120` [remove or rewrite: requires proof of termination] Note over FP,P: node.delete still requires exact runtime exit proof
+- `docs/architecture/lifecycles/mesh-investigation.md:122` [remove or rewrite: requires proof of termination] alt provider proves exit (fully crashed mesh)
+- `docs/architecture/lifecycles/mesh-investigation.md:124` [remove or rewrite: requires proof of termination] P-->>FP: exact exit proof
+- `docs/architecture/lifecycles/mesh-investigation.md:126` [remove or rewrite: requires proof of termination] else no exit proof
+- `docs/architecture/lifecycles/mesh-investigation.md:166` [remove or rewrite: requires proof of termination] At the 60 s carrier-edge-lost verdict, or on the fully crashed arm upon exact provider exit proof (both arms, R-DG1),
+- `docs/architecture/lifecycles/mesh-investigation.md:205` [remove or rewrite: requires proof of termination] mesh-primary's tickle, then the provider's exact-exit proof, then recovery only on proof.
+- `docs/architecture/lifecycles/mesh-investigation.md:237` [remove or rewrite: requires proof of termination] P-->>A: exact exit proof or unresolved result
+- `docs/architecture/lifecycles/mesh-investigation.md:256` [remove or rewrite: requires proof of termination] | Mesh-primary / provider | node recovery | tickle, exact exit proof, one recovery Build; departure only on proof | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
+- `docs/architecture/lifecycles/mesh-investigation.md:277` [remove or rewrite: requires proof of termination] exact provider proof licenses its departure, and no RPC is sent to a birth already proven
+- `docs/architecture/lifecycles/node-delete.md:16` [remove or rewrite: requires proof of termination] | Crashed target | Stop steps are already done; no call is required from an exited process |
+- `docs/architecture/lifecycles/node-delete.md:17` [remove or rewrite: requires proof of termination] | OS-suspended target | The provider reports the exact runtime `os-stopped` ([deployment-provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)): the stop is skipped by name (a suspended pro
+- `docs/architecture/lifecycles/node-mesh-join.md:267` [remove or rewrite: requires proof of termination] accepted report; a runtime exit needs independent exact provider proof
+- `docs/architecture/lifecycles/node-mesh-leave.md:23` [remove or rewrite: requires proof of termination] | Gossip | None from the node. Its mesh-primary publishes NodeStopped from the stop's matching stopped frame, or NodeDeleted after exact exit proof; a mesh's last admin after mesh.deleted has its final aggregate instead 
+- `docs/architecture/lifecycles/node-primary-update.md:73` [remove or rewrite: requires proof of termination] reached a process other than the named birth, a refusal or no answer is never an exit proof (only the
+- `docs/architecture/lifecycles/node-primary-update.md:74` [remove or rewrite: requires proof of termination] provider's exit proof vacates a seat; R-SW1: a failed probe never proves death). The holder's call fails
+- `docs/architecture/lifecycles/node-primary-update.md:76` [remove or rewrite: requires proof of termination] call against the resolved birth; the seat vacates only on the provider's exit proof, and then the
+- `docs/architecture/lifecycles/node-primary-update.md:150` [remove or rewrite: requires proof of termination] The ordinary election is untouched by this search: on a proven loss the seat waits while only Pending
+- `docs/architecture/lifecycles/node-primary-update.md:151` [remove or rewrite: requires proof of termination] admins of the mesh survive and leaves the mesh only when every node-admin birth of the mesh is proven gone
+- `docs/architecture/lifecycles/node-recovery.md:7` [remove or rewrite: requires proof of termination] that is proven exited is drift, and RDM puts it back. The mesh-primary is the
+- `docs/architecture/lifecycles/node-recovery.md:8` [remove or rewrite: requires proof of termination] reconciler for its own members: it tracks them, proves the exit and starts the recovery.
+- `docs/architecture/lifecycles/node-recovery.md:13` [remove or rewrite: requires proof of termination] crashed mesh, on exact provider exit proof.)
+- `docs/architecture/lifecycles/node-recovery.md:21` [remove or rewrite: requires proof of termination] | Investigation | The tickle ladder (`offline.rs`), then the provider's exact-exit proof |
+- `docs/architecture/lifecycles/node-recovery.md:22` [remove or rewrite: requires proof of termination] | Trigger | Exact provider proof only. Silence, a failed tickle and TRUE OFFLINE are not proof |
+- `docs/architecture/lifecycles/node-recovery.md:90` [remove or rewrite: requires proof of termination] takes the exit proof): the provider's
+- `docs/architecture/lifecycles/node-recovery.md:92` [remove or rewrite: requires proof of termination] handle recorded at launch, recording `exit_proof` durably and clearing `held-running`,
+- `docs/architecture/lifecycles/node-recovery.md:109` [remove or rewrite: requires proof of termination] 1. The mesh-primary proves the exit (or the `held-running` hold expires with the provider
+- `docs/architecture/lifecycles/node-recovery.md:116` [remove or rewrite: requires proof of termination] already-exited target, as a crashed target with no RPC to the dead process and no stop
+- `docs/architecture/lifecycles/node-recovery.md:118` [remove or rewrite: requires proof of termination] runs first on the exact runtime handle, records the provider's exit proof durably and
+- `docs/architecture/lifecycles/node-recovery.md:119` [remove or rewrite: requires proof of termination] clears `held-running`, and `node.deleted` follows from that recorded exit proof.
+- `docs/architecture/lifecycles/node-recovery.md:121` [remove or rewrite: requires proof of termination] (or a newly allocated data dir when the old data dir was proven gone past
+- `docs/architecture/lifecycles/node-recovery.md:167` [remove or rewrite: requires proof of termination] member still proven exited and submits the recovery.
+- `docs/architecture/lifecycles/node-recovery.md:177` [remove or rewrite: requires proof of termination] - **Gone (arm A).** When the exited birth's `data_dir` is absent across
+- `docs/architecture/lifecycles/node-recovery.md:180` [remove or rewrite: requires proof of termination] exited birth (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and
+- `docs/architecture/lifecycles/node-recovery.md:186` [remove or rewrite: requires proof of termination] inspection possible there is no exit proof and no gone-floors wait; the node-admin is created at
+- `docs/architecture/lifecycles/node-recovery.md:191` [remove or rewrite: requires proof of termination] exited birth (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `node.get`
+- `docs/architecture/lifecycles/node-replace.md:50` [remove or rewrite: requires proof of termination] `<name>` after exact runtime exit proof. Any wanted successor data is Rafka's to copy out first.
+- `docs/architecture/lifecycles/node-runtime-inspect.md:29` [remove or rewrite: requires proof of termination] | Result | `running`: the exact runtime is alive, however silent the node; nothing is recovered or deleted on it. `os-stopped`: the operating system holds the exact runtime suspended; this proves no exit and no completed
+- `docs/architecture/lifecycles/node-runtime-inspect.md:31` [remove or rewrite: requires proof of termination] | What follows | The caller's: delete writes the row deleted and publishes `NodeDeleted`; recovery opens its attempt; investigation's fully-crashed arm creates the node-admin; a boot on an inherited dir proceeds as recov
+- `docs/architecture/lifecycles/node-runtime-inspect.md:47` [remove or rewrite: requires proof of termination] 5. `exit-proven { code }`: the caller writes the birth's exit-proof row, durably, before anything
+- `docs/architecture/lifecycles/node-runtime-inspect.md:62` [remove or rewrite: requires proof of termination] exit-proven { code: 0 }           recorded as the exit-proof row of (k8pag1qx95gw, 0000000000000008)
+- `docs/architecture/lifecycles/node-runtime-inspect.md:76` [remove or rewrite: requires proof of termination] participant S as Store (exit-proof row)
+- `docs/architecture/lifecycles/node-runtime-inspect.md:87` [remove or rewrite: requires proof of termination] C->>S: 5. write the exit-proof row, durably
+- `docs/architecture/lifecycles/node-runtime-inspect.md:95` [remove or rewrite: requires proof of termination] Checked against the numbered sequence: one question, one answer; the exit-proof row is written
+- `docs/architecture/lifecycles/node-runtime-inspect.md:102` [remove or rewrite: requires proof of termination] the domain and the reason. The exit-proof row is the durable receipt; a later attempt of the
+- `docs/architecture/lifecycles/node-runtime-inspect.md:109` [remove or rewrite: requires proof of termination] | Inspect | caller | `rdm.node_admin.node.resolve.via-provider-inspection` | node, node_id, incarnation_id, inspector, handle, verdict, exit_code, exit_proof (`put` / `held` / none), reason |
+- `docs/architecture/lifecycles/node-runtime-inspect.md:110` [remove or rewrite: requires proof of termination] | Row | caller | the store write of the exit-proof row; on `os-stopped`, node recovery's `os-stopped` row (`rdm.node_admin.node.update.via-os-stopped`, outcome `recorded` / `cleared` / `revalidated`) | node_id, incarnati
+- `docs/architecture/lifecycles/node-tickle.md:139` [remove or rewrite: requires proof of termination] recorded as the node's death. A caller that needs proof of exit runs
+- `docs/architecture/lifecycles/states.md:11` [remove or rewrite: requires proof of termination] - **Fabric:** `pending` → `state-sync` → `state-commit` → `ready-for-traffic`. FabricStatus also carries a `degraded` health marker, set by the fabric-primary at a peer mesh's carrier-edge-lost verdict or on the fully cr
+- `docs/architecture/lifecycles/states.md:33` [remove or rewrite: requires proof of termination] | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's exact provider exit proof |
+- `docs/architecture/lifecycles/states.md:37` [remove or rewrite: requires proof of termination] | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' exact exit proofs; never an op |
+- `docs/architecture/lifecycles/states.md:137` [remove or rewrite: requires proof of termination] an exit/relaunch. node.delete proceeds from stopped, as deleting, to exact provider exit proof
+- `docs/architecture/lifecycles/states.md:138` [remove or rewrite: requires proof of termination] and identity release, deleted. Silence is never exit proof.
+- `docs/architecture/lifecycles/states.md:163` [remove or rewrite: requires proof of termination] - A member leaves the checklist only through the accepted removal and a proven exit,
+- `docs/architecture/lifecycles/states.md:167` [remove or rewrite: requires proof of termination] primary's proven exit or accepted removal, or the member dropping it; re-owed to the new holder
+- `docs/architecture/node-admin-lifecycle.md:116` [remove or rewrite: requires proof of termination] | the fabric-primary's mesh loses every node-admin while other meshes live | the backbone's lowest ReadyForTraffic node-admin, seated by [elections §4.3](fabric-node-lifecycle-elections.md#43-fabric-primary) after the ho
+- `docs/architecture/node-identity-and-state.md:336` [remove or rewrite: requires proof of termination] ([node.primary.update](lifecycles/node-primary-update.md)) or, on proven loss, by
+- `docs/architecture/node-identity-and-state.md:551` [remove or rewrite: requires proof of termination] | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after exact provider proof | on receipt |
+- `docs/architecture/node-identity-and-state.md:583` [remove or rewrite: requires proof of termination] | Effect | The delete's own: provider exit proof, row deleted, name released, NodeDeleted in the aggregate, deleted retention, Gone |
+- `docs/architecture/node-identity-and-state.md:649` [remove or rewrite: requires proof of termination] `os-stopped`, `data-dir-lost` and `data-dir-unreadable` facts and the exit-proof row
+- `docs/architecture/node-rpc-envelope.md:44` [remove or rewrite: requires proof of termination] on the sender birth's proven exit or accepted removal, never by time elapsed. Until then a resend keeps
+- `docs/architecture/node-rpc-envelope.md:313` [remove or rewrite: requires proof of termination] | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reache
+- `docs/architecture/node-rpc-envelope.md:314` [keep: the investigation's provider step] | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `exit-proven { code }` (recorded as the birth's exit 
+- `docs/architecture/node-rpc-envelope.md:952` [remove or rewrite: requires proof of termination] member's exact Exited receipt and `final_*` naming the mesh-primary's own running birth. Both
+- `docs/architecture/node-rpc.md:628` [remove or rewrite: requires proof of termination] | 14 | `UNAVAILABLE` | NotReady, Busy, ConnectionsDeleting; NotSent except an expired owner bound or NotForwardable; a receiving birth proven exited or removed, detail receiver-gone |
+- `docs/architecture/node-rpc.md:971` [remove or rewrite: requires proof of termination] | receiving birth proven exited or removed | `NotSent` before commit; `Indeterminate` after commit, detail receiver-gone | `UNAVAILABLE` | no before commit; unknown after | no |
+- `docs/architecture/node-rpc.md:1023` [remove or rewrite: requires proof of termination] ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's proven exit or accepted removal, or on
+
+### Code, production (677 lines)
+
+- `crates/rdm-admin/src/accepted.rs` (16)
+  - `:249` [remove or rewrite] /// Recover the node at a path from its exact exited birth (node-recovery.md): the exited
+  - `:256` [remove or rewrite] /// The exited birth.
+  - `:260` [remove or rewrite] /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
+  - `:486` [remove or rewrite] // ready; the node re-created at the name its exit-proof row names (`lost_name`); or, with neither
+  - `:531` [remove or rewrite] /// How far a recovery's two operations got for its exited birth.
+  - `:539` [remove or rewrite] /// got for its exited birth, from the Build's receipts: each is done once its `Complete` follows the
+  - `:546` [remove or rewrite] /// The node.delete completed for the exited birth: node.create at its path.name is owed.
+  - `:548` [remove or rewrite] /// The node.create completed after it: the exited birth is recovered. Nothing follows the create:
+  - `:572` [remove or rewrite] // A recovery: how far its two operations got for the exited birth.
+  - `:593` [remove or rewrite] /// How far the recovery of the exited birth `(node_id, incarnation)` at `path` got in `build`
+  - `:595` [remove or rewrite] /// is done once its `node.delete:<path>` `NodeDeleted` names the exited birth (its output is the
+  - `:627` [remove or rewrite] /// The attempt whose `node.create:<path>`, the last operation of the recovery of the exited birth
+  - `:695` [remove or rewrite] // A recovery is its two operations of the exited birth, in order (node-recovery.md "Steps"):
+  - `:700` [remove or rewrite] // the path (the exited birth unheard, nothing, or the new node mid-attempt) until the receipts say
+  - `:703` [remove or rewrite] let exited = crate::build::ExitedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() };
+  - `:752` [remove or rewrite] let held = observed.nodes.iter().any(|n| n.node_id.as_str() == manifest.final_primary.node_id && !n.exit_proven);
+- `crates/rdm-admin/src/admin/boot.rs` (13)
+  - `:443` [remove or rewrite] // from, kept for its exit-proof row once this admin's status store is open.
+  - `:467` [remove or rewrite] // the provider's exact exit proof on the old process before writing `Deleted`.
+  - `:474` [remove or rewrite] exit_proof_of(provider, &None, own_runtime.as_ref())
+  - `:795` [remove or rewrite] (Some((_, provider)), row) => exit_proof_of(provider.as_ref(), &None, row.as_ref()).await.is_ok(),
+  - `:910` [remove or rewrite] // The inherited birth's exit-proof row is node.runtime.inspect's exit-proven, its code and
+  - `:916` [remove or rewrite] if let Err(e) = crate::offline::put_exit_proof(&*status_storage, &birth, code, proof, local_now_ms()).await {
+  - `:917` [remove or rewrite] tracing::warn!(node = %own.name, node_id = %own.node_id, error = %e, "the inherited birth's exit-proof row was not put");
+  - `:1549` [remove or rewrite] // a blind put (a successor fabric primary proves an exit from it).
+  - `:2312` [remove or rewrite] // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
+  - `:2327` [remove or rewrite] // node-recovery.md "Failure and receipts": an exited birth whose workflow in the
+  - `:2560` [remove or rewrite] // successor's process was proven gone, makes it that seat's row writer from the
+  - `:2755` [remove or rewrite] let exit_verdicts = ExitVerdicts::default();
+  - `:2782` [remove or rewrite] // proven exited is not live there, and holds no seat.
+- `crates/rdm-admin/src/admin/mesh_delete.rs` (60)
+  - `:10` [remove or rewrite] //! executor (step 7); once this admin publishes that birth deleted from its exact exit proof
+  - `:11` [remove or rewrite] //! ([`AdminRunner::mesh_left_after_delete`]) every birth is proven exited and it records `MeshLeft`
+  - `:15` [remove or rewrite] //! records one exit manifest as a step receipt of the accepted Build and calls `MeshDeleted` up to
+  - `:22` [remove or rewrite] use crate::mesh_delete::{accepted_roster, manifest_reference, members_exited, Admitted, ExitManifest, MeshDeleteKey, MeshDeleter, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_DELET
+  - `:84` [remove or rewrite] // The view is projected now, its proven exits read from their exit-proof rows (R-EL1, R11):
+  - `:117` [remove or rewrite] // no prior AcceptedRoster resolves by provider exit proof of its births (R-FS1 revised).
+  - `:126` [remove or rewrite] // Each exited birth's end is its own node.delete, this fabric-primary the executor
+  - `:127` [remove or rewrite] // (node-delete.md "Crashed target"), under this Build and attempt.
+  - `:128` [remove or rewrite] let delete = |b: RosterBirth, exit: crate::status_storage::NodeExitRow| async move { self.delete_lost_birth(build_id, attempt, &b, exit).await.map_err(|e| e.to_string()) };
+  - `:148` [remove or rewrite] // mid-leave: the lost one's exact exit is proven and recorded first, then the amendment
+  - `:156` [remove or rewrite] // The predecessor's exit-proof row, put when its exit was proven, is read by this view.
+  - `:162` [remove or rewrite] // (its node.delete, executed by this fabric-primary, proves its exit through it).
+  - `:200` [remove or rewrite] /// 1-2): the lost final primary's exact Exited is proven and recorded first, so nothing is born
+  - `:201` [remove or rewrite] /// for the mesh on an unproven exit (R-D1); then the admin is created at a path no birth held,
+  - `:222` [remove or rewrite] // exit-proof row is the loss every projection reads, and its node.delete as a crashed
+  - `:225` [remove or rewrite] let exit = crate::mesh_delete::prove_predecessor_exit(&*self.provider, &self.records, row.as_ref(), &lost, &adm.final_runtime).await.map_err(|reason| {
+  - `:227` [remove or rewrite] RunEnd::Incomplete(format!("{outer} is refused: {mesh} has no live admin and its final primary {} {} is silent but not proven exited, so no admin is created for it: {reason}", lost
+  - `:233` [remove or rewrite] // exact Exited before anything is created for the mesh.
+  - `:237` [remove or rewrite] // The lost primary's proven exit, read from its exit-proof row, vacates its seat in this view
+  - `:239` [remove or rewrite] // fabric-primary only while the mesh has no primary (R-EL1: proven loss; R11: the
+  - `:309` [remove or rewrite] /// holds silent: proven, never read from silence. Its exact Exited is a receipt of this leave,
+  - `:310` [remove or rewrite] /// its exit-proof row read in this view, or the provider's exact Exited of its durable runtime
+  - `:311` [remove or rewrite] /// row, which this fabric-primary proves and records as its exit-proof row. One not proven exited
+  - `:324` [remove or rewrite] .in_scope(|| tracing::info!("a node-admin of the leaving mesh is silent and not proven exited: it may survive and take the seat, so no admin is created for the mesh"));
+  - `:326` [remove or rewrite] "{outer}: {mesh} holds no live admin in this view, but its node-admin {} {} is silent and not proven exited ({reason}): it may survive and take the mesh's seat, so no admin is crea
+  - `:330` [remove or rewrite] let store = self.records.contacts.get().ok_or_else(|| refused(format!("{} holds no durable runtime rows to prove its exit from", self.held_name())))?;
+  - `:333` [remove or rewrite] crate::mesh_delete::prove_predecessor_exit(&*self.provider, &self.records, row.as_ref(), b, &runtime).await.map_err(refused)?;
+  - `:337` [remove or rewrite] /// node.delete of the lost roster birth `b` as a crashed target on its exit-proof row `exit`
+  - `:338` [remove or rewrite] /// (node-delete.md "Crashed target"; mesh-delete.md "Resume after the primary's loss" step 1), this
+  - `:343` [remove or rewrite] async fn delete_lost_birth(&self, build_id: &crate::build::BuildId, attempt: u32, b: &RosterBirth, exit: crate::status_storage::NodeExitRow) -> Result<TerminalReceipt, RunEnd> {
+  - `:348` [remove or rewrite] self.delete_crashed(&*self.builds, build_id, attempt, &path, &crate::build::ExitedBirth { node_id, incarnation }, exit).await
+  - `:378` [remove or rewrite] // The wait ends on the handoff, or on the final primary proven exited in this owner's view.
+  - `:391` [remove or rewrite] /// is proven exited, naming the proof: its exit-proof row read in this owner's view (put by
+  - `:394` [remove or rewrite] /// Exited of its durable runtime row, which this owner proves and records as its exit-proof row
+  - `:403` [remove or rewrite] return Some("its exit-proof row is read in this fabric-primary's view".to_string());
+  - `:414` [remove or rewrite] .in_scope(|| tracing::info!("the final primary is silent and not proven exited: the owner's wait stays open"));
+  - `:418` [remove or rewrite] return unproven(format!("{} holds no durable runtime rows to prove its exit from", self.held_name()));
+  - `:424` [remove or rewrite] match crate::mesh_delete::prove_predecessor_exit(&*self.provider, &self.records, row.as_ref(), lost, &admitted.final_runtime).await {
+  - `:425` [remove or rewrite] Ok(exit) => Some(format!("its provider proved it exited (exit code {:?}, {}) and this fabric-primary put its exit-proof row", exit.exit_code, exit.proof)),
+  - `:433` [remove or rewrite] async fn record_mesh_deleted(&self, key: &MeshDeleteKey, manifest: ExitManifest) -> Result<(), String> {
+  - `:444` [remove or rewrite] /// exact exit proof. When that birth is the final primary a mesh.delete's completion receipt names
+  - `:446` [remove or rewrite] /// every birth of the mesh is now proven exited: the final birth's exact Exited receipt is read
+  - `:448` [remove or rewrite] /// ([`crate::mesh_delete::mesh_left_proof`]) and recorded as `MeshLeft`, and mesh-left is published.
+  - `:474` [remove or rewrite] span.in_scope(|| tracing::info!("the final primary of a deleted mesh is proven exited: mesh-left is decided"));
+  - `:483` [remove or rewrite] // The final birth's exact Exited: its node.delete's TerminateRuntime receipt, in that Build.
+  - `:490` [remove or rewrite] .map_err(|e| format!("{}: the Build {deleted_in} of the node.delete could not be read for its exit proof: {e}", op.operation))?
+  - `:496` [remove or rewrite] .ok_or_else(|| format!("{}: no exact Exited receipt of {} {} is held in {deleted_in}", op.operation, op.name, op.incarnation.as_str()))?;
+  - `:497` [remove or rewrite] let all = crate::mesh_delete::mesh_left_proof(&completion, &terminal).map_err(|e| format!("{operation}: the proof set is not complete: {e}"))?;
+  - `:507` [remove or rewrite] async fn record_mesh_left(&self, key: &MeshDeleteKey, mesh: &str, all: ExitManifest) -> Result<(), String> {
+  - `:528` [remove or rewrite] .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
+  - `:666` [remove or rewrite] async fn leave_members(&self, key: &MeshDeleteKey, owner: &crate::mesh_delete::MeshDeleteOwner) -> Result<ExitManifest, String> {
+  - `:695` [remove or rewrite] /// exact birth, under the mesh.delete's Build and attempt, and the exact Exited of its
+  - `:696` [remove or rewrite] /// `TerminateRuntime` recorded as the birth's exit-proof row (`terminate-runtime`). The provider's
+  - `:703` [remove or rewrite] // delete goes straight to its exit proof), as `retire` takes it from the view.
+  - `:707` [remove or rewrite] // its exact Exited is the birth's exit-proof row.
+  - `:708` [remove or rewrite] self.records.put_exit_of_terminate(&terminal).await.map_err(|e| format!("{}'s exit is not recorded: {e}", n.name))?;
+  - `:718` [remove or rewrite] async fn hand_off(&self, key: &MeshDeleteKey, owner: &crate::mesh_delete::MeshDeleteOwner, manifest: &ExitManifest, _recorded: u32) {
+  - `:729` [remove or rewrite] // members' exit proofs; mesh is dead, id kept retired"): every other member's exit is proven,
+  - `:746` [remove or rewrite] span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs, and its name released"));
+  - `:757` [remove or rewrite] /// its exit manifest receipt. `manifest` says whether that receipt is recorded (`complete`) or
+- `crates/rdm-admin/src/admin/projection.rs` (11)
+  - `:6` [remove or rewrite] /// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
+  - `:18` [remove or rewrite] /// `book`, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
+  - `:98` [remove or rewrite] /// projection needs is read in [`ViewReads::read`]: the exit-proof rows, folded into the records
+  - `:99` [remove or rewrite] /// ([`Records::read_exits`]), and the node rows, a field here; nothing is read under the lock.
+  - `:116` [remove or rewrite] /// exit-proof rows of the births `book` and `records` name ([`Records::read_exits`]), then the
+  - `:118` [remove or rewrite] /// nothing is read). The exits are read first: a birth proven exited does not publish its name, so
+  - `:123` [remove or rewrite] records.read_exits(book).await;
+  - `:136` [remove or rewrite] /// staleness floor, proven exited, held true offline) may have had its row moved while it said
+  - `:489` [remove or rewrite] // Its exit-proof row read: the birth is Dead, whatever its record last held.
+  - `:496` [remove or rewrite] // Each birth whose exit-proof row was read carries the proof, beside the `Dead` it shows: a
+  - `:499` [remove or rewrite] n.exit_proven = n.incarnation_id.as_ref().is_some_and(|i| records.is_exited(&n.node_id, i));
+- `crates/rdm-admin/src/admin/reconcile.rs` (62)
+  - `:104` [remove or rewrite] /// Projects this admin's view now and installs it, so a birth just proven exited holds no seat
+  - `:142` [remove or rewrite] let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row.as_ref()).await?;
+  - `:143` [remove or rewrite] let recorded = self.records.put_exit(&n, code, source).await;
+  - `:144` [remove or rewrite] tracing::info_span!("rdm.node_admin.build.update.via-executor-exit-proof", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation.as_str(), exit_code = code.map(|c| c.
+  - `:151` [remove or rewrite] /// The provider's exit proof of every one of `nodes`, as the fabric authority's pass reads it
+  - `:152` [remove or rewrite] /// ([`nodes_exit_proof`] over this admin's view and the durable runtime rows): what the drive
+  - `:155` [remove or rewrite] async fn exits_of(&self, nodes: &[PathName]) -> crate::build_drive::ExitProofs {
+  - `:159` [remove or rewrite] Err(e) => return crate::build_drive::ExitProofs { proven: Vec::new(), unproven: nodes.iter().map(|a| format!("{a}: the durable runtime rows could not be read at {me}: {e}")).collec
+  - `:164` [remove or rewrite] nodes_exit_proof(nodes, &map, &self.book, &durable, self.records.path_probe().as_deref(), &*self.provider).await
+  - `:196` [remove or rewrite] /// of its exit-proof row (node-recovery.md: "Exited is the proof, recorded durably"). A row that
+  - `:207` [remove or rewrite] .in_scope(|| tracing::info!("the executor's exit-proof row could not be read: its exit is not taken as recorded"));
+  - `:224` [remove or rewrite] /// The provider's exact exit proof of every one of `nodes`, the nodes the accepted topology names for
+  - `:226` [remove or rewrite] /// included, has crashed ... The fabric-primary acts on the provider's exact exit proof, never on
+  - `:230` [remove or rewrite] /// runtime not proven exited (it runs, or cannot be told) are each named as not proven. Nothing is recorded. The fabric authority's pass and the drive's [banned word]
+  - `:232` [remove or rewrite] pub async fn nodes_exit_proof(
+  - `:239` [remove or rewrite] ) -> crate::build_drive::ExitProofs {
+  - `:243` [remove or rewrite] /// [`nodes_exit_proof`], with each proven node's exited birth (`None` for a node nothing was ever born
+  - `:252` [remove or rewrite] ) -> (crate::build_drive::ExitProofs, Vec<(PathName, Option<crate::drift::ExitedBirth>)>) {
+  - `:270` [remove or rewrite] match exit_proof_of(provider, &held_row, row).await {
+  - `:271` [remove or rewrite] Ok((code, source)) => proven.push((node.clone(), Some(crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source }))),
+  - `:275` [remove or rewrite] (crate::build_drive::ExitProofs { proven: proven.iter().map(|(p, _)| p.to_string()).collect(), unproven }, proven)
+  - `:283` [remove or rewrite] /// not proven exited (it runs, or cannot be told), records that cannot be read, and no probe held,
+  - `:295` [keep: the investigation's provider step] Some((at, status @ (DeploymentStatus::Unknown | DeploymentStatus::Exited { .. }))) => Err(format!("no birth is held for it, and the runtime recorded at {at} is not proven exited: {
+  - `:303` [remove or rewrite] /// ([`nodes_exit_proof`] over `t`): "Every node of mesh-x, its node-admins included, has crashed". A
+  - `:308` [remove or rewrite] /// only on its exact exit.
+  - `:322` [remove or rewrite] ) -> Option<(String, PathName, Option<crate::drift::ExitedBirth>)> {
+  - `:326` [remove or rewrite] // with no exit proof, and the create's own [banned word] decides its data dir (node-recovery.md `R-FM2`).
+  - `:328` [remove or rewrite] // inspect it): a lost birth the view still holds as a member is held-running or proven exited by
+  - `:357` [remove or rewrite] /// mesh that lost its mesh-primary, the exited birth and the completed receipts of its create and delete
+  - `:388` [remove or rewrite] ///   admin and deletes it only on its exact exit, so nothing is proven or recorded here;
+  - `:390` [remove or rewrite] ///   provider proves exited (mesh-investigation.md step 5, "Fully crashed": a mesh whose every node is gone is
+  - `:396` [remove or rewrite] ///   provider proves exited (exact exit proof, never silence): the same recipe, for that admin. A peer mesh
+  - `:401` [remove or rewrite] /// mesh-primary proves its exit and submits its recovery (node-recovery.md, mesh-recovery.md:8-9).
+  - `:405` [remove or rewrite] /// `verdicts` holds the exits this loop recorded ([`record_verdict_once`]), so a proven exit's row is
+  - `:420` [remove or rewrite] verdicts: &ExitVerdicts,
+  - `:443` [remove or rewrite] // Every unheard birth whose exact runtime the provider proves exited, with the exit code the
+  - `:446` [remove or rewrite] let mut proven: std::collections::BTreeMap<PathName, crate::drift::ExitedBirth> = Default::default();
+  - `:463` [remove or rewrite] // unreachable, every node of which the provider proves exited, is owed the same create.
+  - `:470` [remove or rewrite] // Where each proven exit's row stands after this pass (`<path.name>=put|recorded|<refusal>`), named
+  - `:472` [remove or rewrite] let mut exit_proof_rows: Vec<String> = Vec::new();
+  - `:494` [remove or rewrite] // (`crate::investigate`), not on the first exit proof: every one of its births waits for it
+  - `:542` [remove or rewrite] .in_scope(|| tracing::info!("a silent birth the accepted topology names cannot be proven exited by this authority"));
+  - `:545` [remove or rewrite] let (code, source) = match exit_proof_of(provider, &held_row, row).await {
+  - `:568` [remove or rewrite] exit_proof = source,
+  - `:574` [remove or rewrite] // The proof is recorded durably, once (`record_verdict_once`): the birth's exit-proof row is
+  - `:575` [remove or rewrite] // what every projection reads as its proven loss, put by the pass that proved the exit and
+  - `:580` [remove or rewrite] match record_verdict_once(verdicts, birth, &Inspected::Exited(code, source), || async { exits.put_exit(n, code, source).await.map(|_| ()) }).await {
+  - `:581` [remove or rewrite] Ok(stands) => exit_proof_rows.push(format!("{}={stands}", n.name)),
+  - `:583` [remove or rewrite] exit_proof_rows.push(format!("{}={e}", n.name));
+  - `:585` [remove or rewrite] .in_scope(|| tracing::info!("the provider proves the birth exited, but its exit-proof row is not written: no projection holds it exited; the repair is decided from the proof in han
+  - `:589` [remove or rewrite] proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
+  - `:598` [remove or rewrite] // One exited birth per attempt, in path.name order; the next pass takes the next remaining one.
+  - `:599` [remove or rewrite] let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
+  - `:603` [remove or rewrite] // taken only once no exited birth is left to repair.
+  - `:645` [remove or rewrite] // its mesh-primary's to recover), and a proven-exited birth has no process to restart
+  - `:647` [remove or rewrite] // for a mesh with no node-admin left that is not proven gone (mesh-investigation.md step 5
+  - `:648` [remove or rewrite] // "Fully crashed"); the create's [banned word] deletes the exited birth it finds there.
+  - `:681` [remove or rewrite] tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id.log(), failed_attempt = current.attempt, scope = %scope, inputs = %i
+  - `:731` [remove or rewrite] exit_proof = crashed.as_ref().and_then(|(_, _, b)| b.as_ref()).or(first_exited.map(|(_, b)| b)).map(|b| b.source).unwrap_or("none"),
+  - `:732` [remove or rewrite] exit_proof_rows = %exit_proof_rows.join(", "),
+  - `:755` [remove or rewrite] tracing::info!("every node of the fully crashed mesh is proven exited: the next attempt of the same Build, node.create of its node-admin, is open")
+  - `:757` [remove or rewrite] tracing::info!("a birth the accepted topology names is proven gone: the next attempt of the same Build is open")
+- `crates/rdm-admin/src/admin/records.rs` (40)
+  - `:308` [remove or rewrite] /// The exact births whose exit-proof row (`status/<mesh>/exits/`, written by whichever admin
+  - `:314` [remove or rewrite] /// The path.name each exit-proof row read named for its birth: where a birth proven gone lived, for
+  - `:723` [keep: the investigation's provider step] /// proof, recorded durably"; node-runtime-inspect.md step 5): its exit-proof row, a blind put of
+  - `:725` [remove or rewrite] /// whichever admin proved it. This is the fact every projection reads as the birth's proven loss
+  - `:726` [remove or rewrite] /// ([`Self::read_exits`]); nothing is held in memory for it. Fed only from node.runtime.inspect's
+  - `:728` [remove or rewrite] /// proved the exit and is refused by name otherwise ([`exit_proof_named`]).
+  - `:729` [remove or rewrite] pub async fn put_exit(&self, node: &Node, exit_code: Option<i32>, proof: &str) -> Result<crate::status_storage::NodeExitRow, String> {
+  - `:730` [remove or rewrite] let incarnation_id = node.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its exit-proof row by", node.name, node.node_id))?;
+  - `:731` [remove or rewrite] exit_proof_named(proof).map_err(|e| format!("the exit-proof row of {} ({}) at {} is not written: {e}", node.name, node.node_id, incarnation_id.as_str()))?;
+  - `:733` [remove or rewrite] let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms: local_no
+  - `:734` [remove or rewrite] store.put_node_exit_of(&node.mesh, &row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row among {}'s status rows: {e}", node.name, node.node_id, node.mesh))?
+  - `:739` [remove or rewrite] /// The exit-proof row of `node`'s exact birth among its own mesh's status rows, a point read
+  - `:741` [remove or rewrite] pub async fn exit_row_of(&self, node: &Node) -> Result<Option<crate::status_storage::NodeExitRow>, String> {
+  - `:746` [remove or rewrite] /// The exit-proof row of the exact birth `(node_id, incarnation)` of mesh `mesh` among that mesh's
+  - `:749` [remove or rewrite] pub async fn exit_row_of_birth(&self, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId, named: &str) -> Result<Option<crate::status_storage::NodeExitRow>, String> {
+  - `:751` [remove or rewrite] store.node_exit_of(mesh, node_id, incarnation).await.map_err(|e| format!("status.storage read of {named} ({node_id}) exit-proof row at {} among {mesh}'s status rows: {e}", incarnat
+  - `:754` [remove or rewrite] /// [`Self::put_exit`] of the birth a node.delete's `TerminateRuntime` receipt names: the inspect
+  - `:756` [remove or rewrite] /// `node.deleted`"), whose exact Exited the receipt commits; the row's proof is `terminate-runtime`.
+  - `:757` [remove or rewrite] pub async fn put_exit_of_terminate(&self, t: &crate::deployment::pipeline::TerminalReceipt) -> Result<crate::status_storage::NodeExitRow, String> {
+  - `:762` [remove or rewrite] self.put_exit(&node, t.exit_code, "terminate-runtime").await
+  - `:840` [remove or rewrite] /// The read of the exit-proof rows, one part of the view's read phase (taken before the view's
+  - `:844` [remove or rewrite] /// rows, and the proven exits held. The store root is the fabric's own (R14), so a birth of
+  - `:845` [remove or rewrite] /// another fabric names no row there. An exit-proof row is never withdrawn (the status store
+  - `:851` [remove or rewrite] pub async fn read_exits(&self, book: &DigestBook) {
+  - `:869` [remove or rewrite] let mut read: HashMap<(NodeId, IncarnationId), (String, crate::status_storage::NodeExitRow)> = HashMap::new();
+  - `:882` [remove or rewrite] .in_scope(|| tracing::info!("an exit-proof row could not be read: this pass proves nothing new of that birth"));
+  - `:885` [remove or rewrite] let entered: Vec<(String, crate::status_storage::NodeExitRow)> = {
+  - `:894` [remove or rewrite] tracing::info_span!("rdm.node_admin.node.resolve.via-exit-proof-row", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), mesh = %mesh, exit_co
+  - `:895` [remove or rewrite] .in_scope(|| tracing::info!("the projection reads the birth's exit-proof row: it is held exited, Dead and gone from every seat"));
+  - `:935` [remove or rewrite] /// Whether the birth's exit-proof row was read by the installed projection.
+  - `:950` [remove or rewrite] /// The path.name the exit-proof row of this birth named, when the projection read one.
+  - `:955` [remove or rewrite] /// The incarnations whose exit-proof row the installed projection read.
+  - `:989` [remove or rewrite] /// ([`Self::remove_deleted`]); then it reads the exit-proof rows of the births the book this admin's
+  - `:990` [remove or rewrite] /// membership holds and these records name ([`Self::read_exits`]); the projection taken under
+  - `:996` [remove or rewrite] self.read_exits(book).await;
+  - `:1075` [remove or rewrite] // recovery created there) stays. The exited birth is held removed whether or not the
+  - `:1088` [keep: the investigation's provider step] /// What an exit-proof row's `proof` may name (node-runtime-inspect.md step 5; node-delete.md "Exact
+  - `:1091` [remove or rewrite] /// `TerminateRuntime`, `terminate-runtime`; or a committed takeover, `takeover { revision: <t> }`
+  - `:1094` [remove or rewrite] pub fn exit_proof_named(proof: &str) -> Result<(), String> {
+  - `:1095` [remove or rewrite] let takeover = proof.strip_prefix("takeover { revision: ").and_then(|rest| rest.strip_suffix(" }")).is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()));
+- `crates/rdm-admin/src/admin/recovery.rs` (40)
+  - `:20` [remove or rewrite] /// from it which exited births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
+  - `:24` [remove or rewrite] /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
+  - `:70` [remove or rewrite] /// What a loop that proves exits last recorded per birth `(node_id, incarnation)`: the mesh primary's
+  - `:72` [remove or rewrite] /// ([`reconcile_drift`]) each hold one, and record through [`record_verdict_once`].
+  - `:73` [remove or rewrite] pub type ExitVerdicts = Mutex<HashMap<(NodeId, IncarnationId), Inspected>>;
+  - `:97` [remove or rewrite] /// The verdict rule of a loop that proves exits (node-recovery.md "Exited is the proof, recorded
+  - `:99` [remove or rewrite] /// birth, by `record` (its span, and for an exit the birth's exit-proof row, a blind put of its own
+  - `:101` [remove or rewrite] /// (the store refused the put) leaves `verdicts` as it was, so the next pass that proves the exit
+  - `:104` [remove or rewrite] pub(crate) async fn record_verdict_once<F>(verdicts: &ExitVerdicts, birth: (NodeId, IncarnationId), outcome: &Inspected, record: impl FnOnce() -> F) -> Result<&'static str, String>
+  - `:155` [remove or rewrite] /// The provider's exact-exit proof of `node`'s birth: node.runtime.inspect over the one runtime
+  - `:179` [remove or rewrite] /// the birth ([`Self::record_verdict`]: named, and an exit put as the birth's exit-proof row once,
+  - `:180` [remove or rewrite] /// on the tick that proved it), and the recovery submitted only on an exit proof of a member that
+  - `:184` [remove or rewrite] pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &ExitVerdicts) -> Inspected {
+  - `:194` [remove or rewrite] let exit_proof_row = match &row {
+  - `:210` [remove or rewrite] exit_proof = *source,
+  - `:211` [remove or rewrite] exit_proof_row = %exit_proof_row,
+  - `:336` [remove or rewrite] // Nothing proven: the span names the uncertainty; no hold, no exit proof, the next tick asks again.
+  - `:418` [remove or rewrite] /// span, and for an exit the birth's exit-proof row in status.storage (node-recovery.md "Exited
+  - `:419` [remove or rewrite] /// is the proof, recorded durably"; [`crate::offline::put_exit_proof`], a blind put of the birth's
+  - `:422` [remove or rewrite] /// next tick that proves the exit puts the row. For an exit, the answer is where its row stands:
+  - `:424` [remove or rewrite] pub(crate) async fn record_verdict(&self, n: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>, verdicts: &ExitVerdicts) -> Result<&'static str, String> {
+  - `:426` [remove or rewrite] record_verdict_once(verdicts, (n.node_id.clone(), incarnation), outcome, || async {
+  - `:429` [remove or rewrite] crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await?;
+  - `:514` [remove or rewrite] /// node.delete of the exited birth (`node.delete:<path>`) is such a workflow too: its overlay
+  - `:541` [remove or rewrite] let (verdict, exit_code, exit_proof, reason) = match outcome {
+  - `:549` [remove or rewrite] tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(),
+  - `:553` [remove or rewrite] /// The recovery of `node`'s exited birth on its exit-proof row, `row` as the tick recorded it
+  - `:556` [remove or rewrite] /// exited birth ([`Self::submit_in`], R-BI7). The run is followed to its end, so the caller holds
+  - `:559` [remove or rewrite] let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
+  - `:569` [remove or rewrite] /// The exited births the tick submits again (node-recovery.md "Failure and receipts": "the
+  - `:571` [remove or rewrite] /// finds the member still proven exited and submits"): none unless this admin holds its mesh's
+  - `:632` [remove or rewrite] /// The submit of an exited birth whose node workflow stopped at a Failed attempt (node-recovery.md
+  - `:633` [remove or rewrite] /// "Failure and receipts"), on the tick: the birth's exit-proof row is point-read (the provider's
+  - `:635` [remove or rewrite] /// keyed on the exited birth. A missing or unreadable row is no proof: named on its own span, and
+  - `:644` [remove or rewrite] "rdm.node_admin.node.reject.via-exit-proof-unread",
+  - `:653` [remove or rewrite] .in_scope(|| tracing::info!("an exit owed a submit has no readable exit-proof row: nothing is submitted"));
+  - `:654` [remove or rewrite] format!("{me}: no exit-proof row of {} at {} to submit on ({reason}{})", owed.node_id, owed.incarnation.as_str(), if error.is_empty() { String::new() } else { format!(": {error}") 
+  - `:670` [remove or rewrite] /// The recovery of `node`'s exited birth at `incarnation`, run by this admin as its mesh's primary
+  - `:722` [remove or rewrite] /// The span of one submit of the exited birth `node` at `incarnation` by the mesh primary `me`
+  - `:733` [remove or rewrite] exit_proof = source,
+- `crates/rdm-admin/src/admin/rows_writer.rs` (3)
+  - `:400` [remove or rewrite] Self::Running => write!(f, "its runtime is not proven exited: Running"),
+  - `:401` [remove or rewrite] Self::OsStopped => write!(f, "its runtime is not proven exited: OsStopped"),
+  - `:447` [remove or rewrite] pub async fn exit_proof_of(
+- `crates/rdm-admin/src/admin/runner.rs` (48)
+  - `:80` [remove or rewrite] /// This admin's status.storage: as a mesh primary, the exit-proof rows of its members' exited
+  - `:101` [remove or rewrite] /// deleted is handed to it (mesh-left follows the final primary's exit proof, R-MD1 item 2).
+  - `:425` [remove or rewrite] /// a node-admin it launches starts from (a successor fabric primary proves exits from it).
+  - `:454` [remove or rewrite] // delete releases a name, R-MN1): its exit proof is recorded, node.delete deletes it as a
+  - `:455` [remove or rewrite] // crashed target (NodeDeleted, its Deleted row), then the create runs over its data dir
+  - `:458` [remove or rewrite] // §4.3: a lost mesh's node-admin over the inherited data dir only with exit proof).
+  - `:461` [remove or rewrite] // The path's previous birth read exited; its exit-proof row is written from
+  - `:467` [remove or rewrite] return Err(format!("{node}: birth {} at {} read exited at the path, and node.runtime.inspect answers {} ({}): no exit-proof row is written, so it is not deleted and nothing is crea
+  - `:469` [remove or rewrite] let exit = self.records.put_exit(&prev, *code, proof).await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is 
+  - `:470` [remove or rewrite] let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
+  - `:471` [remove or rewrite] self.delete_crashed(&*self.builds, build_id, attempt, node, &from, exit).await?;
+  - `:476` [remove or rewrite] // exit-proof row is the takeover's and its row is Deleted, so the name is free, and its data
+  - `:538` [remove or rewrite] /// The exact exited birth `from` at `node` a node recovery acts for (node-recovery.md), and its
+  - `:542` [remove or rewrite] pub(crate) async fn exited_birth(&self, op: &str, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(Node, DeploymentHandle), String> {
+  - `:550` [remove or rewrite] let (exited, handle) = self.handle_for(&exact).await.map_err(|e| format!("{op}:{node}: the exited birth's runtime is not resolved: {e}"))?;
+  - `:558` [remove or rewrite] /// target"): the exact exited birth `from` at `node`, deleted through the delete workflow on this
+  - `:559` [remove or rewrite] /// admin's recorded exit proof, nothing sent to the dead process. A birth the provider sees running
+  - `:562` [remove or rewrite] pub(crate) async fn delete_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Resul
+  - `:563` [remove or rewrite] // The exit-proof row is read among the birth's own mesh's status rows, where its prover wrote it
+  - `:564` [remove or rewrite] // (`Records::put_exit`): the fabric-primary recovering a peer mesh's node-admin reads mesh2's
+  - `:574` [remove or rewrite] .map_err(|e| format!("node.delete:{node}: the exit-proof row of birth {} at {} could not be read by {me}: {e}", from.node_id, from.incarnation.as_str()))?;
+  - `:576` [remove or rewrite] return self.delete_crashed(builds, build_id, attempt, node, from, exit).await.map(|_| ());
+  - `:586` [remove or rewrite] Err(format!("node.delete:{node}: {me} reads no exit-proof row for birth {} at {} among {}'s status rows: only a proven exit is deleted as a crashed target", from.node_id, from.inca
+  - `:590` [remove or rewrite] /// runs `TerminateRuntime` first, records the provider's exit proof and clears `held-running`,
+  - `:592` [remove or rewrite] pub(crate) async fn delete_hung(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<
+  - `:605` [remove or rewrite] /// node.delete of the crashed target `from` at `node` on the exit-proof row `exit` in hand
+  - `:606` [remove or rewrite] /// (node-delete.md "Crashed target"): the delete workflow, nothing sent to the dead process. A
+  - `:610` [remove or rewrite] pub(crate) async fn delete_crashed(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, exit: c
+  - `:612` [remove or rewrite] // The exit-proof row in hand is the proof: a node-admin deleted on it has its row written by the
+  - `:614` [remove or rewrite] exited.exit_proven = true;
+  - `:617` [remove or rewrite] return Err(format!("node.delete:{node}: birth {} at {} still runs: it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.as_str()).into());
+  - `:620` [remove or rewrite] return Err(format!("node.delete:{node}: the operating system holds birth {} at {} suspended (os-stopped): it is not exited and is not deleted as a crashed target", from.node_id, fr
+  - `:635` [remove or rewrite] /// the exited birth `from`'s data dir, through the create workflow: it loads the endpoint key
+  - `:640` [remove or rewrite] /// The exited birth is [banned word] here, by the create (node-recovery.md "Delete [banned word] the old
+  - `:646` [remove or rewrite] pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<
+  - `:658` [remove or rewrite] // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told
+  - `:714` [remove or rewrite] /// node-recovery.md "Delete [banned word] the old instance before the new join": the exited birth's
+  - `:737` [remove or rewrite] .in_scope(|| tracing::info!("the exited birth's direct paths are retired before the new birth with its key is launched"));
+  - `:741` [remove or rewrite] /// What follows a birth's proven exit: the resolver names
+  - `:752` [remove or rewrite] // The exit is proven: the exited birth's direct paths are retired. Until now they stayed
+  - `:760` [remove or rewrite] .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
+  - `:799` [remove or rewrite] /// at `node`, [banned word] by incarnation, ended with the provider's exact Exited proof and deleted
+  - `:800` [remove or rewrite] /// (`DeploymentPipeline::delete_stopped`); what follows its proven exit follows.
+  - `:952` [remove or rewrite] // goes straight to its exact runtime's exit proof.
+  - `:963` [remove or rewrite] /// exit proof, its row Deleted, NodeDeleted) over its exact runtime `handle`; then its paths are
+  - `:1041` [remove or rewrite] // proven exited is node recovery's (node-recovery.md).
+  - `:1079` [remove or rewrite] /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a recipe's
+  - `:1151` [remove or rewrite] // node.delete runs no stop steps for a stopped or proven-exited birth and stops a live
+- `crates/rdm-admin/src/admin/session.rs` (1)
+  - `:777` [remove or rewrite] // the provider's exact exit proof, then node recovery only on proof (mesh-recovery.md step 6).
+- `crates/rdm-admin/src/build.rs` (10)
+  - `:110` [remove or rewrite] /// Node recovery's create (node-recovery.md sequence step 4): the exited birth whose data
+  - `:113` [remove or rewrite] over: Option<ExitedBirth>,
+  - `:145` [remove or rewrite] /// steps are done; `NodeDeleting`, the provider's exact Exited proof, `NodeDeleted`, and `Complete`
+  - `:157` [remove or rewrite] /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
+  - `:158` [remove or rewrite] /// exact exited birth, deleted on its mesh-primary's recorded exit proof. Its stop steps are
+  - `:161` [remove or rewrite] exited: Option<ExitedBirth>,
+  - `:265` [remove or rewrite] /// The exact exited birth a node recovery acts for: the node.id and incarnation its mesh-primary
+  - `:268` [remove or rewrite] pub struct ExitedBirth {
+  - `:269` [remove or rewrite] /// The exited birth's node.id.
+  - `:271` [remove or rewrite] /// The exited birth's incarnation.
+- `crates/rdm-admin/src/build_drive.rs` (31)
+  - `:54` [remove or rewrite] /// that is this birth, `None` when it names none or a birth proven gone.
+  - `:158` [remove or rewrite] /// The provider's exit proof of the set of nodes of one mesh read together (mesh-investigation.md step 5,
+  - `:162` [remove or rewrite] pub struct ExitProofs {
+  - `:163` [remove or rewrite] /// The nodes whose exact runtime the provider proves exited.
+  - `:165` [remove or rewrite] /// Each node not proven exited, with why (no birth at its path, no runtime fact, a runtime that
+  - `:170` [remove or rewrite] impl ExitProofs {
+  - `:171` [remove or rewrite] /// `proven` when every node read is proven exited, else `held`.
+  - `:181` [remove or rewrite] /// The read of the provider's exit proof of every node of a mesh the peer-mesh investigation decided
+  - `:185` [remove or rewrite] pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, nodes: usize, proofs: &ExitProofs) {
+  - `:196` [remove or rewrite] .in_scope(|| tracing::info!("the provider's exit proof of every node of a mesh the investigation found unreachable was read"));
+  - `:199` [remove or rewrite] /// The admission of the create of `mesh`'s first node-admin with no exit proof, the fabric seat having
+  - `:213` [remove or rewrite] .in_scope(|| tracing::info!("the fabric seat was taken from this mesh past the hold: its first node-admin is re-created from the fabric lane with no exit proof"));
+  - `:220` [remove or rewrite] /// `Ok` when the birth `executor` names in this admin's view is proven exited; `Err` names why
+  - `:223` [remove or rewrite] /// Whether the exact birth `executor` names in this admin's view was already proven exited (a
+  - `:229` [remove or rewrite] /// The provider's exit proof of the exact birth each of `nodes` (every node the accepted topology
+  - `:233` [remove or rewrite] async fn exits_of(&self, nodes: &[PathName]) -> ExitProofs {
+  - `:234` [remove or rewrite] ExitProofs { proven: Vec::new(), unproven: nodes.iter().map(|a| format!("{a}: no provider proof is held here")).collect() }
+  - `:245` [remove or rewrite] /// with no exit proof (elections §4.3, node-recovery.md `R-FM2`). A proof that holds no seat moves
+  - `:256` [remove or rewrite] /// The path.name the lost birth's exit-proof row names, when one was read: where the node the
+  - `:359` [remove or rewrite] /// The path.name the lost birth's exit-proof row names, read beside `taken`.
+  - `:876` [remove or rewrite] // [banned word] it names this birth, none, or a birth proven gone (no holder).
+  - `:949` [remove or rewrite] /// its exact exit.
+  - `:958` [remove or rewrite] /// provider proves exited (mesh-investigation.md step 5, "Fully crashed": "Every node of mesh-x,
+  - `:959` [remove or rewrite] /// its node-admins included, has crashed ... The fabric-primary acts on the provider's exact exit
+  - `:960` [remove or rewrite] /// proof, never on silence"; "Members live": no exit proof means hold). Each read is named once per
+  - `:975` [remove or rewrite] // Only once the lost birth's name was released, its exit-proof row read (fabric-recovery.md
+  - `:985` [remove or rewrite] let proofs = self.departure.exits_of(&nodes).await;
+  - `:1273` [remove or rewrite] .in_scope(|| tracing::info!("the executor's exact runtime is proven exited: the next attempt may be claimed"));
+  - `:1658` [remove or rewrite] /// action names, the retire of that birth as a crashed target (`TerminateRuntime` on its exact runtime
+  - `:1660` [remove or rewrite] /// on the provider's `Running` at the hold's expiry and on their own exit proof, never on silence, so
+  - `:1664` [remove or rewrite] let birth = |b: &crate::build::ExitedBirth| &b.node_id == node_id && &b.incarnation == from_incarnation;
+- `crates/rdm-admin/src/build_run.rs` (2)
+  - `:733` [remove or rewrite] /// The exited birth was recovered already, by this attempt: nothing was opened or run.
+  - `:758` [remove or rewrite] /// The mesh-primary's own recovery of the exited birth `(node_id, incarnation)` at `path` (R-BI7;
+- `crates/rdm-admin/src/build_state.rs` (21)
+  - `:50` [remove or rewrite] /// A birth the topology names was proven exited; the same Build repairs it.
+  - `:1167` [remove or rewrite] /// operation of the node workflow at `path` that deleted the exited birth `(node_id, incarnation)`
+  - `:1174` [remove or rewrite] /// the views, never the receipts). The first such attempt. A point read by the exited birth:
+  - `:1181` [remove or rewrite] /// exit proof. The first such attempt. A point read by the birth: every adapter answers it from
+  - `:1190` [remove or rewrite] /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and
+  - `:1209` [remove or rewrite] /// An exited birth whose node workflow stopped at a Failed attempt and is not done
+  - `:1213` [remove or rewrite] /// The exited birth's path.name.
+  - `:1215` [remove or rewrite] /// The exited birth's node.id.
+  - `:1217` [remove or rewrite] /// The exited birth's incarnation.
+  - `:1230` [remove or rewrite] /// the exited birth's path.name over its data dir, whose claim seeds config and tags from the
+  - `:1340` [remove or rewrite] /// whatever order the facts arrive: the exited birth each attempt opened with
+  - `:1498` [remove or rewrite] /// An attempt opened with `AttemptAction::Recover`, under the exited birth and under its lane.
+  - `:1504` [remove or rewrite] /// The exited birth's path.name.
+  - `:1711` [remove or rewrite] /// drift lane, then each exited birth they open a recovery of, with its lanes.
+  - `:1776` [remove or rewrite] /// The point read of [`BuildStateAdapter::exits_owed`]: per exited birth of `mesh`, the run its
+  - `:2388` [remove or rewrite] /// `Ok` when the record names this birth, none, or a birth proven gone; `Err` naming the record
+  - `:2398` [remove or rewrite] /// move. A revision an election stepped holds no seal: its holder is proven gone.
+  - `:3700` [remove or rewrite] m.absorb(&[BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")), BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "successor proven exited after committed transfer
+  - `:3732` [remove or rewrite] /// then node.create, no step 6): a recovery's exited birth is answered by the recovery index once
+  - `:3747` [remove or rewrite] // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
+  - `:4092` [remove or rewrite] /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
+- `crates/rdm-admin/src/control_plane.rs` (15)
+  - `:76` [remove or rewrite] /// initial fabric before ready-for-traffic"), and each exited birth's exit-proof row is the durable
+  - `:247` [remove or rewrite] /// The exit-proof row of the exact birth this admin's view names at `claimant` in `mesh`, a point
+  - `:251` [remove or rewrite] async fn departure_of(&self, claimant: &PathName, mesh: &str) -> Result<Option<(crate::model::Node, crate::status_storage::NodeExitRow)>, Refusal> {
+  - `:257` [remove or rewrite] Err(e) => Err(Refusal::Unavailable(format!("{me}: the exit-proof row of {claimant} ({}) at {} among mesh {mesh}'s status rows could not be read to prove its departure: {e}", n.node
+  - `:290` [remove or rewrite] let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, node_id = %n.nod
+  - `:692` [remove or rewrite] /// Open and claim the recovery of `path` from its exited birth `(node_id, incarnation)` as the
+  - `:698` [remove or rewrite] /// In order: keyed on the exited birth, once a node workflow that deletes a birth completed for
+  - `:717` [remove or rewrite] // Keyed on the exited birth across the Build log: a birth a node workflow already
+  - `:725` [remove or rewrite] .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, noth
+  - `:734` [remove or rewrite] // (R-FM1: the seat never moves before the exit proof; once TerminateRuntime proves exit,
+  - `:737` [remove or rewrite] && t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && !p.exit_proven)
+  - `:776` [remove or rewrite] // the hung holder keeps that seat until this attempt's exit proof (elections §4.3). The mesh's
+  - `:798` [remove or rewrite] let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claim
+  - `:914` [remove or rewrite] let only_of_cohort = t.cohort(&node.mesh, target.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == target.node_id);
+  - `:1140` [remove or rewrite] /// The exited birth was already recovered, by this attempt of the Build: nothing was opened.
+- `crates/rdm-admin/src/deployment/pipeline.rs` (28)
+  - `:15` [remove or rewrite] //! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
+  - `:16` [remove or rewrite] //!   -> NodeDeleted (from the mesh-primary's recorded exit proof) -> RemoveTopologyMembership -> Complete
+  - `:21` [remove or rewrite] //! own: the delete of the crashed target, then the create over its data dir. A recipe
+  - `:908` [remove or rewrite] /// create, over the exited birth's data dir): taken over whole, its endpoint key loaded and never
+  - `:926` [remove or rewrite] /// exited birth's data dir [banned word] that birth here (node-recovery.md "Delete [banned word] the old instance
+  - `:942` [remove or rewrite] /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
+  - `:943` [remove or rewrite] /// mesh-primary's recorded exit proof of the exact birth. Its stop steps are already done:
+  - `:945` [remove or rewrite] pub exit: Option<crate::status_storage::NodeExitRow>,
+  - `:964` [remove or rewrite] /// provider ends it and proves the exit (a delete, a mesh leave). `publish_stopped` is
+  - `:1409` [remove or rewrite] /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
+  - `:1459` [remove or rewrite] /// is continued; lifecycles/node-create.md requires exact provider proof of a runtime's state even
+  - `:1621` [remove or rewrite] // A create over an exited birth's data dir (or fresh dir on lost-data-dir recovery)
+  - `:2099` [remove or rewrite] /// NodeDeleting -> TerminateRuntime (the provider's exact Exited) -> NodeDeleted -> Complete (the birth)
+  - `:2145` [remove or rewrite] /// proof and records the durable exit-proof row; no node command (`node.connections.delete` / `stop-node`) is
+  - `:2164` [remove or rewrite] .put_exit(&node, terminal.exit_code, "terminate-runtime")
+  - `:2168` [remove or rewrite] node.exit_proven = true;
+  - `:2184` [remove or rewrite] "rdm.node_admin.node.delete.via-exit-proof",
+  - `:2194` [remove or rewrite] .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
+  - `:2213` [remove or rewrite] // A crashed target is deleted only on the exit proof of exactly its birth: a proof of
+  - `:2220` [remove or rewrite] "{name}: the exit proof names birth {} at {}, the delete is of {} at {}",
+  - `:2248` [remove or rewrite] // fabricated again. The delete proceeds to the exact runtime's exit proof
+  - `:2249` [remove or rewrite] // (lifecycles/node-delete.md 1-2, node-stop.md 6). A crashed target likewise: its stop steps
+  - `:2266` [remove or rewrite] // node's Leaving, its drained reply, the claim) is. A crashed target's node.deleted is
+  - `:2267` [remove or rewrite] // published from its mesh-primary's recorded exit proof (node-recovery.md sequence step 3).
+  - `:2274` [remove or rewrite] "rdm.node_admin.node.delete.via-exit-proof",
+  - `:2284` [remove or rewrite] .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
+  - `:2341` [remove or rewrite] async fn until_exited(&self, handle: &DeploymentHandle) {
+  - `:2397` [remove or rewrite] () = self.until_exited(handle) => Completion::RuntimeExited {},
+- `crates/rdm-admin/src/deployment/provider.rs` (7)
+  - `:122` [remove or rewrite] /// never folded into one "nothing" (lifecycles/node-create.md: exact provider proof of a runtime's
+  - `:284` [keep: the investigation's provider step] pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: Option<&std::path::Path>, incarnation: &str) -> Result<DeploymentStatus, String> {
+  - `:301` [keep: the investigation's provider step] /// the `proof` of the exit-proof row the caller writes (node-runtime-inspect.md step 5):
+  - `:324` [remove or rewrite] /// ([`exit_proof`]), and only the runtime's own terminal status an exit. The one inspect every
+  - `:338` [remove or rewrite] match exit_proof(inspected.clone(), fact, data_dir.map(std::path::Path::new), incarnation).await {
+  - `:349` [remove or rewrite] Ok(S::Unknown) => Inspected::Unavailable("its runtime is not proven exited: Unknown".into()),
+  - `:364` [remove or rewrite] /// status `stopped`, proves no completed `node.stop`, and is never exit proof.
+- `crates/rdm-admin/src/drift.rs` (3)
+  - `:11` [remove or rewrite] //! A path in the topology with no present birth and a proven exit is drift.
+  - `:23` [remove or rewrite] pub(crate) struct ExitedBirth {
+  - `:39` [remove or rewrite] /// The births whose exact runtime was proven exited (`path.name`).
+- `crates/rdm-admin/src/election.rs` (14)
+  - `:7` [remove or rewrite] //! changes hands and handed to a joiner in its entry), and the births proven gone.
+  - `:11` [remove or rewrite] //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not proven gone,
+  - `:16` [remove or rewrite] //! - A holder that yields, or whose exact birth is proven gone, hands the seat to its own mesh:
+  - `:22` [remove or rewrite] //!   proven gone (or has left). Then the lowest NodeId among the remaining mesh primaries wins and
+  - `:75` [remove or rewrite] /// proven gone.
+  - `:87` [remove or rewrite] /// Exact births proven gone, by incarnation (an incarnation names one birth of one node): the
+  - `:107` [remove or rewrite] /// The birth was replaced by a later one or is proven gone. A holder's status never yields
+  - `:108` [remove or rewrite] /// it: a seat moves by an explicit transfer (a new holder record) or a proven loss.
+  - `:126` [remove or rewrite] /// The lowest Ready node among `members` that is not proven gone.
+  - `:139` [remove or rewrite] /// given the seat holders held and the births proven gone. `nodes` are members: a replaced
+  - `:180` [remove or rewrite] /// that is not proven gone, another mesh only once the whole incumbent mesh is.
+  - `:193` [remove or rewrite] // node-admin birth of it, the living holder included, is not proven gone or Leaving: with only
+  - `:216` [remove or rewrite] /// `lost`, not proven gone; else [`fabric_successor_excluding`] with `lost`'s mesh excluded.
+  - `:246` [remove or rewrite] /// `holder`'s (mesh, kind) cohort other than `holder`, not proven gone. `None` when no other node of
+- `crates/rdm-admin/src/executor.rs` (12)
+  - `:78` [remove or rewrite] // executed by the exited birth's recoverer (node-recovery.md "Reconciler", R-ON8): a member's
+  - `:83` [remove or rewrite] // (below), the fabric-primary's once the mesh holds no admin that is not proven gone
+  - `:147` [remove or rewrite] /// admin; the fabric primary only when the mesh has no node-admin left that is not proven gone
+  - `:163` [remove or rewrite] /// The node-admins of `mesh` (other than `target`) that hold no seat and are not proven gone: the
+  - `:164` [remove or rewrite] /// same-mesh successors an operation on the mesh waits for. Proven gone in this view is `Dead` (an
+  - `:190` [remove or rewrite] format!("{}: mesh {} seats no node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own seat", op.
+  - `:196` [remove or rewrite] /// place once its exited birth is gone (a proven loss vacates the seat, elections §5). `None` when no
+  - `:201` [remove or rewrite] /// it is proven gone (`crate::election`), and its own recovery is still its mesh's to run.
+  - `:210` [remove or rewrite] /// The admin the election seats as `target`'s mesh primary once `target`'s exited birth is proven
+  - `:211` [remove or rewrite] /// gone (elections §5: "a holder ... whose exact birth is proven gone hands the seat to the lowest
+  - `:212` [remove or rewrite] /// ReadyForTraffic NodeId of its own mesh"). A proven loss only: a planned move is node.primary.update.
+  - `:275` [remove or rewrite] let only_of_cohort = t.cohort(&node.mesh, node.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == holder.node_id);
+- `crates/rdm-admin/src/fabric_builds.rs` (2)
+  - `:197` [remove or rewrite] /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
+  - `:200` [remove or rewrite] /// when the record names none or a birth proven gone.
+- `crates/rdm-admin/src/fabric_handover.rs` (42)
+  - `:28` [remove or rewrite] //! answered it; the provider's exit proof vacates the seat for the cohort's ordinary rule, and anything
+  - `:30` [remove or rewrite] //! answers from it) while the successor is not proven exited. A
+  - `:31` [remove or rewrite] //! resuming executor that reads the row of a holder proven gone has discovered the commit, not
+  - `:37` [remove or rewrite] //! whose exit-proof row it reads; and the holder itself when it restarts over the store root and
+  - `:131` [remove or rewrite] /// rows, never one for the other: after the row, the successor proven exited, the ordinary rule
+  - `:135` [remove or rewrite] /// was proven gone past the completed update), and from that row's revision it is their row
+  - `:517` [remove or rewrite] /// row names is proven exited: then this receiver, the next writer to read the row, says it (C1
+  - `:599` [remove or rewrite] // cohort's row writer, and the holder the row names is proven gone only by the provider's exit
+  - `:600` [remove or rewrite] // proof (elections §4.1), its exit-proof row among its mesh's status rows. A row present: this
+  - `:1001` [remove or rewrite] /// birth is proven gone by its exit-proof row is called no more: the seat the row gave it vacated
+  - `:1003` [remove or rewrite] /// row's operation (C1 failure contract: "the seat vacates only on the provider's exit proof, and
+  - `:1025` [remove or rewrite] self.records.read_exits(&self.book).await;
+  - `:1028` [remove or rewrite] let proof = format!("{} exit-proof row recorded (proof {} observed at {} ms)", births(&row.successor), exit.proof, exit.observed_at_ms);
+  - `:1036` [remove or rewrite] let failed = SourceFailure { source: format!("status.storage of {me}, the exit-proof row of {} under mesh {}", births(&row.successor), row.successor.mesh), op: format!("read the ex
+  - `:1037` [remove or rewrite] let detail = format!("{me}: node.primary.update {} committed the seat(s) to {}, and whether that birth is proven exited cannot be read, so it is not called: {failed}", row.operatio
+  - `:1047` [remove or rewrite] /// named birth, a refusal or no answer is never an exit proof ... The holder's call fails by name,
+  - `:1049` [remove or rewrite] /// call against the resolved birth; the seat vacates only on the provider's exit proof, and then the
+  - `:1053` [remove or rewrite] /// proof is recorded as the birth's exit-proof row, so the seat the row gave it vacates and the
+  - `:1080` [remove or rewrite] exit_proof_row = tracing::field::Empty,
+  - `:1187` [keep: the investigation's provider step] // The inspect's exit proof (node-runtime-inspect.md step 5): recorded durably as the
+  - `:1188` [remove or rewrite] // birth's exit-proof row, its proof the inspect's, which every projection reads as its
+  - `:1189` [remove or rewrite] // proven loss; this admin's own view reads it now.
+  - `:1190` [remove or rewrite] let recorded = self.records.put_exit(&n, *code, proof).await;
+  - `:1191` [remove or rewrite] span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
+  - `:1192` [remove or rewrite] self.records.read_exits(&self.book).await;
+  - `:1201` [remove or rewrite] Err(("unproven", format!("its exact birth neither answered the tickle ladder nor is proven exited ({}: {}); {stands}", finding.name(), finding.detail())))
+  - `:1218` [remove or rewrite] /// its row. A holder proven gone answers nothing: its operation's row is point-read on the fabric's
+  - `:1275` [remove or rewrite] Called::NotDispatched(why) | Called::Indeterminate(why) => Err(("incomplete", SeatMoveEnd::Incomplete(format!("{me}: node.primary.update {operation} of {} is uncertain and the step
+  - `:1279` [remove or rewrite] /// What a holder proven gone committed for `operation`: its seat-transfer row under its mesh on the
+  - `:1290` [remove or rewrite] read.in_scope(|| tracing::info!("the fabric-primary read the committed row of a holder proven gone: it obtains the successor's node.primary.updated before it installs"));
+  - `:1303` [remove or rewrite] Err(("no-update", SeatMoveEnd::Incomplete(format!("{me}: {} is proven gone and no seat row records {operation} under mesh {}: no update happened, and the ordinary election seats it
+  - `:1347` [remove or rewrite] /// to read the row, says it only once the holder the row names is proven exited by its exit-proof
+  - `:1403` [remove or rewrite] // The holder lost after the row, before "updated": the provider's exit proof of the birth the row
+  - `:1557` [remove or rewrite] // again it is commanded back (Q87); proven gone, node recovery runs (Q89).
+  - `:1613` [remove or rewrite] /// The lost birth a committed takeover at seat move `t` superseded (i144 Q51): its exit-proof row
+  - `:1614` [remove or rewrite] /// written `takeover { revision: t }`, the proof kind every projection reads as gone, and its row at
+  - `:1627` [remove or rewrite] let exit = self.records.put_exit(&node, None, &proof).await;
+  - `:1631` [remove or rewrite] (Err(e), _) => Err(format!("its exit-proof row is not written, so its row is not deleted: {e}")),
+  - `:1639` [remove or rewrite] exit_proof = %proof,
+  - `:1640` [remove or rewrite] exit_proof_row = %exit.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()),
+  - `:1685` [remove or rewrite] /// revision (it committed, or the ordinary rule filled the seat), or its lost birth is proven gone.
+  - `:1851` [remove or rewrite] /// "primary updated" (step 7). A holder proven gone is commanded no more: the row stands and this
+- `crates/rdm-admin/src/fabric_rounds.rs` (1)
+  - `:811` [remove or rewrite] /// ends only on that answer, on the birth's proven exit or removal, or when the round closes (this
+- `crates/rdm-admin/src/fabric_storage.rs` (3)
+  - `:155` [remove or rewrite] /// after its holder's proven exit, a seat a holder took again after its successor's exit.
+  - `:463` [remove or rewrite] /// names it, names none (Day 0, before any record) or names a birth proven gone. `Err` says why
+  - `:823` [remove or rewrite] /// ordinary rule after a proven exit ... and day 0's first seating"; "a vacancy filled by the rule
+- `crates/rdm-admin/src/investigate.rs` (2)
+  - `:171` [remove or rewrite] /// only on the provider's exact exit proof of every node of the mesh
+  - `:208` [remove or rewrite] /// whose runtime was proven exited is replaced when the ladder decides, not before, and a
+- `crates/rdm-admin/src/mesh_delete.rs` (97)
+  - `:6` [remove or rewrite] //! node-admins after, each tier a set of parallel member workflows), records one exit manifest, hands it to the
+  - `:11` [remove or rewrite] //! exact exit proof, every birth of the mesh is proven exited and the fabric-primary records
+  - `:37` [remove or rewrite] /// final primary included, proven exited (R-MD1 item 2), once the final primary's own node.delete
+  - `:38` [remove or rewrite] /// holds its exact exit proof.
+  - `:98` [remove or rewrite] /// The exit manifest: the accepted roster, and the provider's terminal receipt of every birth that
+  - `:103` [remove or rewrite] pub struct ExitManifest {
+  - `:121` [remove or rewrite] pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_primary: &RosterBirth, with_final: bool) -> Option<(String, String, String)> {
+  - `:154` [remove or rewrite] /// is an [`ExitManifest`] with no receipts yet: the roster, the final primary and its exact runtime
+  - `:166` [remove or rewrite] let row: ExitManifest = r
+  - `:178` [remove or rewrite] let row = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.clone(), final_primary: final_primary.clone(), final_runtime: Some(final_runtime.clone()), receipts: Vec::
+  - `:200` [remove or rewrite] /// The exact Exited receipts the Build already holds for births of `roster`: each member's
+  - `:203` [remove or rewrite] /// as a crashed target, "Resume after the primary's loss" step 1), from any attempt, whose terminal
+  - `:227` [remove or rewrite] /// for a delete cut anywhere after its exit proof (before `NodeDeleted`'s receipt, before its
+  - `:254` [remove or rewrite] /// node.delete, and mesh-left follows that node.delete's exit proof.
+  - `:255` [remove or rewrite] Deleted(ExitManifest),
+  - `:274` [remove or rewrite] pub fn completion_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Result<ExitManifest, String>> {
+  - `:283` [remove or rewrite] pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
+  - `:298` [remove or rewrite] .in_scope(|| tracing::info!("mesh.deleted: every birth but the final primary is proven exited; the mesh.delete ends with its primary alive, whose end is its own node.delete"));
+  - `:304` [remove or rewrite] /// primary) and `terminal`, the provider's exact Exited of the final primary that its node.delete
+  - `:308` [remove or rewrite] pub fn mesh_left_proof(completion: &ExitManifest, terminal: &TerminalReceipt) -> Result<ExitManifest, String> {
+  - `:328` [remove or rewrite] pub fn accepted_row(steps: &[BuildStepReceipt], operation: &str, step: &str) -> Option<Result<ExitManifest, String>> {
+  - `:334` [remove or rewrite] /// replaces `predecessor`, whose exact Exited receipt the Build already holds. `final_runtime` is the
+  - `:412` [remove or rewrite] /// proven exited (R-D1: unheard is not dead).
+  - `:415` [remove or rewrite] .in_scope(|| tracing::info!("the lost final primary is not proven exited: the resume is refused and nothing is amended"));
+  - `:419` [remove or rewrite] /// exact Exited receipt is recorded for that birth and runtime. The identical amendment replays
+  - `:421` [remove or rewrite] /// of a birth that is not the current final primary, or that names an exited birth, is refused.
+  - `:449` [remove or rewrite] let reason = format!("{operation}: no exact Exited receipt of the final primary {pred} is recorded ({}): {STEP_ROSTER_AMENDED} is written only after it, and a silent primary is not
+  - `:491` [remove or rewrite] /// one inspect ([`crate::deployment::provider::inspect_runtime`]), and on its `exit-proven` the birth's exit-proof
+  - `:492` [keep: the investigation's provider step] /// row through [`crate::admin::Records::put_exit`], its proof the inspect's (node-runtime-inspect.md
+  - `:493` [remove or rewrite] /// step 5). A birth with no row, another runtime, or a runtime not proven exited proves nothing and
+  - `:495` [remove or rewrite] pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, lost:
+  - `:505` [remove or rewrite] records.put_exit(&node, code, proof).await.map_err(|e| format!("the exit of {named} is proven and its exit-proof row is not written: {e}"))
+  - `:507` [remove or rewrite] Inspected::Running => Err(format!("the runtime of {named} is not proven exited: running")),
+  - `:508` [remove or rewrite] Inspected::OsStopped => Err(format!("the runtime of {named} is not proven exited: os-stopped")),
+  - `:509` [remove or rewrite] Inspected::Unavailable(why) => Err(format!("the runtime of {named} is not proven exited: {why}")),
+  - `:516` [remove or rewrite] /// runtime row `row` through the inspect ([`prove_predecessor_exit`]) unless the Build already holds
+  - `:517` [remove or rewrite] /// its receipt, then its node.delete as a crashed target (`delete`, node-delete.md "Crashed target":
+  - `:519` [remove or rewrite] /// roster receipt; then `RosterAmended` admits `held`. A lost primary not proven exited refuses the
+  - `:524` [remove or rewrite] F: FnOnce(crate::status_storage::NodeExitRow) -> Fut,
+  - `:531` [remove or rewrite] // A lost primary not proven exited refuses the resume by name; the leave is incomplete, not failed.
+  - `:532` [remove or rewrite] let exit = prove_predecessor_exit(provider, records, row, lost, &admitted.final_runtime).await.map_err(|reason| {
+  - `:534` [remove or rewrite] crate::executor::RunEnd::Incomplete(format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost
+  - `:536` [remove or rewrite] // The exit-proof row is the proven loss every projection reads; node.delete of the exact
+  - `:676` [remove or rewrite] /// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
+  - `:723` [remove or rewrite] /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
+  - `:726` [remove or rewrite] /// delete the fabric-primary ran as a crashed target) keeps its receipt and is not run again: its
+  - `:728` [remove or rewrite] /// nothing of it is written or published again here; a member whose delete holds its exact Exited
+  - `:741` [remove or rewrite] pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, reco
+  - `:758` [remove or rewrite] // Births whose own node.delete holds the provider's exact Exited and not every later step.
+  - `:762` [remove or rewrite] // The exit proof is a step of the delete, not the delete: a birth is done once its delete
+  - `:779` [remove or rewrite] .in_scope(|| tracing::info!("members whose delete has every step's receipt keep it; the rest run, a delete that holds only its exit proof from the step it has no receipt for"));
+  - `:813` [remove or rewrite] let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: me.clone(), final_runtime: Some(final_runtime), receipts };
+  - `:826` [remove or rewrite] .map_err(|e| format!("the exit manifest could not be recorded: {e}"))?;
+  - `:828` [remove or rewrite] .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
+  - `:834` [remove or rewrite] /// is proven exited. `rows` is the fabric-primary's writer, writing as acting primary of a mesh that
+  - `:925` [remove or rewrite] Accept(ExitManifest),
+  - `:935` [remove or rewrite] /// The leaving primary recorded no exit manifest for the leave: its member workflows are
+  - `:937` [remove or rewrite] /// no exact Exited receipt.
+  - `:975` [remove or rewrite] // accepted birth the sender's facts hold no exact Exited receipt for.
+  - `:979` [remove or rewrite] let named = if without_exit.is_empty() { "none (every other birth exited, but no exit manifest is recorded)".to_string() } else { without_exit.join(", ") };
+  - `:980` [remove or rewrite] let reason = format!("{operation} (build {}, attempt {attempt}): the member workflows are incomplete: {receipt_manifest} names no Complete {STEP_OTHER_MEMBERS_EXITED} receipt among
+  - `:985` [remove or rewrite] let manifest: ExitManifest = match receipt.output.clone().and_then(|v| serde_json::from_value(v).ok()) {
+  - `:987` [remove or rewrite] None => return unmatched("receipt_manifest", "a readable exit manifest".into(), format!("{receipt_manifest}: its output does not decode")),
+  - `:1017` [remove or rewrite] /// fact of the Build (`UnknownBuild`) recorded no exit manifest when it called: its member
+  - `:1187` [remove or rewrite] pub type MeshDeleteOutcome = Result<ExitManifest, String>;
+  - `:1233` [remove or rewrite] pub fn resolve(&self, key: &MeshDeleteKey, manifest: ExitManifest) -> bool {
+  - `:1268` [remove or rewrite] /// or the final primary proven exited ([`await_mesh_deleted`]). An attempt that ends incomplete is handed back to the
+  - `:1277` [remove or rewrite] /// `final_primary_exited` answers whether the final primary is proven exited, naming the proof; a
+  - `:1278` [remove or rewrite] /// proven exit ends the attempt incomplete at once, so the next attempt resumes the leave in the
+  - `:1279` [remove or rewrite] /// order "Resume after the primary's loss" gives (the lost primary's exact Exited recorded first,
+  - `:1282` [remove or rewrite] pub async fn await_mesh_deleted<F, Fut>(key: &MeshDeleteKey, primary: &str, mut handoff: watch::Receiver<Option<MeshDeleteOutcome>>, mut view: watch::Receiver<u64>, mut final_prima
+  - `:1298` [remove or rewrite] .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-deleted: this attempt ends and the next resumes the leave from its receipts"));
+  - `:1300` [remove or rewrite] "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-deleted; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that
+  - `:1315` [remove or rewrite] return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary}, live and not proven exited, sent no valid mesh-deleted within {within:?}; the workflow is incomplete and
+  - `:1329` [remove or rewrite] Exited { key: MeshDeleteKey, owner: MeshDeleteOwner, manifest: ExitManifest, recorded: u32 },
+  - `:1344` [remove or rewrite] manifest: ExitManifest,
+  - `:1375` [remove or rewrite] manifest: ExitManifest,
+  - `:1445` [remove or rewrite] fn exited(&self, ran: &MeshDeleteKey, manifest: &ExitManifest) -> RunExit {
+  - `:1512` [remove or rewrite] Fut: std::future::Future<Output = Result<ExitManifest, String>>,
+  - `:1549` [remove or rewrite] /// exact exit proof).
+  - `:1561` [remove or rewrite] /// Every node of the mesh was proven exited by the provider: rows are `Deleted`, mesh row is
+  - `:1563` [remove or rewrite] FullyCrashed(ExitManifest),
+  - `:1564` [remove or rewrite] /// Ordinary members are live while all `node-admin`s are proven exited: create one `node-admin`
+  - `:1576` [remove or rewrite] /// proven exited through the inspect from its durable runtime row ([`prove_predecessor_exit`], its
+  - `:1577` [remove or rewrite] /// exit-proof row the inspect's) and then deleted by node.delete as a crashed target (`delete`,
+  - `:1578` [remove or rewrite] /// node-delete.md "Crashed target": this fabric-primary its executor, under the leave's Build and
+  - `:1584` [remove or rewrite] /// ([`UnansweredMeshOutcome::CreateAdmin`]). A birth not proven exited refuses the resolve by name.
+  - `:1602` [remove or rewrite] F: Fn(RosterBirth, crate::status_storage::NodeExitRow) -> Fut,
+  - `:1609` [remove or rewrite] return Err(format!("{outer}: {mesh} holds no node-admin birth to prove exited"));
+  - `:1619` [remove or rewrite] format!("{outer}: {mesh} is unanswered and its node-admin {} {} is not proven exited ({reason})", birth.node, birth.incarnation_id)
+  - `:1621` [remove or rewrite] let exit = prove_predecessor_exit(provider, records, row.as_ref(), &birth, &runtime).await.map_err(|reason| {
+  - `:1623` [remove or rewrite] format!("{outer}: {mesh} is unanswered and its node-admin {} {} is not proven exited ({reason})", birth.node, birth.incarnation_id)
+  - `:1637` [remove or rewrite] match prove_predecessor_exit(provider, records, row.as_ref(), &birth, &runtime).await {
+  - `:1647` [remove or rewrite] return Err(format!("{outer}: {mesh} is unanswered and its member {} {} is silent and not proven exited ({reason})", birth.node, birth.incarnation_id));
+  - `:1656` [remove or rewrite] return Err(format!("{outer}: {mesh} is unanswered and its member {} {} has no durable runtime row to prove exited", birth.node, birth.incarnation_id));
+  - `:1673` [remove or rewrite] let deleted_manifest = ExitManifest {
+  - `:1681` [remove or rewrite] let left_manifest = ExitManifest {
+- `crates/rdm-admin/src/node_investigation.rs` (2)
+  - `:10` [remove or rewrite] //! from the exact birth is `reached`; only the provider proves an exit.
+  - `:38` [remove or rewrite] /// Where the proof came from, the `proof` of the exit-proof row the caller writes
+- `crates/rdm-admin/src/node_rows.rs` (3)
+  - `:181` [remove or rewrite] /// Node recovery's create over the exited birth's data dir (node-recovery.md step 4): the row
+  - `:505` [remove or rewrite] let fabric_recovery = record.kind == NodeKind::NodeAdmin && record.exit_proven;
+  - `:533` [remove or rewrite] /// member that departed the view after its exact Exited receipt, mesh-delete.md steps 3 and
+- `crates/rdm-admin/src/primitives/mod.rs` (1)
+  - `:4` [remove or rewrite] //! rafka-time, `node.connections.delete`, the transport cut, the exit proof, row claim/put/tombstone,
+- `crates/rdm-admin/src/reenter.rs` (1)
+  - `:14` [remove or rewrite] //!    mesh-primary's tickle, then the provider's exact exit proof, then recovery only on proof.
+- `crates/rdm-admin/src/seat_watch.rs` (10)
+  - `:11` [remove or rewrite] //! its exit-proof row put (`Records::put_exit`); `unreached`, `NotSent`, a deadline, silence and the
+  - `:73` [remove or rewrite] /// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
+  - `:77` [remove or rewrite] /// naming none or a birth proven gone names no holder. Read from the record alone: no history, no
+  - `:91` [remove or rewrite] /// none is held); held when the record names `me`, none, or a birth proven gone (`lost`), and not
+  - `:287` [remove or rewrite] exit_proof_row = tracing::field::Empty,
+  - `:353` [remove or rewrite] // The verified loss is recorded durably: the holder's exit-proof row is what every
+  - `:354` [remove or rewrite] // projection reads as its proven loss, its proof the inspect's.
+  - `:355` [remove or rewrite] let recorded = w.records.put_exit(&node, *code, proof).await;
+  - `:356` [remove or rewrite] span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
+  - `:368` [remove or rewrite] // A held takeover ends once the seat's record moved or its lost birth is proven gone.
+- `crates/rdm-admin/src/status_storage.rs` (30)
+  - `:166` [remove or rewrite] pub struct NodeExitRow {
+  - `:175` [remove or rewrite] /// Where the proof came from, one of the kinds `exit_proof_named` admits (`Records::put_exit`,
+  - `:176` [remove or rewrite] /// `offline::put_exit_proof`): node.runtime.inspect's `provider` (the provider's own terminal status),
+  - `:178` [remove or rewrite] /// node.delete's own `terminate-runtime` (its `TerminateRuntime` step's exact Exited); or
+  - `:179` [remove or rewrite] /// `takeover { revision }` (the committed takeover at seat move `revision` superseded the birth,
+  - `:186` [remove or rewrite] impl NodeExitRow {
+  - `:459` [remove or rewrite] /// A blind put of the birth's exit-proof row.
+  - `:460` [remove or rewrite] async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError>;
+  - `:461` [remove or rewrite] /// The exit-proof row of the birth `(node_id, incarnation_id)`, when one was put.
+  - `:462` [remove or rewrite] async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError>;
+  - `:469` [remove or rewrite] /// The exit-proof row of the birth `(node_id, incarnation_id)` among the status rows of the mesh
+  - `:471` [remove or rewrite] async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError>;
+  - `:472` [remove or rewrite] /// A blind put of the exit-proof row `row` among the status rows of the mesh named `mesh`.
+  - `:473` [remove or rewrite] async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError>;
+  - `:551` [remove or rewrite] exits: Mutex<std::collections::BTreeMap<String, NodeExitRow>>,
+  - `:559` [remove or rewrite] /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
+  - `:560` [remove or rewrite] exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
+  - `:720` [remove or rewrite] async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
+  - `:725` [remove or rewrite] async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+  - `:726` [remove or rewrite] Ok(self.exits.lock().unwrap().get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned())
+  - `:740` [remove or rewrite] async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+  - `:741` [remove or rewrite] let key = NodeExitRow::key_of(node_id, incarnation_id);
+  - `:745` [remove or rewrite] async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
+  - `:1128` [remove or rewrite] async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
+  - `:1131` [remove or rewrite] async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+  - `:1132` [remove or rewrite] self.exits.read(&NodeExitRow::key_of(node_id, incarnation_id), NODE_EXIT_FORMAT).await
+  - `:1146` [remove or rewrite] async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+  - `:1150` [remove or rewrite] self.other(mesh, "exits").await?.read(&NodeExitRow::key_of(node_id, incarnation_id), NODE_EXIT_FORMAT).await
+  - `:1152` [remove or rewrite] async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
+  - `:1154` [remove or rewrite] return self.put_node_exit(row).await;
+- `crates/rdm-admin/src/storage.rs` (1)
+  - `:385` [remove or rewrite] /// primary proves an exit from when its own membership never heard the birth, and the validated
+- `crates/rdm-admin/src/topology.rs` (5)
+  - `:146` [remove or rewrite] /// (`Node::exit_proven`). Such a birth holds its path until its delete or its mesh's end, but it is
+  - `:147` [remove or rewrite] /// no node of the mesh: mesh.delete's resume records the lost primary's exact Exited before its
+  - `:152` [remove or rewrite] self.members().filter(|n| n.mesh == mesh && !n.exit_proven).all(|n| n.node_id == *node_id)
+  - `:163` [remove or rewrite] /// view that has not heard the mesh lost, or the exited birth a recovery creates over) never
+  - `:198` [remove or rewrite] /// A holder keeps its seat until its explicit yield or a proven loss is held (R-EL1; the
+- `crates/rdm-admin/src/views.rs` (1)
+  - `:165` [remove or rewrite] /// holds the latest loss there (the exited birth's own, or the one the birth was recovered over).
+- `crates/rdm-admin/src/wire.rs` (7)
+  - `:21` [remove or rewrite] use crate::mesh_delete::{ExitManifest, RosterAmended};
+  - `:308` [remove or rewrite] ExitManifest(ExitManifest),
+  - `:448` [remove or rewrite] ExitManifest,
+  - `:488` [remove or rewrite] // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
+  - `:489` [remove or rewrite] Produces::ExitManifest
+  - `:556` [remove or rewrite] Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
+  - `:592` [remove or rewrite] WireOutput::ExitManifest(m) => json(&m),
+- `crates/rdm-admin/src/workflows/node_delete.rs` (1)
+  - `:3` [remove or rewrite] //! Composes `node.stop`, verifies exact provider runtime exit proof, releases node ID and
+- `crates/rdm-admin/src/workflows/node_recovery.rs` (1)
+  - `:8` [remove or rewrite] pub use crate::admin::{durable_births, recovery_due, watched_births, ExitVerdicts, Inspected};
+- `crates/rdm-admin/src/workflows/node_runtime_inspect.rs` (1)
+  - `:4` [remove or rewrite] //! process/container is running or proven exited.
+- `crates/rdm-client/src/workflow.rs` (1)
+  - `:221` [remove or rewrite] /// already stopped or proven-exited birth's runs no stop half and leaves no membership to remove
+- `crates/rdm-core/src/build.rs` (1)
+  - `:120` [remove or rewrite] /// path.name over the inherited data dir, with a new node.id. Keyed on the exited birth: a
+- `crates/rdm-core/src/forward.rs` (1)
+  - `:69` [remove or rewrite] /// The receiving birth is proven exited or removed.
+- `crates/rdm-core/src/model.rs` (7)
+  - `:39` [remove or rewrite] /// by the fabric-primary from the exit proof; the record and its config stay for the next node
+  - `:61` [remove or rewrite] /// Dead: a mesh every one of whose births was proven exited; final, its id never reissued.
+  - `:144` [remove or rewrite] /// The provider's proof that this exact birth exited is recorded: its exit-proof row was read
+  - `:145` [remove or rewrite] /// (`Records::read_exits`), so the birth is `Dead` and gone from every seat. `false` for a
+  - `:147` [remove or rewrite] /// provider's exit proof vacates a seat).
+  - `:149` [remove or rewrite] pub exit_proven: bool,
+  - `:191` [remove or rewrite] exit_proven: false,
+- `crates/rdm-core/src/outcome.rs` (1)
+  - `:266` [remove or rewrite] /// The receiving birth's proven exit or accepted removal ended the owed request after its
+- `crates/rdm-core/src/status.rs` (3)
+  - `:1192` [remove or rewrite] /// A `MeshDeleted` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
+  - `:1197` [remove or rewrite] /// How many roster births, the final primary aside, hold no exact Exited receipt.
+  - `:1495` [remove or rewrite] /// without an exact Exited receipt), cut to its budgets so the reply always fits the Status reply
+- `crates/rdm-core/src/topology.rs` (2)
+  - `:169` [remove or rewrite] /// exact birth as proven gone (its runtime found exited, its departure heard, or a later birth
+  - `:176` [remove or rewrite] /// Whether the target holds the holder's exact birth as proven gone.
+- `crates/rdm-core/src/views.rs` (2)
+  - `:47` [remove or rewrite] /// Dead: a mesh every one of whose births was proven exited; final.
+  - `:78` [remove or rewrite] /// §5): surfaced on `fabric.get` until it commits or the holder is proven gone and the ordinary rule
+- `crates/rdm-node/src/node.rs` (3)
+  - `:707` [remove or rewrite] // proven exit; nothing here sends it again on a cadence. When the mesh's primary seat
+  - `:736` [remove or rewrite] // not the authority, or was proven gone) waits for the seat to name a holder.
+  - `:1293` [remove or rewrite] /// holder's answer or on its proven exit, or when the seat moves ([`declare_until_seat_moves`] drops
+- `crates/rdm-node/src/node_self.rs` (1)
+  - `:821` [remove or rewrite] /// one. A completion whose receiver was proven gone is owed to the next node the seat names. The
+- `crates/rdm-node/src/topology_read.rs` (3)
+  - `:36` [remove or rewrite] /// Whether this node holds a seat holder's exact birth as proven gone.
+  - `:43` [remove or rewrite] /// Whether the node holds a recorded seat holder's exact birth as proven gone.
+  - `:74` [remove or rewrite] /// This node also tells a reader which recorded seat holders it holds as proven gone.
+- `crates/rdm-transport/src/client.rs` (2)
+  - `:569` [remove or rewrite] // birth is neither the holder's answer nor its proven exit (i146 Q52), so the
+  - `:847` [remove or rewrite] /// Returns once the receiver resolves, or once the view holds it proven gone or exited, which ends
+- `crates/rdm-transport/src/membership.rs` (2)
+  - `:1002` [remove or rewrite] /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
+  - `:1848` [remove or rewrite] // typed drain is in flight over them, and they are retired at the proven exit.
+
+### Tests (832 lines in 360 test functions)
+
+- `crates/rdm-admin/src/accepted.rs` `a_fabric_delete_compiles_to_the_build_its_page_names` (lines 1140)
+- `crates/rdm-admin/src/accepted.rs` `an_action_plans_only_its_birth_whatever_other_members_the_view_lacks` (lines 1401)
+- `crates/rdm-admin/src/accepted.rs` `a_stop_is_planned_until_its_complete_receipt_names_its_birth` (lines 1654, 1659, 1660, 1663, 1669)
+- `crates/rdm-admin/src/admin.rs` `?` (lines 77)
+- `crates/rdm-admin/src/admin.rs` `a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted` (lines 110, 112)
+- `crates/rdm-admin/src/admin.rs` `the_executor_exit_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable` (lines 1040, 1059, 1069, 1074, 1082, 1099, 1100, 1103)
+- `crates/rdm-admin/src/admin.rs` `a_departure_recorded_for_the_executors_exact_birth_is_answered_without_a_new_proof` (lines 1131, 1134)
+- `crates/rdm-admin/src/admin.rs` `recovery_of` (lines 1162)
+- `crates/rdm-admin/src/admin.rs` `two_ticks` (lines 1163, 1180, 1184)
+- `crates/rdm-admin/src/admin.rs` `a_true_offline_member_the_provider_cannot_tell_about_is_not_proven_exited_and_never_recovered` (lines 1199, 1205, 1207)
+- `crates/rdm-admin/src/admin.rs` `attrs` (lines 1235)
+- `crates/rdm-admin/src/admin.rs` `an_os_stopped_birth_is_recorded_and_opens_no_hold_and_never_counts_toward_held_running` (lines 1255)
+- `crates/rdm-admin/src/admin.rs` `a_running_read_under_an_announced_delete_leaves_the_os_stopped_fact_to_the_delete` (lines 1386)
+- `crates/rdm-admin/src/admin.rs` `a_successor_mesh_primary_revalidates_a_held_os_stopped_fact_with_its_own_inspection` (lines 1416, 1421)
+- `crates/rdm-admin/src/admin.rs` `an_unknown_inspection_records_uncertainty_and_infers_nothing` (lines 1445, 1448)
+- `crates/rdm-admin/src/admin.rs` `a_refused_exit_proof_write_ends_the_recovery_submit_on_its_span_naming_the_stores_cause` (lines 1451, 1463, 1469, 1475, 1481, 1484, 1487, 1488…)
+- `crates/rdm-admin/src/admin.rs` `a_submitter_that_holds_nothing_in_memory_reads_the_failed_exit_from_the_durable_facts` (lines 1499, 1557, 1567, 1568, 1572, 1574, 1577, 1578…)
+- `crates/rdm-admin/src/admin.rs` `a_proven_exit_of_a_birth_whose_removal_was_announced_submits_no_recovery` (lines 1622, 1636, 1651)
+- `crates/rdm-admin/src/admin.rs` `a_proven_exit_of_a_member_of_a_deleting_or_deleted_mesh_submits_no_recovery` (lines 1691)
+- `crates/rdm-admin/src/admin.rs` `put_node_exit` (lines 1741, 1743, 3885, 3886)
+- `crates/rdm-admin/src/admin.rs` `node_exit` (lines 1745, 3888)
+- `crates/rdm-admin/src/admin.rs` `node_exit_of` (lines 1754, 3897)
+- `crates/rdm-admin/src/admin.rs` `put_node_exit_of` (lines 1757, 1759, 3908, 3909)
+- `crates/rdm-admin/src/admin.rs` `remove_node_data_dir_unreadable_of` (lines 1827, 1828, 1829, 3977)
+- `crates/rdm-admin/src/admin.rs` `the_mesh_primary_records_a_proven_exit_once_over_every_tick_that_finds_it` (lines 1868, 1872, 1873, 1878, 1893, 1898)
+- `crates/rdm-admin/src/admin.rs` `a_failed_removal_attempts_target_is_recovered_by_the_next_tick` (lines 1949, 1961)
+- `crates/rdm-admin/src/admin.rs` `a_refused_read_of_the_durable_runtime_rows_is_spanned_and_the_tick_watches_the_views_births` (lines 2074)
+- `crates/rdm-admin/src/admin.rs` `a_true_offline_member_whose_runtime_row_cannot_be_read_is_not_proven_exited_and_never_recovered` (lines 2085, 2095, 2096)
+- `crates/rdm-admin/src/admin.rs` `a_non_holder_projects_the_degraded_status_the_holder_published` (lines 2188)
+- `crates/rdm-admin/src/admin.rs` `an_admins_door_opens_with_the_first_installed_view_that_holds_its_exact_birth` (lines 2398, 2399)
+- `crates/rdm-admin/src/admin.rs` `a_successor_has_no_recovery_due_for_a_silent_mesh_primary_until_the_seat_moves` (lines 2421, 2474)
+- `crates/rdm-admin/src/admin.rs` `the_projection_keeps_a_recorded_holder_and_elects_nobody_before_it_is_told` (lines 2523)
+- `crates/rdm-admin/src/admin.rs` `fabric_primary_over` (lines 2570, 2571)
+- `crates/rdm-admin/src/admin.rs` `prove_exit` (lines 2582, 2587)
+- `crates/rdm-admin/src/admin.rs` `exited_receipt` (lines 2594, 2595)
+- `crates/rdm-admin/src/admin.rs` `the_final_primarys_exit_held_as_a_proven_loss_leaves_the_fabric_primary_writing_its_row_deleted` (lines 2622, 2634, 2638, 2639, 2640)
+- `crates/rdm-admin/src/admin.rs` `a_fresh_admin_whose_store_holds_the_final_primarys_exit_proof_resolves_its_mesh_with_no_primary` (lines 2647, 2655, 2656, 2663, 2664, 2667)
+- `crates/rdm-admin/src/admin.rs` `mesh_left_drops_the_removed_meshs_contacts_of_every_birth_its_proof_set_names` (lines 2774, 2776)
+- `crates/rdm-admin/src/admin.rs` `the_lost_only_admins_exit_held_admits_the_fabric_primarys_claim_for_the_admin_it_creates` (lines 2806, 2809)
+- `crates/rdm-admin/src/admin.rs` `the_lost_primarys_exit_held_seats_the_live_admin_in_the_fabric_primarys_view_and_its_own` (lines 2827)
+- `crates/rdm-admin/src/admin.rs` `a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent` (lines 2911, 2932)
+- `crates/rdm-admin/src/admin.rs` `a_mesh_primary_announces_its_meshs_cohort_seats_the_election_fills` (lines 2966)
+- `crates/rdm-admin/src/admin.rs` `removed_births_leave_the_view_and_a_newer_birth_at_the_path_does_not` (lines 3734)
+- `crates/rdm-admin/src/admin.rs` `a_recovery_removes_exactly_the_exited_birth_and_never_the_new_node_at_its_path` (lines 3749, 3753)
+- `crates/rdm-admin/src/admin.rs` `a_projection_that_waits_for_the_view_lock_installs_the_state_at_the_lock` (lines 3826)
+- `crates/rdm-admin/src/admin.rs` `a_reader_of_the_view_is_served_while_an_installs_exit_row_read_is_slow` (lines 3988, 3989, 4004, 4008, 4009, 4010, 4014, 4018)
+- `crates/rdm-admin/src/admin.rs` `an_exit_proof_once_read_is_never_withdrawn_by_an_older_or_failed_read` (lines 4020, 4032, 4042, 4043, 4054, 4056, 4061, 4063…)
+- `crates/rdm-admin/src/admin.rs` `a_birth_listed_from_its_record_alone_is_dead_once_its_exit_proof_is_read` (lines 4066, 4077, 4079, 4083, 4085)
+- `crates/rdm-admin/src/admin.rs` `an_exit_proof_row_is_put_only_from_an_inspects_exited_or_a_takeover` (lines 4091, 4096, 4099, 4100)
+- `crates/rdm-admin/src/admin/recovery.rs` `a_hold_is_refused_by_any_provider_or_unproven_terminate_and_voided_by_a_later_inspection_failure` (lines 887)
+- `crates/rdm-admin/src/admin/recovery.rs` `put_node_exit` (lines 946, 947)
+- `crates/rdm-admin/src/admin/recovery.rs` `node_exit` (lines 949)
+- `crates/rdm-admin/src/admin/recovery.rs` `node_exit_of` (lines 958)
+- `crates/rdm-admin/src/admin/recovery.rs` `put_node_exit_of` (lines 961, 962)
+- `crates/rdm-admin/src/build_run.rs` `forget` (lines 1015)
+- `crates/rdm-admin/src/build_run.rs` `a_recovery_lookup_through_the_framed_builds_is_a_point_read_by_the_exited_birth` (lines 1031)
+- `crates/rdm-admin/src/control_plane.rs` `the_delete_of_a_meshs_only_node_skips_the_update_on_every_delete_route` (lines 1295, 1296, 1299, 1302)
+- `crates/rdm-admin/src/control_plane.rs` `a_birth_proven_exited_is_not_the_other_node_of_its_mesh_when_its_final_primary_is_deleted` (lines 1308, 1323)
+- `crates/rdm-admin/src/deployment/container.rs` `status_of` (lines 738)
+- `crates/rdm-admin/src/deployment/container.rs` `container_names_carry_only_safe_characters` (lines 857)
+- `crates/rdm-admin/src/deployment/container.rs` `a_launch_record_says_a_launch_ran_only_when_it_names_it_and_an_unreadable_one_is_refused` (lines 880)
+- `crates/rdm-admin/src/deployment/pipeline.rs` `process_handle` (lines 2951)
+- `crates/rdm-admin/src/deployment/pipeline.rs` `an_explicit_delete_of_an_os_stopped_birth_sends_no_stop_and_terminates_its_exact_runtime` (lines 2989)
+- `crates/rdm-admin/src/deployment/process.rs` `is` (lines 130)
+- `crates/rdm-admin/src/deployment/process.rs` `inspect` (lines 587)
+- `crates/rdm-admin/src/deployment/process.rs` `a_thread_group_is_os_stopped_only_when_every_live_task_is_stopped` (lines 696)
+- `crates/rdm-admin/src/deployment/process.rs` `a_leader_released_during_its_start_token_read_is_gone_and_a_denied_read_is_unreadable` (lines 724)
+- `crates/rdm-admin/src/deployment/process.rs` `find_reads_the_deployment_record_on_the_blocking_pool` (lines 812)
+- `crates/rdm-admin/src/deployment/provider.rs` `an_unreadable_stderr_log_is_named_in_the_failure_detail` (lines 664)
+- `crates/rdm-admin/src/deployment/provider.rs` `an_unknown_exit_code_is_proven_only_by_the_births_own_record` (lines 677, 680, 682, 683, 684, 685, 686, 687)
+- `crates/rdm-admin/src/deployment/provider.rs` `the_exit_record_is_read_on_the_blocking_pool` (lines 694, 697)
+- `crates/rdm-admin/src/deployment/provider.rs` `an_unreadable_exit_record_is_an_error_naming_the_file` (lines 706, 708)
+- `crates/rdm-admin/src/drift.rs` `a_cohort_short_without_a_proven_exit_is_not_drift` (lines 145)
+- `crates/rdm-admin/src/election.rs` `a_replaced_holder_hands_the_seat_to_its_own_mesh` (lines 852)
+- `crates/rdm-admin/src/election.rs` `an_rpc_cohort_seat_whose_recorded_holder_is_unheard_stays_vacant_for_it` (lines 959, 961)
+- `crates/rdm-admin/src/election.rs` `an_rpc_cohort_holder_proven_gone_or_restarted_hands_the_seat_to_the_lowest_ready` (lines 969)
+- `crates/rdm-admin/src/executor.rs` `a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included` (lines 631)
+- `crates/rdm-admin/src/executor.rs` `the_fabric_primary_never_executes_its_own_retire_or_restart` (lines 773, 775, 778)
+- `crates/rdm-admin/src/executor.rs` `a_mesh_whose_admin_is_held_but_not_seated_is_never_executed_by_the_fabric_primary` (lines 796, 803)
+- `crates/rdm-admin/src/fabric_builds.rs` `a_recipe_attempt_travels_the_build_topic_with_its_steps_and_pinned_births` (lines 774)
+- `crates/rdm-admin/src/fabric_builds.rs` `a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write` (lines 798)
+- `crates/rdm-admin/src/fabric_rounds.rs` `a_new_attempt_of_the_accepted_build_commands_every_planned_primary_again_under_its_own_round` (lines 1668)
+- `crates/rdm-admin/src/fabric_state.rs` `a_pending_birth_is_not_commanded_until_it_reaches_ready_for_traffic` (lines 622)
+- `crates/rdm-admin/src/investigate.rs` `a_peer_meshs_recovery_is_decided_only_by_a_recovery_decision` (lines 1302)
+- `crates/rdm-admin/src/mesh_delete.rs` `a_delete_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff` (lines 1780)
+- `crates/rdm-admin/src/mesh_delete.rs` `a_later_delete_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt` (lines 1828, 1846)
+- `crates/rdm-admin/src/mesh_delete.rs` `an_incomplete_report_ends_the_open_leave_at_once_with_its_reason` (lines 1882, 1883, 1884)
+- `crates/rdm-admin/src/mesh_delete.rs` `a_manifest_covers_the_roster_exactly_and_names_what_it_does_not` (lines 1896)
+- `crates/rdm-admin/src/mesh_delete.rs` `a_lost_mesh_deleted_report_is_replayed_to_the_next_attempt_and_resolves_it_exactly_once` (lines 1936)
+- `crates/rdm-admin/src/node_investigation.rs` `provider_says` (lines 387)
+- `crates/rdm-admin/src/offline.rs` `spawn_recovery_follower` (lines 826)
+- `crates/rdm-admin/src/offline.rs` `silence_word` (lines 862)
+- `crates/rdm-admin/src/offline.rs` `put_exit_proof` (lines 865, 867, 869, 870, 871)
+- `crates/rdm-admin/src/offline.rs` `put_node_exit` (lines 1889, 1890, 2067, 2071)
+- `crates/rdm-admin/src/offline.rs` `node_exit` (lines 1892, 2073)
+- `crates/rdm-admin/src/offline.rs` `node_exit_of` (lines 1902, 2082)
+- `crates/rdm-admin/src/offline.rs` `put_node_exit_of` (lines 1905, 1906, 2085, 2086)
+- `crates/rdm-admin/src/offline.rs` `remove_node_data_dir_unreadable_of` (lines 1974)
+- `crates/rdm-admin/src/offline.rs` `mesh_primary_records_an_exit_proof_as_the_births_own_row` (lines 1978, 1985, 1986, 1989, 1993)
+- `crates/rdm-admin/src/offline.rs` `mesh_primary_status_write_puts_only_the_births_own_silence_row` (lines 2017)
+- `crates/rdm-admin/src/status_rpc.rs` `put_node_exit` (lines 2432, 2433)
+- `crates/rdm-admin/src/status_rpc.rs` `node_exit` (lines 2435)
+- `crates/rdm-admin/src/status_rpc.rs` `node_exit_of` (lines 2444)
+- `crates/rdm-admin/src/status_rpc.rs` `put_node_exit_of` (lines 2447, 2448)
+- `crates/rdm-admin/src/status_rpc.rs` `a_superseded_or_deleted_birth_leaves_no_declared_state_row_behind` (lines 3042, 3043, 3045)
+- `crates/rdm-admin/src/status_rpc.rs` `a_birth_whose_path_the_book_holds_under_a_new_node_leaves_no_declared_state_row_behind` (lines 3099, 3117, 3120, 3121)
+- `crates/rdm-admin/src/storage_backend.rs` `open` (lines 328)
+- `crates/rdm-admin/src/storage_backend.rs` `exit` (lines 335, 336)
+- `crates/rdm-admin/src/storage_backend.rs` `a_moving_seats_writes_are_refused_by_name_until_lifted` (lines 354, 355, 361, 362)
+- `crates/rdm-admin/tests/build_drive.rs` `an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once` (lines 340)
+- `crates/rdm-admin/tests/build_drive.rs` `a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_for_its_seat` (lines 392)
+- `crates/rdm-admin/tests/build_drive.rs` `run` (lines 416, 640)
+- `crates/rdm-admin/tests/build_drive.rs` `crashed_rig` (lines 491, 493, 498)
+- `crates/rdm-admin/tests/build_drive.rs` `the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does` (lines 533, 538)
+- `crates/rdm-admin/tests/build_drive.rs` `an_unreachable_mesh_with_a_node_admin_the_provider_does_not_prove_exited_is_held_and_nothing_of_it_runs` (lines 549, 562)
+- `crates/rdm-admin/tests/build_drive.rs` `seeded_before` (lines 1249)
+- `crates/rdm-admin/tests/build_drive.rs` `a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_loss_is_proven` (lines 1269, 1300)
+- `crates/rdm-admin/tests/build_drive.rs` `a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unproven_and_resumes_when_it_is_proven` (lines 1360, 1389)
+- `crates/rdm-admin/tests/build_drive.rs` `seats_acknowledged` (lines 1976)
+- `crates/rdm-admin/tests/build_takeover.rs` `observed` (lines 82)
+- `crates/rdm-admin/tests/container_proof.rs` `daemon_state` (lines 96)
+- `crates/rdm-admin/tests/drift_convergence.rs` `freeze` (lines 99)
+- `crates/rdm-admin/tests/drift_convergence.rs` `proven` (lines 114, 2454)
+- `crates/rdm-admin/tests/drift_convergence.rs` `exits_of` (lines 119, 121)
+- `crates/rdm-admin/tests/drift_convergence.rs` `inspect` (lines 164)
+- `crates/rdm-admin/tests/drift_convergence.rs` `run` (lines 295, 318, 319, 325)
+- `crates/rdm-admin/tests/drift_convergence.rs` `drive_once` (lines 488)
+- `crates/rdm-admin/tests/drift_convergence.rs` `recoverer_of` (lines 559)
+- `crates/rdm-admin/tests/drift_convergence.rs` `submit_recovery` (lines 562)
+- `crates/rdm-admin/tests/drift_convergence.rs` `recover` (lines 579)
+- `crates/rdm-admin/tests/drift_convergence.rs` `an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created` (lines 645, 653, 664, 668)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_recovery_whose_create_failed_resumes_at_its_create_and_never_deletes_again` (lines 697)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary` (lines 788)
+- `crates/rdm-admin/tests/drift_convergence.rs` `members_unheard_through_a_lost_forwarder_are_fenced_never_duplicated` (lines 807)
+- `crates/rdm-admin/tests/drift_convergence.rs` `members_heard_again_mid_attempt_through_the_recovered_forwarder_are_never_created_over` (lines 853)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted` (lines 889, 892)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_its_code` (lines 916, 927)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row` (lines 999)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_its_mesh_primary` (lines 1081, 1082, 1083)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_drift_pass_refused_at_the_admission_spends_no_recovery_release` (lines 1446, 1477)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_durable_runtime_row_of_a_departed_birth_opens_no_attempt` (lines 1533)
+- `crates/rdm-admin/tests/drift_convergence.rs` `every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it` (lines 1604, 1611, 1640, 1645)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it` (lines 1665, 1679, 1690)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too` (lines 1715, 1732)
+- `crates/rdm-admin/tests/drift_convergence.rs` `the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it` (lines 1815)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read` (lines 1875)
+- `crates/rdm-admin/tests/drift_convergence.rs` `exit_proofs_of_a_peer_mesh_open_nothing_before_the_ladders_decision_or_after_the_mesh_is_heard` (lines 1879)
+- `crates/rdm-admin/tests/drift_convergence.rs` `two_meshes_given_new_node_admins_keep_the_fabric_degraded_until_each_new_primary_has_reported` (lines 1951)
+- `crates/rdm-admin/tests/drift_convergence.rs` `an_exited_birth_of_an_unheard_peer_mesh_opens_no_attempt_and_is_kept_as_evidence_once` (lines 2031, 2032)
+- `crates/rdm-admin/tests/drift_convergence.rs` `a_birth_whose_retirement_the_build_receipted_is_not_surplus` (lines 2168)
+- `crates/rdm-admin/tests/drift_convergence.rs` `exit_records` (lines 2189)
+- `crates/rdm-admin/tests/drift_convergence.rs` `put_node_exit` (lines 2238, 2240)
+- `crates/rdm-admin/tests/drift_convergence.rs` `node_exit` (lines 2242)
+- `crates/rdm-admin/tests/drift_convergence.rs` `node_exit_of` (lines 2251)
+- `crates/rdm-admin/tests/drift_convergence.rs` `put_node_exit_of` (lines 2254, 2256)
+- `crates/rdm-admin/tests/drift_convergence.rs` `remove_node_data_dir_unreadable_of` (lines 2324, 2327, 2328)
+- `crates/rdm-admin/tests/drift_convergence.rs` `pass` (lines 2353, 2356, 2370, 2375, 2378)
+- `crates/rdm-admin/tests/fabric_delete.rs` `?` (lines 15, 19, 37)
+- `crates/rdm-admin/tests/fabric_delete.rs` `fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awaits_its_own_node_delete` (lines 323, 424, 445, 448)
+- `crates/rdm-admin/tests/fabric_delete.rs` `unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_live_or_deletes_rows_on_crash_proof_and_refuses_unproven` (lines 468, 489, 501, 502, 520, 531, 535, 541…)
+- `crates/rdm-admin/tests/fabric_handover.rs` `admin_over` (lines 369)
+- `crates/rdm-admin/tests/fabric_handover.rs` `seats_fabric_over` (lines 782)
+- `crates/rdm-admin/tests/fabric_handover.rs` `a_seat_holder_moves_both_seats_to_its_successor_in_one_row` (lines 920)
+- `crates/rdm-admin/tests/fabric_handover.rs` `the_successor_takes_the_holders_claim_from_a_fabric_primarys_own_row_and_none_from_a_commanded_row` (lines 971)
+- `crates/rdm-admin/tests/fabric_handover.rs` `a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the_holder_is_proven_exited` (lines 992, 993)
+- `crates/rdm-admin/tests/fabric_handover.rs` `both_views_name_the_successor_once_the_seat_row_is_committed` (lines 1320, 1323, 1324)
+- `crates/rdm-admin/tests/fabric_handover.rs` `a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attempt_obtains_node_primary_updated` (lines 1368, 1370, 1371, 1421, 1423, 1442, 1445, 1452…)
+- `crates/rdm-admin/tests/fabric_handover.rs` `a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rule_and_is_called_no_more` (lines 1499, 1501, 1507, 1512)
+- `crates/rdm-admin/tests/fabric_handover.rs` `assert_seated_again_order` (lines 1614, 1620)
+- `crates/rdm-admin/tests/fabric_handover.rs` `a_dual_seat_holder_seated_again_in_one_seat_restores_that_seats_writes_and_not_the_others` (lines 1719, 1720, 1722)
+- `crates/rdm-admin/tests/fabric_handover.rs` `the_next_attempt_after_an_interruption_resumes_from_the_exit_proof_row_and_fails_the_step` (lines 1727, 1757)
+- `crates/rdm-admin/tests/fabric_handover.rs` `a_restore_of_the_mesh_seat_gives_back_the_mesh_rows_and_not_the_fabric_record` (lines 1828)
+- `crates/rdm-admin/tests/loopback.rs` `dispatch` (lines 110)
+- `crates/rdm-admin/tests/loopback.rs` `proven` (lines 131)
+- `crates/rdm-admin/tests/loopback.rs` `exits_of` (lines 140, 143)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `?` (lines 18)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `sorted` (lines 284)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `artifact_dir` (lines 335)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest` (lines 418, 488)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_receipt` (lines 558, 574)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its_own_node_delete` (lines 662, 663, 682)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_only_then_the_name_is_claimed_again` (lines 784)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `step_facts` (lines 797, 803)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_completes_over_both_primaries` (lines 863, 880, 890, 899, 901, 912, 947)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_published_again` (lines 1073)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `an_unproven_silent_primary_refuses_the_resume_and_no_amendment_is_recorded` (lines 1112)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting_one_is_refused` (lines 1162, 1193)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_brings_the_amendment` (lines 1265)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_and_amends` (lines 1277, 1293, 1294, 1310, 1317, 1319, 1332)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row` (lines 1430)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_membership_holds` (lines 1475, 1485)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_is_written_deleted` (lines 1533, 1546)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `now_rafka_ms` (lines 1758, 1764)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its_missing_steps` (lines 1770, 1852, 1853, 1856, 1857)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `run_paused` (lines 1904)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer` (lines 1934, 1936, 1951, 1953, 1959, 1963, 1964)
+- `crates/rdm-admin/tests/mesh_delete_resume.rs` `a_handoff_held_ends_the_owners_wait_with_its_manifest_before_a_later_proven_exit` (lines 1971, 1976)
+- `crates/rdm-admin/tests/mesh_delete_round.rs` `?` (lines 14)
+- `crates/rdm-admin/tests/mesh_delete_round.rs` `a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_the_run_keeps_its_round` (lines 81, 92)
+- `crates/rdm-admin/tests/mesh_delete_round.rs` `a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leaving_row_once` (lines 206, 217)
+- `crates/rdm-admin/tests/node_get_reads.rs` `answer` (lines 39)
+- `crates/rdm-admin/tests/node_objects.rs` `node` (lines 197)
+- `crates/rdm-admin/tests/node_objects.rs` `a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothing` (lines 896)
+- `crates/rdm-admin/tests/node_objects.rs` `a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_the_wire_and_drives_nothing` (lines 925)
+- `crates/rdm-admin/tests/node_objects.rs` `next` (lines 1162)
+- `crates/rdm-admin/tests/node_rows.rs` `a_deleted_node_leaves_a_deleted_row_with_its_record_and_config` (lines 153)
+- `crates/rdm-admin/tests/node_rows.rs` `create_attempt_executing` (lines 1076)
+- `crates/rdm-admin/tests/node_rows.rs` `find` (lines 1200, 1381)
+- `crates/rdm-admin/tests/node_rows.rs` `lost_after_claim` (lines 1307, 1314)
+- `crates/rdm-admin/tests/node_rows.rs` `a_create_whose_lost_executor_launched_its_claimed_birth_which_exited_decides_a_new_birth` (lines 1339)
+- `crates/rdm-admin/tests/node_rows.rs` `a_create_whose_lost_executor_launched_a_birth_that_exited_before_its_runtime_record_decides_a_new_birth` (lines 1423)
+- `crates/rdm-admin/tests/node_rows.rs` `another_meshs_primary_claims_no_name_in_a_mesh_with_no_primary_and_the_fabric_primary_does` (lines 1559, 1561)
+- `crates/rdm-admin/tests/node_rows.rs` `recovered` (lines 1570)
+- `crates/rdm-admin/tests/provider_state.rs` `until_host` (lines 59)
+- `crates/rdm-admin/tests/provider_state.rs` `a_suspended_runtime_reads_os_stopped_and_running_again_when_continued` (lines 73)
+- `crates/rdm-admin/tests/provider_state.rs` `a_stopped_runtime_that_then_exits_reads_exited_with_its_code` (lines 94, 97)
+- `crates/rdm-admin/tests/provider_state.rs` `a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited` (lines 110)
+- `crates/rdm-admin/tests/recovery_admission.rs` `?` (lines 2)
+- `crates/rdm-admin/tests/recovery_admission.rs` `opened` (lines 68, 71, 75)
+- `crates/rdm-admin/tests/recovery_admission.rs` `a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recovery` (lines 104, 120, 129, 144, 170)
+- `crates/rdm-admin/tests/recovery_admission.rs` `a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_applied_by_the_delete` (lines 202)
+- `crates/rdm-admin/tests/recovery_admission.rs` `until` (lines 266, 268)
+- `crates/rdm-admin/tests/recovery_admission.rs` `deletion_receipts` (lines 301)
+- `crates/rdm-admin/tests/recovery_admission.rs` `a_recovery_a_mesh_primary_opens_and_claims_on_its_own_log_is_heard_by_the_fabric_primary_and_answered_already_applied_there` (lines 345)
+- `crates/rdm-admin/tests/recovery_admission.rs` `two_meshes` (lines 383, 384)
+- `crates/rdm-admin/tests/recovery_admission.rs` `a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open` (lines 498)
+- `crates/rdm-admin/tests/recovery_admission.rs` `run_door` (lines 536)
+- `crates/rdm-admin/tests/recovery_admission.rs` `two_meshes_two_mesh2_admins` (lines 646)
+- `crates/rdm-admin/tests/recovery_admission.rs` `a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh_primary_on_its_exit_proof` (lines 651, 653, 708, 728)
+- `crates/rdm-admin/tests/recovery_admission.rs` `an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_on_its_exit_proof` (lines 751, 752, 791, 811)
+- `crates/rdm-admin/tests/recovery_admission.rs` `a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_claimed_by_the_new_mesh_primary` (lines 920)
+- `crates/rdm-admin/tests/recovery_admission.rs` `an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_owed_from_its_failed_attempt` (lines 941, 1001)
+- `crates/rdm-admin/tests/status_rpc.rs` `put_node_exit` (lines 634, 636)
+- `crates/rdm-admin/tests/status_rpc.rs` `node_exit` (lines 638)
+- `crates/rdm-admin/tests/status_rpc.rs` `node_exit_of` (lines 647)
+- `crates/rdm-admin/tests/status_rpc.rs` `put_node_exit_of` (lines 650, 651)
+- `crates/rdm-admin/tests/stopped_delete.rs` `?` (lines 4)
+- `crates/rdm-admin/tests/stopped_delete.rs` `remove_birth` (lines 91)
+- `crates/rdm-admin/tests/stopped_delete.rs` `a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof` (lines 98, 157)
+- `crates/rdm-admin/tests/store_root_boot.rs` `an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_fabric_and_mesh_ids` (lines 581, 585, 587, 591)
+- `crates/rdm-admin/tests/store_root_boot.rs` `an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name` (lines 716)
+- `crates/rdm-admin/tests/store_root_boot.rs` `an_admin_started_on_a_prepared_root_writes_the_inherited_birth_deleted_only_after_its_provider_exit_proof` (lines 719, 720, 736, 738, 745, 755, 769, 778)
+- `crates/rdm-core/src/status.rs` `every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip` (lines 1850)
+- `crates/rdm-core/src/status.rs` `an_incomplete_manifest_naming_every_birth_encodes_within_the_reply_bound` (lines 2126, 2127)
+- `crates/rdm-core/tests/outcome_codes.rs` `deadlines_keep_the_commit_cut_and_receiver_gone_is_unavailable` (lines 156)
+- `crates/rdm-test/src/admin_faults.rs` `?` (lines 148)
+- `crates/rdm-test/src/elections.rs` `?` (lines 3)
+- `crates/rdm-test/src/elections.rs` `s` (lines 23)
+- `crates/rdm-test/tests/build/accepted_topology.rs` `?` (lines 16, 17)
+- `crates/rdm-test/tests/build/accepted_topology.rs` `the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` (lines 201, 224, 225)
+- `crates/rdm-test/tests/build/node_create_after_delete.rs` `logged` (lines 34)
+- `crates/rdm-test/tests/chaos/container_fault_backend.rs` `mesh_id_of` (lines 699)
+- `crates/rdm-test/tests/chaos/container_fault_backend.rs` `container_peer_mesh_lost_recovers_under_same_mesh_id` (lines 838)
+- `crates/rdm-test/tests/chaos/container_fault_backend.rs` `container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth` (lines 1369)
+- `crates/rdm-test/tests/chaos/process_fault_backend.rs` `attempt_of` (lines 129, 133, 137)
+- `crates/rdm-test/tests/command_natural_key.rs` `the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both_scopes` (lines 618)
+- `crates/rdm-test/tests/elections/cohort_election.rs` `?` (lines 7)
+- `crates/rdm-test/tests/elections/cohort_election.rs` `successor` (lines 180)
+- `crates/rdm-test/tests/elections/cohort_election.rs` `every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix` (lines 274)
+- `crates/rdm-test/tests/elections/cohort_election.rs` `a_second_meshs_admin_cohort_elects_its_lowest_node_id` (lines 448)
+- `crates/rdm-test/tests/elections/fabric_primary.rs` `?` (lines 33)
+- `crates/rdm-test/tests/elections/fabric_primary.rs` `s` (lines 61)
+- `crates/rdm-test/tests/elections/fabric_primary.rs` `losing_the_fabric_primary_mesh_moves_control` (lines 176, 208, 212, 246)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `?` (lines 7, 8)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `seat_moves` (lines 105)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_at_the_decision_step_through_one_takeover_row` (lines 173)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `spans_where` (lines 383, 386, 390, 393, 398)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_dir_with_inherited_false` (lines 464, 471, 480, 483, 502, 504)
+- `crates/rdm-test/tests/elections/fabric_takeover.rs` `a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_exit_proof` (lines 510, 511, 543)
+- `crates/rdm-test/tests/elections/primary_loss_takeover.rs` `surviving_admins_reproduce_primary_loss_with_complete_evidence` (lines 166)
+- `crates/rdm-test/tests/elections/role_cohort.rs` `the_broker_cohort_elects_the_next_lowest_ready_node_id` (lines 67)
+- `crates/rdm-test/tests/elections/sticky_seat.rs` `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` (lines 376)
+- `crates/rdm-test/tests/elections/sticky_seat.rs` `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` (lines 450, 451)
+- `crates/rdm-test/tests/fabric/owed_check_ins.rs` `a_members_check_in_owed_while_its_mesh_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready` (lines 119, 125)
+- `crates/rdm-test/tests/fabric/owed_check_ins.rs` `a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holder` (lines 172, 175)
+- `crates/rdm-test/tests/gossip/partition_rejoin.rs` `partitioned_meshes_rejoin_with_neighbors_preserve_live_births` (lines 330, 382)
+- `crates/rdm-test/tests/main.rs` `assert_own_story` (lines 32)
+- `crates/rdm-test/tests/mesh/cohort_recovery.rs` `hand_fabric_seat_over` (lines 76)
+- `crates/rdm-test/tests/mesh/cohort_recovery.rs` `recovery_admin_restores_lost_cohort_preserves_mesh_and_build` (lines 192, 199)
+- `crates/rdm-test/tests/mesh/fabric_primary_handover.rs` `?` (lines 6, 10, 14)
+- `crates/rdm-test/tests/mesh/fabric_primary_handover.rs` `alive` (lines 82, 84, 85)
+- `crates/rdm-test/tests/mesh/fabric_primary_handover.rs` `deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it` (lines 139, 286, 304, 345, 374, 384, 388, 390…)
+- `crates/rdm-test/tests/mesh/mesh_delete_no_survivor.rs` `?` (lines 14)
+- `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` `?` (lines 7, 8, 17, 18)
+- `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` `start_ns` (lines 60, 61)
+- `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` `primary_lost_mid_leave` (lines 127, 129, 130, 132, 145, 152)
+- `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` `assert_resumed` (lines 260, 267, 269, 271, 272, 273, 277, 278…)
+- `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` `a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin` (lines 339)
+- `crates/rdm-test/tests/mesh/mesh_delete_resume.rs` `a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_members_delete_under_the_surviving_admin` (lines 347, 348, 354, 358)
+- `crates/rdm-test/tests/mesh/peer_mesh_investigation.rs` `a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes` (lines 373)
+- `crates/rdm-test/tests/mesh/stopped_last_admin.rs` `?` (lines 10)
+- `crates/rdm-test/tests/mesh/stopped_last_admin.rs` `retire_mesh1` (lines 132, 138)
+- `crates/rdm-test/tests/mesh/stopped_last_admin.rs` `a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound` (lines 150, 178, 182, 185, 191, 192)
+- `crates/rdm-test/tests/mesh_delete_member.rs` `?` (lines 4)
+- `crates/rdm-test/tests/mesh_delete_member.rs` `now_rafka_ms` (lines 57)
+- `crates/rdm-test/tests/mesh_delete_member.rs` `a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted` (lines 93)
+- `crates/rdm-test/tests/node/admin_restart.rs` `a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reaches_the_other_mesh_through_the_aggregate` (lines 213, 219)
+- `crates/rdm-test/tests/node/node_replace.rs` `?` (lines 6)
+- `crates/rdm-test/tests/node/node_replace.rs` `fp_recovery_receipts` (lines 218, 220, 224)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_transport_stopped_exit_is_restarted_as_the_same_node` (lines 254, 257, 261, 271, 278, 287, 289, 290…)
+- `crates/rdm-test/tests/node/node_replace.rs` `any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir` (lines 358, 360, 366, 388, 389, 391, 401, 409…)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes` (lines 466, 468, 478, 494, 502, 503, 507)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat` (lines 525, 542, 559, 563, 588, 603)
+- `crates/rdm-test/tests/node/node_replace.rs` `frames` (lines 689)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_replace_recipe_runs_as_one_build_of_node_primitives_in_order` (lines 780)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index` (lines 879, 885)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_under_its_name` (lines 959)
+- `crates/rdm-test/tests/node/node_replace.rs` `delete_parked_and_assert` (lines 1109)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_hung_member_whose_runtime_still_runs_is_never_recovered` (lines 1203, 1239, 1241)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_hung_member_held_past_the_hold_is_terminated_and_recovered` (lines 1286, 1288, 1289, 1293, 1294, 1296, 1311, 1316)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_the_fabric_primary` (lines 1344, 1350, 1351, 1359, 1367, 1371, 1376, 1377…)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_after_the_hung_hold` (lines 1486, 1493, 1510, 1514)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied` (lines 1554, 1564, 1569, 1581)
+- `crates/rdm-test/tests/node/node_replace.rs` `caller_of` (lines 1908)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor` (lines 1943, 1951, 1955, 1985)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_mesh_primary_on_its_exit_proof` (lines 2096, 2097, 2127, 2128, 2168, 2169, 2178)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_terminate_failed_at_its_own_inspection_voids_the_hold_and_a_running_birth_waits_a_full_fresh_hold` (lines 2611)
+- `crates/rdm-test/tests/node/node_replace.rs` `a_birth_that_exits_after_a_refused_terminate_gets_its_exit_proof_and_ordinary_recovery` (lines 2613, 2614, 2635, 2639, 2649)
+- `crates/rdm-test/tests/node/node_stop.rs` `drop` (lines 740)
+- `crates/rdm-test/tests/node/node_stop.rs` `a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep` (lines 762)
+- `crates/rdm-test/tests/node/node_stop.rs` `a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat` (lines 1186)
+- `crates/rdm-test/tests/node/node_stop.rs` `a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder` (lines 1260)
+- `crates/rdm-test/tests/ready_prerequisites.rs` `ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline` (lines 240)
+- `crates/rdm-test/tests/recover_pipeline.rs` `?` (lines 3)
+- `crates/rdm-test/tests/recover_pipeline.rs` `receipts` (lines 121, 142, 143, 144, 145)
+- `crates/rdm-test/tests/recover_pipeline.rs` `a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over_its_data_dir` (lines 177, 180, 185, 187, 210, 225, 230, 233…)
+- `crates/rdm-test/tests/recover_pipeline.rs` `a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name_and_writes_nothing` (lines 254, 268, 273)
+- `crates/rdm-test/tests/rpc/proof_holder_lifecycle.rs` `proof_replacement_inherits_the_data_dir_exact_old_never_follows_path` (lines 228)
+- `crates/rdm-test/tests/rpc/rpc_proof_store.rs` `the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replacement` (lines 179)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `mock_authority_handoffs_preserve_one_effective_writer` (lines 2637)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `recovery_run` (lines 2861)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `restart_node` (lines 3150)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `replacement_run` (lines 4138, 4142, 4151, 4187)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `cut_near_fault_run` (lines 6267)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `mock_cut_restart_of_a_near_node_is_held_by_the_far_side` (lines 6298)
+- `crates/rdm-test/tests/rshape_burn_in.rs` `victims_run` (lines 6415, 6422, 6505)
+- `crates/rdm-test/tests/runtime/container_kill.rs` `a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it` (lines 71, 105)
+- `crates/rdm-test/tests/runtime/provider_state.rs` `?` (lines 7)
+- `crates/rdm-test/tests/runtime/provider_state.rs` `an_os_stopped_member_is_recorded_on_node_get_and_cleared_when_it_runs_again` (lines 113, 118)
+- `crates/rdm-test/tests/runtime/provider_state.rs` `an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recovery` (lines 122, 123, 148, 151, 152, 164)
+- `crates/rdm-test/tests/runtime/provider_state.rs` `an_explicit_delete_of_an_os_stopped_birth_skips_the_stop_by_name_and_terminates_the_exact_runtime` (lines 201)
+- `crates/rdm-test/tests/runtime/successor_adoption.rs` `a_successor_manages_births_it_never_launched` (lines 132, 135)
+- `crates/rdm-transport/src/membership.rs` `join_peers_as` (lines 3488)
+- `crates/rdm-transport/src/membership.rs` `fmt` (lines 3520)
+- `crates/rdm-transport/src/membership.rs` `backbone_meshes` (lines 5912)
+- `crates/rdm-transport/src/membership.rs` `a_connections_deleting_seat_holder_is_still_the_members_mesh_primary` (lines 7657)
+- `crates/rdm-transport/src/membership.rs` `a_seat_holder_unheard_past_the_staleness_floor_is_still_the_members_mesh_primary` (lines 7669)
+- `crates/rdm-transport/tests/delivery.rs` `a_named_refusal_ends_the_retry_and_is_delivered_until_acked` (lines 616)
+- `crates/rdm-transport/tests/delivery.rs` `every_return_of_a_requests_attempt_task_is_spanned_with_its_path` (lines 1169)
+- `crates/rdm-transport/tests/delivery.rs` `an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_comes` (lines 1249)
+- `crates/rdm-transport/tests/delivery.rs` `an_owed_call_to_a_receiver_its_view_holds_only_later_is_delivered_once_it_resolves` (lines 1279)
+- `crates/rdm-transport/tests/delivery.rs` `an_owner_dropping_its_owed_call_ends_the_resend` (lines 1325)
+- `crates/rdm-transport/tests/delivery.rs` `an_owed_call_ends_on_its_receivers_proven_exit_unavailable` (lines 1342, 1344, 1345)
+- `crates/rdm-transport/tests/delivery.rs` `an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable` (lines 1359, 1366, 1367)
+- `crates/rdm-transport/tests/exited_birth.rs` `?` (lines 4)
+- `crates/rdm-transport/tests/exited_birth.rs` `a_call_to_an_exited_birth_dials_nothing_and_the_successor_is_dialled` (lines 60)
+- `crates/rdm-transport/tests/forward.rs` `a_carrier_whose_exit_is_proven_after_the_inner_call_applied_leaves_the_origin_indeterminate_receiver_gone` (lines 74)
+- `crates/rdm-transport/tests/forward.rs` `a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone` (lines 108)
+- `crates/rdm-transport/tests/no_acting_publication.rs` `the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh` (lines 123)
+- `crates/rdm-transport/tests/owed_route.rs` `an_owed_call_whose_carrier_cannot_reach_the_receiver_is_not_ended_by_the_carriers_refusal` (lines 103)
