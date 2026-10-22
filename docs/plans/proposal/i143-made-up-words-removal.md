@@ -53,7 +53,7 @@ line that would need one is listed in §6 as his call.
 | committed (seat, row, transfer, takeover) | written; one writer writes the row | Q109 A: one writer per row, the storage decides nothing |
 | takeover, take seats, `TakeSeats` | take over | Luke's verb ("taken over fabric-primary", 2026-10-20); 26 page lines already use it |
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
-| `Seated` frame | the `primary updated` announcement | `gossip.md:157` already carries `primary updating` / `primary updated` for the same operation; one of the two goes (§6) |
+| `Seated` frame, and the `primary updating` / `primary updated` frames | nothing: no frame announces a primary change; the successor's `Digest` carries `is_primary` and the mesh-primary's `Members` projection carries the recorded change (gossip.md, "A primary change on gossip"); `node.primary.updated` stays only as the direct reply of the operation |
 | seat watch, `seat_watch.rs` | the staleness-floor rule of every primary: a primary unheard past the floor is superseded by the lowest ReadyForTraffic node of its type in its mesh | Q107 (1); `fabric-node-lifecycle-elections.md` §4.3 for the fabric-primary; named by the operation it leads to, `node.primary.update` or `node.fabric-primary.update` |
 | `LeadershipView`, resolver | the leadership election and its result | Luke, Q107: "leadership election"; `fabric-node-lifecycle-elections.md` §1 |
 | lane, `LaneId`, `rev-<R>/<seq>` | the Build journal's records at their own keys | `build.md:413` "the Build journal"; Q109 items 12-13: one row at build_id, one at (build_id, mesh, attempt), one claim at (build_id, mesh, attempt) |
@@ -202,8 +202,9 @@ These have no life apart from seat. Recommendation: they go with it, in the same
 
 - **holder** (133 page lines): "the primary".
 - **`LeadershipView`, resolver** (35 code uses): "the leadership election" and its result, Luke's phrase.
-- **`Seated` or `primary updated`**: two announcements for one operation. Recommendation: `Seated` goes;
-  `node.primary.updated` is the operation's own announcement and is already on the wire.
+- **`Seated`, `primary updating`, `primary updated`**: three frames for one operation that needs none.
+  Recommendation: all three go; the normal `Digest` and `Members` publication carry the change, and
+  `node.primary.updated` is kept only as the direct reply of the operation.
 - **sticky** (3 lines, "the sticky holder"): elections §3's sentence "a primary stays until it is proven
   unable" says it without the word.
 - **yield, yielded** (`SeatYielded`, "the holder's yield"): the primary hands over by
@@ -296,11 +297,12 @@ the hold around it, never the investigation.
 | `a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone` | a primary change is published across the backbone | same |
 | `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` | the cut-off view and the hung hold | goes with landings 3 and 5 |
 | `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | both stay as proofs: the decision step (Q89, §3 step 2) and the hand-back (§3 step 3) of the fabric-primary to the first primary's mesh, together with the node at that path.name being its mesh-primary, once it has been ReadyForTraffic for one floor (Q107 (4)); only the cell's cut-off-view assertions go |
-| `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof of the operation: a same-mesh successor becomes both primaries at one boundary and records both on its own row before it acts (node-primary-update.md) |
+| `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof of the operation, with the storage dependency dropped: a same-mesh successor becomes both primaries at one boundary on the direct acknowledgement and acts; the record of both on its own row, by itself as the mesh's writer, follows and is proved eventual, never a precondition (node-primary-update.md step 6) |
 | `a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_decided_after` | the Build lane's in-flight claim against the seat row | goes with landing 2 |
 
 The cut-off view's cell and the in-flight claim's cell go with their machinery. The four proofs that
-remain are proofs of operations (a primary takes over, a primary change is published, a hand-over writes
-one row first, the fabric-primary is handed back) and move to a file named by the operation, not by
+remain are proofs of operations (a primary takes over, a primary change reaches the other mesh, a
+hand-over makes the successor both primaries with the right writer and the record follows, the
+fabric-primary is handed back) and move to a file named by the operation, not by
 "sticky", keeping the assertions that prove the operation and dropping those that prove removed
 machinery.
