@@ -147,6 +147,10 @@ Files named by a word (renamed or removed): `crates/rdm-core/src/seat.rs`, `crat
 `role_cohort.rs`, `crates/rdm-test/tests/mesh/cohort_recovery.rs`, `crates/rdm-test/tests/gossip/seat_replacement.rs`,
 and the two `rafka-test-scenario` artifact names under `mesh-elections/`.
 
+The elections page keeps two anchor ids under §4.4 that carry the old words
+(`44-explicit-committed-fabric-handover-r-a2--r-st2`, `44-explicit-committed-fabric-handover`): rafka-v2's pages
+link to them, and an anchor is an address, not a word; they stay until rafka-v2's links move.
+
 **Wire types and durable formats: marked, because they are the cost.** These are not renames of a local
 name. Each is a wire frame, a typed reply or a format on the shared store root, and changes under the
 canon's durable-format rule and its commit marker (`durable format moved`); a retired format's decoding

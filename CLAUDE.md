@@ -27,7 +27,7 @@ control plane's word (Forward 0x1A, `build.attempt.run`); `proxy` is the data pl
 connection). Banned everywhere: `relay`, `cluster`, `tailer`, `sidecar`, `child mesh`, `viewer`,
 `operator`, `sysadmin`, `tree`, `partition`, `reborn`, `drain` / `draining` / `drained` (the state is
 `connections-deleting`, the bound `RDM_CONNECTIONS_DELETE_DEADLINE_MS`: [node-connections-delete](docs/architecture/lifecycles/node-connections-delete.md)),
-`park` / `parked`, `fence`, `epoch`, `relaunch`, `departed`, `retire` / `retired`, `seat` / `seated` / `unseat`, `holder`, `authority` / `authorize` / `authoritative`, `cohort`, `lane`, `cut-off` / `cut off`, `committed seat`, `exit proof` / `proven`, `held-running`, `hung hold`, `LeadershipView` / `resolver`, `sticky`, `yield` (the name check's set,
+`park` / `parked`, `fence`, `epoch`, `relaunch`, `departed`, `retire` / `retired`, `seat` / `seated` / `unseat`, `holder` (of a primary; a name's holder in `NameHeld` is another sense), `authority` / `authorize` / `authoritative`, `cohort`, `lane`, `cut-off` / `cut off`, `committed seat`, `exit proof` / `proven exit`, `held-running`, `hung hold`, `LeadershipView` / leadership `resolver`, `sticky` (the name check's set,
 `scripts/name-check.py`). A node is restarted (same node.id and
 incarnation) or re-born (same path.name, new node.id); a mesh is never reborn.
 
