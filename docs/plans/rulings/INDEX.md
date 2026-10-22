@@ -114,7 +114,9 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q112 | 143 (the lead) | Day 0: the first node-admin writes before any Rafka broker exists | **The question:** does RDM move its scratchpad above the storage layer, or does Rafka build its own? | **No change in RDM (Luke, 2026-10-21: "there is no change"; "if it wants it in cache, not local storage, it can create a cache storage provider and use that at boot and then transfer to topics at state-commit if it wants; we don't give a shit").** RDM and its pages stay as they are. Rafka supplies its own storage provider: a cache at boot if it wants one, moved to its topics at state-commit. | nothing to land in RDM |
 
-Next free number: **Q113**.
+| Q118 | 143 (the lead) | landing 2 of the final direction: the fabric-primary writes every Build record, and a mesh-primary's drift attempt reports its receipts up that attempt's `build.attempt.run` stream (build.md:350), whose `AttemptRun` carries no mesh | **The question:** how does `build.attempt.run` name a drift attempt, numbered per mesh? ([packet](i143-q118-drift-attempt-receipts.md)) | open; recommendation A: `AttemptRun` gains `mesh`, appended |
+
+Next free number: **Q119**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
