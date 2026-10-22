@@ -17,17 +17,20 @@ description = "Business-empty R-shape consumer: four node entry points composed 
 members = ["admin-ui"]
 
 [dependencies]
-rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "388339b7449fb18e305cb0689c9b6c19cbe83f60" }
-rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "388339b7449fb18e305cb0689c9b6c19cbe83f60" }
-rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "388339b7449fb18e305cb0689c9b6c19cbe83f60" }
+rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
+rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
+rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
 # The carrier policy this shape declares for the originate door (a gateway carries).
-rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "388339b7449fb18e305cb0689c9b6c19cbe83f60" }
+rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
 # Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "388339b7449fb18e305cb0689c9b6c19cbe83f60" }
+rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
+# The node-admin's own `before_ready` (rdm_node::before_ready::BeforeReady) keeps the process's Node RPC
+# client for the state-sync hook's call to the system gateway.
+async-trait = "0.1"
 
 # The executable binding re-hashes every bound file at every launch and every admin birth hashes the
 # whole set; an unoptimised sha2 takes 4.4 s per 430 MB debug executable (RDM's own workspace sets
@@ -62,6 +65,7 @@ path = "src/bin/rshape_broker.rs"
 
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }
-async-trait = "0.1"
 serde_json = "1"
+# The state-sync cell's desired shape (FabricDesired, MeshDesired) on the testkit's process estate.
+rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "8f477e1f44792573ba2f85c44f78149dab91ab09" }
 
