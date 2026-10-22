@@ -57,9 +57,9 @@ The fabric's store root (`RDM_STORE_DIR`) is required: every node of the fabric 
 root, laid out `<store_dir>/<fabric_id>/{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, status/<mesh>/}`,
 and a missing or unreadable root fails the boot by name; nothing falls back to the data dir.
 The node-admin's own data dir (`RDM_DATA_DIR`) holds only its runtime material (endpoint key,
-identity, runtime record) and the relaunch copy (§7): its attached last-ready snapshot, a
+identity, runtime record) and the recovery copy (§7): its attached last-ready snapshot, a
 recovery contact map. Only a person-started recovery reads that copy. Without attached storage,
-a relaunch starts from a seed: any live node serves
+a recovery starts from a seed: any live node serves
 [GetTopology](node-rpc-envelope.md#topology-op-0x1e-rdm).
 
 `RDM_STOPPED_NODE_TTL` is the [stopped-node collector](node-identity-and-state.md#stopped-node-garbage-collector)'s
