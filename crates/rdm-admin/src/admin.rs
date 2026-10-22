@@ -2821,7 +2821,7 @@ mod tests {
         let decided = incumbency_of(&book, &own);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &own, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(primary(&t).as_deref(), Some("mesh2.admin.2"), "mesh2.admin.2 reads itself seated");
-        let said = seat_announcements(&t, true, "mesh2", (&live.node.node_id, &live.node.incarnation), &decided);
+        let said = seat_announcements(&t, "mesh2", (&live.node.node_id, &live.node.incarnation), &decided);
         assert!(said.iter().any(|(seat, h)| *seat == MeshPrimary && h.mesh == "mesh2" && h.is_birth(&live.node.node_id, &live.node.incarnation) && h.revision == 2), "mesh2.admin.2 announces mesh2's seat at the next revision: {said:?}");
     }
 
@@ -2893,7 +2893,7 @@ mod tests {
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
         // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at revision 2.
         book.seats.take(FabricPrimary, &holder_of(&successor, 2));
-        let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
+        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
 
         // A legitimate succession is still announced: the recorded holder's birth proven exited,
@@ -2909,7 +2909,7 @@ mod tests {
         prove_exit(&book, &records, &gone).await;
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
+        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         let revisions: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.revision)).collect();
         assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next revision (decided against {:?})", decided.fabric);
     }
@@ -2941,21 +2941,21 @@ mod tests {
         // A first election: no record of the rpc cohort, the lowest Ready fills it at revision 1.
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
+        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         assert_eq!(cohort_said(&said), vec![(Cohort(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 1)], "the mesh-primary seats mesh1.rpc.1: {said:?}");
-        let sib = seat_announcements(&t, true, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
+        let sib = seat_announcements(&t, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
         assert!(cohort_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no cohort seat: {sib:?}");
         // The record names the living mesh1.rpc.2: it keeps the seat over the lower Ready NodeId and nothing is said.
         book.seats.take(Cohort(NodeKind::RpcNode), &holder_of(&rpc2, 3));
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.cohort_primary("mesh1", NodeKind::RpcNode).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
-        assert!(cohort_said(&seat_announcements(&t, true, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
+        assert!(cohort_said(&seat_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
         // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next revision.
         prove_exit(&book, &records, &rpc2).await;
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
+        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         assert_eq!(cohort_said(&said), vec![(Cohort(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 4)], "{said:?}");
     }
 

@@ -2801,7 +2801,6 @@ pub struct Membership {
     view: View,
     fabric: FabricId,
     mesh_id: MeshId,
-    cut_off: Arc<Mutex<CutOff>>,
     /// The digest book this membership holds.
     pub book: DigestBook,
     /// The Rafka-time this process composes; every gossip stamp on this membership reads it.
@@ -2904,7 +2903,7 @@ impl Membership {
         forward_path.spawn_sender(forward_rx, sink);
         let name = view.held_name.clone();
         let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone(), types, &app_seeds).await?;
-        let me = Self { apps, mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
+        let me = Self { apps, mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
         me.watch_meshes();
         Ok(me)
     }
@@ -2972,11 +2971,9 @@ impl Membership {
     }
 
     /// Evidence of what this node holds: a mesh it first hears, or hears
-    /// again, and a mesh none of whose members it still hears. And whether it
-    /// is cut off (gossip.md §6, Q58): it hears no other member of its mesh and
-    /// holds one whose silence no lifecycle event it applied explains.
+    /// again, and a mesh none of whose members it still hears.
     fn watch_meshes(&self) {
-        let (book, via, cut_off, view) = (self.book.clone(), self.view.via.clone(), self.cut_off.clone(), self.view.clone());
+        let (book, via, view) = (self.book.clone(), self.view.via.clone(), self.view.clone());
         tokio::spawn(async move {
             let mut held: BTreeSet<String> = BTreeSet::new();
             let mut heard: BTreeSet<String> = BTreeSet::new();
@@ -2995,12 +2992,6 @@ impl Membership {
                         .in_scope(|| tracing::info!("a member is no longer heard within the staleness floor: held, not current"));
                 }
                 heard = now_heard;
-                let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
-                let off = others == 0 && !unexplained.is_empty();
-                if let Some(role) = cut_off.lock().unwrap().observe(off, Instant::now()) {
-                    tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role)
-                        .in_scope(|| tracing::info!("no other member is heard: what this node holds is not acted on"));
-                }
                 let now: BTreeSet<String> = current.into_iter().map(|d| d.node.name.mesh).collect();
                 for m in now.difference(&held) {
                     let v = via.lock().unwrap().get(m).copied().unwrap_or("mesh-channel");
@@ -3065,13 +3056,6 @@ impl Membership {
     /// node lifecycle with no backbone sets it here.
     pub fn set_mesh_primary(&self, primary: bool) {
         self.view.primary.store(primary, Ordering::Relaxed);
-    }
-
-    /// May this node's view authorize anything now: not cut off, and not
-    /// within one silence window of healing ([`CutOff::authorizes`]).
-    pub fn authorizes(&self) -> bool {
-        let now = Instant::now();
-        self.cut_off.lock().unwrap().authorizes(now) && self.book.silence_healed_at().is_none_or(|t| now.saturating_duration_since(t) >= self.book.staleness_floor())
     }
 
     /// How many meshes this node holds a live member of.
@@ -4149,48 +4133,6 @@ impl Backbone {
 }
 
 
-/// Whether a node's view may authorize anything. Cut off: it heard other
-/// members and now hears none. Healed: it hears one again, but the rest of
-/// its view still holds every member it lost as silent until each publishes
-/// again, which every live member does within one staleness floor. A view
-/// authorizes nothing while cut off, nor for one staleness floor after it healed.
-#[derive(Debug)]
-pub(crate) struct CutOff {
-    off: bool,
-    healed_at: Option<Instant>,
-    staleness_floor: Duration,
-}
-
-impl Default for CutOff {
-    fn default() -> Self {
-        Self::with_floor(staleness_floor())
-    }
-}
-
-impl CutOff {
-    pub(crate) fn with_floor(staleness_floor: Duration) -> Self {
-        Self { off: false, healed_at: None, staleness_floor }
-    }
-
-    /// Record whether the node is cut off at `now`; the change, if any
-    /// (`"start"` / `"stop"`).
-    pub fn observe(&mut self, off: bool, now: Instant) -> Option<&'static str> {
-        if self.off == off {
-            return None;
-        }
-        self.off = off;
-        if !off {
-            self.healed_at = Some(now);
-        }
-        Some(if off { "start" } else { "stop" })
-    }
-
-    /// May the view authorize anything at `now`?
-    pub fn authorizes(&self, now: Instant) -> bool {
-        !self.off && self.healed_at.is_none_or(|t| now.saturating_duration_since(t) >= self.staleness_floor)
-    }
-}
-
 /// Whether a forwarded digest carries its status: a member projection entry (a topology read) does;
 /// a join digest, like every heartbeat, does not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4281,12 +4223,6 @@ pub struct DigestBook {
     /// never read: its one status is `member_statuses`'s, and every read that hands out a digest
     /// takes it from there ([`Self::hand_out`]).
     inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, Heard)>>>,
-    /// When this book last applied a member's receipt (`Direct` or `Forwarded`), and when a receipt
-    /// last ended a silence of a whole staleness floor or more: a view that heard members and then
-    /// heard none for a floor was cut off (gossip.md §6), whether or not a watch tick ran meanwhile (a
-    /// held process runs none), and it authorizes nothing for one floor after that receipt.
-    last_heard: Arc<Mutex<Option<Instant>>>,
-    silence_healed_at: Arc<Mutex<Option<Instant>>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
     /// changes, or a departure is accepted; a fresher digest of the same
     /// birth does not tick.
@@ -4481,32 +4417,6 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
 }
 
 impl DigestBook {
-    /// A member's receipt applied at `now`, the book holding `held` members before it: a receipt that
-    /// ends a silence of a staleness floor or more over a book that held members is the heal of a
-    /// cut-off view (gossip.md §6, "a view that heard members and hears none"), measured here on the
-    /// book's own receipts so a held process finds it at its first receipt, before any watch tick.
-    fn note_heard(&self, now: Instant, held: usize) {
-        let mut last = self.last_heard.lock().unwrap();
-        if let Some(prev) = *last {
-            let silent = now.saturating_duration_since(prev);
-            if held > 0 && silent >= self.staleness_floor() {
-                *self.silence_healed_at.lock().unwrap() = Some(now);
-                let node = self.holder_name().unwrap_or_default();
-                tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role = "start", silent_ms = silent.as_millis() as u64)
-                    .in_scope(|| tracing::info!("no member was heard for a staleness floor: what this node held was not acted on"));
-                tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role = "stop", silent_ms = silent.as_millis() as u64)
-                    .in_scope(|| tracing::info!("a member is heard again: the view heals, and authorizes nothing for one floor"));
-            }
-        }
-        *last = Some(now);
-    }
-
-    /// When a receipt last ended a silence of a whole staleness floor over a book that held members,
-    /// if ever: the view's heal, from which it authorizes nothing for one floor.
-    pub fn silence_healed_at(&self) -> Option<Instant> {
-        *self.silence_healed_at.lock().unwrap()
-    }
-
     /// The path name of the node holding this book, when set by its membership.
     pub fn holder_name(&self) -> Option<String> {
         let holder = self.holder.lock().unwrap();
@@ -4527,8 +4437,6 @@ impl DigestBook {
     pub(crate) fn with_floor(retention: Duration, staleness_floor: Duration) -> Self {
         Self {
             inner: Arc::default(),
-            last_heard: Arc::default(),
-            silence_healed_at: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
             overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
@@ -5641,7 +5549,6 @@ impl DigestBook {
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
-        self.note_heard(now, inner.len());
         inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
         drop(inner);
         if heard_changed {
@@ -5768,7 +5675,6 @@ impl DigestBook {
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
-        self.note_heard(now, inner.len());
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
@@ -7320,22 +7226,6 @@ mod tests {
         assert_eq!(rejoin(&joined, &[a, b]), vec![a], "a returns and is joined again");
     }
 
-    #[test]
-    fn a_healed_view_authorizes_nothing_until_every_member_could_be_heard_again() {
-        let t0 = Instant::now();
-        let floor = Duration::from_secs(3);
-        let mut c = CutOff::with_floor(floor);
-        assert!(c.authorizes(t0), "never cut off");
-        assert_eq!(c.observe(true, t0), Some("start"));
-        assert!(!c.authorizes(t0), "cut off");
-        let healed = t0 + Duration::from_secs(10);
-        assert_eq!(c.observe(false, healed), Some("stop"));
-        assert!(!c.authorizes(healed + Duration::from_millis(250)), "healed, but the view still holds lost members as silent");
-        assert!(!c.authorizes(healed + floor - Duration::from_millis(1)));
-        assert!(c.authorizes(healed + floor), "every live member has published again");
-        assert_eq!(c.observe(false, healed + floor), None);
-    }
-
     /// CONTRACT (i143 R-J1 follow-up, ops-naming): a member whose restart is open is held through
     /// it, but it is a parked birth that answers nobody and gossips nothing: the repair refeed
     /// never hands its address to the channel again, however long the member has been silent. Its
@@ -7364,10 +7254,9 @@ mod tests {
         assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41000), "and is a target at its own address");
     }
 
-    /// CONTRACT (gossip.md §6 "A cut-off view", Q58): a member this view stopped is expected silence,
-    /// neither stale nor counted; a view whose only other member it stopped is not cut off, and node.joined
-    /// holds the birth again. A member that falls silent with no event this view applied is unexplained,
-    /// and a view hearing no other member while holding one is cut off.
+    /// CONTRACT (Q58): a member this view stopped is expected silence, neither stale nor counted, and
+    /// node.joined holds the birth again. A member that falls silent with no event this view applied is
+    /// unexplained.
     #[test]
     fn a_member_this_view_stopped_is_expected_silence_and_a_silent_one_is_not() {
         let book = DigestBook::default();
@@ -7377,13 +7266,13 @@ mod tests {
         d.node.name = "mesh1.admin.2".parse().unwrap();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         assert!(book.record_at(d.clone(), long_ago));
-        assert_eq!(book.unheard_unexplained("mesh1", "mesh1.admin.1").len(), 1, "a member silent with no event is unexplained: the view is cut off");
+        assert_eq!(book.unheard_unexplained("mesh1", "mesh1.admin.1").len(), 1, "a member silent with no event is unexplained");
         let mut again = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 200);
         again.node.name = "mesh1.admin.2".parse().unwrap();
         assert!(book.record(again), "heard again");
         assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "heard: nothing unexplained");
         assert!(book.stopped(op(&id, &inc, "node.stop:mesh1.admin.2")), "the stop this view applied");
-        assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "a stopped member is expected silence: the view is not cut off");
+        assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "a stopped member is expected silence");
         assert!(book.joined(&op(&id, &inc, "node.start:mesh1.admin.2")), "its start's node.joined holds it again");
         assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty());
         let mut later = digest(&id, &inc, None, MemberStatus::Pending, 300);

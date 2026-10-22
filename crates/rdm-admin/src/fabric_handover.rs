@@ -989,7 +989,7 @@ impl HandoverDoor {
         }
         let decided = self.incumbency();
         let mut installed = Vec::new();
-        let said = crate::admin::seat_announcements(&view, true, &self.me.mesh, (&self.node_id, &self.incarnation), &decided);
+        let said = crate::admin::seat_announcements(&view, &self.me.mesh, (&self.node_id, &self.incarnation), &decided);
         let said = said.into_iter().filter(|(seat, _)| (*seat == Seat::MeshPrimary && mesh_seat) || (*seat == Seat::FabricPrimary && fabric_seat)).collect();
         for (seat, holder) in elect(&*self.storage, self.membership.seats(), &self.me_birth(), &decided, said).instrument(span.clone()).await {
             if (seat == Seat::MeshPrimary && mesh_seat) || (seat == Seat::FabricPrimary && fabric_seat) {

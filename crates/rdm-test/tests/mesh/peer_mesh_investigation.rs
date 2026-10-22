@@ -511,8 +511,8 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     //   the freeze, so probe 1 is asked by `probe1` after it;
     // - before the frozen admins' own view passes the staleness floor (`mark`, the shared staleness
     //   mark of step 2): each last heard a peer up to one gossip interval before the freeze, and a
-    //   node that hears no other member past the floor is cut off (`via-cut-off`) and goes on unheard
-    //   after it is continued, which a resume at the mark raced;
+    //   node that hears no other member past the floor goes on unheard after it is continued, which a
+    //   resume at the mark raced;
     // so halfway between `probe1` and `mark` less one gossip interval. Heard again at most one
     //   backbone interval after the resume, the fabric primary's t is then below probe 2's rung.
     let (r, gossip, backbone) = (rungs(), rdm_core::cadence::gossip_interval(), rdm_core::cadence::backbone_gossip_interval());

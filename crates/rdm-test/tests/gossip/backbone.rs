@@ -21,9 +21,9 @@
 //! 6. a lost backbone push (the two primaries cut from each other) is
 //!    repaired by gossip through the other admins: the peer mesh is never
 //!    lost by the mesh's ordinary nodes, and nothing beside gossip resends;
-//! 7. an admin isolated past the silence window is cut off and authorizes
-//!    nothing: a Build submitted to it is not executed by it, and after the
-//!    heal its rightful executor runs it without re-creating a live node;
+//! 7. an admin isolated past the silence window executes nothing of a Build
+//!    submitted through it, and after the heal its rightful executor runs it
+//!    without re-creating a live node;
 //! 8. a restarted node is ready only once it holds every mesh.
 //!
 //! The faults drop UDP on loopback (`nft`, as root or `sudo -n`); where
@@ -286,9 +286,9 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
+async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
     let _one = SERIAL.lock().await;
-    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_isolation_authorizes_nothing"), "fabric2", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing"), "fabric2", "mesh1").await;
     let nodes = mm(&estate, "fabric2").await;
     let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
     wait_for("mesh2's rpc nodes hold mesh1", Duration::from_secs(30), || {
@@ -352,7 +352,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     assert!(lost.is_empty(), "with {p1} and {p2} cut apart, mesh2's rpc nodes kept mesh1: {lost:?}");
 
     // 7. Isolate mesh1's non-primary admin past the silence window and ask it
-    // for a Build: cut off, it executes nothing; healed, the rightful
+    // for a Build: it executes nothing; healed, the rightful
     // executor runs it and no live node is created again.
     let nodes = estate.node_values().await;
     let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] != true).cloned().unwrap();
@@ -360,17 +360,17 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     let others: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| *n != lone_name).collect();
     let before: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
     let isolation = Partition::start(&udp_ports(&nodes, &[lone_name.clone()]), &udp_ports(&nodes, &others)).expect("the host dropped traffic above");
-    wait_for(&format!("{lone_name} is cut off"), rdm_transport::membership::staleness_floor() + Duration::from_secs(20), || {
+    wait_for(&format!("{lone_name} no longer hears its mesh"), rdm_transport::membership::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
-            named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "start").then_some(())
+            named(&spans, "rdm.mesh.membership.update.via-member-stale").iter().any(|sp| attr(sp, "node") == lone_name).then_some(())
         }
     })
     .await;
-    // build.create starts at the cut-off admin: it names the fabric-primary it sees, and the call goes there.
+    // build.create starts at the isolated admin: it names the fabric-primary it sees, and the call goes there.
     let lone_path: PathName = lone_name.parse().unwrap();
-    let mut grow = Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create through the cut-off {lone_name} was refused: {e}"));
+    let mut grow = Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create through the isolated {lone_name} was refused: {e}"));
     let b = grow.build_id().to_string();
     tokio::time::sleep(Duration::from_secs(5)).await;
     let by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.update.via-reconcile")
@@ -378,7 +378,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         .filter(|sp| attr(sp, "build_id") == b && attr(sp, "executor") == lone_name)
         .map(|sp| attr(sp, "operations"))
         .collect();
-    assert!(by_lone.is_empty(), "the cut-off {lone_name} executed nothing: {by_lone:?}");
+    assert!(by_lone.is_empty(), "the isolated {lone_name} executed nothing: {by_lone:?}");
     drop(isolation);
     Estate::until_complete(&mut grow).await;
     let mut want: BTreeSet<String> = before.keys().cloned().collect();
@@ -394,13 +394,5 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
             assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);
         }
     }
-    wait_for(&format!("{lone_name} hears the fabric again"), rdm_transport::membership::staleness_floor() + Duration::from_secs(20), || {
-        let spans = estate.spans();
-        let lone_name = lone_name.clone();
-        async move {
-            named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "stop").then_some(())
-        }
-    })
-    .await;
     estate.stop().await;
 }

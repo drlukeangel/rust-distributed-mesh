@@ -1551,9 +1551,6 @@ mod fully_crashed_mesh {
 
     #[async_trait::async_trait]
     impl rdm_admin::build_drive::Gate for HeldPeer {
-        fn authorizes(&self) -> bool {
-            true
-        }
         fn peer_mesh(&self, mesh: &str) -> Option<PeerMesh> {
             (mesh == self.mesh).then_some(self.held)
         }
@@ -2419,9 +2416,6 @@ impl HandBack {
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Gate for HandBack {
-    fn authorizes(&self) -> bool {
-        true
-    }
     async fn move_seats(&self, m: &rdm_admin::executor::SeatMove, build_id: &BuildId, _attempt: u32, run: u32, operation: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
         let to = m.successor.as_ref().map(|p| p.to_string()).unwrap_or_default();
         let update = rdm_admin::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, operation);

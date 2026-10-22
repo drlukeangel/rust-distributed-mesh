@@ -40,7 +40,6 @@ fn view() -> Topology {
 
 /// A gate the cell opens and closes.
 struct Switch {
-    authorizes: AtomicBool,
     fenced: AtomicBool,
     /// The admin a written seat transfer named in the fence, when the cell sets one.
     successor: Mutex<Option<String>>,
@@ -63,9 +62,6 @@ impl Switch {
 
 #[async_trait::async_trait]
 impl Gate for Switch {
-    fn authorizes(&self) -> bool {
-        self.authorizes.load(Ordering::SeqCst)
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         if self.fenced.load(Ordering::SeqCst) {
             Err(BuildStateError::SeatYielded { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
@@ -122,7 +118,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
@@ -266,22 +262,6 @@ async fn a_fence_set_by_a_committed_transfer_names_the_successor_while_the_view_
         other => panic!("the reader ends with the seat loss, got {other:?}"),
     }
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
-}
-
-/// CONTRACT: a cut-off view dispatches nothing. It authorizes no claim and no call; the drive
-/// pauses without ending, and the same drive goes on to the Build's end once the view authorizes.
-#[tokio::test]
-async fn a_cut_off_view_dispatches_nothing_and_the_drive_goes_on_once_it_authorizes() {
-    let r = rig().await;
-    r.switch.authorizes.store(false, Ordering::SeqCst);
-    let drive = Drive::detached(r.build.clone());
-    assert!(matches!(r.env.run(&drive).await, DriveEnd::Paused(why) if why.contains("cut off")));
-    assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
-    assert!(r.dispatch.dispatched.lock().unwrap().is_empty());
-    r.switch.authorizes.store(true, Ordering::SeqCst);
-    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()]);
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "the node of mesh1 is run by mesh1's primary");
 }
 
 /// CONTRACT: an executor that cannot be reached is replaced only on proof of its departure. The
@@ -885,9 +865,6 @@ struct SeatMoves {
 
 #[async_trait::async_trait]
 impl Gate for SeatMoves {
-    fn authorizes(&self) -> bool {
-        self.inner.authorizes()
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.fence().await
     }
@@ -1563,9 +1540,6 @@ struct Acknowledges {
 
 #[async_trait::async_trait]
 impl Gate for Acknowledges {
-    fn authorizes(&self) -> bool {
-        self.inner.authorizes()
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.fence().await
     }
@@ -1670,9 +1644,6 @@ struct HolderUpdate {
 
 #[async_trait::async_trait]
 impl Gate for HolderUpdate {
-    fn authorizes(&self) -> bool {
-        self.inner.authorizes()
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.fence().await
     }
@@ -1727,7 +1698,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
         topology: e.topology.clone(),
@@ -1786,9 +1757,6 @@ const NO_SECONDARY: &str = "cannot transfer: no secondary of type node-admin in 
 
 #[async_trait::async_trait]
 impl Gate for RefusedUpdate {
-    fn authorizes(&self) -> bool {
-        self.inner.authorizes()
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.fence().await
     }
@@ -1914,7 +1882,7 @@ async fn a_successor_that_reads_the_holders_attempt_ended_claims_the_next_attemp
     assert_eq!((p.attempt, handed), (1, vec![rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }]), "the holder's attempt ended handed off to the successor before the successor's drive begins");
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
     // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let successor = Arc::new(DriveEnv {
@@ -1951,9 +1919,6 @@ struct AfterTheProof {
 
 #[async_trait::async_trait]
 impl Gate for AfterTheProof {
-    fn authorizes(&self) -> bool {
-        self.inner.authorizes()
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.fence().await
     }
@@ -2016,7 +1981,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
     let op = "node.delete:mesh1.admin.1";
     let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
     let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
@@ -2249,7 +2214,6 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             topology: topology.clone(),
         });
         let switch = Arc::new(Switch {
-            authorizes: AtomicBool::new(true),
             fenced: AtomicBool::new(false),
             successor: Mutex::new(None),
             fence_tx: tokio::sync::watch::channel(false).0,
@@ -2318,74 +2282,14 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
 }
 
 
-/// CONTRACT (`Drives::ensure`: "A drive that stalled or paused is picked up again here"): the drive
-/// the reconcile loop ensures while the view is cut off pauses without ending. The Build completes
-/// meanwhile (here by another pass, as its executor's verdict does). Once the view authorizes, the
-/// reconcile loop's `ensure_active` picks the paused drive up again, and its next pass reads the
-/// Build complete and ends its callers' stream `Complete`.
-/// Must NOT happen: the paused drive left holding its callers' stream because the current Build is
-/// no longer in progress (release run b7548453, owed_check_ins state_commit, Build a6v3: the
-/// fabric-primary's drive paused at the cut-off, no pass followed, and the caller's follow never ended).
-#[test]
-fn a_drive_paused_while_its_build_completes_is_picked_up_again_and_ends_its_stream_complete() {
-    use tracing_subscriber::layer::SubscriberExt;
-    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rdm_transport::span_capture("paused-drive-picked-up", exporter.clone());
-    let _g = tracing::dispatcher::set_default(&tracing::Dispatch::new(tracing_subscriber::registry().with(layer)));
-    let drive_outcomes = || -> Vec<String> {
-        capture.flush(Duration::from_secs(10)).expect("spans flush");
-        exporter
-            .get_finished_spans()
-            .unwrap()
-            .into_iter()
-            .filter(|s| s.name == "rdm.node_admin.build.update.via-drive")
-            .map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == "outcome").map(|kv| kv.value.to_string()).unwrap_or_default())
-            .collect()
-    };
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-        let r = rig().await;
-        let drives = Arc::new(rdm_admin::build_drive::Drives::default());
-        r.switch.authorizes.store(false, Ordering::SeqCst);
-        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
-        let paused = drives.get(&r.build).expect("the reconcile loop holds the current Build's drive");
-        let mut reader = paused.reader(1);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while drive_outcomes() != ["paused"] {
-            assert!(tokio::time::Instant::now() < deadline, "the ensured drive ran and paused: {:?}", drive_outcomes());
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(!paused.ended(), "a paused drive does not end");
-
-        r.switch.authorizes.store(true, Ordering::SeqCst);
-        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "another pass completes the Build");
-        assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Complete);
-        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
-        let terminal = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match reader.next().await {
-                    Some(Read::Terminal(t)) => break Some(t),
-                    Some(_) => {}
-                    None => break None,
-                }
-            }
-        })
-        .await;
-        match terminal {
-            Ok(Some(BuildReply::Complete { attempt, .. })) => assert_eq!(attempt, 1, "the Build completed at its first attempt"),
-            other => panic!("the paused drive's callers' stream ends Complete once the reconcile loop picks it up again, got {other:?}; via-drive outcomes {:?}", drive_outcomes()),
-        }
-    });
-}
-
 /// CONTRACT (R-BI3: only a caller's resubmit drives a failed Build on): a Build that completed once
-/// stays the known state when a later attempt of it fails (`CurrentBuild::Completed`), and the drive
-/// this admin still holds of it, one that never framed that attempt's end, is not passed again by
-/// the reconcile loop: no next attempt is claimed until a caller resubmits.
+/// stays the known state when a later attempt of it fails (`CurrentBuild::Completed`), and the
+/// reconcile loop's drive of it claims no next attempt until a caller resubmits.
 /// Must NOT happen: the reconcile loop claiming the attempt after the failed one by itself (gate
 /// e6s7-b7d25a17, node_restart: attempt 2 of a restart failed, and 52 ms later the drive claimed
 /// attempt 3 with no resubmit).
 #[test]
-fn a_held_drive_of_a_build_whose_later_attempt_failed_claims_no_next_attempt() {
+fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit() {
     use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, CurrentBuild};
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
@@ -2404,26 +2308,13 @@ fn a_held_drive_of_a_build_whose_later_attempt_failed_claims_no_next_attempt() {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let r = rig().await;
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "attempt 1 completes the Build");
-        // A later attempt of it (a restart) is opened; the reconcile loop's drive of it is held,
-        // paused by a view that authorizes nothing.
+        // A later attempt of it (a restart) is opened, claimed and fails at its executor.
         r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
-        r.switch.authorizes.store(false, Ordering::SeqCst);
-        let drives = Arc::new(rdm_admin::build_drive::Drives::default());
-        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
-        let held = drives.get(&r.build).expect("the reconcile loop holds the Build's drive");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while !drive_outcomes().contains(&"paused".to_string()) {
-            assert!(tokio::time::Instant::now() < deadline, "the held drive ran and paused: {:?}", drive_outcomes());
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        // Attempt 2 is claimed and fails at its executor; the held drive never frames its end.
         r.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: r.build.clone(), attempt: 2, executor: "mesh1.admin.2".into() }).await.unwrap();
         let failed = AttemptOutcome::Failed { reason: "the restart's stop was not admitted".into(), code: rdm_core::outcome::Code::FailedPrecondition };
         r.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt: 2, outcome: failed }).await.unwrap();
         assert_eq!(r.builds.current_build().await.unwrap(), CurrentBuild::Completed(r.build.clone()), "the Build that completed once is the known state");
-        assert!(!held.ended(), "the held drive framed no end of attempt 2");
-
-        r.switch.authorizes.store(true, Ordering::SeqCst);
+        let drives = Arc::new(rdm_admin::build_drive::Drives::default());
         rdm_admin::build_op::ensure_active(&drives, &r.env).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let p = r.builds.read_build(&r.build).await.unwrap();

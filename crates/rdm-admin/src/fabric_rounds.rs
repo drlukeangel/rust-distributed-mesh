@@ -314,12 +314,6 @@ impl FabricRounds {
             .unwrap_or_else(|| self.env.me.clone())
     }
 
-    /// Does this admin's view authorize an act on it (gossip.md §6: a cut-off or healing view
-    /// authorizes nothing)? With no gossip plugged in, there is no view to be cut off from.
-    fn view_authorizes(&self) -> bool {
-        self.gossip.get().is_none_or(|g| g.membership.authorizes())
-    }
-
     /// Where this admin's round hooks are published, once it has joined the backbone.
     pub fn set_gossip(&self, backbone: rdm_transport::membership::Backbone, membership: rdm_transport::membership::Membership) {
         let _ = self.gossip.set(RoundGossip { backbone, membership });
@@ -761,18 +755,11 @@ impl FabricRounds {
             self.mesh_book.open(key);
             self.spawn_mesh_driver(key.clone(), false, parent.clone());
         }
-        // An admin whose view is cut off or healing commands nothing on it (gossip.md §6;
-        // node-admin-lifecycle.md §1 rule 6): the commands wait for the view to heal, which wakes the climb.
-        if self.view_authorizes() {
-            for (node_id, expected, event) in self.fabric_book.take_due(key, view) {
-                if node_id == self.env.node_id {
-                    continue;
-                }
-                self.spawn_command(key.clone(), true, node_id, expected, event, parent.clone());
+        for (node_id, expected, event) in self.fabric_book.take_due(key, view) {
+            if node_id == self.env.node_id {
+                continue;
             }
-        } else {
-            tracing::info_span!("rdm.node_admin.fabric.update.via-round-command", node = %self.env.me, round = key.kind.command(), to = "", event = "view-cut-off", outcome = "view-cut-off")
-                .in_scope(|| tracing::info!("this admin's view authorizes nothing: the round's commands wait for the view to heal"));
+            self.spawn_command(key.clone(), true, node_id, expected, event, parent.clone());
         }
         self.fabric_book.missing(key)
     }
@@ -955,15 +942,8 @@ impl FabricRounds {
                 }
             }
             self.mesh_book.expect(key, planned, unresolved);
-            // An admin whose view is cut off or healing commands nothing on it (gossip.md §6;
-            // node-admin-lifecycle.md §1 rule 6): the view's heal is a view change, which wakes this loop.
-            if self.view_authorizes() {
-                for (node_id, expected, event) in self.mesh_book.take_due(key, &view) {
-                    self.spawn_command(key.clone(), false, node_id, expected, event, round_span.clone());
-                }
-            } else {
-                tracing::info_span!("rdm.node_admin.fabric.update.via-round-command", node = %me, round = key.kind.command(), to = "", event = "view-cut-off", outcome = "view-cut-off")
-                    .in_scope(|| tracing::info!("this admin's view authorizes nothing: the round's commands wait for the view to heal"));
+            for (node_id, expected, event) in self.mesh_book.take_due(key, &view) {
+                self.spawn_command(key.clone(), false, node_id, expected, event, round_span.clone());
             }
             if !own_done {
                 match run_action(&*self.env.actions, &me, key.kind).await {

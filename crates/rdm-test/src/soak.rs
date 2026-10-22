@@ -970,7 +970,7 @@ const FABRIC_ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
 /// [`FABRIC_ROLE`] `role=start` on, or every row when the tail holds none (the role was taken
 /// before the tail began). An investigation is its fabric-primary's (mesh-investigation.md "One
 /// investigation per peer mesh, owned by the fabric-primary"): the ladder is kept while the admin
-/// holds the seat and its view authorizes, the same condition the role row follows, and is dropped
+/// holds the seat, the condition the role row follows, and is dropped
 /// with no row otherwise (investigate.rs `run`), so no `heard-again` ever follows a verdict of an
 /// ended tenure. At `b6695529` the floors soak's mesh1.admin.1 decided mesh2 `unreachable` during
 /// the cut, lost the seat to mesh2.admin.1's takeover (Q89), took it back at the hand-back (Q107)

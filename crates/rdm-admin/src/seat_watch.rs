@@ -360,12 +360,11 @@ pub async fn run(w: Watch) {
         }
         // The fabric-primary unheard past the staleness floor is superseded (Q89, elections §4.3): its own
         // mesh's standby proposes at the first tick after the mark; outside its mesh, an admin proposes once
-        // the whole mesh is held past the hold (the lost-mesh arm). An admin whose view is cut off or
-        // healing acts on nothing (gossip.md §6).
-        // ... and only once this admin has held the record's holder as the holder for a floor: a record
-        // learned a moment ago (after a heal) names a holder whose silence in this book predates it.
+        // the whole mesh is held past the hold (the lost-mesh arm), and only once this admin has held the
+        // record's holder as the holder for a floor: a record learned a moment ago names a holder whose
+        // silence in this book predates it.
         let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
-        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric()).filter(|_| w.membership.authorizes() && held_a_floor) {
+        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric()).filter(|_| held_a_floor) {
             if let Some(door) = w.handover.get().cloned() {
                 drop(turn.take());
                 let _ = door.propose_take_over(&lost).await;

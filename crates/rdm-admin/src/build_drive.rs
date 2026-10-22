@@ -14,11 +14,10 @@
 //! projection: a successor fabric-primary resumes from it, and the attempt it finds claimed it
 //! dispatches again (start-or-reattach), so no completed step runs twice.
 //!
-//! Before every claim and every dispatch the drive passes three gates: the Build log's sticky seat
+//! Before every claim and every dispatch the drive passes two gates: the Build log's sticky seat
 //! fence is not set (a fabric-primary whose written seat record names another live birth
-//! dispatches nothing), this admin holds the seat in its view, and its view may authorize anything
-//! at all (a cut-off view dispatches nothing). A seat loss names the holder the written seat
-//! record names, never the view's.
+//! dispatches nothing), and this admin holds the seat in its view. A seat loss names the holder the
+//! written seat record names, never the view's.
 //! An executor that cannot be reached is replaced only on proof of its departure, never on
 //! silence.
 //!
@@ -46,9 +45,6 @@ use tracing::Instrument as _;
 /// The gates every claim and dispatch passes.
 #[async_trait::async_trait]
 pub trait Gate: Send + Sync {
-    /// Whether this admin's view may authorize anything now: not cut off, and not within one
-    /// silence window of healing (`CutOff::authorizes`).
-    fn authorizes(&self) -> bool;
     /// The seat fence of the Build log, read from the committed fabric seat record: refused by name
     /// once the record names another live birth; otherwise the path.name of the birth it names when
     /// that is this birth, `None` when it names none or a birth proven gone.
@@ -147,9 +143,6 @@ pub struct OpenGate;
 
 #[async_trait::async_trait]
 impl Gate for OpenGate {
-    fn authorizes(&self) -> bool {
-        true
-    }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         Ok(None)
     }
@@ -623,8 +616,6 @@ pub enum DriveEnd {
     Terminal,
     /// The drive cannot go on now; the next pass of the reconcile loop tries again.
     Stalled(String),
-    /// The view may not authorize anything now (cut off); the next pass tries again.
-    Paused(String),
     /// This admin does not hold the seat: the callers' streams end.
     SeatLost(String),
 }
@@ -835,7 +826,6 @@ impl DriveEnv {
         match &end {
             DriveEnd::Terminal => span.record("outcome", "terminal"),
             DriveEnd::Stalled(w) => span.record("outcome", "stalled").record("detail", w.as_str()),
-            DriveEnd::Paused(w) => span.record("outcome", "paused").record("detail", w.as_str()),
             DriveEnd::SeatLost(w) => span.record("outcome", "seat-lost").record("detail", w.as_str()),
         };
         drop(span);
@@ -880,13 +870,6 @@ impl DriveEnv {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id.log(), node = %me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
             drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
-        }
-        if !self.gate.authorizes() {
-            let why = format!("{me}: its view is cut off or within one silence window of healing, and authorizes nothing");
-            if drive.stall_is_new(&why) {
-                tracing::info_span!("rdm.node_admin.build.reject.via-cut-off", build_id = %drive.build_id.log(), node = %me).in_scope(|| tracing::info!("dispatch refused: a cut-off view authorizes nothing"));
-            }
-            return Some(DriveEnd::Paused(why));
         }
         None
     }

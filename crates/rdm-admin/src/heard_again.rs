@@ -40,9 +40,6 @@ pub struct HeardAgain {
     pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
     /// This admin's digest book: whether the birth has been heard ready-for-traffic since.
     pub book: DigestBook,
-    /// Whether this admin's view authorizes anything now: cut off, or within one silence window of
-    /// healing, it commands nobody (gossip.md §6, node-admin-lifecycle.md).
-    pub authorizes: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 /// The handle, once this admin's runner is built.
@@ -53,7 +50,6 @@ impl HeardAgain {
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
         let outcome = match self.runner.get() {
             None => "no-runner".to_string(),
-            Some(_) if !(self.authorizes)() => "view-cut-off: this admin's view authorizes nothing now".to_string(),
             Some(runner) => command_mesh_join(&self.client, &self.authority, &self.builds, runner, &self.book, node, incarnation).await,
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.

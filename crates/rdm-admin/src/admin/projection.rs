@@ -43,15 +43,15 @@ pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (N
 }
 
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
-/// `t` gives it (`live`: a cut-off view authorizes nothing) whose record names another birth, at the
+/// `t` gives it whose record names another birth, at the
 /// next epoch over that record; and, while it is its mesh's primary, each other cohort's seat of its
 /// mesh that `t` fills with a birth the cohort's record does not name. The record is the one `t` was decided against (`decided`): a seat
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
-pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::SeatHolder)> {
-    let mesh_primary = live && t.holds_mesh_seat(mesh, me.0);
-    let fabric_primary = live && t.holds_fabric_seat(me.0);
+pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::SeatHolder)> {
+    let mesh_primary = t.holds_mesh_seat(mesh, me.0);
+    let fabric_primary = t.holds_fabric_seat(me.0);
     let mut said = Vec::new();
     for (seat, holds) in [(rdm_core::Seat::MeshPrimary, mesh_primary), (rdm_core::Seat::FabricPrimary, fabric_primary)] {
         if !holds {

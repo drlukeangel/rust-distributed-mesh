@@ -407,7 +407,7 @@ pub async fn run(w: Watch) {
         let me = w.held_name_in(&view);
         inv.set_me(me.to_string());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
-        was_fabric_primary = fabric_primary && w.membership.authorizes();
+        was_fabric_primary = fabric_primary;
         if ladder_role_fabric_primary != Some(fabric_primary) {
             if ladder_role_fabric_primary.is_some() {
                 w.ladder.lock().unwrap().clear();
@@ -502,10 +502,9 @@ pub async fn run(w: Watch) {
 /// The mesh this admin, a mesh-primary that does not hold the fabric seat, investigates while the
 /// fabric-primary is unheard: the fabric seat record's mesh, when it is not this admin's own (its own
 /// mesh's standby is the seat watch's arm, node-recovery.md step 2) and the record's birth is held off
-/// ready-for-traffic in this admin's view. `None` otherwise, and whenever this admin's view authorizes
-/// nothing (gossip.md §6).
+/// ready-for-traffic in this admin's view. `None` otherwise.
 fn fabric_seat_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
-    if !w.membership.authorizes() || !view.holds_mesh_seat(&me.mesh, &w.me_id) {
+    if !view.holds_mesh_seat(&me.mesh, &w.me_id) {
         return None;
     }
     let record = w.membership.seats().fabric()?;

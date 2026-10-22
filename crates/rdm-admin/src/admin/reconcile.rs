@@ -20,9 +20,6 @@ pub(crate) struct SeatGate {
 
 #[async_trait::async_trait]
 impl crate::build_drive::Gate for SeatGate {
-    fn authorizes(&self) -> bool {
-        self.membership.authorizes()
-    }
     async fn fence(&self) -> Result<Option<String>, crate::build_state::BuildStateError> {
         self.builds.fence_check().await
     }

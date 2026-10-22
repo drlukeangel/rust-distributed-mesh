@@ -6528,11 +6528,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         for ((o, p), n) in &per_pair {
             assert!(*n <= held_ns / (wm * 1_000_000) + 1, "{o} -> {p}: {n} attempts in {} ms exceeds one per {wm} ms window", held_ns / 1_000_000);
         }
-        // Each victim knew it was cut off (it did not act on what it held), and no one lost or retired anything.
-        for (v, _) in &vmeshes {
-            let cut_off = named(spans, "rdm.mesh.membership.update.via-cut-off").into_iter().filter(|sp| sp["attributes"]["node"] == v.as_str() && sp["attributes"]["role"] == "start" && start_ns(sp) >= cut_at).count();
-            assert!(cut_off >= 1, "{v} recognised it was cut off");
-        }
+        // Nothing was lost, tombstoned or created again through cut and heal.
         let life = lifecycle_marks(spans, cut_at, after1);
         assert!(life.is_empty(), "no death, tombstone, departure, rebirth or terminate through cut and heal: {life:?}");
         let created: BTreeSet<String> = named(spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
