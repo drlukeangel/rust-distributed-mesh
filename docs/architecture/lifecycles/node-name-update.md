@@ -15,7 +15,7 @@ step. A node's other properties have their own commands ([node properties](../no
 | Entry | The exact `(node.id, incarnation)` and the new name. Nothing else: no path, no mesh, no type, no tags |
 | Precondition | The node is live and admits no connection: this mesh-primary holds the birth's `node.connections.deleted` of an `All`, then its `node.mesh.left` ([node.mesh.leave](node-mesh-leave.md)), and it holds zero connections. A stopped node is never renamed; a ready-for-traffic node, or one still holding a connection, is refused. No new connection is admitted from the row write through `ApplyNodeName`, retries after an interruption included |
 | Validation | The exact birth matches the held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status, held_connections }`; the name is within the name grammar, else `RejectedName { reason }`. A rename may take any name within the grammar, unique within its path |
-| Claim and move | The new name is claimed by insert-and-fail on the kind's `path.name` index inside the store adapter; a held name answers `NameHeld { by: node.id }` and nothing is written. The move is two writes: the row is put at the new key carrying `renamed_from: <old path.name>`, then the old key is released. Between them the node holds both keys, and the destination row says which is which: **a row whose `renamed_from` key still holds the same node id has a pending release, and the writer releases it.** The rule needs no clearing: once the source no longer holds the id it is false. It runs wherever a writer meets the row: a retry of the command, the Build attempt's resume of a replace or recovery step, and a mesh-primary's rebuild from its mesh's rows after a seat change (R13), which already reads every row of the mesh |
+| Claim and move | The new name is claimed by the row writer, which reads the kind's `path.name` index; a held name answers `NameHeld { by: node.id }` and nothing is written. The move is two writes: the row is put at the new key carrying `renamed_from: <old path.name>`, then the old key is released. Between them the node holds both keys, and the destination row says which is which: **a row whose `renamed_from` key still holds the same node id has a pending release, and the writer releases it.** The rule needs no clearing: once the source no longer holds the id it is false. It runs wherever a writer meets the row: a retry of the command, the Build attempt's resume of a replace or recovery step, and a mesh-primary's rebuild from its mesh's rows after a seat change (R13), which already reads every row of the mesh |
 | Order | Row first, node second |
 | Completion | [By case](#completion-by-case) |
 | Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds finishes any pending release and then, for a live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`. A repeat with a different name is a new rename |
@@ -26,7 +26,7 @@ step. A node's other properties have their own commands ([node properties](../no
 1. The caller sends `node.name.update` to the node's mesh-primary.
 2. The mesh-primary validates from the record it holds: exact birth, its own writer role, the
    precondition from the node's status and its `node.connections.deleted` and `node.mesh.left` receipts, the name grammar.
-3. The new name is claimed by insert-and-fail in the store adapter; a held name refuses
+3. The row writer reads the new name's row and claims it; a held name refuses
    `NameHeld { by }` with nothing written.
 4. The mesh-primary writes the row with the new name. The old name's key is released. This is the
    durable name move.
@@ -53,7 +53,7 @@ row's name. A node never renames itself.
 
 ```text
 node.name.update
-  → validate → claim new name (insert-and-fail) → put row at the new key (renamed_from) → release the old key
+  → validate → claim new name (the row writer reads its row) → put row at the new key (renamed_from) → release the old key
   → ApplyNodeName (the live node that has left its mesh)
   ← node.name.updated
 ```

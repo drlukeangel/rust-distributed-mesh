@@ -8,7 +8,7 @@
 //! (`RejectedAdmittingConnections { status, held_connections }`; a stopped node is never renamed and is
 //! refused the same way); the name is within the name grammar and its join with the held record's path
 //! is a `path.name` this build keys (`RejectedName`). Then, one change at a time with every other change
-//! to a node record: the new name is claimed by insert-and-fail in the store adapter (`NameHeld { by }`,
+//! to a node record: the row writer reads the new name's row and claims it (`NameHeld { by }`,
 //! nothing written) and the row moved through the one writer of a row's move
 //! (`crate::node_rows::move_row`): put at the new key carrying `renamed_from`, then the old key
 //! released. A release that fails leaves both keys held and ends the command incomplete naming it

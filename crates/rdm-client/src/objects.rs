@@ -103,7 +103,8 @@ pub enum NodeSelector {
 
 /// A create or a rename into a `path.name` another node holds, parked or live: a name is held by
 /// exactly one node until that node is renamed or deleted (ops-naming "Identity";
-/// node-rpc-envelope.md "Meta and config"). The claim is insert-and-fail on the name's key.
+/// node-rpc-envelope.md "Meta and config"). The row writer reads the row at the name's key and
+/// claims it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameHeld {
     /// The name claimed.

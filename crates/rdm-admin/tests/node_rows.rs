@@ -133,7 +133,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
         let victim = held(&mp, "mesh1.rpc.1").await;
-        storage.put_node_row(&row_of(&victim)).await.unwrap().unwrap();
+        storage.put_node_row(&row_of(&victim)).await.unwrap();
         mp.rows.deleted(&victim, "node.delete:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         (storage.node_row_at(&victim.name).await.unwrap(), victim.node_id)
     });
@@ -162,7 +162,7 @@ fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_no
         let mp = mesh_primary(&storage);
         let victim = held(&mp, "mesh1.rpc.1").await;
         let tags: std::collections::BTreeSet<String> = ["rabbit".to_string(), "red".to_string()].into();
-        storage.put_node_row(&NodeRow { tags: tags.clone(), ..row_of(&victim) }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { tags: tags.clone(), ..row_of(&victim) }).await.unwrap();
         assert_eq!(storage.tagged("rabbit").await.unwrap(), [victim.node_id.clone()].into(), "the store keeps the tags index with the row it writes");
         mp.rows.deleted(&victim, "node.delete:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         let row = storage.node_row_at(&victim.name).await.unwrap();
@@ -199,7 +199,7 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
         mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "node.create:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
@@ -225,7 +225,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
     let (deleted, next_row, born) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let name: PathName = "mesh1.rpc.2".parse().unwrap();
-        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
         mp.rows.claim(&name, &born, "node.create:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
@@ -249,7 +249,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
 }
 
 /// CONTRACT: two nodes never hold one name (R13 acceptance): a birth at a `path.name` whose row
-/// another live node holds gets no row; the store adapter's insert-and-fail refuses it `NameHeld`
+/// another live node holds gets no row; the row writer's claim refuses it `NameHeld`
 /// naming the holder, and the holder's row stays exactly as it was. One `via-node-row` span names
 /// the refusal.
 #[test]
@@ -259,7 +259,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
         let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-        storage.put_node_row(&held).await.unwrap().unwrap();
+        storage.put_node_row(&held).await.unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(birth)).await;
@@ -276,7 +276,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
 }
 
 /// CONTRACT (R-OW1 item 2: "No bypass; a conflicting holder is NameHeld, never overwritten"): the
-/// Day-0 claim of the bootstrap admin's own `path.name` is the create door's insert-and-fail. A name
+/// Day-0 claim of the bootstrap admin's own `path.name` is the create door's claim. A name
 /// another live node's row holds is refused `NameHeld` naming the holder, and the holder's row stays
 /// exactly as it was; a free name is written `Pending` under the admin's node.id. One `via-node-row`
 /// span each, `moment` `claim`, operation `fabric-create`.
@@ -287,7 +287,7 @@ fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_
     let (refused, row, held, written, me) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let held = NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-        storage.put_node_row(&held).await.unwrap().unwrap();
+        storage.put_node_row(&held).await.unwrap();
         let me = NodeId::mint();
         let refused = rdm_admin::node_rows::claim_day0_name(&*storage, &name, &me).await;
         let row = storage.node_row_at(&name).await.unwrap();
@@ -317,7 +317,7 @@ fn a_birth_no_create_claimed_gets_its_row_seeded_when_the_writers_view_holds_it(
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
@@ -351,7 +351,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-        storage.put_node_row(&written).await.unwrap().unwrap();
+        storage.put_node_row(&written).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
                 n.is_primary = n.name.to_string() == "mesh1.admin.1";
@@ -392,7 +392,7 @@ fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         // The rename its mesh's former primary wrote while the node was stopped: the row moved to `.old`.
         let renamed = NodeRow { name: rpc1.name.renamed(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-        storage.put_node_row(&renamed).await.unwrap().unwrap();
+        storage.put_node_row(&renamed).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
                 n.is_primary = n.name.to_string() == "mesh1.admin.1";
@@ -435,8 +435,8 @@ fn a_seat_taken_rebuild_finishes_a_lost_writers_pending_release() {
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         let to: PathName = "mesh1.rpc.9".parse().unwrap();
         // The lost writer's two writes: the row at its old key, then the put at the new key; no release.
-        storage.put_node_row(&NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
-        storage.put_node_row(&NodeRow { name: to.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some(rpc1.name.clone()), app_types: None, inherited_by: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
+        storage.put_node_row(&NodeRow { name: to.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some(rpc1.name.clone()), app_types: None, inherited_by: None }).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
                 n.is_primary = n.name.to_string() == "mesh1.admin.1";
@@ -479,7 +479,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
             NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None },
             NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None },
         ] {
-            p_store.put_node_row(&row).await.unwrap().unwrap();
+            p_store.put_node_row(&row).await.unwrap();
         }
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let records = Records::default();
@@ -555,10 +555,10 @@ fn a_node_lets_go_only_of_its_own_row() {
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-            store.put_node_row(&held).await.unwrap().unwrap();
-            assert!(!store.release_node_row(&held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
+            store.put_node_row(&held).await.unwrap();
+            assert!(!rdm_admin::storage::release_node_row(&*store, &held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");
-            assert!(store.release_node_row(&held.name, &id).await.unwrap(), "{kind}: the holder lets go of its key");
+            assert!(rdm_admin::storage::release_node_row(&*store, &held.name, &id).await.unwrap(), "{kind}: the holder lets go of its key");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), None, "{kind}: the holder's release frees the key");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -669,7 +669,7 @@ mod writer {
             }
             let rpc = before.node(&"mesh1.rpc.1".parse().unwrap()).unwrap().clone();
             let held = NodeRow { config: tier("silver"), ..row_of(&rpc) };
-            storage.put_node_row(&held).await.unwrap().unwrap();
+            storage.put_node_row(&held).await.unwrap();
             let me_id = before.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone();
             let (records, topology) = writer_of("mesh1.admin.1", &before, &storage);
             install(&records, &topology, |v| {
@@ -774,7 +774,7 @@ mod writer {
 
     /// CONTRACT: a `node.create` whose name another live node's row holds launches nothing
     /// (lifecycles/node-create.md step 1): the mesh-primary claims the name at the start of
-    /// `PrepareStorage`, before `DeployRuntime`, the store adapter refuses it `NameHeld` naming the
+    /// `PrepareStorage`, before `DeployRuntime`, the claim refuses it `NameHeld` naming the
     /// holder, the create fails at `PrepareStorage` saying so, the provider is never asked to spawn,
     /// and the holder's row stands. One `via-node-row` span, `moment` `claim`, outcome `name-held`.
     #[test]
@@ -783,7 +783,7 @@ mod writer {
         let (err, spawned, row, held) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
-            storage.put_node_row(&held).await.unwrap().unwrap();
+            storage.put_node_row(&held).await.unwrap();
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
             let err = create(&records, &provider, "mesh1.rpc.2").await;
@@ -952,7 +952,7 @@ mod writer {
             )
             .await
             .unwrap();
-            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
+            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
             let rerun_after_claim = create_attempt(&records, &provider, &builds, &other, "mesh1.rpc.6", 2).await;
             (lost_before_receipt, rerun_after_loss, x, rerun_after_claim)
         });
@@ -1568,7 +1568,7 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId,
     let mp = mesh_primary(&storage);
     let exited = held(&mp, "mesh1.rpc.1").await;
     // The exited birth's row, as its create claimed it.
-    storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
+    storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
     let born = NodeId::mint();
     if new_claimed_first {
         mp.rows.claim(&exited.name, &born, create, None, ClaimFor::Recovery).await.expect_err("the exited node's live row holds the name");
@@ -1663,7 +1663,6 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
                 app_types: None, inherited_by: None,
             })
             .await
-            .unwrap()
             .unwrap();
         let created_row = storage.node_row_at(&north_key).await.unwrap().expect("row at mesh1.broker.north");
         assert_eq!((created_row.path().as_str(), created_row.node_name().as_str(), created_row.node_type()), ("mesh1.broker", "north", "broker"));

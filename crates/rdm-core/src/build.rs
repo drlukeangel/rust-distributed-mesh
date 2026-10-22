@@ -149,8 +149,8 @@ pub enum BuildChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecipeStep {
     /// node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name`
-    /// (for a replace's successor, the `<name>` its predecessor released), claimed by insert-and-fail
-    /// before anything is launched.
+    /// (for a replace's successor, the `<name>` its predecessor released), claimed before anything is
+    /// launched.
     Create {
         /// The `path.name` the node is created at.
         node: PathName,

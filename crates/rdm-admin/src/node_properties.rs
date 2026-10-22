@@ -188,7 +188,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
     let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by, app_types: door.written().row_of(node_id).and_then(|r| r.app_types) };
-    match storage.put_node_row(&row).await {
+    match crate::storage::claim_node_row(&*storage, &row).await {
         Ok(Ok(())) => {
             door.written().hold(&row);
             done

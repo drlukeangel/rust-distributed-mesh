@@ -165,7 +165,6 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 app_types: None, inherited_by: None,
             })
             .await
-            .unwrap()
             .unwrap();
         assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
         let h = handle(&n.name.to_string(), 50_000);
@@ -214,10 +213,10 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Durable stores for fabric, meshes, statuses, and each mesh's node rows.
     let fabric_storage = Arc::new(MemoryFabricStorage::new());
     let identity = FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
-    fabric_storage.claim_identity(&identity).await.unwrap().unwrap();
+    rdm_admin::fabric_storage::claim_identity(&*fabric_storage, &identity).await.unwrap().unwrap();
     let mesh_storage = MemoryMeshStorage::default();
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
-        mesh_storage.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: id.clone(), name: name.into(), dead: false }).await.unwrap().unwrap();
+        rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id.clone(), name: name.into(), dead: false }).await.unwrap().unwrap();
     }
     let status_storage = MemoryStatusStorage::default();
     let declared = Mutex::new(Declared::default());
@@ -374,7 +373,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let admitted_m1 = rdm_admin::mesh_delete::Admitted { roster: roster_m1, final_primary: me_m1.clone(), final_runtime: rt_m1, amendments: Vec::new() };
     let HandoffVerdict::Accept(manifest_m1) = handoff_verdict(&facts, &key_m1, &admitted_m1, &manifest_reference(build_id.as_str(), 1, &op_m1, false)) else { panic!("mesh1 handoff accepted") };
     status_storage.put_mesh_status_of("mesh1", &MeshStatusRow { mesh_id: id1.clone(), state: MeshState::Dead }).await.unwrap();
-    mesh_storage.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: id1.clone(), name: "mesh1".into(), dead: true }).await.unwrap().unwrap();
+    rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id1.clone(), name: "mesh1".into(), dead: true }).await.unwrap().unwrap();
     record_completion(&*builds, &key_m1, "mesh1.admin.1", &manifest_m1).await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m1_r1.name);
     observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh1").unwrap().status = ScopeStatus::Dead;
@@ -485,7 +484,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         }
         let status_storage = Arc::new(MemoryStatusStorage::default());
         let mesh_storage = MemoryMeshStorage::default();
-        mesh_storage.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
         // The fabric-primary's records: the exit-proof rows it puts land in its status store.
         let records = Records::default();
         records.set_status(status_storage.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
@@ -592,7 +591,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         }
         let status_storage = Arc::new(MemoryStatusStorage::default());
         let mesh_storage = MemoryMeshStorage::default();
-        mesh_storage.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
         let declared = Mutex::new(Declared::default());
         let records = Records::default();
         records.set_status(status_storage.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());

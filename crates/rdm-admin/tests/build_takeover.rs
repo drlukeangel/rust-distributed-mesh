@@ -161,7 +161,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     // As a started admin: its fabric.storage holds the Fabric record, and it holds no Build yet.
     let storage = Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new());
-    rdm_admin::fabric_storage::FabricStorage::claim_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
+    rdm_admin::fabric_storage::claim_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let local = Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new());
     let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());

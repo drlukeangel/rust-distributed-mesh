@@ -849,7 +849,7 @@ pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &
 /// mesh's live row holds the name: this mesh holds no row there to release, and nothing is written).
 pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, mesh: &str, mesh_id: &MeshId) -> Result<&'static str, String> {
     let row = crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: mesh.to_string(), dead: true };
-    match meshes.claim_mesh(&row).await {
+    match crate::storage::claim_mesh(&*meshes, &row).await {
         Ok(Ok(crate::storage::MeshClaim::Written { .. })) => Ok("dead-written"),
         Ok(Ok(crate::storage::MeshClaim::Held)) => Ok("already-dead"),
         Ok(Err(crate::storage::MeshClaimRefused::NameHeld { .. })) => Ok("name-held"),
@@ -1721,7 +1721,7 @@ pub async fn complete_fabric_delete(
     let operation = format!("fabric.delete:{fabric_id}");
     if let Some(identity) = storage.fabric().await.map_err(|e| format!("{operation}: fabric.storage could not read the fabric identity: {e}"))? {
         if identity.fabric_id == *fabric_id {
-            storage.release_name(&identity).await.map_err(|e| format!("{operation}: fabric.storage could not release the fabric name {}: {e}", identity.name))?;
+            crate::fabric_storage::release_name(&*storage, &identity).await.map_err(|e| format!("{operation}: fabric.storage could not release the fabric name {}: {e}", identity.name))?;
         }
     }
     builds

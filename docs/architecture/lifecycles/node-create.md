@@ -36,7 +36,7 @@ topology, never by looking whether a channel exists and then creating it.
 1. Record the exact deployment, prepare its identity/data dir and launch its executable.
    The executor never picks, reserves or predicts a transport port. Before this step the
    node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh)
-   claims the name by insert-and-fail inside the store adapter;
+   claims the name, reading the row at it;
    `NameHeld { by: node.id }` refuses a held name and nothing is launched.
 2. The process loads `endpoint_id` and binds port 0. In the exact-address configuration,
    endpoint startup neither awaits nor launches host-interface enumeration. The

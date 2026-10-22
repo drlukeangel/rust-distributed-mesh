@@ -279,8 +279,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(claim["attributes"]["outcome"], "row-seeded", "{claim}");
     assert_eq!(s(&claim["attributes"]["seeded_from"]), s(&old_admin["node_id"]), "seeded from the old mesh2.admin.1's Deleted row: {claim}");
     assert_eq!(s(&new_admin["mesh"]), "mesh2");
-    // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's name is claimed by insert-and-fail on
-    // its key, before anything else of the mesh is written (CLAUDE.md), at CreateMesh by the
+    // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's name is claimed at its key, by its
+    // writer (Q109), before anything else of the mesh is written (CLAUDE.md), at CreateMesh by the
     // fabric-primary as the acting primary of a mesh with none (R13); the removed mesh2's Mesh row is
     // written Dead, which releases the name; the recreated mesh2's claim takes the name over that Dead
     // row under its new MeshId, before the recreated mesh2.admin.1's row is claimed, by the same

@@ -16,7 +16,7 @@
 //!
 //! - `node.create`: the name is claimed at the start of `PrepareStorage`, once the
 //!   `AllocateIdentity` receipt names the node id, and before anything is prepared or launched
-//!   ([`NodeRows::claim`]): insert-and-fail inside the store adapter,
+//!   ([`NodeRows::claim`]): the writer reads the row at the name and claims it,
 //!   `NameHeld { by }` and nothing launched. The row's config is seeded from the previous row at
 //!   the `path.name` (a `Deleted` row) or the `<name>.old` row. A create that fails after its claim
 //!   withdraws it ([`NodeRows::withdraw`]), the holder's own key only.
@@ -30,8 +30,8 @@
 //!   Exited receipt, by the deleting mesh's primary, and the final primary's in its own node.delete,
 //!   by the fabric-primary as acting primary of a mesh with no primary; a birth the view no longer
 //!   names is written from this writer's record of its row ([`NodeRows::deleted_birth`]).
-//! - Day 0 (R-OW1 item 2): the bootstrap admin, mesh1's primary, claims its own `path.name` by
-//!   insert-and-fail as the first write of its birth, before Ready ([`claim_day0_name`]).
+//! - Day 0 (R-OW1 item 2): the bootstrap admin, mesh1's primary, claims its own `path.name`
+//!   as the first write of its birth, before Ready ([`claim_day0_name`]).
 //! - A birth no create of this writer claimed (a birth made before this admin took its mesh's
 //!   seat, this admin's own included): written when the writer's view first holds it
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's seat writes every member's row of that
@@ -143,8 +143,7 @@ pub(crate) fn labels(tags: &std::collections::BTreeSet<String>) -> String {
 pub enum RowRefused {
     /// This admin is not the writer of the row's mesh: why, naming the mesh and its writer.
     NotMeshPrimary(String),
-    /// Another node's live row holds the name: the store adapter's insert-and-fail refused it and
-    /// nothing was written.
+    /// Another node's live row holds the name: the claim refused it and nothing was written.
     NameHeld(NameHeld),
     /// The row could not be read or written: why, whole.
     Unwritten(String),
@@ -302,7 +301,7 @@ impl NodeRows {
     /// launched for the birth, the writer of the mesh's rows puts the birth's row at `name`, status
     /// `Pending`, its config seeded from the previous row at the `path.name` (a `Deleted` row) or the
     /// `<name>.old` row, and its tags from that `Deleted` row only for a recovery's claim (`of`,
-    /// [`ClaimFor`]). The store adapter's insert-and-fail
+    /// [`ClaimFor`]). The claim ([`crate::storage::claim_node_row`])
     /// refuses a name another node's live row holds, `NameHeld { by }`, and nothing is written. A row
     /// the node holds already is left as it is. `allocated`: what the create allocated for the birth,
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
@@ -463,7 +462,7 @@ impl NodeRows {
             Ok(held) => {
                 me = held;
                 span.record("node", me.to_string().as_str());
-                self.storage.release_node_row(name, node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: nodes.storage refused the release of {name} by {node_id}: {e}")))
+                crate::storage::release_node_row(&*self.storage, name, node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: nodes.storage refused the release of {name} by {node_id}: {e}")))
             }
         };
         if let Ok(true) = r {
@@ -492,7 +491,7 @@ impl NodeRows {
             }
         }
         row.app_types = Some(crate::storage::AppTypes { incarnation: d.node.incarnation.clone(), types });
-        self.storage.put_node_row(&row).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:?}"))?;
+        crate::storage::claim_node_row(&*self.storage, &row).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:?}"))?;
         self.written.hold(&row);
         tracing::info_span!("rdm.node_admin.node.update.via-types", node = %d.node.name, node_id = %d.node.node_id, incarnation = %d.node.incarnation, types = row.app_types.as_ref().unwrap().types.len()).in_scope(|| tracing::info!("the birth's declaration is recorded"));
         Ok(())
@@ -578,7 +577,7 @@ impl NodeRows {
                     return Err(RowRefused::Unwritten(format!("{me}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know")));
                 };
                 let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, app_types: self.written.row_of(node_id).and_then(|r| r.app_types), inherited_by: None };
-                match self.storage.put_node_row(&row).await {
+                match crate::storage::claim_node_row(&*self.storage, &row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
                         Ok(())
@@ -599,7 +598,7 @@ impl NodeRows {
     }
 
     /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
-    /// `path.name` (another node's row there: the store adapter refuses it unless it is `Deleted`),
+    /// `path.name` (another node's row there: the claim refuses it unless it is `Deleted`),
     /// else the `<name>.old` row, else `own`. Its tags: for a recovery's claim ([`ClaimFor::Recovery`])
     /// those of that previous `Deleted` row (proposal node-properties-own-commands.md §8, recovery:
     /// "the successor's claim over it seeds config and tags from that Deleted row and writes the tags
@@ -822,7 +821,7 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
     let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, app_types: None, inherited_by: None };
     span.record("awaiting", "put-node-row");
-    let put = storage.put_node_row(&row).await;
+    let put = crate::storage::claim_node_row(storage, &row).await;
     push_awaited(&mut awaited, "put-node-row");
     span.record("awaited", awaited.as_str());
     match put {
@@ -867,7 +866,7 @@ async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &Writ
                 return Ok("already-inherited");
             }
             let row = NodeRow { inherited_by: Some(successor.clone()), ..row };
-            match storage.put_node_row(&row).await {
+            match crate::storage::claim_node_row(storage, &row).await {
                 Ok(Ok(())) => {
                     written.hold(&row);
                     Ok("inherited")
@@ -899,7 +898,7 @@ async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &Writ
 /// 1. node.delete of the inherited birth: its live row at the name written `Deleted`, its config and
 ///    tags kept (one `rdm.node_admin.node.delete.via-node-row` span), and its contact dropped from its
 ///    mesh's contacts (a deleted birth is no node to reach), a blind removal of its own key;
-/// 2. node.create's claim of the name under `node_id`: insert-and-fail in the store adapter, the row
+/// 2. node.create's claim of the name under `node_id` ([`crate::storage::claim_node_row`]), the row
 ///    `Pending`, its config and tags seeded from the `Deleted` row ([`ClaimFor::Recovery`]; one
 ///    `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`).
 ///
@@ -923,7 +922,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, inherited: &crate::
             "otel.kind" = "internal",
         );
         let row = NodeRow { status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, ..p };
-        let r = match tracing::Instrument::instrument(storage.put_node_row(&row), span.clone()).await {
+        let r = match tracing::Instrument::instrument(crate::storage::claim_node_row(storage, &row), span.clone()).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
             Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the Deleted row of the inherited birth at {name} ({}): {e}", row.node_id))),
@@ -939,14 +938,14 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, inherited: &crate::
     own_claim(None, storage, name, node_id, operation, ClaimFor::Recovery).await
 }
 
-/// Day 0's claim of the bootstrap admin's own `path.name` (R-OW1 item 2: "Day 0: the bootstrap admin,
-/// as mesh1's primary, claims (mesh1.admin, 1) by insert-and-fail and writes its own row through the
-/// same validation and storage path as any create, the first write of its birth, before Ready. No
-/// bypass; a conflicting holder is NameHeld, never overwritten"). The bootstrap admin, `node_id` at
+/// Day 0's claim of the bootstrap admin's own `path.name` (R-OW1 item 2: the bootstrap admin, as
+/// mesh1's primary, claims (mesh1.admin, 1) and writes its own row through the same validation and
+/// storage path as any create, the first write of its birth, before Ready; no bypass; a conflicting
+/// holder is NameHeld, never overwritten). The bootstrap admin, `node_id` at
 /// `name`, is its mesh's primary from its birth and the only admin of its fabric, so it is the writer of
 /// its own row; the claim is the first write of its birth, made before anything else of it is written or
-/// published. It is the create door's claim ([`ClaimFor::Create`]): insert-and-fail in the store
-/// adapter, the row `Pending`, one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`.
+/// published. It is the create door's claim ([`ClaimFor::Create`],
+/// [`crate::storage::claim_node_row`]), the row `Pending`, one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`.
 /// Another node's live row at the name is `NameHeld` naming it, and nothing is written.
 pub async fn claim_day0_name(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<Claimed, RowRefused> {
     own_claim(None, storage, name, node_id, "fabric-create", ClaimFor::Create).await
@@ -1008,8 +1007,7 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, n
 /// Why a node row's move was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameRefused {
-    /// The new name is held by another node: the store adapter's insert-and-fail refused it and
-    /// nothing was written.
+    /// The new name is held by another node: the claim refused it and nothing was written.
     NameHeld(crate::storage::NameHeld),
     /// The move could not be written: why, whole.
     Unwritten(String),
@@ -1017,10 +1015,9 @@ pub enum RenameRefused {
 
 /// The node's row moves from `from` to `to` in `storage` (proposal node-properties-own-commands.md
 /// §2.1 "Claim and move"): put at `to` from its held `record` with `config` and `tags`, carrying
-/// `renamed_from: from` (a put the store adapter refuses `NameHeld` when another node's live row holds
-/// `to`), then the node lets go of `from` (only its own row there goes). A row the node holds at `to`
+/// `renamed_from: from` (a claim refused `NameHeld` when another node's live row holds `to`), then the node lets go of `from` (only its own row there goes). A row the node holds at `to`
 /// already is a move made before: it is left as it is, its id index entry naming `to`
-/// ([`NodesStorage::hold_node_row`]), and the release its `renamed_from` names is finished when still
+/// ([`crate::storage::hold_node_row`]), and the release its `renamed_from` names is finished when still
 /// pending ([`finish_release`]). A release that fails after the put leaves both keys held and answers
 /// [`Moved::ReleasePending`]: nothing is rolled back and no second row is written. The one writer of a
 /// rename (R13: `node.name.update` is one write path): `node.name.update` at the node's mesh-primary
@@ -1029,7 +1026,7 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
     if from == to {
         return Ok((Moved::Renamed, None));
     }
-    let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
+    let held_there = crate::storage::hold_node_row(storage, to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
     if held_there {
         // A move made before: its destination row names the key it came from (a row written before
         // `renamed_from` existed names none, and the key is this move's own `from`).
@@ -1042,9 +1039,9 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
         });
     }
     let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), app_types, inherited_by: None };
-    storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
+    crate::storage::claim_node_row(storage, &row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
     // The new name is the node's: it lets go of the old key.
-    match storage.release_node_row(from, &record.node_id).await {
+    match crate::storage::release_node_row(storage, from, &record.node_id).await {
         Ok(_) => Ok((Moved::Renamed, Some(row))),
         Err(e) => Ok((Moved::ReleasePending { why: format!("nodes.storage refused the release of {from}: {e}") }, Some(row))),
     }
@@ -1073,7 +1070,7 @@ async fn release_source(storage: &dyn NodesStorage, me: &PathName, node_id: &Nod
     if !still {
         return Ok(false);
     }
-    match storage.release_node_row(from, node_id).await {
+    match crate::storage::release_node_row(storage, from, node_id).await {
         Ok(released) => {
             let _ = pending_release_span(me, node_id, to, from, moment, Ok(released));
             Ok(released)

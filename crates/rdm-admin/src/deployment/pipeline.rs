@@ -212,7 +212,7 @@ impl LeaveStep {
 /// The steps of creating a mesh (`create-mesh:<mesh>`, node-identity-and-state.md §2.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateMeshStep {
-    /// The mesh's name is claimed by insert-and-fail at its key. Receipted only when the claim is
+    /// The mesh's name is claimed at its key ([`crate::storage::claim_mesh`]). Receipted only when the claim is
     /// refused: a won claim, or the mesh's own row found standing, ends in `Complete`.
     ClaimMeshName,
     /// The name is claimed and the mesh's id is held for its launches: the operation is done.
@@ -1390,7 +1390,9 @@ impl DeploymentPipeline<'_> {
     async fn create_with_claim(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
-        self.create_steps(req, claim_for, before_ready, before_launch).instrument(span).await
+        // Boxed: the create's steps are one large state machine, and every caller (a recipe step, a
+        // recovery, a drive) holds only the box on its worker's stack.
+        Box::pin(self.create_steps(req, claim_for, before_ready, before_launch)).instrument(span).await
     }
 
     async fn create_steps(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {

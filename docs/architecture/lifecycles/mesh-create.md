@@ -16,7 +16,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 | Caller / driver | The topology Build that adds the mesh ([build.md §12.1](../build.md#121-create-a-new-mesh)); the fabric-primary accepts it and drives it through the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) |
 | Precondition | The fabric has first reached ready-for-traffic; before then the Build is refused `fabric-not-ready` ([States](states.md#fabric-not-ready)) |
 | MeshId | Minted once, when the mesh enters the accepted topology, and carried by every Build after it; never reissued |
-| Name | `mesh<#>` by default, the Build's `mesh_name`; the first node-admin, as the mesh's primary, claims it by insert-and-fail on `(path, name)`, unique within its path; held by a different MeshId answers `NameHeld` |
+| Name | `mesh<#>` by default, the Build's `mesh_name`; the first node-admin, as the mesh's primary, claims it at `(path, name)`, unique within its path; held by a different MeshId answers `NameHeld` |
 | Executor / maker | The fabric-primary: it is the maker of the mesh's first node-admin and writes the mesh's rows until the mesh has a primary (R-OW1) |
 | Channel | `f(FabricId, MeshId)`, created by its first listener, the node-admin |
 | Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, under the same accepted Build's attempts |
@@ -49,8 +49,8 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    `node.started`. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
    ReadyForTraffic.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) seats the node-admin as
-   `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name by
-   insert-and-fail, writes the mesh row, publishes its `Seated` record and its mesh's status
+   `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
+   writes the mesh row, publishes its `Seated` record and its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every

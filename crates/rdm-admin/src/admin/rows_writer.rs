@@ -48,7 +48,7 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 /// primary alone, for its own members alone (R14 item 2; the writer ladder,
 /// node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's primary's). A
 /// round that does not hold the seat writes nothing. A round that takes it first claims the mesh's
-/// name by the mesh store's insert-and-fail and writes the Mesh row (node-identity-and-state.md
+/// name ([`crate::storage::claim_mesh`]) and writes the Mesh row (node-identity-and-state.md
 /// §2.7): nothing else of the mesh is written until the claim wins, and a name another mesh's live
 /// row holds leaves the mesh's rows unwritten for the tenure, named. Then it reads what the shared
 /// root holds for the mesh, writes each member whose held birth differs and drops a contact whose
@@ -148,8 +148,8 @@ pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: 
     }
 }
 
-/// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7), by the mesh
-/// store's insert-and-fail ([`crate::storage::MeshStorage::claim_mesh`]), made by `me`: the
+/// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7)
+/// ([`crate::storage::claim_mesh`]), made by `me`: the
 /// fabric-primary at CreateMesh, as the writer of a mesh with no primary (R13), the mesh's first
 /// durable write; and the mesh's primary when its seat tenure starts, which finds the mesh's own row
 /// (the same MeshId re-claiming, idempotent). The Mesh row written, or this mesh's own row found
@@ -169,7 +169,7 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
         "otel.kind" = "internal",
     );
     let record = crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: mesh.to_string(), dead: false };
-    let claimed = meshes.claim_mesh(&record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"));
+    let claimed = crate::storage::claim_mesh(&*meshes, &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"));
     match &claimed {
         Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
             span.record("outcome", "row-written");
@@ -190,7 +190,7 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
             span.record("outcome", "row-refused").record("detail", e.as_str());
         }
     }
-    span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed by insert-and-fail at its key; nothing else of the mesh is written until the claim wins"));
+    span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed at its key; nothing else of the mesh is written until the claim wins"));
     claimed
 }
 
@@ -313,8 +313,8 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
     r.map(|_| ()).map_err(|(_, detail)| detail)
 }
 
-/// fabric.create's claim of the fabric's name (node-identity-and-state.md §2.8), by the fabric store's
-/// insert-and-fail ([`crate::fabric_storage::FabricStorage::claim_identity`]): Day 0's first write of
+/// fabric.create's claim of the fabric's name (node-identity-and-state.md §2.8)
+/// ([`crate::fabric_storage::claim_identity`]): Day 0's first write of
 /// the fabric, and the fabric-primary's row writer's before it writes anything else to `fabric/`. One
 /// `rdm.node_admin.fabric.create.via-fabric-row` span, `moment` `claim`, names the outcome
 /// (`row-written`, `row-held-by-fabric`, `name-held` with the holder, `row-refused`).
@@ -330,14 +330,14 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let claimed = storage.claim_identity(identity).await.map_err(|e| format!("fabric.storage did not answer the claim of the fabric name {} for Fabric {}: {e}", identity.name, identity.fabric_id));
+    let claimed = crate::fabric_storage::claim_identity(&*storage, identity).await.map_err(|e| format!("fabric.storage did not answer the claim of the fabric name {} for Fabric {}: {e}", identity.name, identity.fabric_id));
     match &claimed {
         Ok(Ok(crate::fabric_storage::FabricClaim::Written)) => span.record("outcome", "row-written"),
         Ok(Ok(crate::fabric_storage::FabricClaim::Held)) => span.record("outcome", "row-held-by-fabric"),
         Ok(Err(held)) => span.record("outcome", "name-held").record("holder", tracing::field::display(&held.by)).record("detail", held.to_string().as_str()),
         Err(e) => span.record("outcome", "row-refused").record("detail", e.as_str()),
     };
-    span.in_scope(|| tracing::info!("fabric.create: the fabric's name is claimed by insert-and-fail at its key; nothing else of the fabric is written until the claim wins"));
+    span.in_scope(|| tracing::info!("fabric.create: the fabric's name is claimed at its key; nothing else of the fabric is written until the claim wins"));
     claimed
 }
 

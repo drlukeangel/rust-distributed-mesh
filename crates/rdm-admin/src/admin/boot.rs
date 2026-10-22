@@ -503,8 +503,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (None, None) => {
             let name = PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1);
             let node_id = NodeId::mint();
-            // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path.name by
-            // insert-and-fail, the first write of its birth, before Ready (`claim_day0_name`). A name another
+            // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path.name,
+            // the first write of its birth, before Ready (`claim_day0_name`). A name another
             // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
             // is written when it holds its mesh's seat, as every member's is (`NodeRows::arrivals`).
             if !cfg.mesh_primary && !cfg.fabric_primary {

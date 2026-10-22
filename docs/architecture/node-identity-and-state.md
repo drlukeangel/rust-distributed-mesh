@@ -303,7 +303,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   own path is opaque (§2).
 - **The mesh's primary node-admin claims the mesh's name and writes its row, at creation and at
   state-commit.** The mesh's first node-admin is its primary (the only candidate of its election),
-  and the mesh-primary keeps that mesh's row in the mesh store: it claims the mesh's name by insert-and-fail on the key
+  and the mesh-primary keeps that mesh's row in the mesh store: it claims the mesh's name at the key
   `(path, name)`, unique within its path, the path opaque (a deployment may name it after the
   fabric, as it names a node's after its mesh; that is its choice, not the key's shape), writes
   the row when the mesh is created (the scratchpad before state-commit, the store after) and
@@ -364,8 +364,8 @@ node in one mesh is a fabric of one mesh.
 - **The first node-admin creates it.** The node-admin that holds both seats, `is_primary` and `is_fabric_primary` (the
   first node of the first mesh), mints the fabric and its mesh together and holds both in memory; the sequence is
   [fabric.create](lifecycles/fabric-create.md).
-- **It is written at Day 0 and at state-commit.** The fabric-primary claims the fabric's name by
-  insert-and-fail on its `(path, name)`, the path opaque, idempotent for the same FabricId and
+- **It is written at Day 0 and at state-commit.** The fabric-primary claims the fabric's name at
+  its `(path, name)`, the path opaque, idempotent for the same FabricId and
   `NameHeld` naming a different one, and writes the fabric's row at Day 0, into the scratchpad, and
   writes it durably to the fabric store when the fabric can first take a write, during fabric
   state-commit once the required system stores are established. See [States](lifecycles/states.md#states). Nothing writes the row again until

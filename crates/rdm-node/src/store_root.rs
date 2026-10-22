@@ -122,9 +122,8 @@ impl StoreRoot {
         &self.dir
     }
 
-    /// Open `<store_dir>/fabrics/`, the fabrics' name index above the per-fabric roots (R-FN1: "The
-    /// fabric's (path, name) claim is an insert-and-fail at the path level, above the per-fabric store
-    /// roots"), written by the process born as `writer`: held in this root's scratchpad until it is
+    /// Open `<store_dir>/fabrics/`, the fabrics' name index above the per-fabric roots (R-FN1, Q109: the
+    /// fabric's (path, name) claim sits at the path level, above the per-fabric store roots), written by the process born as `writer`: held in this root's scratchpad until it is
     /// published, named `fabrics` in the publication, as every store opened on it.
     pub async fn fabric_names(&self, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
         match &self.scratchpad {

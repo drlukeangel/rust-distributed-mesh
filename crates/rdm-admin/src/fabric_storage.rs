@@ -320,25 +320,57 @@ pub async fn seat_transfers(storage: &dyn FabricStorage) -> Result<Vec<SeatTrans
 /// Why a `fabric.storage` read or write failed.
 pub use crate::storage_error::StorageError as FabricStorageError;
 
+/// Claim the fabric's name for `identity.fabric_id` and keep `identity` as the Fabric's identity row
+/// (node-identity-and-state.md §2.8): the writer reads the claim at the fabric's `(path, name)` (R-FN1:
+/// `<store_dir>/fabrics/<name>`) and claims it, then the identity row at the fabric's key (Q109: the
+/// storage decides nothing). A free key takes the row (`Written`); this Fabric's own row there writes
+/// nothing (`Held`); another Fabric holds it: `FabricNameHeld` naming that Fabric, and nothing of this
+/// fabric is written.
+pub async fn claim_identity(storage: &dyn FabricStorage, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
+    let named = match claim_fabric_against(storage.name_claim(&identity.name).await?.as_ref(), identity) {
+        Ok(c) => c,
+        Err(held) => return Ok(Err(held)),
+    };
+    if named == FabricClaim::Written {
+        storage.put_name_claim(identity).await?;
+    }
+    let own = match claim_fabric_against(storage.fabric().await?.as_ref(), identity) {
+        Ok(c) => c,
+        Err(held) => return Ok(Err(held)),
+    };
+    if own == FabricClaim::Written {
+        storage.put_identity(identity).await?;
+    }
+    Ok(Ok(if named == FabricClaim::Written || own == FabricClaim::Written { FabricClaim::Written } else { FabricClaim::Held }))
+}
+
+/// fabric.delete's release of the fabric's name (R-FN1: "a deleted fabric releases it"): the name's
+/// claim goes when it is `identity`'s Fabric's, and another Fabric's claim there is left as it is.
+/// Returns whether it went. The hook s59's fabric.delete calls; nothing else releases a fabric's name.
+pub async fn release_name(storage: &dyn FabricStorage, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
+    if !storage.name_claim(&identity.name).await?.is_some_and(|h| h.fabric_id == identity.fabric_id) {
+        return Ok(false);
+    }
+    storage.remove_name_claim(&identity.name).await?;
+    Ok(true)
+}
+
 /// node-admin's Fabric control state: each kind of row written on its own and never read back to be
 /// written again.
 #[async_trait]
 pub trait FabricStorage: Send + Sync {
     /// The Fabric's identity row; `None` while no identity is held.
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError>;
-    /// Claim the fabric's name for `identity.fabric_id` and keep `identity` as the Fabric's identity row:
-    /// the claim is here, inside the adapter (node-identity-and-state.md §2.8): insert-and-fail on the
-    /// fabric's `(path, name)`, at the path level above the per-fabric roots (R-FN1:
-    /// `<store_dir>/fabrics/<name>`), then the identity row at the fabric's key. A free key takes the
-    /// row (`Written`); this Fabric's own row there is idempotent (`Held`, nothing written); another
-    /// Fabric holds it: `FabricNameHeld` naming that Fabric, and nothing of this fabric is written. A
-    /// held claim is never rewritten.
-    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError>;
-    /// fabric.delete's release of the fabric's name (R-FN1: "a deleted fabric releases it"): the
-    /// name's claim goes when it is `identity`'s Fabric's, and another Fabric's claim there is left as
-    /// it is. Returns whether it went. The hook s59's fabric.delete calls; nothing else releases a
-    /// fabric's name.
-    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError>;
+    /// The claim of the fabric name `name` at the fabric's `(path, name)` (R-FN1:
+    /// `<store_dir>/fabrics/<name>`, above the per-fabric roots): the Fabric that holds it, if any.
+    async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError>;
+    /// Write `identity` as the claim of its name, as given (Q109: storage stores and returns what it is
+    /// given); the claim is the writer's ([`claim_identity`]).
+    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError>;
+    /// Remove the claim of the fabric name `name`.
+    async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError>;
+    /// Write `identity` as the Fabric's identity row, as given.
+    async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError>;
     /// Write `moved`, a row of the fabric's seat-move sequence, at its `t`, as given (Q109: storage
     /// stores and returns what it is given). The writer folded the moves before it
     /// ([`commit_seat_move`]).
@@ -405,25 +437,27 @@ impl FabricStorage for MemoryFabricStorage {
     fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
         let _ = self.seat.set(seat);
     }
-    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-        // The look and the insert are one step under the identity's lock.
-        let mut held = self.identity.lock().unwrap();
-        let claimed = claim_fabric_against(held.as_ref(), identity);
-        if claimed == Ok(FabricClaim::Written) {
-            self.identity_write("identity")?;
-            *held = Some(identity.clone());
-        }
-        Ok(claimed)
+    // The identity slot is this store's claim of the name too: one fabric per memory store.
+    async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        Ok(self.identity.lock().unwrap().clone().filter(|i| i.name == name))
     }
-    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
-        // The identity slot is this store's claim of the name: it goes only when it is this Fabric's.
+    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
+        self.identity_write("name")?;
+        *self.identity.lock().unwrap() = Some(identity.clone());
+        Ok(())
+    }
+    async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
+        self.identity_write("name")?;
         let mut held = self.identity.lock().unwrap();
-        let ours = held.as_ref().is_some_and(|h| h.fabric_id == identity.fabric_id);
-        if ours {
-            self.identity_write("name")?;
+        if held.as_ref().is_some_and(|i| i.name == name) {
             *held = None;
         }
-        Ok(ours)
+        Ok(())
+    }
+    async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
+        self.identity_write("identity")?;
+        *self.identity.lock().unwrap() = Some(identity.clone());
+        Ok(())
     }
     async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError> {
         let mut moves = self.moves.lock().unwrap();
@@ -577,27 +611,17 @@ impl FabricStorage for FileFabricStorage {
             store.set_publish_gate(std::sync::Arc::new(move || slot.open(&writer)));
         }
     }
-    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-        // R-FN1: the fabric's (path, name) claim, an insert-and-fail at `<store_dir>/fabrics/<name>`
-        // above the per-fabric roots, before anything of the fabric is written under its own root.
-        let named = match claimed_insert(&self.names, &identity.name, NAME_FORMAT, identity).await? {
-            Ok(c) => c,
-            Err(held) => return Ok(Err(held)),
-        };
-        // The identity row at the fabric's own key, under its root.
-        let own = match claimed_insert(&self.records, IDENTITY_KEY, IDENTITY_FORMAT, identity).await? {
-            Ok(c) => c,
-            Err(held) => return Ok(Err(held)),
-        };
-        Ok(Ok(if named == FabricClaim::Written || own == FabricClaim::Written { FabricClaim::Written } else { FabricClaim::Held }))
+    async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        self.names.read(name_key(&self.names, name)?, NAME_FORMAT).await
     }
-    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
-        let ours = self.names.read::<FabricIdentity>(&identity.name, NAME_FORMAT).await?.is_some_and(|h| h.fabric_id == identity.fabric_id);
-        if ours {
-            let fabric_id = identity.fabric_id.clone();
-            self.names.remove_released(&identity.name, NAME_FORMAT, move |h: &FabricIdentity| h.fabric_id == fabric_id).await?;
-        }
-        Ok(ours)
+    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
+        self.names.write(name_key(&self.names, &identity.name)?, NAME_FORMAT, identity).await
+    }
+    async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
+        self.names.remove(name_key(&self.names, name)?).await.map(|_| ())
+    }
+    async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
+        self.records.write(IDENTITY_KEY, IDENTITY_FORMAT, identity).await
     }
     async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError> {
         self.moves.put(moved).await
@@ -736,16 +760,12 @@ async fn refuse_retired(dir: &std::path::Path, reason: &str) -> Result<(), Fabri
 }
 
 #[cfg(feature = "file-backend")]
-async fn claimed_insert(records: &crate::record_store::FileRecords, key: &str, format: &str, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-    if key.is_empty() || key.starts_with('.') || key.contains(['/', '\\']) {
-        return Err(FabricStorageError::Io { file: format!("{}/{key}", records.store_name()), reason: format!("the fabric name {key:?} is not one path segment, so it keys no claim of the fabric's name") });
+/// The fabric name `name` as the key of its claim: one path segment, or no key.
+fn name_key<'a>(records: &crate::record_store::FileRecords, name: &'a str) -> Result<&'a str, FabricStorageError> {
+    if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
+        return Err(FabricStorageError::Io { file: format!("{}/{name}", records.store_name()), reason: format!("the fabric name {name:?} is not one path segment, so it keys no claim of the fabric's name") });
     }
-    let claim = identity.clone();
-    if records.insert_claimed(key, format, identity, move |standing| claim_fabric_against(standing, &claim).map(|c| c == FabricClaim::Written).map_err(|held| held.to_string())).await? {
-        return Ok(Ok(FabricClaim::Written));
-    }
-    let held: FabricIdentity = records.read(key, format).await?.ok_or_else(|| FabricStorageError::Io { file: format!("{}/{key}.json", records.store_name()), reason: "the claim's insert met a live key that no read finds".into() })?;
-    Ok(claim_fabric_against(Some(&held), identity))
+    Ok(name)
 }
 
 #[cfg(all(test, feature = "file-backend"))]
@@ -929,7 +949,7 @@ mod tests {
         // The fabric seat holder: no seat record governs this fixture's writer.
         s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
-        assert_eq!(s.claim_identity(&fabric).await.unwrap(), Ok(FabricClaim::Written));
+        assert_eq!(crate::fabric_storage::claim_identity(&s, &fabric).await.unwrap(), Ok(FabricClaim::Written));
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
         std::fs::write(d.join(FABRIC_DIR).join("identity.json"), br#"{"format":"fabric-identity/9","record":{}}"#).unwrap();
@@ -976,34 +996,31 @@ mod tests {
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("00000000000000000010-bld-1.json") && reason.contains("fabric-pointer/1")), "{err}");
     }
 
-    /// CONTRACT (node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name "by
-    /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming
+    /// CONTRACT (node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name "at
+    /// its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming
     /// a different one"): a free key takes the identity; the same Fabric claiming again writes nothing;
     /// another Fabric's claim is refused naming the holder, and the held identity is never rewritten.
     /// The memory store and the file store each run their own check.
     #[tokio::test]
-    async fn the_fabric_name_is_claimed_once_in_the_adapter_for_both_stores() {
+    async fn the_fabric_name_is_claimed_once_by_its_writer_for_both_stores() {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
-            assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Written));
-            assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Held), "the same Fabric claiming again writes nothing");
-            assert_eq!(s.claim_identity(&other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "another Fabric's claim is refused naming the holder");
+            assert_eq!(crate::fabric_storage::claim_identity(&*s, &first).await.unwrap(), Ok(FabricClaim::Written));
+            assert_eq!(crate::fabric_storage::claim_identity(&*s, &first).await.unwrap(), Ok(FabricClaim::Held), "the same Fabric claiming again writes nothing");
+            assert_eq!(crate::fabric_storage::claim_identity(&*s, &other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "another Fabric's claim is refused naming the holder");
             assert_eq!(s.fabric().await.unwrap(), Some(first.clone()), "the held identity is never rewritten");
         }
     }
 
-    /// CONTRACT (R-FN1: "A name is unique per (path, kind) for every entity, the fabric included. The
-    /// fabric's (path, name) claim is an insert-and-fail at the path level, above the per-fabric store
-    /// roots (`<store_dir>/fabrics/<name>`). A second fabric of the same name under that path is refused
-    /// `NameHeld { by }`"; R14 item 1: the per-fabric root is unchanged, the index sits beside it;
+    /// CONTRACT (R-FN1: a name is unique per (path, kind) for every entity, the fabric included; the
+    /// fabric's (path, name) claim sits at the path level, above the per-fabric store roots
+    /// (`<store_dir>/fabrics/<name>`), and a second fabric of the same name under that path is refused
+    /// `NameHeld { by }`; Q109: the writer reads the claim and writes it; R14 item 1: the per-fabric root is unchanged, the index sits beside it;
     /// CLAUDE.md: a refused claim writes nothing of the entity): under one store_dir, fabric A claims
     /// fabric1 and its state-commit publishes the claim. Fabric B, another FabricId with its own root
     /// under the same store_dir, claims fabric1: refused naming A, and nothing of B is written, neither
-    /// at the index nor under B's root, even once B's scratchpad is published. Fabric C claims fabric1
-    /// at once with A, both before their state-commit: C's claim wins against what C sees, and C's
-    /// publication, after A's, decides it again at the index: refused, naming A, the index row A's.
-    /// Must NOT happen: a second fabric of one name under one store_dir taking the name because its
+    /// at the index nor under B's root, even once B's scratchpad is published. Must NOT happen: a second fabric of one name under one store_dir taking the name because its
     /// identity row lives under its own root.
     // @feature: mesh-lifecycle
     #[tokio::test]
@@ -1012,7 +1029,7 @@ mod tests {
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let fabric = |name: &str| FabricIdentity { fabric_id: FabricId::mint(), name: name.into() };
-        let (a, b, c) = (fabric("fabric1"), fabric("fabric1"), fabric("fabric1"));
+        let (a, b) = (fabric("fabric1"), fabric("fabric1"));
         let open = |id: &FabricIdentity| {
             let (store, id) = (store.clone(), id.fabric_id.clone());
             async move {
@@ -1021,9 +1038,8 @@ mod tests {
                 (root, s)
             }
         };
-        let ((root_a, store_a), (root_c, store_c)) = (open(&a).await, open(&c).await);
-        assert_eq!(store_a.claim_identity(&a).await.unwrap(), Ok(FabricClaim::Written), "A claims fabric1");
-        assert_eq!(store_c.claim_identity(&c).await.unwrap(), Ok(FabricClaim::Written), "C claims fabric1 at once with A, before either publishes");
+        let (root_a, store_a) = open(&a).await;
+        assert_eq!(crate::fabric_storage::claim_identity(&store_a, &a).await.unwrap(), Ok(FabricClaim::Written), "A claims fabric1");
         root_a.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
         let (root_b, store_b) = open(&b).await;
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-index");
@@ -1036,9 +1052,6 @@ mod tests {
         let published_b = root_b.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
         assert_eq!(published_b.written(), 0, "nothing of B is written: {published_b:?}");
         assert!(!store.join(b.fabric_id.to_string()).join(FABRIC_DIR).join("identity.json").exists(), "B's identity row is not written under its root");
-        let published_c = root_c.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
-        let summary = published_c.summary();
-        assert!(summary.contains("fabrics refused 1") && summary.contains(&a.fabric_id.to_string()), "C's held claim of fabric1 is refused at its publication, naming A: {summary}");
         let index: serde_json::Value = serde_json::from_slice(&std::fs::read(store.join("fabrics").join("fabric1.json")).expect("the name's index row is on the store_dir")).unwrap();
         assert_eq!(index["record"]["fabric_id"].as_str(), Some(a.fabric_id.to_string().as_str()), "the index row at <store_dir>/fabrics/fabric1 is A's: {index}");
     }
@@ -1054,10 +1067,10 @@ mod tests {
         let d = tempdir();
         for (s, store) in [(Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, "memory"), (Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap()), "file")] {
             let (first, other) = (FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }, FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() });
-            assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Written), "{store}");
-            assert!(!s.release_name(&other).await.unwrap(), "{store}: another Fabric's release of the name is refused");
-            assert_eq!(s.claim_identity(&other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "{store}: the claim stands");
-            assert!(s.release_name(&first).await.unwrap(), "{store}: the holder's release lets the name go");
+            assert_eq!(crate::fabric_storage::claim_identity(&*s, &first).await.unwrap(), Ok(FabricClaim::Written), "{store}");
+            assert!(!crate::fabric_storage::release_name(&*s, &other).await.unwrap(), "{store}: another Fabric's release of the name is refused");
+            assert_eq!(crate::fabric_storage::claim_identity(&*s, &other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "{store}: the claim stands");
+            assert!(crate::fabric_storage::release_name(&*s, &first).await.unwrap(), "{store}: the holder's release lets the name go");
             if store == "file" {
                 assert!(!d.join(crate::store_root::FABRIC_NAMES).join("fabric1.json").exists(), "the index row is removed");
             }

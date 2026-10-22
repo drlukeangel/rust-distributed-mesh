@@ -348,19 +348,19 @@ mod tests {
         };
         let mesh2 = MeshRecord { mesh_id: MeshId::mint(), name: "mesh2".into(), dead: false };
         let identity = FabricIdentity { fabric_id: scope.fabric_id.clone(), name: format!("fabric-{}", scope.fabric_id) };
-        refused(b.meshes.claim_mesh(&mesh2).await.map(drop), "the Mesh row");
-        refused(b.nodes.put_node_row(&row("mesh1.rpc.1")).await.map(drop), "the admin's own mesh's node row");
-        refused(b.nodes.put_node_row(&row("mesh2.rpc.1")).await.map(drop), "another mesh's node row");
+        refused(crate::storage::claim_mesh(&*b.meshes, &mesh2).await.map(drop), "the Mesh row");
+        refused(b.nodes.put_node_row(&row("mesh1.rpc.1")).await, "the admin's own mesh's node row");
+        refused(b.nodes.put_node_row(&row("mesh2.rpc.1")).await, "another mesh's node row");
         refused(b.status.put_node_exit(&exit("mesh1.rpc.1")).await, "the admin's own mesh's status row");
         refused(b.status.put_node_exit_of("mesh2", &exit("mesh2.rpc.1")).await, "another mesh's status row");
-        refused(b.fabric.claim_identity(&identity).await.map(drop), "the Fabric identity");
+        refused(crate::fabric_storage::claim_identity(&*b.fabric, &identity).await.map(drop), "the Fabric identity");
         (b.cut_off_writes)(WriteCutOff::Lift).await;
-        assert!(b.meshes.claim_mesh(&mesh2).await.unwrap().is_ok(), "the Mesh row is written once the cut-off is lifted");
-        assert!(b.nodes.put_node_row(&row("mesh1.rpc.1")).await.unwrap().is_ok(), "the own mesh's node row is written once lifted");
-        assert!(b.nodes.put_node_row(&row("mesh2.rpc.1")).await.unwrap().is_ok(), "another mesh's node row is written once lifted");
+        assert!(crate::storage::claim_mesh(&*b.meshes, &mesh2).await.unwrap().is_ok(), "the Mesh row is written once the cut-off is lifted");
+        assert!(b.nodes.put_node_row(&row("mesh1.rpc.1")).await.is_ok(), "the own mesh's node row is written once lifted");
+        assert!(b.nodes.put_node_row(&row("mesh2.rpc.1")).await.is_ok(), "another mesh's node row is written once lifted");
         b.status.put_node_exit(&exit("mesh1.rpc.1")).await.unwrap();
         b.status.put_node_exit_of("mesh2", &exit("mesh2.rpc.1")).await.unwrap();
-        assert!(b.fabric.claim_identity(&identity).await.unwrap().is_ok(), "the Fabric identity is written once lifted");
+        assert!(crate::fabric_storage::claim_identity(&*b.fabric, &identity).await.unwrap().is_ok(), "the Fabric identity is written once lifted");
     }
 
     /// The same script against any backend that keeps its rows across opens: a birth's runtime rows

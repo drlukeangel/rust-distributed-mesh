@@ -373,8 +373,8 @@ impl<'a> NodeRpc<'a> {
 
     /// `node.name.update` of the exact birth, the caller's single call to the node's mesh-primary
     /// `mesh_primary` (proposal node-properties-own-commands.md §2; R13, R-CR1): `name` is the name
-    /// only, never its path. The mesh-primary validates from its held record, claims the name in its
-    /// store adapter, moves the row, tells a live birth `ApplyNodeName` and answers `NameUpdated` after
+    /// only, never its path. The mesh-primary validates from its held record, claims the name,
+    /// moves the row, tells a live birth `ApplyNodeName` and answers `NameUpdated` after
     /// the birth answered; a stopped birth is told nothing and the call completes on the row. `route`
     /// is the caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward
     /// `0x1A`), executed exactly as chosen (`NodeRpcClient::call_routed`).

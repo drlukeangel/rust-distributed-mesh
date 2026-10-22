@@ -367,7 +367,7 @@ pub enum StatusRequest {
     /// exact birth ([`StatusReply::RejectedStaleIncarnation`]), its own writer role
     /// ([`NotAuthority::ReceiverNotPrimary`]), the node admitting no connection
     /// ([`StatusReply::RejectedAdmittingConnections`]), the name grammar ([`StatusReply::RejectedName`]);
-    /// then it claims the name by insert-and-fail in its store adapter ([`StatusReply::NameHeld`]),
+    /// then it reads the new name's row and claims it ([`StatusReply::NameHeld`]),
     /// moves the row (put at the new key carrying `renamed_from`, release of the old key), sends a live
     /// birth `ApplyNodeName` (a stopped one nothing) and answers [`StatusReply::NameUpdated`]
     /// (`node.name.updated`): for a stopped node after both writes of the move, for a live one after
@@ -1086,8 +1086,8 @@ pub enum StatusReply {
         /// [`MAX_REPORTED_CONNECTIONS`]; empty when it holds no cut of every connection.
         held_connections: Vec<ConnectionId>,
     },
-    /// The `UpdateName` was not made: another node holds the name (insert-and-fail on its key in
-    /// the store adapter). Nothing was written.
+    /// The `UpdateName` was not made: another node holds the name (the row writer read its row).
+    /// Nothing was written.
     NameHeld {
         /// The name claimed.
         name: String,

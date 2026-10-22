@@ -221,12 +221,18 @@ impl FabricStorage for FailingStorage {
         self.check("fabric")?;
         self.inner.fabric().await
     }
-    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-        self.check("claim_identity")?;
-        self.inner.claim_identity(identity).await
+    async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        self.inner.name_claim(name).await
     }
-    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
-        self.inner.release_name(identity).await
+    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
+        self.check("put_name_claim")?;
+        self.inner.put_name_claim(identity).await
+    }
+    async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
+        self.inner.remove_name_claim(name).await
+    }
+    async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
+        self.inner.put_identity(identity).await
     }
     async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError> {
         // The fixture's seeded elections are no handover's commit.
@@ -650,7 +656,7 @@ fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents
     let (trace, (resubmitted, held)) = cap.story("the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents_facts", async {
         let storage: Arc<dyn FabricStorage> = Arc::new(MemoryFabricStorage::new());
         let f = fabric_with(|| storage.clone()).await;
-        storage.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
+        rdm_admin::fabric_storage::claim_identity(&*storage, &FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
         // P accepts B: the Build durable on its own log, where it is the current Build.
         let b = rdm_admin::build::BuildId::mint();
         let (p_log, n_log) = (Arc::new(MemoryBuildStateAdapter::new()), Arc::new(MemoryBuildStateAdapter::new()));
@@ -1811,7 +1817,7 @@ fn a_restore_of_the_mesh_seat_gives_back_the_mesh_rows_and_not_the_fabric_record
         stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
         stores.apply(WriteCutOff::Restore { reason: "mesh1's seat is mesh1.admin.1's again at epoch 5".into(), mesh_seat: true, fabric_seat: false }).await;
         stores.status.put_mesh_status(&MeshStatusRow { mesh_id: MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic }).await.expect("the restored mesh seat writes its mesh's status rows");
-        match stores.fabric.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
+        match rdm_admin::fabric_storage::claim_identity(&*stores.fabric, &FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
             Err(e) => assert!(e.to_string().contains("node.primary.update:b1:1:node.stop:mesh1.admin.1"), "the fabric seat stays cut, naming the transfer: {e}"),
             Ok(claim) => panic!("a Fabric record write while the fabric seat is not this holder's: {claim:?}"),
         }
@@ -2004,14 +2010,14 @@ fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
         let reason = "the fabric-primary seat(s) of mesh1.admin.1 are updating to mesh2 000000000002 by node.fabric-primary.update:b1:mesh.delete:mesh1";
         let mesh_id = MeshId::mint();
         stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: false, fabric_seat: true }).await;
-        match stores.fabric.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
+        match rdm_admin::fabric_storage::claim_identity(&*stores.fabric, &FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
             Err(e) => assert!(e.to_string().contains("node.fabric-primary.update:b1:mesh.delete:mesh1"), "the refusal names the transfer: {e}"),
             Ok(claim) => panic!("a Fabric record write after the fabric seat's cut-off: {claim:?}"),
         }
         stores.status.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Leaving }).await.expect("the holder writes its mesh's Leaving row through the fabric seat's cut-off");
         stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: false, fabric_seat: true }).await;
         stores.status.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.expect("the holder, still mesh1's primary, writes its mesh's status row after the row");
-        stores.mesh.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id, name: "mesh1".into(), dead: true }).await.expect("the holder writes its Mesh row after the row").expect("mesh1 is a free name");
+        rdm_admin::storage::claim_mesh(&*stores.mesh, &rdm_admin::storage::MeshRecord { mesh_id, name: "mesh1".into(), dead: true }).await.expect("the holder writes its Mesh row after the row").expect("mesh1 is a free name");
         let _ = std::fs::remove_dir_all(&d);
     });
 }
@@ -2042,9 +2048,9 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
             fabric: std::sync::Arc::new(rdm_admin::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
             status: std::sync::Arc::new(rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
-        stores.mesh.claim_mesh(&rdm_admin::storage::MeshRecord { mesh_id: rdm_admin::model::MeshId::mint(), name: "mesh1".into(), dead: false }).await.unwrap().unwrap();
+        rdm_admin::storage::claim_mesh(&*stores.mesh, &rdm_admin::storage::MeshRecord { mesh_id: rdm_admin::model::MeshId::mint(), name: "mesh1".into(), dead: false }).await.unwrap().unwrap();
         stores.status.put_mesh_status(&MeshStatusRow { mesh_id: rdm_admin::model::MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic }).await.unwrap();
-        stores.fabric.claim_identity(&rdm_admin::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
+        rdm_admin::fabric_storage::claim_identity(&*stores.fabric, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
         assert!(stores.mesh.mesh("mesh1").await.unwrap().is_some(), "the holder reads the Mesh row it holds");
         let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by node.primary.update:b1:node.stop:mesh1.admin.1";
         stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
@@ -2096,7 +2102,7 @@ fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_pri
         };
         let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
         let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rdm_core::status::MeshState::Dead };
-        stores.nodes.put_node_row(&row).await.unwrap().expect("mesh2.rpc.1 is a free key");
+        stores.nodes.put_node_row(&row).await.unwrap();
         stores.status.put_mesh_status_of("mesh2", &dead).await.unwrap();
         assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), Some(row.clone()), "the holder reads the mesh2 Node row it holds");
         assert!(stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "the holder reads the mesh2 status row it holds");

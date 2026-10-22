@@ -189,7 +189,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     }
     assert!(continued >= 1, "the first attempt continues the request's trace");
     // node-identity-and-state.md §2.7: "The mesh's primary node-admin claims the mesh's name and writes
-    // its row, at creation and at state-commit ... by insert-and-fail on the key `(path, name)`", the
+    // its row, at creation and at state-commit ... at the key `(path, name)`", the
     // same MeshId re-claiming its own name accepted; R13: the fabric-primary writes as the acting
     // primary of a mesh with no primary; CLAUDE.md: the claim is the first durable write of a create,
     // nothing is written for the entity until it wins. mesh1's name is claimed by its Day-0 primary
@@ -220,8 +220,8 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert!(!reclaims.is_empty() && reclaims.iter().all(|c| s(&c["attributes"]["mesh_id"]) == mesh2_id && c["attributes"]["outcome"] == "row-held-by-mesh"), "mesh2's own primary re-claims its name and finds the row the fabric-primary's claim wrote: {reclaims:?}");
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before node.create.via-node-row subject=mesh2.admin.1", s(&m2_claim["trace_id"]));
     assert!(claims.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's claim is refused: {claims:?}");
-    // node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name by insert-and-fail at
-    // Day 0, its first write of the fabric; a later fabric-primary's claim of the same FabricId finds its
+    // node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name at its `(path, name)`
+    // at Day 0, its first write of the fabric; a later fabric-primary's claim of the same FabricId finds its
     // own row and writes nothing.
     let fabric_id = s(&fabric["id"]);
     let fabric_claims = named(&spans, "rdm.node_admin.fabric.create.via-fabric-row");

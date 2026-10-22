@@ -253,7 +253,7 @@ pub use rdm_test::rig::*;
 pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
     let root = rdm_admin::store_root::StoreRoot::at(&store.join(fabric.to_string()));
     let fabric_store = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_core::IncarnationId::mint()).await.expect("the fabric store opens");
-    rdm_admin::fabric_storage::FabricStorage::claim_identity(&fabric_store, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
+    rdm_admin::fabric_storage::claim_identity(&fabric_store, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
 }
 
 /// A launch template for `rafka-rpc-node` whose launcher is `admin`: its seed, its fabric and its
