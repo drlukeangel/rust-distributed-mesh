@@ -54,13 +54,15 @@ and recording it are separate for every type.
    NA2 is mesh-primary NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
    (its own `connections/<node>/` rows are its own, R14).
 5. The primary calls `node.primary.update` on the successor's exact birth. The successor becomes
-   primary: it installs the election's result the call carries in its own topology view and answers
-   `node.primary.updated { revisions }` on that call. A non-admin primary then answers its commander's
-   command. For the `node-admin` type NA2 is the mesh's writer from this moment.
-6. The mesh-primary records the change: `is_primary` (and `is_fabric_primary` when both moved) at the
-   next revision on the successor's row, after the successor's installation is acknowledged. For the
-   `node-admin` type that is NA2 recording its own row; for every other type the mesh-primary records
-   the successor's row on the acknowledgement. The write records the role; it does not grant it.
+   primary: it installs the election's result the call carries in its own topology view, answers
+   `node.primary.updated { revisions }` on that call, and announces the change in its own digest
+   (`is_primary`, and `is_fabric_primary` when both moved, at the next revision). A non-admin primary
+   then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
+   moment.
+6. The mesh-primary records the change it hears: `is_primary` (and `is_fabric_primary`) at the next
+   revision on the successor's row. For the `node-admin` type that is NA2 recording its own row; for
+   every other type the mesh-primary records the successor's row from the successor's digest, the way it
+   records every member fact it hears. The write records the role; it does not grant it.
 7. The mesh-primary publishes "primary updated" with the same identifiers. A late "updating" never undoes
    an "updated": the row's revision, per node type, is these two frames' order key in the one gossip
    receive path (R-RX3); nothing orders inside a handler.
@@ -103,8 +105,9 @@ and recording it are separate for every type.
   same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.
 - **The old primary lost after the update, before "updated":** the successor and every reader take the
-  primary from the election; the successor publishes "updated" as the mesh's writer. Completion needs neither
-  gossip delivery nor the old primary's survival.
+  primary from the election; the successor announces its role in its digest, and the mesh-primary (the
+  successor itself for the `node-admin` type) records it and publishes "updated". Completion needs
+  neither gossip delivery nor the old primary's survival.
 - **Discovery is not installation.** A later attempt that reads the record has discovered the update, not
   installed it. The resuming executor installs from the election locally and obtains the successor's
   `node.primary.updated` (its installation acknowledgement) before it commands the departing primary's
@@ -180,9 +183,9 @@ writer                    pre-check: a ReadyForTraffic successor of the type in 
 mesh-primary → mesh channel, backbone   "primary updating" (operation, node type, both exact births, revisions)
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
-successor                 becomes primary: installs the election's result in its topology view
+successor                 becomes primary: installs the election's result in its topology view; announces it in its digest
   ← node.primary.updated { revisions }   (PrimaryUpdated)
-mesh-primary              records is_primary at the next revision on the successor's row (NA2 its own row), after the acknowledgement
+mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row)
 mesh-primary → mesh channel, backbone   "primary updated" (same identifiers)
 commander's Build continues under the successor
 ```
@@ -204,7 +207,7 @@ sequenceDiagram
     NA1->>G: primary updating
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update
-    Note over NA2: becomes primary: installs the election's result
+    Note over NA2: becomes primary: installs the election's result; announces it in its digest
     NA2-->>NA1: node.primary.updated { revisions }
     Note over NA2: records is_primary on its own row at the next revision
     NA2->>G: primary updated

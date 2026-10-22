@@ -1184,8 +1184,8 @@ pub enum TopologyReply {
     RafkaTime { ms: u64, kind: Option<PrimaryKind> },
 }
 
-// The Mesh row's and the fabric row's primary entry, distinct from the
-// per-type entry of op 0x21.
+// A primary as the topology answers it (the election's result the mesh-primary
+// recorded as is_primary / is_fabric_primary), distinct from the per-type entry of op 0x21.
 pub enum PrimaryKind {
     MeshPrimary,
     FabricPrimary,
@@ -1517,7 +1517,7 @@ shown. Births are exact identities, never names.
 
 ```text
 primary → successor   PrimaryUpdate { primaries: [(node_type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, run, operation }
-successor             writes or reads the Mesh row, installs itself as primary from that revision
+successor             becomes primary: installs the election's result in its topology view and announces it in its digest; the mesh-primary records it afterwards
 successor → primary   PrimaryUpdated { revisions }   (on that call's reply stream)
 ```
 

@@ -286,7 +286,8 @@ No timer expires it.
 backbone: "primary updating" before the successor installs itself, and "primary updated" after the
 successor answers `node.primary.updated`. Each names the operation, the node type, both exact births and
 the revisions. The announcer is the mesh-primary (the successor itself for the `node-admin` type), the
-sole author of member status; a node of another type never publishes its own primary. A primary the
+sole author of member status; a node of another type announces its own primary in its digest, and the
+mesh-primary records it. A primary the
 staleness-floor rule elects is announced the same way, by the same writer steps.
 
 Peer mesh primaries carry them under the forwarding rules, preserving operation and subject. They are
