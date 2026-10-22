@@ -6,7 +6,7 @@ This page owns node identity (the minted id, `endpoint_id`, `path.name`, incarna
 display prefixes), the node, mesh and fabric rows and who writes each, the `NodeState` liveness
 enum, the hydration roster, local eviction and the stopped-node collector. Lifecycle states and
 rounds are [States](lifecycles/states.md#states); each workflow is its page in the
-[lifecycle index](fabric-mesh-node-lifecycles.md); gossip is [gossip.md](gossip.md); seats are
+[lifecycle index](fabric-mesh-node-lifecycles.md); gossip is [gossip.md](gossip.md); the primaries are
 [elections](fabric-node-lifecycle-elections.md).
 
 ---
@@ -120,7 +120,7 @@ a node is its `path.name` (`mesh1.broker.1`), not its minted id or its iroh key.
   projection** (§2.6), which every node already holds in memory when it routes. The
   projection carries a `path.name` index, so a node whose `endpoint_id` moved (§2.3), or a `path.name` a
   new node now holds (§2.3), is reached without a single config changing.
-- **The node owns its name**: it is the authority on the name it publishes, and what it publishes is the row's name. A
+- **The node owns its name**: it is the owner of the name it publishes, and what it publishes is the row's name. A
   member never writes its row merely because it is the subject (§2.5).
 - **A 64-hex `endpoint_id` or a minted node id in a stored reference is a defect** and is refused
   by name at the reader.
@@ -216,7 +216,7 @@ It does not know whether its mesh is the first or the 101st, and it does not car
 "am I first" question anywhere in its boot, because nothing it does depends on the answer.
 
 Its day zero does NOT read `ops.nodes`. At Day 0 the bootstrap admin, as mesh1's primary, claims its
-own name and writes its own row through the create path, the first write of its create. That write is storage authority only: it is never permission to originate a rename of its own row. Every later
+own name and writes its own row through the create path, the first write of its create. That write is a row write only: it is never permission to originate a rename of its own row. Every later
 node-admin's row is written by its mesh's primary. From there the topology grows by two inputs: the
 backbone aggregate of each peer mesh, and node.create calls for its own mesh.
 
@@ -231,7 +231,7 @@ which are there because one of those two put them there.
 | per-heartbeat liveness — `cpu_used`, `ram_used`, reachability | gossip, in memory only | every node, about itself |
 
 In normal operation nothing reads `ops.nodes` back — the mesh-primary holds the record. The store
-is read only to rebuild, after a seat change or a recovery, before anything is written, each
+is read only to rebuild, after a primary change or a recovery, before anything is written, each
 mesh-primary from its own mesh's rows.
 
 A status change — starting → pending → ready-for-traffic → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted — happens on a REAL membership,
@@ -244,7 +244,7 @@ field precisely so the durable half stays distinct from the noisy half.
 
 A mesh-primary takes rafka-time and the fabric-level projections from the fabric-primary when it
 enters the fabric ([node.mesh.join](lifecycles/node-mesh-join.md): the join answer's rafka-time, the
-entry answer's projections) and each time the fabric seat moves.
+entry answer's projections) and each time the fabric-primary changes.
 
 ### 2.6 The projection is `topology-nodes`, and it is fed like any other projection
 
@@ -311,7 +311,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   and writes every status from then on. Held means held by a different MeshId: `NameHeld` names
   that holder. The same MeshId re-claiming its own name, at state-commit, on a retry or from a
   replaced primary, is idempotent and accepted. The fabric-primary does the same for the fabric's
-  row on its own `(path, name)`, at Day 0 and at state-commit, idempotent for the same FabricId. At Day 0 the fabric-primary holds both seats and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
+  row on its own `(path, name)`, at Day 0 and at state-commit, idempotent for the same FabricId. At Day 0 the fabric-primary is its mesh's mesh-primary too and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
   node-admin writes them (a secondary writes none, a WAL reset's rewrite included).
 - **A mesh outage moves no row.** The fabric-primary observes it
   ([mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation)) and never writes the
@@ -319,24 +319,26 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
 - **It carries tags** as its own property (mesh.tags.get / create / delete, the same shape as a node's tags), so an application selector resolves a mesh by tag before it
   submits mesh.delete or any other Build intent.
 
-- **Its lifecycle states and declaring authority are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready-for-traffic" is one filtered read.
+- **Its lifecycle states and who declares each are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready-for-traffic" is one filtered read.
 
-The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`); `Node.mesh_id`
-holds the minted `MeshId`. The mesh's channel is derived from its MeshId and its status is its
-mesh-primary's `MeshStatus`.
+The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`, `primaries`); `Node.mesh_id`
+holds the minted `MeshId`. `primaries` names the mesh-primary and each node-type primary of the mesh, each
+as its exact birth `(node_id, incarnation)` and its `revision`: who is primary is one fact with one
+writer, on this row, written by [node.primary.update](lifecycles/node-primary-update.md). The mesh's channel is
+derived from its MeshId and its status is its mesh-primary's `MeshStatus`.
 
 - **Who mints it.** The Build that creates a mesh's first node-admin mints the mesh id, never
   reissued; the fabric-primary drives that node.create and decides from the accepted topology whether
-  the mesh exists. The mesh-primary, elected like every seat, claims the mesh's name and writes its
+  the mesh exists. The mesh-primary, elected like every primary, claims the mesh's name and writes its
   row. A node-admin that joins a mesh adopts its id. Assignment and recovery are owned by the
   [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm).
-- **The row's author is the current mesh-primary from the canonical LeadershipView.**
-  [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) is the only specification of how that seat is resolved. A node-admin without the current seat may adopt the row but does not author it. When LeadershipView changes, row ownership follows the resolved authority; this document does not define a second overlap, comparator, or successor rule.
-- **The row changes writer with the mesh-primary seat.** A seat moves by its committed seat row
-  ([node.primary.update](lifecycles/node-primary-update.md)) or, on proven loss, by
-  election. Write authority for every row of the mesh, the predecessor's included, moves with it and
+- **The row's author is the current mesh-primary, as the election names it.**
+  [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) is the only specification of how that primary is elected. A node-admin that is not the mesh-primary may adopt the row but does not author it. When the mesh-primary changes, row ownership follows it; this document does not define a second overlap, comparator, or successor rule.
+- **The row changes writer with the mesh-primary.** The mesh-primary changes by its own hand-over
+  ([node.primary.update](lifecycles/node-primary-update.md)) or, unheard past the staleness floor, by
+  election; either way the one write is this row's `primaries`. Every row of the mesh, the predecessor's included, is the successor's to write from then and
   nothing is rewritten; the successor rebuilds from its mesh's rows in the fabric's store before it
-  writes. A node-admin without the seat writes no row.
+  writes. A node-admin that is not the mesh-primary writes no row.
 - **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row once the fabric is
   `state-commit` ([States](lifecycles/states.md#states)), through the mesh rows writer, and every
   node writes its connections rows; each finishes its writes before its state-committed check-in. Before then
@@ -356,20 +358,23 @@ mesh-primary's `MeshStatus`.
 store root; Rafka binds it to its `<system_org>.ops.fabrics`). A fabric exists from the first node: one
 node in one mesh is a fabric of one mesh.
 
-- **Its row** is `FabricIdentity` (`rdm-admin/src/fabric_storage.rs`: `fabric_id`, `name`); its status is the
-  fabric-primary's `FabricStatus` frame. It carries no pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
+- **Its row** is `FabricIdentity` (`rdm-admin/src/fabric_storage.rs`: `fabric_id`, `name`, `primary_mesh`); its status is the
+  fabric-primary's `FabricStatus` frame. `primary_mesh` names the mesh whose mesh-primary is the fabric-primary: the
+  mesh-primary and the fabric-primary move together, and this field changes only when the fabric-primary leaves its
+  mesh ([node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate),
+  [fabric recovery](lifecycles/fabric-recovery.md)). It carries no pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 - **Its id is minted** (bare Crockford internally, displayed `fab_xxxx-xxxx-xxxx`). Its path is `""`, the root every
   mesh and node sits under, so its path.name is its name. A row that names the fabric it belongs to carries that id in
   a field named `fabric`; `endpoint_id` is a node's routing key (§2) and never names a fabric.
-- **The first node-admin creates it.** The node-admin that holds both seats, `is_primary` and `is_fabric_primary` (the
+- **The first node-admin creates it.** The node-admin that is both mesh-primary and fabric-primary, `is_primary` and `is_fabric_primary` (the
   first node of the first mesh), mints the fabric and its mesh together and holds both in memory; the sequence is
   [fabric.create](lifecycles/fabric-create.md).
 - **It is written at Day 0 and at state-commit.** The fabric-primary claims the fabric's name at
   its `(path, name)`, the path opaque, idempotent for the same FabricId and
   `NameHeld` naming a different one, and writes the fabric's row at Day 0, into the scratchpad, and
   writes it durably to the fabric store when the fabric can first take a write, during fabric
-  state-commit once the required system stores are established. See [States](lifecycles/states.md#states). Nothing writes the row again until
-  [fabric.delete](lifecycles/fabric-delete.md).
+  state-commit once the required system stores are established. See [States](lifecycles/states.md#states). After that the row is written
+  only when the fabric-primary leaves its mesh (`primary_mesh`), and at [fabric.delete](lifecycles/fabric-delete.md).
 - **Every node holds it through gossip.** The fabric row lives in `topology-nodes` (§2.6), filled from gossip only;
   no node hydrates it from the broker. node-admin's spawn records (`spawned_meta`) carry the fabric each spawned node
   belongs to, as they carry its mesh.
@@ -580,14 +585,14 @@ selects candidates and submits ordinary Builds.
 | Selection | Every node stopped longer than the ttl, except a birth an open Build still references (a replace mid-transfer keeps its rollback point) |
 | Action | One ordinary node.delete Build per selected node, one at a time: one topology Build runs at a time, so the other candidates wait for the next sweep; a `BuildInProgress` refusal loses nothing, the candidate is seen again. The sweep itself deletes nothing |
 | Recheck | The stopped and open-Build checks run again at the delete Build's admission, serialized with it: a node started or referenced by a new Build after the scan is refused there, never deleted from a stale decision |
-| Effect | The delete's own: provider exit proof, row deleted, name released, NodeDeleted in the aggregate, deleted retention, Gone |
+| Effect | The delete's own: row deleted, name released, NodeDeleted in the aggregate, deleted retention, Gone |
 | Wire | Nothing. No frame gains a field; the age lives in the receipt |
 | Span | `rdm.node_admin.node.delete.via-stopped-ttl` with node, stopped_at, ttl, build_id |
 
 ## 7. node-admin — who drives a node's lifecycle
 
 node-admin is a full mesh participant (`Role::Admin`) and a backbone subscriber. Its launch and
-start modes are [node-admin-lifecycle.md](node-admin-lifecycle.md), the seats it holds are
+start modes are [node-admin-lifecycle.md](node-admin-lifecycle.md), whether it is a primary is
 [elections](fabric-node-lifecycle-elections.md), the frames it publishes are
 [gossip.md §3.1](gossip.md#31-frame-catalog), and the node workflows it executes as a Build step are
 the [typed node objects](node-rpc-envelope.md#typed-object-contract).
@@ -615,7 +620,7 @@ A node-admin is created, restarted, replaced and deleted like any node
 ([node create](lifecycles/node-create.md), [node restart](lifecycles/node-restart.md),
 [node replace](lifecycles/node-replace.md), [node delete](lifecycles/node-delete.md)); its launch,
 start modes and replacement rules are [node-admin-lifecycle.md](node-admin-lifecycle.md), and its
-seats move as [elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover-r-a2--r-st2)
+the fabric-primary moves as [elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover)
 defines.
 
 - **The shape is the accepted Build's.** A mesh may run N node-admins for HA; scaling up never
@@ -645,8 +650,8 @@ A silent member is its mesh-primary's
 [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
 
 **What a mesh-primary records of a silent member** is its status rows: the `PendingReconnect` and
-`Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the `held-running`,
-`os-stopped`, `data-dir-lost` and `data-dir-unreadable` facts and the exit-proof row
+`Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the `data-dir-lost` and
+`data-dir-unreadable` facts
 ([node recovery](lifecycles/node-recovery.md), [deployment provider](deployment-provider.md) §2.5),
 each a typed keyed row written and removed by the mesh-primary and revalidated by a successor's own
 inspection. An application's own record of an outage and the work it owes on a return (Rafka's
@@ -659,10 +664,10 @@ new-format binaries refuses at the record header's checksum on the first read �
 failure, and the reason a durable format move takes the mesh down and deploys it again rather
 than replacing members in place.
 
-### 7.4 Fabric-primary authority
+### 7.4 The fabric-primary writes topology
 
-Fabric-primary and mesh-primary seats are [elections](fabric-node-lifecycle-elections.md); the
-resolved fabric-primary alone accepts a Fabric topology change
+The fabric-primary and each mesh-primary are [elections](fabric-node-lifecycle-elections.md); the
+elected fabric-primary alone accepts a Fabric topology change
 ([build.md](build.md)).
 
 ## 8. Connections are a kept log, and routing reads them
