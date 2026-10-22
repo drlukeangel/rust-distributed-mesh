@@ -283,15 +283,15 @@ No timer expires it.
 #### Primary update announcements
 
 [node.primary.update](lifecycles/node-primary-update.md) has two announcements on the mesh channel and the
-backbone: "primary updating" before the writer writes the Mesh row, and "primary updated" after the
+backbone: "primary updating" before the successor installs itself, and "primary updated" after the
 successor answers `node.primary.updated`. Each names the operation, the node type, both exact births and
 the revisions. The announcer is the mesh-primary (the successor itself for the `node-admin` type), the
 sole author of member status; a node of another type never publishes its own primary. A primary the
 staleness-floor rule elects is announced the same way, by the same writer steps.
 
 Peer mesh primaries carry them under the forwarding rules, preserving operation and subject. They are
-announcements, never the fact: the Mesh row is the fact, and a node that hears an announcement installs
-nothing until the row names the revision. A late "updating" never undoes an "updated": the row's
+announcements, never the fact: the election's result is the fact and the row records it, and a node
+that hears an announcement installs nothing until "updated" names the revision. A late "updating" never undoes an "updated": the row's
 revision, per node type, is their order key in the one gossip receive path
 (R-RX3). They are best-effort dissemination, and a stop does not wait for their delivery (R-NS2).
 

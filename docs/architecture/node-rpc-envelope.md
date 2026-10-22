@@ -359,8 +359,8 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its members' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
-| `is_primary` | the Mesh row's primaries | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
-| `is_fabric_primary` | the fabric row's mesh and the Mesh row | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
+| `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
+| `is_fabric_primary` | the election's result, recorded by the node-admin on its own row | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
 | connections | — (data plane, never a property) | `node.connections.delete { All \| [ids] }` | — | `node.connections.deleted` |
 
 `node.get` answers the whole node. Nothing above is PATCH: a rename replaces the name, a tag command adds or removes whole labels on their own rows, a config update replaces the whole map, and each runs once through the one writer.
@@ -1296,8 +1296,8 @@ REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
 
 The fabric-primary accepts **every** Build and drives every topology Build: it claims each topology attempt through its claim door, then calls the executor named by
-`executor_for`. A drift attempt of the current Build inside a mesh (a node recovery) is opened, claimed and run by that mesh's primary, with no call to the fabric-primary, which learns it from the Build channel. The executor validates and records the won claim through
-`adopt_claim`; it does not claim or pick up work autonomously from a projection.
+`executor_for`. A drift attempt of the current Build inside a mesh (a node recovery) is run by that mesh's primary, which claims it through the fabric-primary ([BuildClaim](#buildclaim-op-0x1c-rdm)) and reports its receipts up the attempt's stream; the fabric-primary writes every Build record. The executor validates and adopts the won claim through
+`adopt_claim`; it does not claim or pick up work autonomously from a projection, and it persists nothing of the Build.
 A call covers one contiguous run of operations with the same executor, in plan
 order. Mesh creation and deletion, plus members of any mesh with no mesh-primary,
 run in process at the fabric-primary and feed the same outer stream
@@ -1314,7 +1314,7 @@ never a defect and never a new execution (Node RPC §34, §43).
 | Frame / outcome | Meaning |
 |---|---|
 | Started { build_id, attempt, disposition } | accepted Build identity on the outer stream |
-| Step, the durable step-outcome frame | emitted on the inner and outer progress path only after its receipt is durable on the executor that wrote it |
+| Step, the durable step-outcome frame | emitted on the inner and outer progress path only after the fabric-primary has recorded its receipt |
 | Complete | terminal success; completed step receipts are read and replayed, never executed again |
 | Failed { step, reason } | terminal named failure; nothing follows it on that stream |
 | Blocked { step, reason } | nonterminal hook blocker, emitted on a new blocker or reason change, never on a timer; replay the current blocker on reattach if still blocked. Its only source is the subject's [Status `Blocked`](#status-op-0x1b-rdm) reply to the executor's ProbeNodeState |
@@ -1331,13 +1331,13 @@ recovery evidence through the existing publication path.
 
 Resubmission by build_id never creates a second Build. The fabric-primary answers:
 completed → AlreadyApplied with terminal frame; running with a live executor → that
-executor's stream through build.attempt.run reattachment; failed or an executor node
-investigation did not reach → the next attempt. A successor uses the Build projection as its recovery
+executor's stream through build.attempt.run reattachment; failed, or node investigation's
+verdict on the executor anything but reached → the next attempt. A successor uses the Build projection as its recovery
 source. If the fabric-primary dies after claiming but before dispatch, its
 successor dispatches the still-current claimed work; a live executor is reattached,
 not replaced merely because the fabric-primary changed. It plans from accepted intent and observed topology and never reruns a
-caller-visible step with a Complete receipt. Executor departure proof, never
-silence, is required before claiming the next attempt for its successor.
+caller-visible step with a Complete receipt. Node investigation's verdict on the executor, never
+silence alone and never a proof of its exit, opens the next attempt for its successor.
 
 ### Refusals, fencing and bounds
 
@@ -1521,9 +1521,10 @@ successor             writes or reads the Mesh row, installs itself as primary f
 successor → primary   PrimaryUpdated { revisions }   (on that call's reply stream)
 ```
 
-`primaries` carries the row's content, one entry or two: the fabric-primary is a second entry,
-node type `fabric`. For the `node-admin` type the successor writes the row on this call; for every other
-type the row is already written when the call is made. The receiver refuses only:
+`primaries` carries the election's result the successor installs, one entry or two: the fabric-primary
+is a second entry, node type `fabric`. For the `node-admin` type the successor records its own row on
+this call; for every other type the mesh-primary recorded the row before its command. The receiver
+refuses only:
 
 - RejectedConflictingPayload: the same operation with different content; the row decides;
 - `fabric-not-ready`: before the initial fabric first reached ready-for-traffic.
@@ -1532,7 +1533,7 @@ There is no RejectedWrongBirth (R-UC1a, R-RX5: a receiver never refuses a call f
 names), no RejectedStaleRevision and no RejectedNotEligible on the receiver: eligibility is the writer's
 pre-check before the row.
 
-`operation` identifies one update and names its row (the Mesh row's or the fabric row's write that carries it)
+`operation` identifies one update
 by (build_id, run): `node.primary.update:<build_id>:<run>:<op>`. The run is the first attempt of the series a
 submission opened: a resume continues it and replays that run's row; a resubmit after Failed opens a new run,
 so a new transfer.
@@ -1544,13 +1545,12 @@ or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when i
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
-The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own mesh first), with `TakeOverFabricPrimary { fabric, lost: { mesh, node_id, incarnation }, expected_revision, successor, proposer }`. The winner, when its own view names it, writes its row once (the Mesh row in the lost mesh's own arm, the fabric row from the backbone, [fabric recovery](lifecycles/fabric-recovery.md)) and answers `PrimaryUpdated { revisions }`. A repeat for the same takeover and successor answers `AlreadyApplied { revisions }` (`ALREADY_EXISTS`); a proposal naming another winner is `RejectedNotPrimary`, one at a revision the row no longer holds `RejectedStaleRevision`; a store that cannot write answers `RejectedSourceFailed`, and the step fails by name.
+The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): an admin that holds the fabric-primary unheard past the staleness floor calls the winner elections §4.3 names (the fabric-primary's own mesh first), with `TakeOverFabricPrimary { fabric, lost: { mesh, node_id, incarnation }, expected_revision, successor, proposer }`. The winner, when its own view names it, is fabric-primary (with the mesh-primary in the lost mesh's own arm, [fabric recovery](lifecycles/fabric-recovery.md)), records it on its own row, and answers `PrimaryUpdated { revisions }`. A repeat for the same takeover and successor answers `AlreadyApplied { revisions }` (`ALREADY_EXISTS`); a proposal naming another winner is `RejectedNotPrimary`, one at a revision the row no longer holds `RejectedStaleRevision`; a store that cannot write answers `RejectedSourceFailed`, and the step fails by name.
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is
 RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: it retries the
-identical call, and the row resolves uncertainty. A row naming the successor is the result and
-the successor installs it; no row means the update never happened.
+identical call, and the election resolves uncertainty.
 
 The primary's full digest
 carries `admin_api_base`, the application contact URL including its bound port. Consumers

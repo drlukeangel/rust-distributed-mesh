@@ -50,7 +50,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    ReadyForTraffic.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin
    `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
-   writes the mesh row (naming itself its primary), publishes `primary updated` and its mesh's status
+   writes the mesh row and records `is_primary` on its own row, publishes `primary updated` and its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every

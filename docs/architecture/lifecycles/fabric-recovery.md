@@ -22,8 +22,8 @@ back. Only two things vary: when the row is written, and which node-admin the on
 names ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): the lowest
 ReadyForTraffic node-admin of the fabric-primary's own mesh while it has one, else the lowest
 ReadyForTraffic mesh-primary on the backbone. The mesh-primary and the fabric-primary move together: the
-fabric-primary is the mesh-primary of one mesh, and the fabric row names that mesh
-([the fabric row](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)).
+fabric-primary is the mesh-primary of one mesh, an explicit property of that node-admin
+(`is_fabric_primary`, [node.primary.update](node-primary-update.md)).
 They are separated in one case only: no node-admin of that mesh is available to the backbone. Then the
 mesh-primary of another mesh is fabric-primary temporarily, stays mesh-primary of its own mesh, and
 re-creates the lost mesh's node-admins; the fabric-primary returns to that mesh with the node at the lost
@@ -36,19 +36,19 @@ primary's path.name as its mesh-primary (step 4).
    writer's steps of [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate):
    "primary updating", the row at the next revision, "primary updated". Any other admin that notices
    tells the successor; the successor acts only when its own view agrees; repeats answer `AlreadyApplied`.
-   - *Its own mesh*: the successor writes the Mesh row naming itself mesh-primary at the first tick after
-     the mark, once the Mesh row has named the unheard primary for one staleness floor in its own book: a
-     row learned after a heal names a primary whose silence in this admin's book began before the row
-     did. The fabric row names its mesh, so that one write makes it fabric-primary too. It needs no probe
+   - *Its own mesh*: the successor is mesh-primary and fabric-primary at the first tick after the mark,
+     once the record has named the unheard primary for one staleness floor in its own book: a record
+     learned after a heal names a primary whose silence in this admin's book began before the record
+     did. It records both on its own row as the mesh's writer. It needs no probe
      to know it is alive, and it publishes the mesh's aggregate as its primary within one backbone interval.
    - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its aggregate stops, so it runs
      [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
      node-admins. An answer from any of them ends the investigation and the fabric-primary stays in that
      mesh. No answer from any of them by the decision step is the backbone rule, and the lowest
-     ReadyForTraffic mesh-primary writes the fabric row naming its own mesh.
+     ReadyForTraffic mesh-primary is fabric-primary and records it on its own row.
 3. **The successor is fabric-primary above the lost one**, and the standing playbook runs downward from
-   it: [node investigation](node-recovery.md) decides (Q111). Reached, by its digest or its tickle, the
-   lost birth is commanded back through [node.mesh.join](node-mesh-join.md) and runs its start sequence,
+   it: [node investigation](node-investigation.md) decides (Q111). Reached, by the investigation's answer
+   from the exact birth and nothing else, the lost birth is commanded back through [node.mesh.join](node-mesh-join.md) and runs its start sequence,
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path.name
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
@@ -58,14 +58,15 @@ primary's path.name as its mesh-primary (step 4).
 4. **The fabric-primary goes home.** Once the node at the lost fabric-primary's path.name, returned or
    re-created, has been ReadyForTraffic for one staleness floor, it is handed back, and the mesh-primary
    with it. In its own mesh, the successor runs [node.primary.update](node-primary-update.md) to that
-   node: one Mesh row write names it mesh-primary, and the fabric row, naming that mesh, makes it
-   fabric-primary. From the backbone, the re-created node-admin first takes mesh-primary of its mesh by
-   node.primary.update (its Mesh row named a birth that is gone), then the temporary fabric-primary's
-   hand-back writes the fabric row naming that mesh. The hand-back runs as an attempt of the current
-   accepted Build, keyed `handback:<path.name>@<T>`, and does not declare the returning node lost. The
-   fabric-primary returns only that way. The fabric's shared store root and the fabric-primary's data dir
-   stay where they were, and the fabric resolves to a fabric-primary at the original path.name with the
-   original endpoint key.
+   node, which becomes mesh-primary and fabric-primary and records both on its own row. From the
+   backbone, the re-created node-admin first becomes mesh-primary of its mesh by the election (the
+   recorded primary is a birth that is gone) and records it; then the temporary fabric-primary's
+   hand-back, `node.fabric-primary.update` to it, makes it fabric-primary and each records its own row.
+   The hand-back runs as an attempt of the current accepted Build, keyed `handback:<path.name>@<T>`, and
+   does not declare the returning node lost. The fabric-primary returns only that way. The fabric's shared
+   store root stays where it was. The fabric resolves to a fabric-primary at the original path.name over
+   the original data dir and endpoint key when the investigation's provider step found the old runtime
+   exited, and over a newly allocated data dir and endpoint key otherwise (R-FM2).
 
 | from the fabric-primary's last frame | default (floor 30 s) | gate (floor 3 s) |
 |---|---|---|

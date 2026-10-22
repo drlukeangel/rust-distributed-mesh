@@ -65,13 +65,12 @@ line that would need one is listed in §6 as his call.
 **The pages now say it.** The sequence, the storage beneath it and the recovery are on the pages, in
 the terms, and this page points at them rather than restating them:
 
-- who is primary, the one write, the writer, and the fabric-primary's own update:
-  [node-primary-update.md](../../architecture/lifecycles/node-primary-update.md) (the Mesh row names the
-  mesh's primaries; the fabric row names the mesh whose mesh-primary is the fabric-primary; the successor
-  writes for the `node-admin` type, the mesh-primary for every other; `is_primary` and
-  `is_fabric_primary` are projections);
-- the rows and their fields: [node-identity-and-state.md §2.7 and §2.8](../../architecture/node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)
-  (`MeshRecord.primaries`, `FabricIdentity.primary_mesh`);
+- who is primary is the election's result; the write records the role and does not grant it; the
+  mesh-primary records `is_primary` on the node's row (NA2 its own, as the mesh's writer from the moment it
+  is mesh-primary) and `is_fabric_primary` on a node-admin's own row; a broker-primary writes nothing:
+  [node-primary-update.md](../../architecture/lifecycles/node-primary-update.md);
+- the rows and their writers, unchanged in shape (`MeshRecord` and `FabricIdentity` immutable in this):
+  [node-identity-and-state.md §2.7 and §2.8](../../architecture/node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it);
 - the election, a heard primary kept, the staleness-floor rule, the hand-over:
   [fabric-node-lifecycle-elections.md](../../architecture/fabric-node-lifecycle-elections.md);
 - the loss of the fabric-primary, the combined move, the one backbone exception and the hand-back as an
@@ -223,9 +222,10 @@ follows the pages, in this order, each landing with the cells that prove the ope
    stream. Q113 withdrawn. `build-fact/1` under the durable-format rule.
 3. `authorizes()` and the cut-off view out, with their 18 callers and 9 cells, and a before-and-after
    flame, since it is gossip code.
-4. seat, authority and cohort out of the code: the Mesh row's `primaries` and the fabric row's
-   `primary_mesh` replace the seat-move log (`seat-move/1` retired under the durable-format rule, its
-   decoding kept), the wire and durable items of §4.2 renamed as the envelope page now names them.
+4. seat, authority and cohort out of the code: the election's result, recorded as `is_primary` and
+   `is_fabric_primary` on node rows by the mesh-primary, replaces the seat-move log (`seat-move/1` retired
+   under the durable-format rule, its decoding kept); the wire and durable items of §4.2 renamed as the
+   envelope page now names them.
 5. Q110's machinery out (§8): the exit proof as a condition, the hung hold, the held-running and exit
    rows, and the sticky file whole.
 

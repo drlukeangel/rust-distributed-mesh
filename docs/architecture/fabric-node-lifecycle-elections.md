@@ -3,7 +3,7 @@
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
 This page owns the leadership election for the fabric-primary, each mesh-primary and each node-type
-primary: the one rule, its inputs (the Mesh row, the fabric row and the current member facts), the
+primary: the one rule, its inputs (the recorded primaries and the current member facts), the
 staleness-floor rule, and the hand-over by [node.primary.update](lifecycles/node-primary-update.md).
 Other pages consume the elected primary and link here.
 
@@ -17,20 +17,20 @@ elected primaries.
 There are no election ballots, terms, coordinator messages, quorum votes, or incumbent leases.
 
 ~~~text
-the Mesh row's primary + current candidate facts
+the recorded primary (`is_primary` on the node rows) + current candidate facts
     -> the primary stays primary while it is heard
     -> unheard past the staleness floor, or no primary: eligible candidates of that type in that mesh
     -> lowest complete NodeId
     -> the elected primary
 ~~~
 
-Equal candidate facts and equal rows produce equal winners. Every primary moves in two ways only: it
+Equal candidate facts and equal records produce equal winners. Every primary moves in two ways only: it
 hands over by [node.primary.update](lifecycles/node-primary-update.md) (`node.fabric-primary.update` for the
 fabric-primary), or it is unheard past the staleness floor and is superseded by the rule above (Q107 (1),
 Q89). Nothing else moves a primary, and nothing waits for proof of anything (Q111).
 
-A published `is_primary` or `is_fabric_primary` bit is a projection of this result and of the rows it is
-written on. It never makes a primary by advertisement.
+A published or recorded `is_primary` or `is_fabric_primary` bit is a projection of this result. It
+never makes a primary by advertisement or by a write: the write records the role.
 
 A peer mesh that goes unheard may temporarily produce different local candidate sets. A failed RPC, a
 failed dial, gossip silence or an unheard peer mesh does not itself say what happened to a candidate and
@@ -61,8 +61,8 @@ Ready time is not priority.
 
 ## 3. Election key
 
-A primary stays primary while it is heard. The Mesh row's entry for it — its exact birth `(mesh,
-node_id, incarnation)` and its revision — is an election input: it is gossiped when a primary changes
+A primary stays primary while it is heard. Its record — its exact birth `(mesh, node_id, incarnation)`
+and its revision, `is_primary` on its row — is an election input: it is gossiped when a primary changes
 and handed to a joiner in its entry. When the primary is unheard past the staleness floor, or there is
 none, the winner among eligible candidates is the **lowest complete canonical NodeId**.
 
@@ -97,13 +97,13 @@ replacement does not inherit election rank.
 
 For the nodes of every type in every mesh, the one election applies the same eligibility/key rule. A
 node's type is its `node_type` field ([node identity](node-identity-and-state.md)), never its name. That
-type's primary in that mesh is the node-type primary, and that node's `is_primary`; the Mesh row names
-it.
+type's primary in that mesh is the node-type primary, and that node's `is_primary`, which the
+mesh-primary records on its row.
 
 Ordinary nodes publish current facts. They do not author election outcomes.
 
 A primary unheard past the staleness floor is superseded by the lowest ReadyForTraffic node of its type
-in its mesh, which writes the Mesh row at the next revision ([node.primary.update](lifecycles/node-primary-update.md)).
+in its mesh; the mesh-primary announces and records it ([node.primary.update](lifecycles/node-primary-update.md)).
 The mesh-primary then runs [node investigation](lifecycles/node-recovery.md) on the unheard node, whatever
 its type, and that verdict decides what becomes of it (Q111): reached, it is commanded back as a member;
 anything else, it is re-created.
@@ -118,8 +118,8 @@ There is no second mesh-primary election. The mesh-primary writes the mesh's row
 
 ### 4.3 Fabric primary
 
-The fabric-primary is the mesh-primary of one mesh: the fabric row names that mesh
-([node.primary.update](lifecycles/node-primary-update.md)). The mesh-primary and the fabric-primary move
+The fabric-primary is the mesh-primary of one mesh, an explicit property of that node-admin
+(`is_fabric_primary`, [node.primary.update](lifecycles/node-primary-update.md)). The mesh-primary and the fabric-primary move
 together, under the same rule: lowest complete NodeId, a heard primary kept.
 
 ~~~text
@@ -130,18 +130,18 @@ ReadyForTraffic node-admins of the fabric-primary's mesh
 
 There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric-primary stays
 in its mesh while that mesh has a Ready node-admin: when it hands over or is unheard past the staleness
-floor, the lowest ReadyForTraffic node-admin NodeId of the same mesh takes both (Q89), by one Mesh row
-write; if only Pending admins survive it waits. The fabric-primary leaves the mesh in one case only: no
+floor, the lowest ReadyForTraffic node-admin NodeId of the same mesh takes both (Q89) and records both
+on its own row; if only Pending admins survive it waits. The fabric-primary leaves the mesh in one case only: no
 node-admin of the mesh answers [mesh investigation](lifecycles/mesh-investigation.md)'s ladder by its
-decision step. Then the lowest ReadyForTraffic mesh-primary on the backbone writes the fabric row naming
-its own mesh, stays mesh-primary of its own mesh, and is fabric-primary temporarily
+decision step. Then the lowest ReadyForTraffic mesh-primary on the backbone is fabric-primary
+temporarily, records it on its own row, and stays mesh-primary of its own mesh
 ([fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)).
 It re-creates the lost mesh's node-admins (mesh investigation's fully-crashed arm, run by it): over the
 inherited data dir when the investigation's provider step found the old runtime exited, otherwise over a
 newly allocated data dir with a new endpoint key, `inherited = false` ([node recovery](lifecycles/node-recovery.md),
 R-FM2). Once the node at the lost fabric-primary's path.name, returned or re-created, has been Ready for
 one staleness floor and is its mesh's mesh-primary, the temporary fabric-primary hands back by
-`node.fabric-primary.update`, one fabric row write naming that mesh. The fabric-primary returns only that
+`node.fabric-primary.update`, and each records its own row. The fabric-primary returns only that
 way.
 
 Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
@@ -250,7 +250,7 @@ that a candidate is gone.
 6. The fabric-primary is a mesh-primary; its candidates are its mesh's node-admins, else the
    mesh-primaries on the backbone.
 7. Primary advertisements are projections, never a fact of their own.
-8. Equal candidate sets and equal rows yield equal winners.
+8. Equal candidate sets and equal records produce equal winners.
 9. Day 0 uses the ordinary rule.
 10. Restart preserves NodeId; permanent logical replacement does not.
 11. Election movement never changes accepted topology or mints a Build.
@@ -287,9 +287,9 @@ fn elect<'a>(primary: Option<&Primary>, candidates: &'a [Node]) -> Option<&'a No
 Exact Rust names may differ. The contract does not:
 
 ~~~text
-the Mesh row's primary, heard -> that primary
-the Mesh row's primary, not yet heard -> it waits
-vacant (handed over, unheard past the floor, or no row)
+the recorded primary, heard -> that primary
+the recorded primary, not yet heard -> it waits
+vacant (handed over, unheard past the floor, or no record)
        -> current ReadyForTraffic candidates of that type in that mesh
        -> lowest complete NodeId
        -> one elected primary

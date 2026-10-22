@@ -321,11 +321,12 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
 
 - **Its lifecycle states and who declares each are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready-for-traffic" is one filtered read.
 
-The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`, `primaries`); `Node.mesh_id`
-holds the minted `MeshId`. `primaries` names the mesh-primary and each node-type primary of the mesh, each
-as its exact birth `(node_id, incarnation)` and its `revision`: who is primary is one fact with one
-writer, on this row, written by [node.primary.update](lifecycles/node-primary-update.md). The mesh's channel is
-derived from its MeshId and its status is its mesh-primary's `MeshStatus`.
+The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`); `Node.mesh_id`
+holds the minted `MeshId`. The mesh's channel is derived from its MeshId and its status is its
+mesh-primary's `MeshStatus`. Who is primary in the mesh is the [election](fabric-node-lifecycle-elections.md)'s
+result; the mesh-primary records it as `is_primary` on each node's row and `is_fabric_primary` on its
+own, at the primary's `revision` ([node.primary.update](lifecycles/node-primary-update.md)); the write
+records the role and does not grant it.
 
 - **Who mints it.** The Build that creates a mesh's first node-admin mints the mesh id, never
   reissued; the fabric-primary drives that node.create and decides from the accepted topology whether
@@ -336,7 +337,8 @@ derived from its MeshId and its status is its mesh-primary's `MeshStatus`.
   [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) is the only specification of how that primary is elected. A node-admin that is not the mesh-primary may adopt the row but does not author it. When the mesh-primary changes, row ownership follows it; this document does not define a second overlap, comparator, or successor rule.
 - **The row changes writer with the mesh-primary.** The mesh-primary changes by its own hand-over
   ([node.primary.update](lifecycles/node-primary-update.md)) or, unheard past the staleness floor, by
-  election; either way the one write is this row's `primaries`. Every row of the mesh, the predecessor's included, is the successor's to write from then and
+  election; either way the successor is the mesh's writer from the moment it is mesh-primary and records
+  its own row. Every row of the mesh, the predecessor's included, is the successor's to write from then and
   nothing is rewritten; the successor rebuilds from its mesh's rows in the fabric's store before it
   writes. A node-admin that is not the mesh-primary writes no row.
 - **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row once the fabric is
@@ -358,11 +360,9 @@ derived from its MeshId and its status is its mesh-primary's `MeshStatus`.
 store root; Rafka binds it to its `<system_org>.ops.fabrics`). A fabric exists from the first node: one
 node in one mesh is a fabric of one mesh.
 
-- **Its row** is `FabricIdentity` (`rdm-admin/src/fabric_storage.rs`: `fabric_id`, `name`, `primary_mesh`); its status is the
-  fabric-primary's `FabricStatus` frame. `primary_mesh` names the mesh whose mesh-primary is the fabric-primary: the
-  mesh-primary and the fabric-primary move together, and this field changes only when the fabric-primary leaves its
-  mesh ([node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate),
-  [fabric recovery](lifecycles/fabric-recovery.md)). It carries no pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
+- **Its row** is `FabricIdentity` (`rdm-admin/src/fabric_storage.rs`: `fabric_id`, `name`), immutable; its status is the
+  fabric-primary's `FabricStatus` frame. Which node-admin is fabric-primary is the election's result, recorded as
+  `is_fabric_primary` on that node-admin's own row, never on this one. It carries no pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 - **Its id is minted** (bare Crockford internally, displayed `fab_xxxx-xxxx-xxxx`). Its path is `""`, the root every
   mesh and node sits under, so its path.name is its name. A row that names the fabric it belongs to carries that id in
   a field named `fabric`; `endpoint_id` is a node's routing key (§2) and never names a fabric.
@@ -373,8 +373,8 @@ node in one mesh is a fabric of one mesh.
   its `(path, name)`, the path opaque, idempotent for the same FabricId and
   `NameHeld` naming a different one, and writes the fabric's row at Day 0, into the scratchpad, and
   writes it durably to the fabric store when the fabric can first take a write, during fabric
-  state-commit once the required system stores are established. See [States](lifecycles/states.md#states). After that the row is written
-  only when the fabric-primary leaves its mesh (`primary_mesh`), and at [fabric.delete](lifecycles/fabric-delete.md).
+  state-commit once the required system stores are established. See [States](lifecycles/states.md#states). Nothing writes the row again until
+  [fabric.delete](lifecycles/fabric-delete.md).
 - **Every node holds it through gossip.** The fabric row lives in `topology-nodes` (§2.6), filled from gossip only;
   no node hydrates it from the broker. node-admin's spawn records (`spawned_meta`) carry the fabric each spawned node
   belongs to, as they carry its mesh.

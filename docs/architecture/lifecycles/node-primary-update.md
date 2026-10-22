@@ -9,30 +9,28 @@ down: the fabric-primary commands a mesh-primary, and a mesh-primary commands th
 mesh's other node types. No node commands its own primary. A stop, delete, restart, replace or
 `node.connections.delete { scope: All }` of a primary runs it first.
 
-Who is primary is one fact with one writer, on one row
-([the Mesh row](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it),
-[the fabric row](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)):
-
-- the Mesh row (`meshes/<mesh>`) names the mesh-primary and each node-type primary of that mesh, each as
-  its exact birth `(node_id, incarnation)` and its `revision`;
-- the fabric row (`fabric/`) names the mesh whose mesh-primary is the fabric-primary. The mesh-primary
-  and the fabric-primary move together: a same-mesh update of the mesh-primary is one Mesh row write and
-  the fabric row does not change. They are separated in one case only, no node-admin of that mesh being
-  available to the backbone ([fabric recovery](fabric-recovery.md)), or under mesh.delete of that mesh
-  ([below](#the-fabric-primary-nodefabric-primaryupdate)).
-
-`is_primary` and `is_fabric_primary` are projections of those rows, never written on a node row.
+Who is primary is the [election](../fabric-node-lifecycle-elections.md)'s result, computed by every
+node-admin from the facts it holds. Becoming primary and recording it are separate: the successor
+installs itself from the election and the mesh-primary announces the change; the mesh-primary, as the
+one writer of its mesh's rows ([node-identity-and-state.md §2.7](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)),
+records it as `is_primary` on the node's row, and as `is_fabric_primary` on a node-admin's own row for the
+fabric-primary. **The write records the role; it does not grant it.** The mesh-primary and the
+fabric-primary move together: a same-mesh successor becomes both, and records both on its own row. They
+are separated in one case only, no node-admin of that mesh being available to the backbone
+([fabric recovery](fabric-recovery.md)), or under mesh.delete of that mesh
+([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
+seat row, no move log, nothing to fold.
 
 ## Operation contract
 
 | Field | Contract |
 |---|---|
 | Commander | Above the primary: the fabric-primary for a mesh-primary, the mesh-primary for every other node type of its mesh. The mesh-primary owns its nodes always: a command the fabric-primary originates for one of them reaches it as a forwarded command through the mesh-primary, never directly |
-| Writer | For the `node-admin` type the successor writes the Mesh row naming itself, since it is that row's writer from then; for every other type the mesh-primary writes it (Q107 (1)). One writer per row, never two |
+| Writer | The mesh-primary records the change on the node's row: for the `node-admin` type that is the successor, NA2, which is the mesh's writer from the moment it is mesh-primary and records its own row (Q107 (1)); for every other type the mesh-primary records the node's row. A broker-primary writes nothing |
 | The primary | Makes the `node.primary.update` call on its successor's exact birth |
 | Roles | For the `node-admin` type the primary is the mesh-primary and the commander is the fabric-primary; the successor writes. For any other type the mesh-primary is commander and writer, and the primary only makes the call |
-| The row | The one Mesh row write at the next revision, naming the successor. Before the row nothing has changed; after it the successor is primary and the ordinary rules apply. There is no path back |
-| Both primaries | When the mesh-primary is also the fabric-primary and the successor is in the same mesh, the one Mesh row write makes the successor both, the fabric row unchanged |
+| The record | `is_primary` (and `is_fabric_primary`) at the next revision on the successor's row, written by the mesh-primary after the successor installed itself. The record follows the role; it never makes it. There is no path back |
+| Both primaries | When the mesh-primary is also the fabric-primary and the successor is in the same mesh, the successor becomes both and records both on its own row |
 | Precondition | Before the initial fabric first reaches ready-for-traffic, every call is refused `fabric-not-ready` ([States](states.md#fabric-not-ready)) |
 | Completion | `node.primary.updated { revisions }`, answered by the successor on the primary's call; `node.fabric-primary.updated` for the fabric-primary |
 | Wire | [PrimaryUpdate / PrimaryUpdated on 0x21](../node-rpc-envelope.md#primaryupdate-op-0x21-rdm) |
@@ -52,17 +50,18 @@ the call of step 6. For the `node-admin` type the primary is commanded first and
    nothing has changed, no row ([no-successor cases](#no-successor-cases)).
 3. The mesh-primary, as sole author of member status, publishes "primary updating": operation, node type,
    the primary's and the successor's exact births, the current and next revisions. It states intent
-   only; receivers keep the current primary until the row names the next revision.
-4. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): from
-   NA2's row NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
+   only; receivers keep the current primary until "primary updated" names the next revision.
+4. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): once
+   NA2 is mesh-primary NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
    (its own `connections/<node>/` rows are its own, R14).
-5. The writer writes the one Mesh row at the next revision naming the successor. For the `node-admin`
-   type this is NA2, on NA1's call of step 6; for every other type it is the mesh-primary, before its
-   command. From this write the successor is primary and the old primary is not.
+5. The successor becomes primary: for a non-admin type the mesh-primary installs the change in its
+   topology view and records `is_primary` at the next revision on the successor's row, before its command;
+   for the `node-admin` type this happens on NA1's call of step 6.
 6. The primary calls `node.primary.update` on the successor's exact birth. The successor installs itself
-   as primary (for the `node-admin` type by writing the row, step 5; for every other type by reading the
-   row the call carries) and answers `node.primary.updated { revisions }` on that call. A non-admin
-   primary then answers its commander's command.
+   as primary from the election's result the call carries (for the `node-admin` type NA2 is the mesh's
+   writer from here and records `is_primary`, and `is_fabric_primary` when both move, on its own row at
+   the next revision) and answers `node.primary.updated { revisions }` on that call. A non-admin primary
+   then answers its commander's command.
 7. The mesh-primary publishes "primary updated" with the same identifiers. A late "updating" never undoes
    an "updated": the row's revision, per node type, is these two frames' order key in the one gossip
    receive path (R-RX3); nothing orders inside a handler.
@@ -74,24 +73,24 @@ the call of step 6. For the `node-admin` type the primary is commanded first and
 
 - **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by
   name, nothing changed, the Build's step fails by name.
-- **The row write fails** (step 5). The row is a local write, temp file, fsync, rename (R14's fs
-  contract), and it answers a named error or succeeds. A named error is a confirmed non-write: the step
-  fails by name naming the error, and the old primary is primary under the unchanged revision. The one
-  uncertain case is the writer dying before the rename; it resolves it itself on restart by reading the
-  row (written: the successor is primary; absent: the old primary is, under the unchanged revision).
-- **After the row, the successor is primary whatever the call returns.** The receiver never refuses the
+- **The record's write fails** (step 5 or 6). The row is a local write, temp file, fsync, rename
+  (R14's fs contract), and it answers a named error or succeeds. The role is the election's, not the
+  write's: a named error fails the step by name, the successor stays what the election names it, and
+  the mesh-primary records the row on its next write. A writer dying before the rename changes nothing:
+  on restart it reads its rows, computes the election from what it holds and records what is missing.
+- **After the successor installed itself, it is primary whatever the call returns.** The receiver never refuses the
   call for the birth it names (R-UC1a, R-RX5); it installs from the row and answers, and whether it is
   primary is a projection of the row against its own birth. A call that reached a process other than the
   named birth, a refusal or no answer decides nothing about the successor's birth (R-SW1: a failed probe
   never proves anything). The call fails by name, and [node investigation](node-recovery.md) on the
   successor's exact birth decides (Q111): reached, the call is retried against it; any other verdict, the
   successor is re-created and the ordinary election names the primary by the staleness-floor rule, the
-  old primary included. No row is rewritten by this step.
-- **The successor is unheard after the row.** When node investigation's verdict is anything but reached,
-  the step fails by name, `the successor is unheard after the row: <verdict>`, and the Build is Failed
-  (R-BI4). The ordinary election then names whoever it names, the old primary included: the lowest
-  ReadyForTraffic node of that type in the mesh writes the Mesh row at the next revision first and
-  publishes "primary updated" second. The successor's node goes through
+  old primary included.
+- **The successor is unheard after the update.** When node investigation's verdict is anything but
+  reached, the step fails by name, `the successor is unheard after the update: <verdict>`, and the Build
+  is Failed (R-BI4). The ordinary election then names whoever it names, the old primary included: the
+  lowest ReadyForTraffic node of that type in the mesh is primary, "primary updated" is published and the
+  mesh-primary records it. The successor's node goes through
   [node recovery](node-recovery.md) like any unheard member. A caller's resubmit opens a new run, so a
   new update under its own key, which excludes the old primary.
 - **The commanded arm.** When a node.primary.update the fabric-primary commanded ends, the old primary
@@ -100,14 +99,14 @@ the call of step 6. For the `node-admin` type the primary is commanded first and
   reason's text. The reason records the step, the successor's node id and incarnation, the revisions the
   row moved, who the ordinary election named, and the investigation's verdict on the successor. The
   fabric-primary claims the attempt at the claim door before it commands.
-- **Indeterminate after the row:** the row resolves it. An identical retry of the call replays the
-  written result before any revision check; a call with a conflicting payload for the same operation is
+- **Indeterminate after the update:** the election resolves it. An identical retry of the call replays the
+  same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.
-- **The old primary lost after the row, before "updated":** the successor and every reader take the
-  primary from the row; the next writer to read the row publishes "updated". Completion needs neither
+- **The old primary lost after the update, before "updated":** the successor and every reader take the
+  primary from the election; the successor publishes "updated" as the mesh's writer. Completion needs neither
   gossip delivery nor the old primary's survival.
-- **Discovery is not installation.** A later attempt that reads the row has discovered the update, not
-  installed it. The resuming executor installs from the row locally and obtains the successor's
+- **Discovery is not installation.** A later attempt that reads the record has discovered the update, not
+  installed it. The resuming executor installs from the election locally and obtains the successor's
   `node.primary.updated` (its installation acknowledgement) before it commands the departing primary's
   destructive step. A successor node investigation found unheard is handled above.
 - The workflow continues only after the result is installed and acknowledged: `node.primary.updated`
@@ -136,7 +135,8 @@ the call of step 6. For the `node-admin` type the primary is commanded first and
 ## The fabric-primary: node.fabric-primary.update
 
 The fabric-primary is its own property, projected as `is_fabric_primary` (never a settable field: a
-published bit is a projection of the fabric row and the Mesh row), with its own op,
+published bit is a projection of the election's result, recorded on the node-admin's own row by itself
+as its mesh's writer), with its own op,
 `node.fabric-primary.update`. It runs the same sequence through the same primitive and completes as
 `node.fabric-primary.updated` (never `node.primary.updated`, which is the mesh-primary's), the
 fabric-primary (a mesh-primary by definition) as caller, its commander being the workflow that stops,
@@ -164,11 +164,13 @@ floor, the fabric-primary waits while only Pending admins of its mesh survive, a
 when no node-admin of the mesh is available to the backbone ([fabric recovery](fabric-recovery.md)). The
 search above is for the commanded transfer only.
 
-**The row.** A successor in the same mesh (search step 1): the one Mesh row write names it mesh-primary,
-and the fabric row, naming that mesh, makes it fabric-primary at the same boundary. A successor in
-another mesh (search step 2): the fabric-primary writes the fabric row once, naming the successor's
-mesh; under mesh.delete the departing mesh's mesh-primary stays mesh-primary until its own node.delete.
-No other row records the move; every reader reads the Mesh row and the fabric row and folds nothing.
+**The record.** A successor in the same mesh (search step 1) becomes mesh-primary and fabric-primary
+at the same boundary and records both on its own row. A successor in another mesh (search step 2)
+becomes fabric-primary and records `is_fabric_primary` on its own row, as its mesh's writer; the
+departing fabric-primary records its own row with it cleared, and under mesh.delete stays mesh-primary
+until its own node.delete. The fabric row (`fabric/`) is the fabric's identity and never changes for
+this. No other record exists; every reader computes the election from the facts it holds and folds
+nothing.
 
 ## Command, completion and gossip messages
 
@@ -178,13 +180,13 @@ writer                    pre-check: a ReadyForTraffic successor of the type in 
 mesh-primary → mesh channel, backbone   "primary updating" (operation, node type, both exact births, revisions)
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
-writer                    the one Mesh row at the next revision (the successor for the node-admin type, on this call; the mesh-primary otherwise, before its command)
+successor                 installs itself from the election; the mesh-primary records is_primary at the next revision (NA2 on its own row, on this call; the mesh-primary on the node's row otherwise, before its command)
   ← node.primary.updated { revisions }   (PrimaryUpdated)
 mesh-primary → mesh channel, backbone   "primary updated" (same identifiers)
 commander's Build continues under the successor
 ```
 
-"Primary updating" and "primary updated" are announcements, never the fact: the Mesh row is the fact.
+"Primary updating" and "primary updated" are announcements, never the fact: the election's result is the fact, and the row records it.
 They are best-effort dissemination, and a stop does not wait for their delivery (R-NS2): the
 mesh-primary publishes a written fact as its author.
 
@@ -201,7 +203,7 @@ sequenceDiagram
     NA1->>G: primary updating
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update
-    Note over NA2: the one Mesh row at the next revision, naming NA2
+    Note over NA2: installs itself from the election; records is_primary on its own row at the next revision
     NA2-->>NA1: node.primary.updated { revisions }
     NA2->>G: primary updated
     Note over FP,NA2: the Build continues; NA2 commands NA1's destructive step
@@ -212,4 +214,4 @@ sequenceDiagram
 Trace propagation, step spans and correlation follow the
 [runtime spans](../node-rpc-envelope.md#runtime-spans). The update's spans carry the operation, the node
 type, both exact births and the revisions: the "primary updating" and "primary updated" announcements,
-the Mesh row's write, the successor's install, and every refusal by its typed reason.
+the record's write, the successor's install, and every refusal by its typed reason.
