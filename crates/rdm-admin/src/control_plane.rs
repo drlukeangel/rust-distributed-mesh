@@ -294,7 +294,7 @@ impl ControlPlane {
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt could not be ended: the mesh stays held by it"));
             return Err(Refusal::State(e));
         }
-        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string(), lane_key: None };
+        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string() };
         if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
@@ -781,7 +781,7 @@ impl ControlPlane {
             let open = open.filter(|_| lane.is_some());
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
-            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), lane_key: None };
+            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string() };
             let standing = match self.claims.in_flight(&path.mesh).await {
                 Ok(standing) => standing.filter(|held| !held.same_attempt(&row)),
                 Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),

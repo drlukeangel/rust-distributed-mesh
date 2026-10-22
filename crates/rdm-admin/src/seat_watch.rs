@@ -86,11 +86,6 @@ pub fn mesh_seat_record(mesh: &str, record: Option<&SeatHolder>, me: &Birth, los
     seat_record(&format!("mesh {mesh}'s primary seat record"), record, me, lost, name_of)
 }
 
-/// The seat a Build lane is written under (Q28: "`N` is the committed fabric seat revision the
-/// writer holds"), from the lane's seat `record`: the record's revision, 0 when none is held.
-pub fn lane_seat(record: Option<&SeatHolder>) -> crate::build_state::LaneSeat {
-    crate::build_state::LaneSeat { revision: record.map(|h| h.revision).unwrap_or(0) }
-}
 
 fn seat_record(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {

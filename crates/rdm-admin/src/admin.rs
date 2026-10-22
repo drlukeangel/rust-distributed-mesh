@@ -691,9 +691,6 @@ mod tests {
         async fn release_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<(), crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
         }
-        async fn repoint_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<(), crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
-        }
         async fn in_flight(&self, mesh: &str) -> Result<Option<crate::mesh_claims::InFlight>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
         }

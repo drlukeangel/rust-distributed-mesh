@@ -860,28 +860,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 records.set_me(node_id.clone());
                 {
                     if inherited.is_some() {
-                        // Recovery on an inherited root (fabric-recovery.md): load the existing Build journal once
-                        // before locking `journal` to `membership.book.seats`, so `builds_dyn.current()` during boot
-                        // (before the hierarchy loop seats this birth) holds the accepted Build and preserves stored MeshIds.
+                        // Recovery on an inherited root (fabric-recovery.md): read the Build journal once
+                        // before this admin reads it only as the fabric-primary, so `builds_dyn.current()`
+                        // during boot holds the accepted Build and preserves stored MeshIds.
                         let _ = journal.current_build().await;
                     }
-                    let seat_for_holds = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
-                    // One fact gets one source (R-BI6): the seat record held in `membership.book.seats`.
-                    let holds_fabric = Arc::new(move || matches!((seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
-                    let mesh_seat_for_holds = mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh);
-                    let holds_mesh = Arc::new(move || matches!((mesh_seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
-                    // Each lane is written under the revision of its seat's record this birth holds
-                    // (Q28, Q35): the fabric seat's for `fabric/builds/`, a mesh's primary seat's for
-                    // `meshes/<mesh>/builds/`.
-                    let (lane_book, lane_records) = (membership.book.clone(), records.clone());
-                    let revisions: crate::build_state::LaneRevisions = Arc::new(move |lane: &crate::build_state::LaneId| {
-                        let incumbency = incumbency_of(&lane_book, &lane_records);
-                        match lane {
-                            crate::build_state::LaneId::Fabric => crate::seat_watch::lane_seat(incumbency.fabric.as_ref()),
-                            crate::build_state::LaneId::Mesh(m) => crate::seat_watch::lane_seat(incumbency.meshes.get(m)),
-                        }
-                    });
-                    journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions });
+                    let fabric_primary = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
+                    journal.read_while_fabric_primary(Arc::new(move || matches!((fabric_primary.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })));
                 }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
                 // seat change.

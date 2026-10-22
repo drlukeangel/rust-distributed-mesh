@@ -31,10 +31,6 @@ pub struct InFlight {
     pub attempt: u32,
     /// The admin that claimed it (a node-admin's path.name): the holder a refusal names.
     pub claimant: String,
-    /// The lane key of the attempt's claim (Q35, `crate::build_state::LaneKey`): the row is void when
-    /// that key holds another entry. `None` for rows held in one process, where no lane is keyed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lane_key: Option<String>,
 }
 
 impl InFlight {
@@ -59,7 +55,7 @@ mod tests {
     use crate::storage::MeshStorage;
 
     fn attempt(build_id: &BuildId, lane: Option<&str>, attempt: u32, claimant: &str) -> InFlight {
-        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into(), lane_key: None }
+        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into() }
     }
 
     /// The same script against two claimants: whatever backs them, one attempt holds a mesh at a time.

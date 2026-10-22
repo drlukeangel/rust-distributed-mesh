@@ -112,7 +112,7 @@ impl StorageBackend for FileBackend {
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
-        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.own_mesh, &scope.writer).await.map_err(|e| e.to_string())?);
+        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.writer).await.map_err(|e| e.to_string())?);
         let status = Arc::new(crate::status_storage::FileStatusStorage::open(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
         let finish_writes: FinishWrites = {
             let (meshes, nodes, fabric, status) = (meshes.clone(), nodes.clone(), fabric.clone(), status.clone());
@@ -173,7 +173,7 @@ impl StorageBackend for MemoryBackend {
             nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
             status: Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh(&scope.own_mesh)),
             connections,
-            builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::of_mesh(&scope.own_mesh)),
+            builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             // Nothing is held for a later publication: the embedding's actions alone, or none.
             round_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_rounds::NoScratchpad)),
             finish_writes,

@@ -100,8 +100,8 @@ impl rdm_admin::build_state::LocalBuildLog for Refuses {
     async fn attempt_context(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, rdm_admin::storage_error::StorageError> {
         self.inner.attempt_context(build_id, lane, attempt).await
     }
-    fn hold_seats(&self, seats: rdm_admin::build_state::JournalSeats) {
-        self.inner.hold_seats(seats)
+    fn read_while_fabric_primary(&self, fabric_primary: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) {
+        self.inner.read_while_fabric_primary(fabric_primary)
     }
 }
 

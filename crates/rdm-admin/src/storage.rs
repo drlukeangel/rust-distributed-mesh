@@ -154,12 +154,6 @@ pub trait MeshStorage: Send + Sync {
     /// is the admin that durably recorded the verdict (the seat that holds the attempt's lane), so no
     /// two releases of one row race.
     async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError>;
-    /// Point `mesh`'s in-flight row, standing for `row`'s attempt, at `row`'s lane key when it names
-    /// another (Q35: the row names its claim's lane key): the standing row goes while it is that exact
-    /// row, and `row` is inserted. Nothing when the row names `row`'s key already or another attempt.
-    /// A row another attempt inserts between the two is refused by name: this attempt holds the mesh
-    /// no more.
-    async fn repoint_in_flight(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError>;
     /// The attempt holding `mesh`, when one does: a point read of its in-flight row.
     async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError>;
 }
@@ -199,13 +193,6 @@ impl MeshStorage for MemoryMeshStorage {
         let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         if rows.get(mesh).is_some_and(|held| held.same_attempt(attempt)) {
             rows.remove(mesh);
-        }
-        Ok(())
-    }
-    async fn repoint_in_flight(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError> {
-        let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(held) = rows.get_mut(mesh).filter(|h| h.same_attempt(row)) {
-            held.lane_key = row.lane_key.clone();
         }
         Ok(())
     }
@@ -308,19 +295,6 @@ impl MeshStorage for FileMeshStorage {
         }
         let attempt = attempt.clone();
         store.remove_released::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT, move |held| held.same_attempt(&attempt)).await
-    }
-    async fn repoint_in_flight(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError> {
-        let store = self.claims_of(mesh).await?;
-        let Some(standing) = store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await?.filter(|h| h.same_attempt(row) && h.lane_key != row.lane_key) else { return Ok(()) };
-        let exact = standing.clone();
-        store.remove_released::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT, move |held| *held == exact).await?;
-        if store.insert(IN_FLIGHT, IN_FLIGHT_FORMAT, row).await? {
-            return Ok(());
-        }
-        Err(StorageError::Io {
-            file: format!("{}/{IN_FLIGHT}.json", store.store_name()),
-            reason: format!("mesh {mesh}'s in-flight row for attempt {} of {} was moved from lane key {} to {} and another attempt took the mesh between the two: this attempt holds it no more", row.attempt, row.build_id, standing.lane_key.as_deref().unwrap_or("none"), row.lane_key.as_deref().unwrap_or("none")),
-        })
     }
     async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
         self.claims_of(mesh).await?.read(IN_FLIGHT, IN_FLIGHT_FORMAT).await

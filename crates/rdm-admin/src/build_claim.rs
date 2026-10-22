@@ -131,7 +131,7 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
         detail = tracing::field::Empty,
     );
     let reply = async {
-        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()), lane_key: None };
+        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()) };
         let decided = match builds.claim_in_flight(claim, claims, mesh, &row).await {
             Ok(InFlightClaim::Held(held)) => return rdm_core::reply::build_claim::build_in_progress(held.build_id.to_string(), mesh.to_string(), Some(held.claimant)),
             Ok(InFlightClaim::Decided(outcome)) => Ok(outcome),
