@@ -265,7 +265,7 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
     std::fs::create_dir(&store).unwrap();
     let control = store.join(".qualification");
     std::fs::create_dir(&control).unwrap();
-    let probe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("rafka-store-root-probe{}", std::env::consts::EXE_SUFFIX));
+    let probe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("rdm-store-root-probe{}", std::env::consts::EXE_SUFFIX));
     assert!(probe.is_file(), "the workspace build must supply {}", probe.display());
     let mut a = launch(&p, &fabric, 0);
     let mut b = launch(&p, &fabric, 1);

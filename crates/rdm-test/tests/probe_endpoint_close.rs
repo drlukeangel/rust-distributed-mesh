@@ -17,7 +17,7 @@ fn root_span_or_named_loss(evidence: &std::path::Path, stderr: &str) {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rafka-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl")))
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rdm-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl")))
         .collect();
     let spans: String = files.iter().map(|p| std::fs::read_to_string(p).unwrap_or_default()).collect();
     if spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
@@ -42,7 +42,7 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
     let evidence = std::env::temp_dir().join(format!("rdm-probe-close-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let ghost = NodeId::mint().to_string();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))
         .args(["--admin-birth", &admin.birth_arg(), "put", "--target", &format!("exact:{ghost}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.1"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
@@ -70,7 +70,7 @@ fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
     let (rt, admin) = serve_on_own_runtime(vec![node("mesh1.broker.1", &present, Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-close-carrier-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))
         .args(["--admin-birth", &admin.birth_arg(), "put", "--target", &format!("exact:{present}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.9"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()

@@ -1,5 +1,5 @@
 //! i143.e6.s7 process E2E: a node declares its lifecycle state to its authority over Node RPC,
-//! from public surfaces (`node.get` at the authority, `rafka-rpc-probe`'s `declare` oracle on the
+//! from public surfaces (`node.get` at the authority, `rdm-rpc-probe`'s `declare` oracle on the
 //! node) and the estate's span evidence only.
 //!
 //! 0. Born ready, every rpc node declares `ReadyForTraffic` to its mesh-primary by itself

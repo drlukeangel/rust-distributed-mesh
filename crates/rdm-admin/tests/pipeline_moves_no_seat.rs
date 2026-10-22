@@ -107,7 +107,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-node-admin".into(),
+            executable: "/nonexistent/rdm-node-admin".into(),
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: "mesh2.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

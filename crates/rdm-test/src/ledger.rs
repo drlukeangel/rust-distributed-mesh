@@ -89,7 +89,7 @@ impl Classification {
 }
 
 impl Classification {
-    /// The classification of an outcome as `rafka-rpc-probe` prints it (`{"outcome": ..}`): the
+    /// The classification of an outcome as `rdm-rpc-probe` prints it (`{"outcome": ..}`): the
     /// probe is the typed `RpcOutcome` rendered to one JSON line, so the bucket is the outcome's
     /// own name and the detail is the same typed reason text [`Self::of`] renders. A `Reply` is a
     /// success when the proof store applied or answered the request; a compare-and-swap mismatch
@@ -268,7 +268,7 @@ impl Ledger {
         self.classify_as(id, Classification::of(outcome))
     }
 
-    /// Classify an issued operation from the outcome line `rafka-rpc-probe` printed
+    /// Classify an issued operation from the outcome line `rdm-rpc-probe` printed
     /// ([`Classification::of_probe`]), once. A line that is not a typed outcome leaves the
     /// operation unclassified, which [`Self::reconcile`] names.
     pub fn classify_probe(&mut self, id: OperationId, out: &Value) -> Result<(), String> {

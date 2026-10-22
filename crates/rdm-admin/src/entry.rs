@@ -1,5 +1,5 @@
 //! The node-admin process entry: what every executable that IS a node-admin runs. The shipped
-//! `rafka-node-admin` and a consumer's own node-admin executable are this call under their own
+//! `rdm-node-admin` and a consumer's own node-admin executable are this call under their own
 //! service name.
 
 use crate::admin::{start_on, AdminConfig};

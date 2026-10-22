@@ -94,7 +94,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     std::fs::create_dir_all(&dir).unwrap();
     let (mut estate, nodes) = estate(cell).await;
     let target = format!("exact:{}", node_id(&nodes, MEMBER));
-    let t0 = rafka_test_scenario_now();
+    let t0 = rdm_test_scenario_now();
 
     let all = estate.probe(&["topology", "--target", &target]);
     assert_eq!(all["outcome"], "Reply", "{all}");
@@ -163,7 +163,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     .unwrap();
 }
 
-fn rafka_test_scenario_now() -> u64 {
+fn rdm_test_scenario_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
 }
 

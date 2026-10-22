@@ -37,8 +37,8 @@ rdm-node = { path = "../rdm-node", default-features = false }
 rdm-client = { path = "../rdm-client" }
 
 [[bin]]
-name = "rafka-node-admin"
-path = "src/bin/rafka_node_admin.rs"
+name = "rdm-node-admin"
+path = "src/bin/rdm_node_admin.rs"
 required-features = ["file-backend"]
 
 [dev-dependencies]

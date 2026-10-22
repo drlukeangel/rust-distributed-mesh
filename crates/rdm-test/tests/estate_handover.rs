@@ -57,7 +57,7 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     let root = estate_root(TEST);
     std::fs::create_dir_all(estate_store_dir(&root)).unwrap();
     let _scope = EstateScope::begin(&root);
-    let mut child = Command::new(binary("rafka-node-admin"))
+    let mut child = Command::new(binary("rdm-node-admin"))
         .envs([
             ("MESH_SPAWN_TYPE", "process".to_string()),
             ("RDM_FABRIC", "fabric1".into()),

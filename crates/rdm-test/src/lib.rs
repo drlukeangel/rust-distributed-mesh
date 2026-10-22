@@ -28,7 +28,7 @@ pub mod test_app;
 pub mod rig;
 pub mod channel_member;
 
-// ── Scenario & Replay Harness (from former rafka-test-scenario) ──
+// ── Scenario & Replay Harness (from former rdm-test-scenario) ──
 #[allow(missing_docs)]
 pub mod canary;
 #[allow(missing_docs)]
@@ -241,7 +241,7 @@ impl Oracles {
     }
 }
 
-/// The one proof-node executable's run (`rafka-node`).
+/// The one proof-node executable's run (`rdm-node`).
 pub async fn run_proof_launched() -> anyhow::Result<()> {
     run_proof(Role::of(&read_launch()?)).await
 }

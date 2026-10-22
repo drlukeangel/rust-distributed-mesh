@@ -248,9 +248,9 @@ impl AdminRunner {
             // node is the testkit's proof node: the proof protocols on top of the node runtime.
             None => {
                 let name = match kind {
-                    NodeKind::NodeAdmin => "rafka-node-admin",
-                    NodeKind::RpcNode => "rafka-rpc-node",
-                    _ => "rafka-node",
+                    NodeKind::NodeAdmin => "rdm-node-admin",
+                    NodeKind::RpcNode => "rdm-rpc-node",
+                    _ => "rdm-node",
                 };
                 self.bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
             }

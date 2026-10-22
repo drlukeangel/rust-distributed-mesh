@@ -1,4 +1,4 @@
-//! `rafka-rpc-node`: the generic RPC proof node a node-admin deploys.
+//! `rdm-rpc-node`: the generic RPC proof node a node-admin deploys.
 //! All configuration is the launch environment.
 
 use rdm_test::launch::Launch;
@@ -9,11 +9,11 @@ use std::sync::Arc;
 async fn main() {
     // A stop that arrives while the node boots is heard from here on.
     node::listen_for_stop();
-    let telemetry = rdm_transport::init_evidence_telemetry("rafka-rpc-node");
+    let telemetry = rdm_transport::init_evidence_telemetry("rdm-rpc-node");
     let launch = match Launch::from_env(|k| std::env::var(k).ok()) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("rafka-rpc-node: refusing to start: {e}");
+            eprintln!("rdm-rpc-node: refusing to start: {e}");
             drop(telemetry);
             std::process::exit(2);
         }
@@ -39,7 +39,7 @@ async fn main() {
         Ok(s) => Arc::new(s),
         Err(e) => {
             boot.in_scope(|| tracing::error!(error = %e, "the proof store refused to open"));
-            eprintln!("rafka-rpc-node: proof store: {e}");
+            eprintln!("rdm-rpc-node: proof store: {e}");
             drop(telemetry);
             std::process::exit(3);
         }
@@ -74,7 +74,7 @@ async fn main() {
             Ok(r) => r,
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
-                eprintln!("rafka-rpc-node: {e:#}");
+                eprintln!("rdm-rpc-node: {e:#}");
                 drop(telemetry);
                 std::process::exit(3);
             }
@@ -92,7 +92,7 @@ async fn main() {
     .in_scope(|| tracing::info!("the node's member cert"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
-    node::wait_for_signal("rafka-rpc-node").await;
+    node::wait_for_signal("rdm-rpc-node").await;
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true)
         .in_scope(|| tracing::info!("stopping"));
     running.stop().await;

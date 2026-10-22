@@ -2806,7 +2806,7 @@ mod tests {
             let template = LaunchTemplate {
                 fabric: "fabric1".into(),
                 fabric_id: rdm_core::FabricId::mint(),
-                executable: "/nonexistent/rafka-rpc-node".into(),
+                executable: "/nonexistent/rdm-rpc-node".into(),
                 seeds: vec![],
                 launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
                 env: BTreeMap::new(),
@@ -2857,7 +2857,7 @@ mod tests {
         LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: rdm_core::FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

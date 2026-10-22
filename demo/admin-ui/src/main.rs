@@ -206,7 +206,7 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
     let url = match from_evidence {
         Some(trace) => format!("{}/api/traces/{trace}", s.jaeger_url),
         None => {
-            let service = if q.service.contains(".admin.") { "rafka-node-admin" } else { "rafka-rpc-node" };
+            let service = if q.service.contains(".admin.") { "rdm-node-admin" } else { "rdm-rpc-node" };
             let tags = serde_json::to_string(&json!({"node": q.service})).unwrap_or_default();
             format!("{}/api/traces?service={service}&operation=rdm.mesh.node.update.via-ready&limit=1&lookback=2h&tags={}", s.jaeger_url, urlencoding::encode(&tags))
         }

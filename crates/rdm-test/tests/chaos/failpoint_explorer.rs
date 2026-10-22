@@ -491,7 +491,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
         {
             "cuts": ["day-0 first Build acceptance at boot"],
             "where": "crates/rafka-node-admin-core/src/admin.rs:1660-1661",
-            "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rafka-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
+            "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rdm-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
         }
     ]);
     let result = json!({

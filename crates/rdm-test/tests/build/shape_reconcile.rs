@@ -1,7 +1,7 @@
 //! i143.e3.s3 process E2E: the SN, MN and MM proof shapes (PRD §1.12–13,
 //! §10) converge through Build alone.
 //!
-//! Each shape runs on a fresh fabric: the first `rafka-node-admin` boots it,
+//! Each shape runs on a fresh fabric: the first `rdm-node-admin` boots it,
 //! one `build.create` asks for the shape, and the test then checks, from
 //! the typed objects and the evidence only, that:
 //! - the Build completes and every desired node is `ready-for-traffic`;

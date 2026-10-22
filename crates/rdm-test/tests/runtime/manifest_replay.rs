@@ -334,7 +334,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let spans = estate.spans();
     let services: BTreeSet<String> = spans.iter().filter_map(|s| s["service"].as_str().map(String::from)).collect();
     assert!(services.contains("rshape-node-admin"), "the demo's admin ran: {services:?}");
-    assert!(!services.contains("rafka-node-admin"), "no built-in node-admin ran: {services:?}");
+    assert!(!services.contains("rdm-node-admin"), "no built-in node-admin ran: {services:?}");
     // Every restart was an operation of the Build rectifier: the REST call that opened the attempt,
     // the executor's reconcile of that attempt, the node's update under the reconcile and the
     // deployment steps under that. The reconcile is the child of the restart call's request span: the

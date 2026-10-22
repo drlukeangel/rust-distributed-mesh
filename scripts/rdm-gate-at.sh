@@ -266,7 +266,7 @@ export FP_KILL_SKIP_ARGS
 : > $D/jobs
 # A crate's integration tests are either one executable per file (a stem is its own executable) or one
 # executable `main` with a module per file (a stem is the module filter `<stem>::`). A missing stem fails by name.
-SCENARIO_PKG=rafka-test-scenario
+SCENARIO_PKG=rdm-test-scenario
 [ -d crates/rdm-test ] && SCENARIO_PKG=rdm-test
 for t in $SCENARIOS; do
     e=$(exe $SCENARIO_PKG $t)
@@ -303,7 +303,7 @@ per_exe(){
             else
                 echo "$name:$b sh:$c" >> $D/jobs
             fi
-        elif [ "$pkg" = "rafka-test-scenario" ] && [ "$b" = "main" ]; then
+        elif [ "$pkg" = "rdm-test-scenario" ] && [ "$b" = "main" ]; then
             :
         elif [ "$pkg" = "rafka-node-rpc-testkit" ] && [ "$b" = "main" ]; then
             echo "$name:$b sh:${c%)} --test-threads=8)" >> $D/jobs
@@ -326,7 +326,7 @@ per_exe mesh-ops rafka-mesh-ops
 per_exe mesh-telemetry rafka-mesh-telemetry
 per_exe node-admin-client rafka-node-admin-client
 per_exe chaos rafka-chaos
-per_exe test-scenario rafka-test-scenario
+per_exe test-scenario rdm-test-scenario
 per_exe rdm-core rdm-core
 per_exe rdm-client rdm-client
 per_exe node-admin-core rafka-node-admin-core
@@ -453,7 +453,7 @@ cat $D/*.log >> $O.detail
 # Nothing an estate launched may outlive the gate: a node process of this lane's build that the
 # init/user manager has adopted is a leak, named and failed (then killed so the next gate is clean).
 LANE_ROOT=$(pwd)
-leaked=$(ps -eo pid,ppid,args | awk -v r="$LANE_ROOT/target/debug/" '$2!=0 && index($0, r) && /(rafka-node-admin|rafka-rpc-node|rshape-node-admin|rafka-broker|rafka-gateway|rafka-compute)/ {print $1":"$2}' | while IFS=: read pid ppid; do pcomm=$(ps -o comm= -p $ppid 2>/dev/null); case "$pcomm" in systemd|init) echo $pid;; esac; done)
+leaked=$(ps -eo pid,ppid,args | awk -v r="$LANE_ROOT/target/debug/" '$2!=0 && index($0, r) && /(rdm-node-admin|rdm-rpc-node|rshape-node-admin|rafka-broker|rafka-gateway|rafka-compute)/ {print $1":"$2}' | while IFS=: read pid ppid; do pcomm=$(ps -o comm= -p $ppid 2>/dev/null); case "$pcomm" in systemd|init) echo $pid;; esac; done)
 if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" | tee -a $O; for p in $leaked; do echo "leaked: $(ps -o pid=,etimes=,args= -p $p | cut -c1-160)" >> $O.detail; kill -9 $p 2>/dev/null; done; fi
 # Preserve once after all live tests and their runtimes ended. Per-job copies during the
 # concurrent batch multiply every artifact by every red and perform disk work inside other

@@ -1,4 +1,4 @@
-//! The node-admin runtime (`rafka-node-admin`).
+//! The node-admin runtime (`rdm-node-admin`).
 //!
 //! A node-admin is a fabric member that serves the control API. The first
 //! one bootstraps the fabric (its `MESH_SPAWN_TYPE` becomes fabric policy);

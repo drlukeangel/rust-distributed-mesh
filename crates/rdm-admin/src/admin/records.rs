@@ -126,7 +126,7 @@ impl AdminConfig {
             .as_ref()
             .map(|l| l.data_dir.clone())
             .or_else(|| get("RDM_DATA_DIR").map(PathBuf::from))
-            .unwrap_or_else(|| std::env::temp_dir().join(format!("rafka-node-admin-{}", rand::random::<u32>())));
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("rdm-node-admin-{}", rand::random::<u32>())));
         // The fabric's store root: required, never defaulted, never the data dir (R14 items 1, 8).
         let store_dir = match &launch {
             Some(l) => l.store_dir.clone(),

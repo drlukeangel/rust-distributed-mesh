@@ -4,7 +4,7 @@
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2775`).
 //!
 //! The testkit proof store (op 0x70) on a real estate, driven only through the `node` objects and
-//! `rafka-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
+//! `rdm-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
 //! node.id and the incarnation (node-restart.md: stop then start on the parked process); the new
 //! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (an
 //! attempt of the accepted Build, reason recovery, a new node.id at the same path.name).

@@ -185,7 +185,7 @@ mod tests {
             span("rdm.mesh.membership.update.via-snapshot-installed", 4_000_000_000, json!({"node": "mesh1.rpc.1"})),
             span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"node": "mesh1.admin.1", "outcome": "applied"})),
         ];
-        std::fs::write(dir.join("rafka-rpc-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
+        std::fs::write(dir.join("rdm-rpc-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
         let mut e = Evidence::default();
         assert_eq!(e.refresh(&dir).unwrap(), 1);
         let (shown, hidden) = e.newest(&[], false, 10);
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].name, "rdm.mesh.membership.update.via-snapshot-installed", "newest first across the toggle");
         // A second refresh reads only what was appended, and never a half-written line.
-        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("rafka-rpc-node.1-1.spans.jsonl")).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("rdm-rpc-node.1-1.spans.jsonl")).unwrap();
         use std::io::Write;
         write!(f, "{}\n{{\"name\":\"half", span("rdm.mesh.election.resolve.via-mesh-primary", 5_000_000_000, json!({"observer": "mesh1.admin.2"}))).unwrap();
         e.refresh(&dir).unwrap();

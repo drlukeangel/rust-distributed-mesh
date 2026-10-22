@@ -16,7 +16,7 @@
 //! signal or remove a process themselves; a restart is `node.restart` over Node RPC. Every read and
 //! command goes to the admins over Node RPC through the estate's typed objects.
 //!
-//! The controller is `rafka-rpc-probe`, the generic proof-store caller of the testkit (op 0x70,
+//! The controller is `rdm-rpc-probe`, the generic proof-store caller of the testkit (op 0x70,
 //! with 0x73 originate and 0x72 snapshot on the roles that originate), so every observed outcome is
 //! the typed `RpcOutcome` of a real Node RPC call.
 
@@ -430,7 +430,7 @@ struct Call {
 }
 
 fn probe_files(estate: &Estate) -> BTreeSet<PathBuf> {
-    std::fs::read_dir(&estate.evidence).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rafka-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl"))).collect()
+    std::fs::read_dir(&estate.evidence).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rdm-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl"))).collect()
 }
 
 fn probe_call(estate: &Estate, args: &[&str]) -> Call {
@@ -654,7 +654,7 @@ fn check_services(spans: &[Value], inv: &mut Invariants) -> BTreeSet<String> {
     for want in ["rshape-node-admin", "rshape-broker", "rshape-gateway", "rshape-compute"] {
         assert!(services.contains(want), "the consumer's `{want}` ran: {services:?}");
     }
-    for never in ["rafka-node-admin", "rafka-rpc-node", "rafka-node"] {
+    for never in ["rdm-node-admin", "rdm-rpc-node", "rdm-node"] {
         assert!(!services.contains(never), "no built-in `{never}` ran: {services:?}");
     }
     inv.holds("the estate ran only the consumer's four executables (the other services are the controller's probe)", true, json!({"services": services}));
@@ -936,7 +936,7 @@ impl RouteRun {
         assert_eq!(c.out["reply"]["executing_node"], b1["node_id"], "the exact broker served: {}", c.out);
         assert_eq!(c.out["reply"]["incarnation_id"], b1["incarnation_id"], "{}", c.out);
         assert_eq!(c.out["reply"]["result"], json!({"stored": true}));
-        leg(self, "same-mesh-exact-put", c, "controller (rafka-rpc-probe, caller_system rdm)", &json!(exact(&b1_id)), &resolved(&b1));
+        leg(self, "same-mesh-exact-put", c, "controller (rdm-rpc-probe, caller_system rdm)", &json!(exact(&b1_id)), &resolved(&b1));
         let c = probe_call(e, &["get", "--target", &exact(&b1_id), "--key", "same-mesh"]);
         assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": value("same")}), "presence control: {}", c.out);
         assert_eq!(c.out["reply"]["executing_node"], b1["node_id"]);

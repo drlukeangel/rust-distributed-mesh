@@ -8,19 +8,19 @@
 #   scripts/demo-estate.sh up     [<root dir>]   bring it up; prints the UI's URL; the root holds the logs,
 #                                                evidence, store and the binding set
 #   scripts/demo-estate.sh stream [<root dir>]   the data-plane proof: five `demo/echo` streams, four across
-#                                                the meshes, through the originate door (rafka-rpc-probe stream)
+#                                                the meshes, through the originate door (rdm-rpc-probe stream)
 #   scripts/demo-estate.sh down   [<root dir>]   stop the UI and every role process of that root
 #
 # Inputs: RDM_DEMO_BIN (the directory holding rshape-node-admin, rshape-gateway, rshape-compute,
 # rshape-broker and rafka-admin-ui, built from demo/ against this tree: `cargo build --bins` in the
 # consumer workspace and `cargo build --bin rafka-admin-ui` in demo/admin-ui), RDM_DEMO_PROBE (the
-# rafka-rpc-probe of this tree's build, default target/debug/rafka-rpc-probe), RDM_DEMO_WEB (the built web
+# rdm-rpc-probe of this tree's build, default target/debug/rdm-rpc-probe), RDM_DEMO_WEB (the built web
 # bundle, default demo/admin-ui/web/dist), RDM_DEMO_UI_BIND (default 127.0.0.1:19090).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 CMD=${1:-}; ROOT=${2:-}
 BIN=${RDM_DEMO_BIN:?set RDM_DEMO_BIN to the directory holding the consumer executables}
-PROBE=${RDM_DEMO_PROBE:-$HERE/target/debug/rafka-rpc-probe}
+PROBE=${RDM_DEMO_PROBE:-$HERE/target/debug/rdm-rpc-probe}
 WEB=${RDM_DEMO_WEB:-$HERE/demo/admin-ui/web/dist}
 UI_BIND=${RDM_DEMO_UI_BIND:-127.0.0.1:19090}
 export OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://192.168.68.99:5318}

@@ -5,7 +5,7 @@
 //! every durable read and write of its own going through the six boundaries it opened. Built with the
 //! file backend off (`--no-default-features`), the file store is absent from this executable; built
 //! with it on, the admin still opens nothing but the memory boundaries. The rpc node the admin launches
-//! is the gate's `rafka-node`, whose own connections rows are its node backend's (the file one).
+//! is the gate's `rdm-node`, whose own connections rows are its node backend's (the file one).
 
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;

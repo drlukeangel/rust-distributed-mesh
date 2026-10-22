@@ -25,7 +25,7 @@ fn probe_with_unreadable_endpoint_refuses_naming_the_node() {
     let (rt, admin) = serve_on_own_runtime(vec![node("mesh1.rpc.1", &bad_node, Some(bad_endpoint.into()), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-view-entry-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))
         .args(["--admin-birth", &admin.birth_arg(), "get", "--target", &format!("exact:{bad_node}"), "--key", "k"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
@@ -43,7 +43,7 @@ fn probe_with_unreadable_endpoint_refuses_naming_the_node() {
     let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
         .unwrap()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
         .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<serde_json::Value>>())
         .collect();
     let probe = spans

@@ -129,7 +129,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             };
             let before: std::collections::BTreeSet<_> = span_files(&evidence).into_iter().collect();
             let out = tokio::task::spawn_blocking(move || {
-                std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
+                std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))
                     .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{id}"), "--key", "k"])
                     .args(&via)
                     .env("RDM_EVIDENCE_DIR", &evidence_dir)
@@ -176,14 +176,14 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
 fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let evidence = std::env::temp_dir().join(format!("rdm-probe-refusal-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe")).args(["--no-such-flag", "x"]).env("RDM_EVIDENCE_DIR", &evidence).output().unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe")).args(["--no-such-flag", "x"]).env("RDM_EVIDENCE_DIR", &evidence).output().unwrap();
     let context = || failure_context(&out, &evidence, "refusing probe");
     assert_eq!(out.status.code(), Some(2), "{}", context());
     let v: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap_or_else(|e| panic!("no JSON ({e}): {}", context()));
     assert_eq!(v["outcome"], "Refused", "{v}; {}", context());
     let reason = v["reason"].as_str().unwrap_or_else(|| panic!("no refusal reason: {}", context())).to_string();
     assert!(reason.contains("--no-such-flag"), "the refusal names the argument: {reason}; {}", context());
-    let spans: String = std::fs::read_dir(&evidence).unwrap_or_else(|e| panic!("evidence read failed: {e}; {}", context())).flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
+    let spans: String = std::fs::read_dir(&evidence).unwrap_or_else(|e| panic!("evidence read failed: {e}; {}", context())).flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
     if spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments") {
         assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}; {}", context());
     } else {

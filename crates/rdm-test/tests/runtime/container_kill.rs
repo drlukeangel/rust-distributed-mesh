@@ -150,7 +150,7 @@ fn a_give_up_while_docker_create_is_in_flight_leaves_no_container_or_network() {
     let shim = dir.join("docker-gated");
     std::fs::write(&shim, "#!/bin/sh\nif [ \"$1\" = create ]; then sleep 6; fi\nexec docker \"$@\"\n").unwrap();
     std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    give_up_leaves_nothing("gate", &rdm_test::estate::binary("rafka-node-admin"), shim.to_str().unwrap());
+    give_up_leaves_nothing("gate", &rdm_test::estate::binary("rdm-node-admin"), shim.to_str().unwrap());
 }
 
 /// CONTRACT: when the Day-0 container is created and started but never advertises its API base,

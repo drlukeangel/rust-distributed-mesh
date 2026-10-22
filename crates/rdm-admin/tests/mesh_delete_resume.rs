@@ -373,7 +373,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
@@ -518,7 +518,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
@@ -607,7 +607,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
@@ -831,7 +831,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
@@ -982,7 +982,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
@@ -1794,7 +1794,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

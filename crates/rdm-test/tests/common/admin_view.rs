@@ -1,5 +1,5 @@
 //! A node-admin's view, served over Node RPC from a fixed set of nodes: the entry the probe's cells
-//! give `rafka-rpc-probe` (`--admin-birth`). It answers `fabric.get` (Status `GetFabric`) and
+//! give `rdm-rpc-probe` (`--admin-birth`). It answers `fabric.get` (Status `GetFabric`) and
 //! `node.get` by mesh (Status `GetNodes { Mesh }`) from that set, as an admin answers both from its
 //! own view (`rafka-node-admin-core` views.rs), and records every Status request it decodes. It
 //! serves no HTTP: the probe reads nothing but Node RPC.

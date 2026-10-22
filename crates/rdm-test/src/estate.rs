@@ -1,7 +1,7 @@
 //! Blackbox estate harness for the i143 e2e canaries.
 //!
 //! Everything here goes through public surfaces only (`docs/plans/i143-design.md`):
-//! the `rafka-node-admin` process and its control API, the `rafka-rpc-probe`
+//! the `rdm-node-admin` process and its control API, the `rdm-rpc-probe`
 //! binary and the JSONL evidence files. No internal map is read.
 
 use rdm_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
@@ -32,7 +32,7 @@ pub fn artifacts_root() -> PathBuf {
         Ok(d) if Path::new(&d).is_absolute() => PathBuf::from(d),
         // Relative to the workspace root, resolved to its real path: the estate hands this path to
         // every admin (RDM_EVIDENCE_DIR) and bind-mounts it into every container, where a path
-        // that walks `crates/rafka-test-scenario/../..` names nothing.
+        // that walks `crates/rdm-test-scenario/../..` names nothing.
         Ok(d) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the workspace root exists").join(d),
         Err(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/artifacts"),
     }
@@ -82,7 +82,7 @@ fn read_announcement(stdout: impl std::io::Read + Send + 'static) -> std::sync::
     rx
 }
 
-/// Start a `rafka-node-admin` with `env` and wait for what it prints before it serves: the birth it
+/// Start a `rdm-node-admin` with `env` and wait for what it prints before it serves: the birth it
 /// runs under.
 fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, MeshNode) {
     let mut cmd = Command::new(exe);
@@ -327,9 +327,9 @@ pub fn binary(name: &str) -> PathBuf {
 /// The package that builds `name`, for the rebuild command a refusal names.
 pub(crate) fn package_of(name: &str) -> &'static str {
     match name {
-        "rafka-node-admin" => "rdm-admin",
-        "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rdm-test",
-        "rafka-node" => "rdm-test",
+        "rdm-node-admin" => "rdm-admin",
+        "rdm-rpc-probe" | "rdm-rpc-node" | "faulted-node-admin" => "rdm-test",
+        "rdm-node" => "rdm-test",
         _ => "<the package of this binary>",
     }
 }
@@ -692,7 +692,7 @@ impl Estate {
                 env.extend(x.env());
                 x.admin_exe()
             }
-            None => binary("rafka-node-admin"),
+            None => binary("rdm-node-admin"),
         };
         // A container fabric's Day-0 admin runs in a container of that fabric, so every admin of
         // the fabric is a container a successor can control in the same Docker domain.
@@ -967,7 +967,7 @@ impl Estate {
             }
             None => {
                 refuse_built_ins_in_consumer_mode("Estate::restart_admin");
-                binary("rafka-node-admin")
+                binary("rdm-node-admin")
             }
         };
         let (child, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
@@ -1189,7 +1189,7 @@ fn kill_estate_processes(root: &Path) {
     }
 }
 
-/// One estate's probe door: runs `rafka-rpc-probe` entered at a node-admin's birth (it reads that
+/// One estate's probe door: runs `rdm-rpc-probe` entered at a node-admin's birth (it reads that
 /// admin's view over Node RPC) and appends the invocation to the estate's RPC ledger
 /// (`rpc-ledger.jsonl`).
 #[derive(Clone)]
@@ -1202,7 +1202,7 @@ pub struct ProbeHandle {
 impl ProbeHandle {
     fn command(&self, admin: &MeshNode, args: &[&str]) -> Result<Command, String> {
         let birth = serde_json::to_string(admin).map_err(|e| format!("the birth of {} does not serialize: {e}", admin.name))?;
-        let mut cmd = Command::new(binary("rafka-rpc-probe"));
+        let mut cmd = Command::new(binary("rdm-rpc-probe"));
         cmd.arg("--admin-birth").arg(birth).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
         if let Some(gw) = &self.bind { cmd.env("RDM_PROBE_BIND", gw); }
         Ok(cmd)
@@ -1227,7 +1227,7 @@ impl ProbeHandle {
 
     /// [`ProbeHandle::run`], with the probe's stderr.
     pub fn run_with_stderr(&self, admin: &MeshNode, args: &[&str]) -> Result<(Value, String), String> {
-        let out = self.command(admin, args)?.output().map_err(|e| format!("run rafka-rpc-probe: {e}"))?;
+        let out = self.command(admin, args)?.output().map_err(|e| format!("run rdm-rpc-probe: {e}"))?;
         let line = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         let value = serde_json::from_str(line.trim()).map_err(|e| format!("probe {args:?} printed no JSON ({e}): {line} / {stderr}"))?;
@@ -1477,20 +1477,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("lib one.rs");
         std::fs::write(&src, "fn main() {}").unwrap();
-        let exe = dir.join("rafka-rpc-probe");
+        let exe = dir.join("rdm-rpc-probe");
         let set = |path: &Path, secs_from_epoch: u64| {
             let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
             f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs_from_epoch)).unwrap();
         };
         std::fs::write(&exe, "bin").unwrap();
-        assert_eq!(binary_is_fresh("rafka-rpc-probe", &exe), Ok(()), "no dep-info beside the binary: not judged");
+        assert_eq!(binary_is_fresh("rdm-rpc-probe", &exe), Ok(()), "no dep-info beside the binary: not judged");
         std::fs::write(exe.with_extension("d"), format!("{}: {}\n", exe.display(), src.display().to_string().replace(' ', "\\ "))).unwrap();
         set(&src, 1_000);
         set(&exe, 2_000);
-        assert_eq!(binary_is_fresh("rafka-rpc-probe", &exe), Ok(()), "the source is older than the binary");
+        assert_eq!(binary_is_fresh("rdm-rpc-probe", &exe), Ok(()), "the source is older than the binary");
         set(&src, 3_000);
-        let why = binary_is_fresh("rafka-rpc-probe", &exe).unwrap_err();
-        assert!(why.contains("rafka-rpc-probe") && why.contains("lib one.rs") && why.contains("cargo build -p rdm-test --bin rafka-rpc-probe"), "{why}");
+        let why = binary_is_fresh("rdm-rpc-probe", &exe).unwrap_err();
+        assert!(why.contains("rdm-rpc-probe") && why.contains("lib one.rs") && why.contains("cargo build -p rdm-test --bin rdm-rpc-probe"), "{why}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

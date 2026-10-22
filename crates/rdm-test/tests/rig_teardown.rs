@@ -2,7 +2,7 @@
 //! leaves its runtime running for the Build's re-run (the pipeline reuses a live runtime), and the
 //! process provider starts a node detached so it outlives its launcher: a cell that ends without
 //! stopping a node it launched (a panic after a create, a failed step) must still leave no
-//! `rafka-rpc-node` running once its rig is gone, or the node is orphaned to the init process.
+//! `rdm-rpc-node` running once its rig is gone, or the node is orphaned to the init process.
 
 use crate::common;
 
@@ -59,6 +59,6 @@ fn a_rig_dropped_with_its_launched_node_running_leaves_no_node_running() {
         // The cell ends here without stopping its node, as a failed cell does.
         drop(pipeline);
         drop(admin);
-        assert!(!runs(pid, start), "rafka-rpc-node pid {pid} still runs after its rig dropped: the cell orphans it");
+        assert!(!runs(pid, start), "rdm-rpc-node pid {pid} still runs after its rig dropped: the cell orphans it");
     })
 }

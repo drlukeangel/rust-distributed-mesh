@@ -273,7 +273,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
         template: LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

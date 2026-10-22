@@ -170,7 +170,7 @@ async fn roles_are_born_by_build_under_their_kind() {
 }
 
 /// The one node executable of node-admin's built-in set: every node_type but `node_admin` runs it.
-const NODE_EXECUTABLE: &str = "rafka-node";
+const NODE_EXECUTABLE: &str = "rdm-node";
 
 /// CONTRACT: with no explicit executable binding, node-admin's process provider launches its
 /// built-in set, which is two executables: the node-admin and the one node executable. A broker, a

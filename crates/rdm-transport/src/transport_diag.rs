@@ -214,10 +214,10 @@ mod tests {
     /// shared diagnostic file whose lines do not say which process wrote them.
     #[test]
     fn each_process_writes_its_own_diagnostic_file_and_none_outside_an_evidence_run() {
-        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), Some("/e"), "rafka-rpc-node", "7-9"), Some(PathBuf::from("/d/mesh1.rpc.1-x/transport-diag.log")));
-        assert_eq!(file_path(None, Some("/e"), "rafka-rpc-probe", "7-9"), Some(PathBuf::from("/e/rafka-rpc-probe.7-9.transport-diag.log")));
-        assert_eq!(file_path(Some(""), Some("/e"), "rafka-rpc-probe", "8-9"), Some(PathBuf::from("/e/rafka-rpc-probe.8-9.transport-diag.log")));
-        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), None, "rafka-rpc-node", "7-9"), None);
-        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), Some(""), "rafka-rpc-node", "7-9"), None);
+        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), Some("/e"), "rdm-rpc-node", "7-9"), Some(PathBuf::from("/d/mesh1.rpc.1-x/transport-diag.log")));
+        assert_eq!(file_path(None, Some("/e"), "rdm-rpc-probe", "7-9"), Some(PathBuf::from("/e/rdm-rpc-probe.7-9.transport-diag.log")));
+        assert_eq!(file_path(Some(""), Some("/e"), "rdm-rpc-probe", "8-9"), Some(PathBuf::from("/e/rdm-rpc-probe.8-9.transport-diag.log")));
+        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), None, "rdm-rpc-node", "7-9"), None);
+        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), Some(""), "rdm-rpc-node", "7-9"), None);
     }
 }

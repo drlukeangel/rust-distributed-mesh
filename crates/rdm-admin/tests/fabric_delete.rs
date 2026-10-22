@@ -257,7 +257,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
         fabric_id: fabric_id.clone(),
-        executable: "/nonexistent/rafka-rpc-node".into(),
+        executable: "/nonexistent/rdm-rpc-node".into(),
         seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
         launcher: rdm_core::launch::Launcher { name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
         env: BTreeMap::new(),
@@ -505,7 +505,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
@@ -610,7 +610,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let fp_template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
@@ -674,7 +674,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rafka-rpc-node".into(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),

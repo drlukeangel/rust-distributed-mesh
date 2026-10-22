@@ -5,7 +5,7 @@ use rdm_core::launch::{Launch, Launcher};
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use std::time::{Duration, Instant};
 
-/// CONTRACT: a launched `rafka-node-admin` that is held in its boot (no runtime record from its
+/// CONTRACT: a launched `rdm-node-admin` that is held in its boot (no runtime record from its
 /// provider yet: `admin.rs` waits for it up to 10 s) and is sent SIGTERM ends its boot by name and
 /// exits 0 through its telemetry drain: its evidence file holds `rdm.mesh.node.create.via-deployment`
 /// and `rdm.mesh.node.delete.via-signal` with `booted=false`. What must NOT happen: the default
@@ -40,16 +40,16 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-node-admin"))
         .envs(launch.to_env())
         .env("RDM_EVIDENCE_DIR", &dir)
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .env_remove("OTEL_SERVICE_NAME")
         .stdout(std::process::Stdio::null())
         .spawn()
-        .expect("rafka-node-admin starts");
+        .expect("rdm-node-admin starts");
     let pid = child.id();
-    let prefix = format!("rafka-node-admin.{pid}-");
+    let prefix = format!("rdm-node-admin.{pid}-");
     let file = || {
         std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix)))
     };
@@ -59,7 +59,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         if let Some(p) = file() {
             break p;
         }
-        assert!(Instant::now() < until, "rafka-node-admin {pid} opened no evidence file in {}", dir.display());
+        assert!(Instant::now() < until, "rdm-node-admin {pid} opened no evidence file in {}", dir.display());
         std::thread::sleep(Duration::from_millis(5));
     };
     unsafe { libc::kill(pid as i32, libc::SIGTERM) };

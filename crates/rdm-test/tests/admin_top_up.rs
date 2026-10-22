@@ -7,7 +7,7 @@
 //! deltas, and pulls the current full fabric topology from its own current mesh-primary with
 //! GetTopology, installs it atomically, records the publisher and version baseline, and resumes."
 //!
-//! The defect this cell pins (gate 784e5974, node_stop, rafka-node-admin.308223): mesh1.admin.2, a
+//! The defect this cell pins (gate 784e5974, node_stop, rdm-node-admin.308223): mesh1.admin.2, a
 //! non-primary node-admin, took an own-mesh delta out of order (`via-version-gap`, held 11, base 12)
 //! and never topped up: only the testkit node spawned the top-up. A non-primary serves its own mesh
 //! from its mesh-channel sources, and a desynchronized source is not served, so its topology door

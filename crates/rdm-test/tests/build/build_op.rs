@@ -821,7 +821,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     let real = set.bindings.iter().find(|b| b.launch_id == "rpc_node").expect("the rpc node is bound").executable.clone();
     let dir = std::env::temp_dir().join(format!("q30-bound-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
-    let wrapper = dir.join("rafka-rpc-node-padded");
+    let wrapper = dir.join("rdm-rpc-node-padded");
     std::fs::write(&wrapper, format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", real.display())).unwrap();
     std::fs::OpenOptions::new().write(true).open(&wrapper).unwrap().set_len(8 << 30).unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();

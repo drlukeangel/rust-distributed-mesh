@@ -47,18 +47,18 @@ futures-lite = "2"
 bytes = "1"
 
 [[bin]]
-name = "rafka-node"
-path = "src/bin/rafka_node.rs"
+name = "rdm-node"
+path = "src/bin/rdm_node.rs"
 required-features = ["file-backend"]
 
 [[bin]]
-name = "rafka-rpc-node"
-path = "src/bin/rafka_rpc_node.rs"
+name = "rdm-rpc-node"
+path = "src/bin/rdm_rpc_node.rs"
 required-features = ["file-backend"]
 
 [[bin]]
-name = "rafka-rpc-probe"
-path = "src/bin/rafka_rpc_probe.rs"
+name = "rdm-rpc-probe"
+path = "src/bin/rdm_rpc_probe.rs"
 required-features = ["file-backend"]
 
 [[bin]]
@@ -67,12 +67,12 @@ path = "src/bin/faulted_node_admin.rs"
 required-features = ["file-backend"]
 
 [[bin]]
-name = "rafka-scenario"
-path = "src/bin/rafka_scenario.rs"
+name = "rdm-scenario"
+path = "src/bin/rdm_scenario.rs"
 required-features = ["file-backend"]
 
 [[bin]]
-name = "rafka-store-root-probe"
+name = "rdm-store-root-probe"
 path = "src/bin/store_root_probe.rs"
 required-features = ["file-backend"]
 

@@ -5,14 +5,14 @@
 
 use std::time::{Duration, Instant};
 
-/// A bootstrap `rafka-node-admin` run on `env` until it exits: its exit status, its stderr and the
+/// A bootstrap `rdm-node-admin` run on `env` until it exits: its exit status, its stderr and the
 /// spans of its evidence file.
 fn boot(name: &str, env: &[(&str, String)]) -> (std::process::ExitStatus, String, Vec<serde_json::Value>, std::path::PathBuf) {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let data_dir = dir.join("mesh1.admin.1");
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-node-admin"));
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("RDM_DATA_DIR", &data_dir)
@@ -22,12 +22,12 @@ fn boot(name: &str, env: &[(&str, String)]) -> (std::process::ExitStatus, String
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts");
+    let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
     let pid = child.id();
     let started = Instant::now();
     let out = child.wait_with_output().unwrap();
     assert!(started.elapsed() < Duration::from_secs(10), "a refused boot took {} ms", started.elapsed().as_millis());
-    let prefix = format!("rafka-node-admin.{pid}-");
+    let prefix = format!("rdm-node-admin.{pid}-");
     let spans = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -66,7 +66,7 @@ fn a_node_admin_with_no_usable_store_dir_is_refused_by_name_at_boot() {
 
 /// The spans the evidence files of process `pid` under `dir` hold.
 fn spans_of(dir: &std::path::Path, pid: u32) -> Vec<serde_json::Value> {
-    let prefix = format!("rafka-node-admin.{pid}-");
+    let prefix = format!("rdm-node-admin.{pid}-");
     std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -87,14 +87,14 @@ fn fabric_dirs(store: &std::path::Path) -> Vec<String> {
     v
 }
 
-/// A bootstrap `rafka-node-admin` on its own data dir and the fabric's store_dir under `dir`: the Day-0 root.
+/// A bootstrap `rdm-node-admin` on its own data dir and the fabric's store_dir under `dir`: the Day-0 root.
 struct Day0 {
     dir: std::path::PathBuf,
     store: std::path::PathBuf,
     data_dir: std::path::PathBuf,
 }
 
-/// A running `rafka-node-admin`, killed by its exact pid when a failed assertion drops it.
+/// A running `rdm-node-admin`, killed by its exact pid when a failed assertion drops it.
 struct Running {
     child: std::process::Child,
     pid: u32,
@@ -118,7 +118,7 @@ impl Day0 {
     }
 
     fn run(&self) -> Running {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-node-admin"));
         cmd.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("RDM_DATA_DIR", &self.data_dir)
@@ -126,7 +126,7 @@ impl Day0 {
             .env("RDM_EVIDENCE_DIR", &self.dir)
             .env("MESH_SPAWN_TYPE", "process")
             .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
-        let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts");
+        let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
         let pid = child.id();
         Running { child, pid }
     }
@@ -417,9 +417,9 @@ impl Prepared {
         })
     }
 
-    /// Start a bootstrap `rafka-node-admin` on the prepared data dir and root, no fabric id handed in.
+    /// Start a bootstrap `rdm-node-admin` on the prepared data dir and root, no fabric id handed in.
     fn start(&self) -> Running {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-node-admin"));
         cmd.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("RDM_DATA_DIR", &self.data_dir)
@@ -427,7 +427,7 @@ impl Prepared {
             .env("RDM_EVIDENCE_DIR", &self.dir)
             .env("MESH_SPAWN_TYPE", "process")
             .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
-        let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts");
+        let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
         let pid = child.id();
         Running { child, pid }
     }

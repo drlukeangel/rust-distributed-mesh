@@ -5,7 +5,7 @@
 //! `outcome`, `attempt` and `elapsed_ms`.
 //!
 //! The admin side is in-process (a gossip seed plus a Node RPC client); the
-//! node is a real `rafka-rpc-node` runtime started by the provider the
+//! node is a real `rdm-rpc-node` runtime started by the provider the
 //! `MESH_SPAWN_TYPE` value selects.
 //!
 //! The pieces (admin side, observer, sink, span capture) are shared with the
@@ -204,10 +204,10 @@ impl Drop for Capture {
 }
 
 /// A runtime the cell launched through [`template`] stopped and left its trace: its JSONL file in
-/// the cell's artifact dir (`rafka-rpc-node.<pid>-<ns>.spans.jsonl`) holds its boot span and the
+/// the cell's artifact dir (`rdm-rpc-node.<pid>-<ns>.spans.jsonl`) holds its boot span and the
 /// span of the stop it took. A runtime killed before its batch export leaves the file empty.
 pub fn assert_launched_node_stopped_with_its_spans(dir: &std::path::Path, pid: u32) {
-    let prefix = format!("rafka-rpc-node.{pid}-");
+    let prefix = format!("rdm-rpc-node.{pid}-");
     let file = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("the cell's artifact dir {} is unreadable: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -256,7 +256,7 @@ pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId)
     rdm_admin::fabric_storage::claim_identity(&fabric_store, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
 }
 
-/// A launch template for `rafka-rpc-node` whose launcher is `admin`: its seed, its fabric and its
+/// A launch template for `rdm-rpc-node` whose launcher is `admin`: its seed, its fabric and its
 /// data root, so every node launched from it is stopped when `admin` drops.
 pub fn template(admin: &AdminSide) -> LaunchTemplate {
     let data_root = admin.data_root().to_path_buf();
@@ -266,7 +266,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
     LaunchTemplate {
         fabric: "fabric1".into(),
         fabric_id: admin.fabric.clone(),
-        executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
+        executable: env!("CARGO_BIN_EXE_rdm-rpc-node").into(),
         seeds: vec![admin.seed.clone()],
         launcher: admin.launcher.clone(),
         env: [(rdm_core::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())]

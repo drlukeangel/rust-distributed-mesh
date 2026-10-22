@@ -1,6 +1,6 @@
 //! i143.e7.s3 process E2E: the testkit proof store on op `0x70`.
 //!
-//! From the typed objects, `rafka-rpc-probe` over real Node RPC and the estate's span evidence only:
+//! From the typed objects, `rdm-rpc-probe` over real Node RPC and the estate's span evidence only:
 //! 1. Every op answers its typed result and names where it ran: node id, path,
 //!    mesh and incarnation.
 //! 2. A same-node restart keeps the store: the new incarnation of the same

@@ -68,7 +68,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         .await;
         (admin, launch.node_id.to_string(), router)
     });
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))
         .args(["--admin-birth", &admin.birth_arg(), "get", "--target", &format!("exact:{target}"), "--key", "k"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
@@ -82,7 +82,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
     let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
         .unwrap()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
         .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<serde_json::Value>>())
         .collect();
     let root = spans.iter().find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").unwrap_or_else(|| panic!("the probe left no via-probe span: {spans:?}"));

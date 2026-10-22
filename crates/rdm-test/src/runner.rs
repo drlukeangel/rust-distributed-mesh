@@ -1,6 +1,6 @@
 //! Scenario runner: brings the scenario's shape up through node-admin Build on
 //! the selected provider, then executes every operation and assertion over real
-//! Node RPC through `rafka-rpc-probe` (PRD §6: no in-process shortcut).
+//! Node RPC through `rdm-rpc-probe` (PRD §6: no in-process shortcut).
 
 use crate::estate::{Estate, Owner};
 use crate::replay::{EvidenceOwner, Fault, ManifestError, ReplayManifest, ScheduledFault, Source, StepOutcome, SCHEMA_VERSION};

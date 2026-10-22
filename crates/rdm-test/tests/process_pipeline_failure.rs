@@ -36,7 +36,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
         let template = LaunchTemplate {
             fabric: String::new(),
             fabric_id: FabricId::mint(),
-            executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
+            executable: env!("CARGO_BIN_EXE_rdm-rpc-node").into(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

@@ -3,7 +3,7 @@
 //! the handshake's packets, and none of it reaches span export.
 //!
 //! The maker is this process (an endpoint and a Node RPC server, accepting as the router does);
-//! the joining end is the `rafka-rpc-probe` process, which dials the maker's address expecting
+//! the joining end is the `rdm-rpc-probe` process, which dials the maker's address expecting
 //! another endpoint's key. The maker answers the Initial, the probe verifies the maker's key, finds
 //! it is not the one it dialled and closes: a failed handshake with work on both ends.
 //!
@@ -63,7 +63,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&run).unwrap();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rafka-node-admin") });
+    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rdm-node-admin") });
     let maker_key = iroh::SecretKey::generate();
     let expected = iroh::SecretKey::generate().public();
     let (maker_addr, accepted, out) = rt.block_on(async {
@@ -77,7 +77,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
         let admin = served.birth_arg();
         let (run, dialler_dir) = (run.clone(), dialler_dir.clone());
         let mut dialler = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_rdm-rpc-probe"))
                 .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
                 .env("RDM_EVIDENCE_DIR", &run)
                 .env("RDM_DATA_DIR", &dialler_dir)
@@ -159,7 +159,7 @@ fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
     }
     let _ = std::fs::remove_dir_all(&data_dir);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rafka-rpc-node") });
+    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rdm-rpc-node") });
     let (noq_trace, diag_target) = (tracing::enabled!(target: "noq_proto::endpoint", tracing::Level::TRACE), tracing::enabled!(target: "transport_diag", tracing::Level::INFO));
     rt.block_on(async {
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

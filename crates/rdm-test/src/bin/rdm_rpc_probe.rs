@@ -1,12 +1,12 @@
-//! `rafka-rpc-probe`: one proof-store call over real Node RPC, for scenarios
+//! `rdm-rpc-probe`: one proof-store call over real Node RPC, for scenarios
 //! (PRD §6: no in-process shortcut).
 //!
 //! ```text
-//! rafka-rpc-probe --admin-birth <birth> get    --target exact:<node_id>|path:<path.name> --key <k>
-//! rafka-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
-//! rafka-rpc-probe --admin-birth <birth> delete --target ... --key <k>
-//! rafka-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
-//! rafka-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]
+//! rdm-rpc-probe --admin-birth <birth> get    --target exact:<node_id>|path:<path.name> --key <k>
+//! rdm-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
+//! rdm-rpc-probe --admin-birth <birth> delete --target ... --key <k>
+//! rdm-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
+//! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]
 //! ```
 //!
 //! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
@@ -360,7 +360,7 @@ fn main() -> std::process::ExitCode {
     // One invocation runs one async call sequence. Its I/O tasks share this runtime;
     // creating a worker for every host CPU adds no call concurrency.
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the probe's runtime");
-    let telemetry = runtime.block_on(async { rdm_transport::init_evidence_telemetry_for_one_call("rafka-rpc-probe") });
+    let telemetry = runtime.block_on(async { rdm_transport::init_evidence_telemetry_for_one_call("rdm-rpc-probe") });
     let code = runtime.block_on(probe());
     drop(runtime);
     drop(telemetry);

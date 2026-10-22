@@ -169,7 +169,7 @@ async fn local_nodes_at(before: &[Value], silenced: &Silenced, name: &str) -> Op
     };
     let view: NodeView = serde_json::from_value(node_in(before, name)?.clone()).ok()?;
     let birth = rdm_client::birth_of_view(&view)?;
-    let probe = rdm_test::estate::binary("rafka-rpc-probe");
+    let probe = rdm_test::estate::binary("rdm-rpc-probe");
     let output = tokio::process::Command::new("docker")
         .args(["exec", "-e", &format!("RDM_PROBE_BIND={}", member.ip), &member.id])
         .arg(probe)
@@ -555,8 +555,8 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // Evidence from the exported spans.
     let all_resolves: Vec<&Value> = spans.iter().filter(|sp| sp["name"] == "rdm.node_rpc.route.resolve.via-connections" && sp["attributes"]["target"] == target_id.as_str()).collect();
     // The cell's own legs are the probe's; the control plane's calls to the same node are recorded apart.
-    let resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] == "rafka-rpc-probe").collect();
-    let control_plane_resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] != "rafka-rpc-probe" && start(sp) > cut_at && start(sp) < healed_at).collect();
+    let resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] == "rdm-rpc-probe").collect();
+    let control_plane_resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] != "rdm-rpc-probe" && start(sp) > cut_at && start(sp) < healed_at).collect();
     let by = |route: &str, replied: bool| resolves.iter().filter(|sp| sp["attributes"]["route"] == route && (sp["attributes"]["outcome"] == "Reply") == replied).cloned().collect::<Vec<_>>();
     let serves: Vec<&Value> = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["node_id"] == target_id.as_str()).collect();
     let silent_traces: BTreeSet<String> = resolves.iter().filter(|sp| sp["attributes"]["outcome"] != "Reply" && start(sp) > cut_at && start(sp) < healed_at).map(|sp| s(&sp["trace_id"])).collect();

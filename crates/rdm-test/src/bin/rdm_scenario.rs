@@ -1,4 +1,4 @@
-//! `rafka-scenario <scenario.yaml> [--provider process|container]`
+//! `rdm-scenario <scenario.yaml> [--provider process|container]`
 //!
 //! Runs one declarative scenario against a live estate it bootstraps through
 //! node-admin Build (PRD §20). Exits 1 naming every failed step.
@@ -23,13 +23,13 @@ async fn main() {
     let test = std::path::Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("scenario").to_string();
     let report = runner::run(&scenario, provider.as_deref(), &test).await;
     for f in &report.failures {
-        eprintln!("rafka-scenario: FAILED {}: {}", f.step, f.reason);
+        eprintln!("rdm-scenario: FAILED {}: {}", f.step, f.reason);
     }
-    eprintln!("rafka-scenario: build {} — {} failure(s)", report.build_id, report.failures.len());
+    eprintln!("rdm-scenario: build {} — {} failure(s)", report.build_id, report.failures.len());
     std::process::exit(if report.failures.is_empty() { 0 } else { 1 });
 }
 
 fn usage(msg: &str) -> ! {
-    eprintln!("rafka-scenario: {msg}\nusage: rafka-scenario <scenario.yaml> [--provider process|container]");
+    eprintln!("rdm-scenario: {msg}\nusage: rdm-scenario <scenario.yaml> [--provider process|container]");
     std::process::exit(2)
 }
