@@ -1,143 +1,105 @@
 # Node recovery
 
-[Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
+[Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract) · [node investigation](node-investigation.md)
 
-Node recovery is RDM's drift reconciliation for a member that exits outside any
-workflow. The accepted Build is the fabric's desired topology; a member at a path.name
-that is proven exited is drift, and RDM puts it back. The mesh-primary is the
-reconciler for its own members: it tracks them, proves the exit and starts the recovery.
-The app takes part only through the start hook of the new node. Recovery is not a
-caller op. (A mesh none of whose node-admins can be reached is
-[mesh investigation](mesh-investigation.md), driven by the fabric-primary; its decision step
-runs node.create of a node-admin into the live mesh, on a carrier-edge-lost verdict or, for a fully
-crashed mesh, on exact provider exit proof.)
+Node recovery is RDM's drift reconciliation for a member that goes unheard outside any workflow. The
+accepted Build is the fabric's desired topology; a member at a path.name that
+[node investigation](node-investigation.md) did not reach is drift, and RDM puts it back. The
+mesh-primary is the reconciler for its own members, whatever their type: it tracks them, runs the
+investigation and starts the recovery. The app takes part only through the start hook of the new node.
+Recovery is not a caller op. (A mesh none of whose node-admins can be reached is
+[mesh investigation](mesh-investigation.md), driven by the fabric-primary; its decision step runs
+node.create of a node-admin into the live mesh.)
 
 ## Operation summary
 
 | Field | Contract |
 |---|---|
-| Reconciler | The mesh-primary of the member's mesh |
+| Reconciler | The mesh-primary of the member's mesh; the fabric-primary for a mesh-primary (mesh investigation for a mesh with no reachable node-admin) |
 | Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a command to them was never sent for a reachability reason (step 1) |
-| Investigation | The tickle ladder (`offline.rs`), then the provider's exact-exit proof |
-| Trigger | Exact provider proof only. Silence, a failed tickle and TRUE OFFLINE are not proof |
-| Execution | The mesh-primary opens the recovery as the next attempt of the current Build in its mesh's lane, claims it on its mesh's rows and runs it; no call to the fabric-primary, which learns it from the Build channel |
-| Steps | node.delete of the exited instance, node.create at the same path.name over the inherited data dir; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
-| Retained | path.name, placement, inherited data dir and endpoint key (unless the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), config (seeded from the deleted row) |
-| New | node.id, incarnation, OS-assigned port, exact runtime, and (when the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`) a newly allocated data dir and endpoint key |
-| App part | The new node's start runs `before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated data dir after `RDM_DATA_DIR_GONE_FLOORS` (`R-FM2`) |
+| Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.tickle direct and via peers, node.runtime.inspect; one verdict |
+| Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on a proof of termination |
+| Execution | The mesh-primary runs the recovery as the next attempt of the current Build and reports its receipts up the attempt's stream; the fabric-primary writes the Build records ([build.md](../build.md)) |
+| Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
+| Retained | path.name, placement, config (seeded from the deleted row); the inherited data dir and endpoint key when the verdict is `exited` |
+| New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
+| App part | The new node's start runs `before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |
 
-## Detection and proof
+## Detection and the verdict
 
-The mesh-primary runs one loop for its own members, on every gossip interval, never on a
-timer of its own:
+The mesh-primary runs one loop for its own members, on every gossip interval, never on a timer of its
+own:
 
-1. **Silence.** Each node's pruner marks a member `PendingReconnect` once it is unheard
-   past the staleness floor. Nothing is sent; the mark comes from the digests not arriving.
-   Peers stop routing new work to it. Silence is not death. Every node-admin keeps the
-   silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
-   continues the window already running. The mesh-primary also marks a member `PendingReconnect`
-   at once when a command to it was never sent for a reachability reason (the connect refused,
-   timed out or failed; the endpoint unresolved). The mark is an observer mark: it never replaces a
-   lifecycle state the node reported and the mesh-primary recorded (`connections-deleting`,
-   `stopping`, `stopped`), and it ends when a digest of the exact birth arrives after it, when the
-   birth answers its tickle, or when the view no longer holds that birth. A birth heard again
-   runs its `before_ready` hook again before it is ready-for-traffic
-   ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
-2. **Tickle.** Only the mesh-primary acts. Half a floor after the mark it makes one QUIC
-   connect, direct; if that fails, the same kick through up to two eligible live peers of
-   the birth's mesh, sent at once (`rafka-node-admin-core/src/offline.rs`, module doc).
-   Completion rules: any answer from the exact birth (`Current`, `CurrentParked` or
-   `Blocked` on the kick) ends the ladder and cancels the probes still running; one failed
-   peer probe does not cancel the other; every probe names the same exact
-   `(node.id, incarnation)`; a failure, a deadline included, never
-   proves anything, and the provider check below stays mandatory. A node-admin watching a
-   silent seat holder of its own mesh (seat watch) runs this same ladder at the mark, without the
-   half-floor wait; outside the holder's mesh the ladder is [mesh investigation](mesh-investigation.md)'s. An answer is
-   `reachable-silent`: recorded, and a held birth that answered `Current`, or that is heard again by
-   its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the authority above
-   it (its mesh-primary; the fabric-primary for a seat holder: every admin looks, one commands) and
-   runs its start sequence again before it is ready-for-traffic (Q87). The command goes only to a
-   birth the view holds off ready-for-traffic (the topology decides it, not what an admin just started has heard),
-   once per silence (not again within a staleness floor, nor until it is heard ready-for-traffic or
-   unheard again), never to a fabric seat holder, which has no authority above it, and never to a
-   birth with a command of its authority open or in flight, which is that command's. A commanded
-   start that stops at a step leaves the birth off its channels, Pending, for the next command. No path opens a hold-down; no path again at
-   least one floor later is TRUE OFFLINE, written as status Dead on the node's row.
-   Dead is observer-inferred and is never itself a reason to act.
-3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment
-   backend that launched the runtime) about the exact runtime recorded at launch. Exited
-   is the proof, recorded durably. `Unknown` or an unreadable runtime row proves nothing
-   and opens no hold. When the provider reports `OsStopped`, the mesh-primary records the durable
-   status-row fact `os-stopped { since }` (surfaced on `node.get`, never a gossip `MemberStatus`),
-   opens no hold and runs no `TerminateRuntime`; a hold already open on the birth is cancelled (its
-   `held-running` row removed, so no expired hold submits its terminate). It inspects the exact
-   runtime again on every tick: `Running` clears the fact and, if the birth is still unreachable,
-   the rule below opens a fresh hold; `Exited` clears the fact and is the proof; `Unknown` keeps the
-   fact, records the uncertainty and terminates nothing. When the provider reports `Running` for the exact runtime handle,
-   the mesh-primary records the durable status-row fact `held-running { since, verdicts }`
-   (surfaced on `node.get`, never as a gossip `MemberStatus`: the gossip wire is untouched)
-   and opens the hold (step 4).
-4. **Hung runtime hold and terminate (`R-FM1`).** During the hold (`RDM_HUNG_HOLD_FLOORS`
-   staleness floors, default 10 = 300 s at the 30 s floor), the mesh-primary keeps running
-   the investigation ladder every tick; an answer from the exact birth or its returning
-   digest ends the hold and clears `held-running` (`reachable-silent` / `offline-returned`,
-   no action). When the hold expires with the provider still reporting `Running`, the
-   mesh-primary submits the recovery Build for that birth whose first step is
-   `TerminateRuntime { node_id, incarnation, handle }`, which inspects the exact runtime again
-   immediately before it asks the provider to terminate (`Running` lets the request go; `OsStopped`
-   or `Unknown` fails the step by name and requests nothing; `Exited` sends no signal and the step
-   takes the exit proof): the provider's
-   `terminate(handle, Graceful)` then `Forced` after the stop grace on the exact runtime
-   handle recorded at launch, recording `exit_proof` durably and clearing `held-running`,
-   then continuing ordinary recovery in the same attempt (a new `node.id` at the same
-   `path.name`). A terminate the provider refuses or cannot prove ends the attempt
-   `Failed { step: TerminateRuntime, reason }` by name, and no hold submits that birth's terminate
-   again: a person decides. The mesh-primary keeps inspecting the exact runtime every tick (step 3):
-   `OsStopped` records the fact and cancels the hold; `Exited` is the proof, and the recovery of an
-   exited member follows (Failure and receipts); neither reopens the failed attempt. A
-   `TerminateRuntime` that failed at its own inspection (`OsStopped` or `Unknown`) asked the provider
-   nothing: it voids the hold, and a birth that reads `Running` and stays unreachable opens a fresh
-   hold under the ordinary rule.
-   For a hung mesh-primary, the fabric-primary runs the same hold and submits the same
-   Build; for a hung fabric-primary, watching admins record `held-running` (surfaced on
-   `node.get` and `fabric.get`) and surface it on `fabric.get`, and nothing below it
-   commands its termination.
+1. **Silence.** Each node's pruner marks a member `PendingReconnect` once it is unheard past the
+   staleness floor. Nothing is sent; the mark comes from the digests not arriving. Peers stop routing
+   new work to it. Silence is not death. Every node-admin keeps the silence bookkeeping
+   (`first_seen`), so a node-admin that becomes mesh-primary mid-window continues the window already
+   running. The mesh-primary also marks a member `PendingReconnect` at once when a command to it was
+   never sent for a reachability reason (the connect refused, timed out or failed; the endpoint
+   unresolved). The mark is an observer mark: it never replaces a lifecycle state the node reported and
+   the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), and it ends when a digest
+   of the exact birth arrives after it, when the birth answers its tickle, or when the view no longer
+   holds that birth. A birth heard again runs its `before_ready` hook again before it is
+   ready-for-traffic ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
+2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
+   [node investigation](node-investigation.md) on the exact birth: the by-destination connections index,
+   node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at
+   once, then node.runtime.inspect. Any answer from the exact birth ends the ladder and cancels the
+   probes still running; one failed peer probe does not cancel the other; every probe names the same
+   exact `(node.id, incarnation)`. For an unheard mesh-primary the fabric-primary runs it, without the
+   half-floor wait, after the election has named the new mesh-primary
+   ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)); outside its
+   mesh the ladder is [mesh investigation](mesh-investigation.md)'s.
+3. **The verdict is the one decision (Q111).** `reached`: a held birth that answered, or that is heard
+   again by its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the primary
+   above it (its mesh-primary; the fabric-primary for a mesh-primary: every admin looks, one commands)
+   and runs its start sequence again before it is ready-for-traffic (Q87). The command goes only to a
+   birth the view holds off ready-for-traffic (the topology decides it, not what an admin just started
+   has heard), once per silence (not again within a staleness floor, nor until it is heard
+   ready-for-traffic or unheard again), never to the fabric-primary, which has no primary above it, and
+   never to a birth with a command of its primary open or in flight, which is that command's. A
+   commanded start that stops at a step leaves the birth off its channels, Pending, for the next
+   command. Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at
+   once. Nothing holds, nothing is inspected again, and nothing waits for a proof of termination
+   (Q110, Q111). A birth that comes back after it was re-created is refused at admission
+   (`superseded-birth`), reported to the fabric-primary, and its runtime terminated.
 
 ## Numbered end-to-end sequence
 
-1. The mesh-primary proves the exit (or the `held-running` hold expires with the provider
-   still reporting `Running`, above) and opens the recovery attempt itself, keyed on
-   the target birth `(node.id, incarnation)`, and claims it on its mesh's rows (or, for a
-   hung mesh-primary, the fabric-primary opens and claims it). A repeat answers
-   AlreadyApplied or BuildInProgress from the mesh's own rows, never a second recovery.
-2. The claimant runs the attempt through its own executor in the target mesh's lane.
-3. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the target instance: for an
-   already-exited target, as a crashed target with no RPC to the dead process and no stop
-   frames; for a hung target whose `held-running` hold expired (`R-FM1`), `TerminateRuntime`
-   runs first on the exact runtime handle, records the provider's exit proof durably and
-   clears `held-running`, and `node.deleted` follows from that recorded exit proof.
-4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir
-   (or a newly allocated data dir when the old data dir was proven gone past
-   `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`): it loads the endpoint key from the kept data dir
-   (or mints a new endpoint key in the fresh data dir) and binds port 0, with a new node.id,
-   incarnation and port. Its config is seeded from the deleted row at that path.name.
+1. The mesh-primary's investigation ends in a verdict other than `reached`, and it opens the recovery
+   as the next attempt of the current Build, keyed on the target birth `(node.id, incarnation)` (or,
+   for an unheard mesh-primary, the fabric-primary opens it). A repeat answers AlreadyApplied or
+   BuildInProgress, never a second recovery.
+2. The reconciler runs the attempt through its own executor and reports each receipt up the attempt's
+   stream.
+3. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the target instance, as a target with
+   no RPC to the old process and no stop frames. When the verdict was `running`, the first step is
+   `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime handle recorded at launch,
+   the provider's `terminate(handle, Graceful)` then `Forced` after the stop grace: Q110's "then you kill
+   it". A terminate the provider refuses ends the attempt `Failed { step: TerminateRuntime, reason }` by
+   name; the next tick's investigation decides again.
+4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir when the
+   verdict was `exited` (or a newly allocated data dir otherwise, and when the old data dir is absent,
+   `R-FM2`): it loads the endpoint key from the kept data dir (or mints a new endpoint key in the fresh
+   data dir) and binds port 0, with a new node.id, incarnation and port. Its config is seeded from the
+   deleted row at that path.name.
 5. Create runs the whole [start](node-start.md#end-to-end-sequence) with FirstStart and
-   `inherited = true` over the kept data dir (or `inherited = false` over a newly allocated
-   data dir after `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), and ends node.created.
+   `inherited = true` over the kept data dir (or `inherited = false` over a newly allocated one), and
+   ends node.created.
 
 ## Command, completion and gossip messages
 
 ```text
-mesh-primary tick: PendingReconnect → tickle → TRUE OFFLINE → provider: Exited
-mesh-primary: open + claim attempt N of its mesh's lane on its own rows, run
-  node.delete(exited instance) → node.deleted   (no stop frames)
-  node.create(same path.name, inherited data dir) → every FirstStart event, node.started, node.created
+mesh-primary tick: PendingReconnect → node investigation → verdict
+  reached:    node.mesh.join (commanded back)
+  otherwise:  open attempt N of the current Build, run
+                node.delete(unheard instance) → node.deleted   (TerminateRuntime first when running; no stop frames)
+                node.create(same path.name; inherited data dir when exited) → every FirstStart event, node.started, node.created
 ```
 
-Delete blocks the old instance before the new join, so a late old digest cannot return
-the retained endpoint key to the old port. The workflow waits on stream events and Build
-receipts, not gossip.
+Delete blocks the old instance before the new join, so a late old digest cannot return the retained
+endpoint key to the old port. The workflow waits on stream events and Build receipts, not gossip.
 
 ## Sequence diagram
 
@@ -148,56 +110,50 @@ sequenceDiagram
     participant P as Provider
     participant F as Fabric-primary
     Note over M: tick: member PendingReconnect
-    M->>N: tickle (direct, then via peers)
-    Note over M: no path twice: TRUE OFFLINE
-    M->>P: inspect exact runtime
-    P-->>M: Exited
-    Note over M: open and claim attempt N of its mesh's lane (its own rows), run
-    Note over M: node.delete → node.deleted
-    Note over M: node.create, same path.name, inherited data dir
-    M-->>F: node.started, node.created
+    M->>N: node investigation: tickle (direct, then via peers)
+    M->>P: node.runtime.inspect
+    P-->>M: verdict
+    Note over M: reached: node.mesh.join; otherwise open attempt N of the current Build, run
+    Note over M: node.delete → node.deleted (TerminateRuntime first when running)
+    Note over M: node.create, same path.name (inherited data dir when exited)
+    M-->>F: receipts up the attempt's stream; node.started, node.created
 ```
 
 ## Failure and receipts
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty); here the
-mesh-primary is the submitter that resubmits by `build_id`. An exit during a workflow
-belongs to that workflow: its Build ends Failed, and the mesh-primary's next tick finds the
-member still proven exited and submits the recovery.
+mesh-primary is the submitter that resubmits by `build_id`. A member unheard during a workflow belongs
+to that workflow: its Build ends Failed, and the mesh-primary's next tick investigates the member again
+and submits the recovery.
 
 ### Lost data dir (`R-FM2`)
 
-Gone versus broken is decided from the filesystem error on the inherited `data_dir`, never
-guessed. An absent directory path (`NotFound` on the directory itself) is **gone**; an
-existing directory on disk whose `node-key` is missing, unreadable, or corrupt (`NotFound`
-on `node-key` inside an existing directory, `EIO`, `EACCES`, or decode failure) is
-**broken**:
+Gone versus broken is decided from the filesystem error on the inherited `data_dir`, never guessed. An
+absent directory path (`NotFound` on the directory itself) is **gone**; an existing directory on disk
+whose `node-key` is missing, unreadable, or corrupt (`NotFound` on `node-key` inside an existing
+directory, `EIO`, `EACCES`, or decode failure) is **broken**:
 
-- **Gone (arm A).** When the exited birth's `data_dir` is absent across
-  `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2 = 60 s at the 30 s floor, to ride
-  out a remount), the mesh-primary records `data-dir-lost { path, since }` durably on the
-  exited birth (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and
-  never as a gossip `MemberStatus`), and the recovery Build creates the node at the same
-  `path.name` over a newly allocated `data_dir` beside the old path with a newly minted
-  endpoint key (the old key is never re-minted) and `before_ready` with
-  `inherited = false`. For a lost mesh's node-admin, the fabric-primary runs this arm from the
-  fabric lane ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): with no
-  inspection possible there is no exit proof and no gone-floors wait; the node-admin is created at
-  its path.name over a newly allocated `data_dir` with a newly minted endpoint key,
-  `inherited = false`, and the old birth's data dir is reused only once its exit is proven.
-- **Broken (arm B).** On the first `PrepareStorage` failure over an existing but unreadable
-  `data_dir`, the executor records `data-dir-unreadable { path, cause }` durably on the
-  exited birth (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `node.get`
-  and never as a gossip `MemberStatus`), and the mesh-primary's due rule holds that
-  recovery (not due while the fact stands) instead of resubmitting every tick. RDM deletes
-  nothing on disk. When `<data_dir>/node-key` is repaired and reads again, the next tick
-  clears `data-dir-unreadable` (`rdm.node_admin.node.resolve.via-data-dir-repaired`) and
-  completes recovery over the kept `data_dir` with its retained endpoint key
-  (`inherited = true`).
+- **Gone (arm A).** When the `data_dir` of a birth whose verdict was `exited` is absent across
+  `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2 = 60 s at the 30 s floor, to ride out a
+  remount), the mesh-primary records `data-dir-lost { path, since }` durably on that birth
+  (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and never as a gossip
+  `MemberStatus`), and the recovery Build creates the node at the same `path.name` over a newly
+  allocated `data_dir` beside the old path with a newly minted endpoint key (the old key is never
+  re-minted) and `before_ready` with `inherited = false`. On any verdict but `exited` the data dir is
+  newly allocated without the wait ([node investigation](node-investigation.md)); for a lost mesh's
+  node-admin, the fabric-primary runs this arm ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)).
+- **Broken (arm B).** On the first `PrepareStorage` failure over an existing but unreadable `data_dir`,
+  the executor records `data-dir-unreadable { path, cause }` durably on that birth
+  (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `node.get` and never as a gossip
+  `MemberStatus`), and the mesh-primary's due rule holds that recovery (not due while the fact stands)
+  instead of resubmitting every tick. RDM deletes nothing on disk. When `<data_dir>/node-key` is
+  repaired and reads again, the next tick clears `data-dir-unreadable`
+  (`rdm.node_admin.node.resolve.via-data-dir-repaired`) and completes recovery over the kept `data_dir`
+  with its retained endpoint key (`inherited = true`).
 
 ## Observability contract
 
 Trace propagation, step spans and correlation follow the
-[runtime spans](../node-rpc-envelope.md#runtime-spans). The tickle, the TRUE OFFLINE mark,
-the provider inspection and the submit each have a span on the mesh-primary.
+[runtime spans](../node-rpc-envelope.md#runtime-spans). The investigation's steps, its verdict and the
+submit each have a span on the mesh-primary.
