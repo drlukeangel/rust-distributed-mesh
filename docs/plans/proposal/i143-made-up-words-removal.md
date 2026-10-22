@@ -287,7 +287,8 @@ Under Q107, Q110 and Q111 the sequence for an unheard primary is, in order:
    `node.mesh.join`; any other verdict, the mesh-primary re-creates it at its path.name with a new node
    id (Q110), over the inherited data dir when the investigation's provider step found the old runtime
    exited and over a newly allocated one otherwise (Q111, R-FM2). When no node-admin of the mesh is
-   available to the backbone, the temporary fabric-primary of §3 step 2 does this for that mesh.
+   available to the backbone, the fabric recovery workflow's executor does this for that mesh, without
+   becoming fabric-primary (fabric-recovery.md).
 3. An old birth that comes back is refused at admission by its cert (Q106, `superseded-birth`); the
    refusing node reports it to the fabric-primary, which terminates its runtime (Q111).
 
@@ -301,7 +302,7 @@ the hold around it, never the investigation.
 | `a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_mesh` | Q89: the mesh's lowest Ready admin takes over | kept as a proof, written again under a name in the terms of §3; the file does not move |
 | `a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone` | a primary change is published across the backbone | same |
 | `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` | the cut-off view and the hung hold | goes with landings 3 and 5 |
-| `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | both stay as proofs: the decision step (Q89, §3 step 2) and the hand-back (§3 step 3) of the fabric-primary to the first primary's mesh, together with the node at that path.name being its mesh-primary, once it has been ReadyForTraffic for one floor (Q107 (4)); only the cell's cut-off-view assertions go |
+| `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | stays as a proof of the workflow: at the decision step the fabric recovery workflow opens at the far side's lowest Ready mesh-primary, which never becomes fabric-primary; after the heal the node at the lost primary's path.name is fabric-primary by the election once Ready for one floor and mesh-primary (fabric-recovery.md); the cut-off-view assertions go |
 | `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof of the operation, with the storage dependency dropped: a same-mesh successor becomes both primaries at one boundary on the direct acknowledgement and acts; the record of both on its own row, by itself as the mesh's writer, follows and is proved eventual, never a precondition (node-primary-update.md step 6) |
 | `a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_decided_after` | the Build lane's in-flight claim against the seat row | goes with landing 2 |
 
