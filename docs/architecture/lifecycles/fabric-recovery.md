@@ -19,8 +19,7 @@ The sequence below reads topology from a node that is alive; when no node is,
 
 Fabric recovery is one workflow, an attempt of the current Build: taking the fabric-primary is its first
 step, recovering the lost node-admin its middle, handing the fabric-primary back its last. No node-admin
-takes the fabric-primary and keeps it. The workflow holds the lost primary's path.name while it runs, and
-if it must, reads it from the Build. One sequence, whatever stopped the fabric-primary and whichever
+takes the fabric-primary and keeps it. One sequence, whatever stopped the fabric-primary and whichever
 node-admin is fabric-primary until it is back. Only two things vary: when the row is written, and which node-admin the one leadership election
 names ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): the lowest
 ReadyForTraffic node-admin of the fabric-primary's own mesh while it has one, else the lowest
