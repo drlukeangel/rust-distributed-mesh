@@ -292,6 +292,10 @@ vacant (handed over, unheard past the floor, or no record)
        -> current ReadyForTraffic candidates of that type in that mesh
        -> lowest complete NodeId
        -> one elected primary
+the node-admin type of a mesh whose unheard mesh-primary was also the fabric-primary (Q122)
+       -> no node-admin is elected: the lowest ReadyForTraffic one runs fabric recovery instead,
+          and the node re-created at the fabric-primary's path.name records itself primary when Ready;
+          the mesh's other types elect as above
 ~~~
 
 RDM owns the election. Rafka binds facts and consumes the result. No downstream document or

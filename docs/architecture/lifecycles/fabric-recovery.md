@@ -31,7 +31,8 @@ ReadyForTraffic it is mesh-primary and fabric-primary, as it was, and the workfl
 taken over and nothing is handed back; the fabric-primary's path.name never changed, so a replacement
 executor starting the workflow over knows it. The attempt names what it recovers, as every recovery
 attempt does, and its executor writes this attempt's Build records while the fabric-primary is
-unavailable, the one case in which a node-admin other than the fabric-primary writes a Build record
+unavailable, and the rows of this attempt's own operations, since the mesh has no mesh-primary either: the one case
+in which a node-admin that is no primary writes a Build record or a mesh's rows
 ([build.md §5.3](../build.md#53-node-admin-storage-boundaries)). If the executor is lost, the next one in
 the same order starts the workflow again, resuming the attempt from its recorded progress.
 
