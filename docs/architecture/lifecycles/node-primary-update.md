@@ -47,38 +47,36 @@ and recording it are separate for every type.
 2. The writer pre-checks from its own view: the election over the nodes of that type in the mesh with the
    primary excluded names a ReadyForTraffic successor. If it names none, the step is refused by name and
    nothing has changed, no row ([no-successor cases](#no-successor-cases)).
-3. The mesh-primary, as sole author of member status, publishes "primary updating": operation, node type,
-   the primary's and the successor's exact births, the current and next revisions. It states intent
-   only; receivers keep the current primary until "primary updated" names the next revision.
-4. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): once
+3. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): once
    NA2 is mesh-primary NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
    (its own `connections/<node>/` rows are its own, R14).
-5. The primary calls `node.primary.update` on the successor's exact birth. The successor becomes
+4. The primary calls `node.primary.update` on the successor's exact birth. The successor becomes
    primary: it installs the election's result the call carries in its own topology view, answers
-   `node.primary.updated { revisions }` on that call, and announces the change in its own digest
-   (`is_primary`, and `is_fabric_primary` when both moved, at the next revision). A non-admin primary
+   `node.primary.updated { revisions }` on that call, and its next `Digest` carries the change
+   (`is_primary`, and `is_fabric_primary` when both moved, at the next revision), its normal
+   announcement and the only one ([gossip.md §3.1](../gossip.md#31-frame-catalog)). A non-admin primary
    then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
    moment.
-6. The mesh-primary records the change it hears: `is_primary` (and `is_fabric_primary`) at the next
-   revision on the successor's row. For the `node-admin` type that is NA2 recording its own row; for
-   every other type the mesh-primary records the successor's row from the successor's digest, the way it
-   records every member fact it hears. The write records the role; it does not grant it.
-7. The mesh-primary publishes "primary updated" with the same identifiers. A late "updating" never undoes
-   an "updated": the row's revision, per node type, is these two frames' order key in the one gossip
-   receive path (R-RX3); nothing orders inside a handler.
-8. The commanding Build continues on the successor's direct acknowledgement of step 5, never on
-   gossip: steps 6 and 7 are the recording and the announcement of a change that has already happened,
-   and the Build waits for neither. The successor is now the old primary's primary (for the `node-admin`
+5. The mesh-primary records the change it hears: `is_primary` (and `is_fabric_primary`) at the next
+   revision on the successor's row, and its next `Members` projection carries it, its normal publication.
+   For the `node-admin` type that is NA2 recording its own row; for every other type the mesh-primary
+   records the successor's row from the successor's digest, the way it records every member fact it
+   hears. The write records the role; it does not grant it. No frame of its own announces a primary
+   change.
+6. The commanding Build continues on the successor's direct acknowledgement of step 4, never on
+   gossip: step 5 is the recording of a change that has already happened, and the Build waits for
+   neither the digest nor the record. The successor is now the old primary's primary (for the `node-admin`
    type, its mesh-primary) and commands the old primary's connections delete, stop, restart or replace.
 
 ## Failure contract
 
 - **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by
   name, nothing changed, the Build's step fails by name.
-- **The record's write fails** (step 5 or 6). The row is a local write, temp file, fsync, rename
-  (R14's fs contract), and it answers a named error or succeeds. The role is the election's, not the
-  write's: a named error fails the step by name, the successor stays what the election names it, and
-  the mesh-primary records the row on its next write. A writer dying before the rename changes nothing:
+- **The record's write fails** (step 5). The row is a local write, temp file, fsync, rename (R14's fs
+  contract), and it answers a named error or succeeds. The step completed on the acknowledgement of
+  step 4 and the role is the election's, not the write's: a named error is handled as every storage
+  error is, named on its span and surfaced, it fails nothing already completed, the successor stays
+  what the election names it, and the mesh-primary records the row on its next write. A writer dying before the rename changes nothing:
   on restart it reads its rows, computes the election from what it holds and records what is missing.
 - **After the successor installed itself, it is primary whatever the call returns.** The receiver never refuses the
   call for the birth it names (R-UC1a, R-RX5); it installs from the election's result the call carries
@@ -92,7 +90,7 @@ and recording it are separate for every type.
 - **The successor is unheard after the update.** When node investigation's verdict is anything but
   reached, the step fails by name, `the successor is unheard after the update: <verdict>`, and the Build
   is Failed (R-BI4). The ordinary election then names whoever it names, the old primary included: the
-  lowest ReadyForTraffic node of that type in the mesh is primary, "primary updated" is published and the
+  lowest ReadyForTraffic node of that type in the mesh is primary, its digest carries it and the
   mesh-primary records it. The successor's node goes through
   [node recovery](node-recovery.md) like any unheard member. A caller's resubmit opens a new run, so a
   new update under its own key, which excludes the old primary.
@@ -105,10 +103,10 @@ and recording it are separate for every type.
 - **Indeterminate after the update:** the election resolves it. An identical retry of the call replays the
   same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.
-- **The old primary lost after the update, before "updated":** the successor and every reader take the
-  primary from the election; the successor announces its role in its digest, and the mesh-primary (the
-  successor itself for the `node-admin` type) records it and publishes "updated". Completion needs
-  neither gossip delivery nor the old primary's survival.
+- **The old primary lost after the update:** the successor and every reader take the primary from the
+  election; the successor's digest carries its role, and the mesh-primary (the successor itself for the
+  `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's
+  survival.
 - **Discovery is not installation.** A later attempt that reads the record has discovered the update, not
   installed it. The resuming executor installs from the election locally and obtains the successor's
   `node.primary.updated` (its installation acknowledgement) before it commands the departing primary's
@@ -181,19 +179,18 @@ nothing.
 ```text
 commander → primary       (a step of the Build that stops, deletes, restarts, replaces or deletes the primary's connections)
 writer                    pre-check: a ReadyForTraffic successor of the type in the mesh, the primary excluded
-mesh-primary → mesh channel, backbone   "primary updating" (operation, node type, both exact births, revisions)
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
-successor                 becomes primary: installs the election's result in its topology view; announces it in its digest
+successor                 becomes primary: installs the election's result in its topology view
   ← node.primary.updated { revisions }   (PrimaryUpdated)
-mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row)
-mesh-primary → mesh channel, backbone   "primary updated" (same identifiers)
 commander's Build continues under the successor
+successor → mesh channel  its next Digest carries is_primary (its normal announcement)
+mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next Members projection carries it
 ```
 
-"Primary updating" and "primary updated" are announcements, never the fact: the election's result is the fact, and the row records it.
-They are best-effort dissemination, and a stop does not wait for their delivery (R-NS2): the
-mesh-primary publishes a written fact as its author.
+No gossip frame announces a primary change: the successor's `Digest` and the mesh-primary's `Members`
+projection are the normal announcement and publication, best-effort dissemination a stop does not wait
+for (R-NS2). The election's result is the fact, and the row records it.
 
 ## Mermaid sequence diagram
 
@@ -205,19 +202,18 @@ sequenceDiagram
     participant G as Mesh channel and backbone
     FP->>NA1: Build step on NA1 (stop, delete, restart, replace, connections delete)
     Note over NA1: pre-check: a ReadyForTraffic successor, NA1 excluded
-    NA1->>G: primary updating
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update
-    Note over NA2: becomes primary: installs the election's result; announces it in its digest
+    Note over NA2: becomes primary: installs the election's result
     NA2-->>NA1: node.primary.updated { revisions }
-    Note over NA2: records is_primary on its own row at the next revision
-    NA2->>G: primary updated
     Note over FP,NA2: the Build continues; NA2 commands NA1's destructive step
+    NA2->>G: Digest (is_primary, next revision)
+    Note over NA2: records is_primary on its own row; Members projection carries it
 ```
 
 ## Observability contract
 
 Trace propagation, step spans and correlation follow the
 [runtime spans](../node-rpc-envelope.md#runtime-spans). The update's spans carry the operation, the node
-type, both exact births and the revisions: the "primary updating" and "primary updated" announcements,
-the record's write, the successor's install, and every refusal by its typed reason.
+type, both exact births and the revisions: the successor's install, the record's write, and every
+refusal by its typed reason.

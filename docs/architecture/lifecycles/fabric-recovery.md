@@ -34,7 +34,7 @@ primary's path.name as its mesh-primary (step 4).
    between the mark and the row.
 2. **The successor writes the one row.** It names itself by the election on its own view and runs the
    writer's steps of [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate):
-   "primary updating", the row at the next revision, "primary updated". Any other admin that notices
+   the call, the successor's digest carrying the change, the record at the next revision. Any other admin that notices
    tells the successor; the successor acts only when its own view agrees; repeats answer `AlreadyApplied`.
    - *Its own mesh*: the successor is mesh-primary and fabric-primary at the first tick after the mark,
      once the record has named the unheard primary for one staleness floor in its own book: a record

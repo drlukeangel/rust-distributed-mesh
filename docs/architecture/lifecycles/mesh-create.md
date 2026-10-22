@@ -50,7 +50,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    ReadyForTraffic.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin
    `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
-   writes the mesh row and records `is_primary` on its own row, publishes `primary updated` and its mesh's status
+   writes the mesh row and records `is_primary` on its own row, which its `Digest` carries, publishes its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every
@@ -104,24 +104,18 @@ Three frames, all authored by the new mesh-primary once it is mesh-primary; noth
 for `mesh2` before that, and the fabric-primary never publishes on its behalf (R-RX4).
 
 The primary the election named, on `mesh2`'s channel and the backbone
-([catalog](../gossip.md#31-frame-catalog), `primary updated`):
+([catalog](../gossip.md#31-frame-catalog), the node-admin's own `Digest`, `is_primary` at revision 1):
 
 ```json
 {
-  "frame": "primary updated",
-  "node_type": "node-admin",
-  "primary": {
-    "mesh": "mesh2",
-    "node_id": "adm2b7d4f9h1",
-    "incarnation": "0000000000000001",
-    "revision": 1
-  }
-}
-
-The mesh's status, the mesh-primary's own `MeshStatus`, first `pending` and at step 8
-`ready-for-traffic`:
-
-```json
+  "frame": "digest",
+  "mesh": "mesh2",
+  "node_id": "adm2b7d4f9h1",
+  "incarnation": "0000000000000001",
+  "digest_seq": 1,
+  "is_primary": true,
+  "revision": 1
+}json
 {
   "frame": "mesh-status",
   "mesh": "mesh2",
@@ -158,7 +152,7 @@ sequenceDiagram
     A-->>F: Applied
     Note over A: 6. hook, topology read, node.started, fabric-primary sets ReadyForTraffic
     Note over A: 7. election names it mesh-primary, claims mesh name, writes mesh row
-    A->>G: 7. primary updated, MeshStatus pending, first Members aggregate
+    A->>G: 7. Digest (is_primary), MeshStatus pending, first Members aggregate
     G-->>R: install mesh2 into external topology
     F-->>C: node.created
     Note over A: 8. creates mesh2's other nodes under the same Build
