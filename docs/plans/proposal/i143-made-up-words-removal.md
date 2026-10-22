@@ -5,7 +5,7 @@ make new terms", "there is no authority, there is no committed seat", "there is 
 always one writer for each item", and "do not replace the removed mechanisms with renamed equivalents".
 This page is the removal written at the root: where each word came from, what it stands for in the
 terms we have, every page and code file that carries it, the landing that stops it spreading today, and
-the order the rest comes out in. Nothing here starts until Luke has read it.
+the order the rest comes out in.
 
 ## 1. The finding
 
@@ -46,20 +46,46 @@ line that would need one is listed in §6 as his call.
 | the mesh's authority | the mesh-primary | `fabric-authority.md` §2.3.1 and `build.md:218` already say "the current fabric-primary" / "the mesh-primary" in the same sentences |
 | the fabric's authority | the fabric-primary | same |
 | a cohort's primary, "cohort seat" | the node-type primary | Luke, 2026-10-22; not yet on any page |
-| cohort | the node type (`node-admin`, `rpc`) | `node-rpc-envelope.md` JoinNode `types`; `NodeKind` in code |
+| cohort | the nodes of one type in one mesh (`(mesh, node_type)`); its primary is the node-type primary of that mesh, a node of that type, a node-admin only for the `node-admin` type | Q107 (1): "every cohort `(mesh, node_type)` runs one election"; `node-rpc-envelope.md` JoinNode `types` |
 | mesh-primary seat, fabric seat; "holds the seat" | being the mesh-primary, being the fabric-primary | the terms themselves |
 | holder | the primary (mesh-primary, fabric-primary, node-type primary) | the terms themselves |
-| seat row, seat move, committed seat row, `seat-moves/<T>…` | the row `node.primary.update` writes: `is_primary` and `is_fabric_primary` on the node row | `node-rpc-envelope.md:362-363`: "`is_primary` … `node.primary.update`; never a put", "`is_fabric_primary` … `node.fabric-primary.update`" |
+| seat row, seat move, committed seat row, `seat-moves/<T>…` | the node row's `is_primary` and `is_fabric_primary`, written by `node.primary.update` and `node.fabric-primary.update` (the update sequence below) | `node-rpc-envelope.md:362-363`: "`is_primary` … `node.primary.update`; never a put", "`is_fabric_primary` … `node.fabric-primary.update`" |
 | committed (seat, row, transfer, takeover) | written; one writer writes the row | Q109 A: one writer per row, the storage decides nothing |
 | takeover, take seats, `TakeSeats` | take over | Luke's verb ("taken over fabric-primary", 2026-10-20); 26 page lines already use it |
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
 | `Seated` frame | the `primary updated` announcement | `gossip.md:157` already carries `primary updating` / `primary updated` for the same operation; one of the two goes (§6) |
-| seat watch, `seat_watch.rs` | the staleness-floor rule of the fabric-primary | `fabric-node-lifecycle-elections.md` §4.3; named by the operation it leads to, `node.fabric-primary.update` |
+| seat watch, `seat_watch.rs` | the staleness-floor rule of every primary: a primary unheard past the floor is superseded by the lowest ReadyForTraffic node of its type in its mesh | Q107 (1); `fabric-node-lifecycle-elections.md` §4.3 for the fabric-primary; named by the operation it leads to, `node.primary.update` or `node.fabric-primary.update` |
 | `LeadershipView`, resolver | the leadership election and its result | Luke, Q107: "leadership election"; `fabric-node-lifecycle-elections.md` §1 |
 | lane, `LaneId`, `rev-<R>/<seq>` | the Build journal's records at their own keys | `build.md:413` "the Build journal"; Q109 items 12-13: one row at build_id, one at (build_id, mesh, attempt), one claim at (build_id, mesh, attempt) |
 | write cut-off, `StorageError::CutOff`, held rows, lift, restore | nothing: a writer finishes the writes it issued before it writes its row | Q109 B, Luke's sentence |
 | cut-off view, `authorizes()`, healing window | nothing: a node-admin acts on its view and answers a question by its direct operations | R-RX1 (Luke, 2026-10-12): no authorization in the framework |
 | `NotSeatHolder` (the fabric store's refusal by seat record) | nothing: storage decides nothing | Q109 |
+
+
+**The update sequence that replaces the seat rows.** Who is primary is a fact on the node row, one row
+per node, and has the row's one writer:
+
+1. A primary changes by `node.primary.update` (or `node.fabric-primary.update` for the fabric-primary),
+   whether the primary hands over itself or is unheard past the staleness floor. The operation writes
+   `is_primary` (or `is_fabric_primary`) on the successor's node row and clears it on the old primary's.
+   The writer is the one Q107 (1) names: for the `node-admin` type the successor itself, since it is now
+   its mesh's row writer; for every other type the mesh-primary, which writes its mesh's node rows.
+2. The operation then announces `node.primary.updated` (gossip.md, "primary updated"); the announcement
+   is never the fact.
+3. A joining or restarting node reads the fact, never gossip: `node.start` step 4 reads its projections
+   from its node-admin, and a join sent to a node that is not the primary is answered
+   `ReceiverNotPrimary { needed }` naming the one to report to (`node-rpc-envelope.md:709`,
+   node-mesh-join.md step 3).
+4. A reader of the store folds nothing: the row says who is primary. The `seat-moves/<T>` log, its fold
+   and its revision bookkeeping go; `revision` stays on the node row as the primary's revision.
+
+The Build records are the fabric-primary's. It writes every Build record (acceptance, attempts, claims,
+step receipts, results) through the configured Build storage (`build.md:218`: "Authority is the current
+fabric-primary ... never creates a second writer"). A mesh-primary runs its mesh's attempt and reports
+each receipt up the attempt's own `build.attempt.run` stream; running an attempt does not make it a
+Build-record writer. It writes its own mesh's rows: the Mesh row, its members' node rows and status rows.
+`build.md:350`'s "one claimant per mesh for drift (its mesh-primary, on its mesh's in-flight row)" is
+rewritten to this.
 
 ## 4. Inventory
 
@@ -187,8 +213,9 @@ These have no life apart from seat. Recommendation: they go with it, in the same
 0. The name check (§5). Cheap, today, stops the spread before any removal.
 1. The write cut-off and the words "committed seat" out of code and pages (lane e7s3, proposal B's eight
    lines plus the 21 lines of §4.1's third column).
-2. Lanes out: Build records at their own keys through the Build storage contract, one writer each, no
-   routing through the fabric-primary; Q113 withdrawn. `build-fact/1` under the durable-format rule.
+2. Lanes out: Build records at their own keys through the configured Build storage, every one written
+   by the fabric-primary; a mesh-primary runs its mesh's attempts and reports receipts up the attempt's
+   stream (§3's writer rule). Q113 withdrawn. `build-fact/1` under the durable-format rule.
 3. `authorizes()` and the cut-off view out, with their 18 callers, 11 page lines and 9 cells, and a
    before-and-after flame, since it is gossip code.
 4. seat, authority and cohort out, page by page, each page's old and new lines listed in that landing's
@@ -242,8 +269,9 @@ mesh-investigation.md (12 lines); deployment-provider.md (7); states.md, node-pr
 mesh-delete.md (5 each); fabric-recovery.md (4); fabric-delete.md (3); node-identity-and-state.md,
 node-rpc-envelope.md, gossip.md, fabric-certs.md (2 each); node-delete.md (1). CLAUDE.md line 102.
 Under Q110 a primary changes in two ways only: it hands over itself by `node.primary.update`, or it is
-unheard past the staleness floor and the lowest Ready node-admin of its mesh takes over and re-creates it
-with a new node id (Q89 says this for the fabric-primary already). An old birth that comes back is refused
+unheard past the staleness floor and the lowest ReadyForTraffic node of its type in its mesh takes over
+(Q107 (1)) and the mesh-primary re-creates the unheard node at its path.name with a new node id (Q110;
+Q89 says this for the fabric-primary, whose successor is its mesh's lowest Ready node-admin). An old birth that comes back is refused
 at admission by its cert (Q106's `superseded-birth`), then terminated. Nothing holds, nothing verifies.
 
 **The sticky file's six cells, and what becomes of each.**
@@ -253,16 +281,12 @@ at admission by its cert (Q106's `superseded-birth`), then terminated. Nothing h
 | `a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_mesh` | Q89: the mesh's lowest Ready admin takes over | kept as a proof, written again under a name in the terms of §3; the file does not move |
 | `a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone` | a primary change is published across the backbone | same |
 | `a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat` | the cut-off view and the hung hold | goes with landings 3 and 5 |
-| `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | the decision step stays a proof; "gets it back" is the cut-off view's healing window and goes |
+| `a_mesh_cut_off_whole_from_the_backbone_loses_the_fabric_seat_at_the_decision_step_and_gets_it_back_after_the_heal` | Q89's decision step and the seat's return after a heal | both stay as proofs: the decision step (Q89) and the hand-back of the fabric-primary to the node at the first primary's path.name once it has been ReadyForTraffic for one floor (Q107 (4)); only the cell's cut-off-view assertions go |
 | `a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` | node.primary.update writes one row before the successor acts | kept as a proof, written again in the terms of §3 |
 | `a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_decided_after` | the Build lane's in-flight claim against the seat row | goes with landing 2 |
 
-The two cells of the cut-off view and the one of the in-flight claim go with their machinery. The three
-proofs that remain are proofs of operations (a primary takes over, a primary change is published, a
-hand-over writes one row first) and are written as new cells in a file named by the operation, not by
-"sticky", with no line carried over from this file.
-
-**Open from Q110's row, for Luke:** in RDM standalone the stores are one shared directory, so an old
-node that comes back could write files there before its first connection is refused and it is terminated.
-Under "one writer per item" its writes land at its own birth's keys and every reader folds them away;
-no machinery is proposed for it until telemetry shows a run where it matters.
+The cut-off view's cell and the in-flight claim's cell go with their machinery. The four proofs that
+remain are proofs of operations (a primary takes over, a primary change is published, a hand-over writes
+one row first, the fabric-primary is handed back) and move to a file named by the operation, not by
+"sticky", keeping the assertions that prove the operation and dropping those that prove removed
+machinery.
