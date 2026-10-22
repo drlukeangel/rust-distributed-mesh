@@ -27,13 +27,13 @@ ReadyForTraffic mesh-primary on the backbone, from [mesh investigation](mesh-inv
 step, does exactly the same. The workflow re-creates the node-admin at the fabric-primary's path.name
 ([node recovery](node-recovery.md), over the inherited data dir when the investigation's provider step
 found the old runtime exited, otherwise over a newly allocated one, R-FM2). When that node is
-ReadyForTraffic it is mesh-primary and fabric-primary, as it was, and the workflow completes. Nothing is
+ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary (step 4) and completes. Nothing is
 taken over and nothing is handed back; the fabric-primary's path.name never changed, so a replacement
 executor starting the workflow over knows it. The attempt names what it recovers, as every recovery
 attempt does, and its executor writes this attempt's Build records while the fabric-primary is
-unavailable, and the rows of this attempt's own operations, since the mesh has no mesh-primary either: the one case
-in which a node-admin that is no primary writes a Build record or a mesh's rows
-([build.md §5.3](../build.md#53-node-admin-storage-boundaries)). If the executor is lost, the next one in
+unavailable, and, while the target mesh has no active mesh-primary, the mesh and node records its own operations
+require, nothing else; this makes it no primary, and ordinary mesh writing passes to the restored
+mesh-primary when it assumes the role ([build.md §5.3](../build.md#53-node-admin-storage-boundaries)). If the executor is lost, the next one in
 the same order starts the workflow again, resuming the attempt from its recorded progress.
 
 1. **Unheard past the staleness floor.** Every admin marks the fabric-primary `PendingReconnect` at the
@@ -60,8 +60,10 @@ the same order starts the workflow again, resuming the attempt from its recorded
    ([node.mesh.join](node-mesh-join.md), `superseded-birth`) and its runtime is terminated (Q110).
    Nothing holds, and nothing waits for proof.
 4. **The fabric-primary is back.** When the node at the fabric-primary's path.name, returned or
-   re-created, is ReadyForTraffic, it is mesh-primary and fabric-primary, as it was, records both on its
-   own row, and the workflow completes. The fabric's shared store root stays where it was. The fabric
+   re-created, is ReadyForTraffic, the workflow restores it as mesh-primary and fabric-primary: the node
+   installs both roles, acknowledges directly, and records them on its own row as the mesh's writer; its
+   normal Digest carries the change. The write records the roles; it does not grant them. The workflow
+   completes on the acknowledgement. The fabric's shared store root stays where it was. The fabric
    resolves to a fabric-primary at the original path.name over the original data dir and endpoint key
    when the investigation's provider step found the old runtime exited, and over a newly allocated data
    dir and endpoint key otherwise (R-FM2).

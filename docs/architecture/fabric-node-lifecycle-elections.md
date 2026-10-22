@@ -87,7 +87,12 @@ Build attempt
 ~~~
 
 Restart of the same logical node preserves NodeId. Permanent logical replacement mints a new NodeId, so
-replacement does not inherit election rank.
+replacement does not inherit election rank. One exception, [fabric recovery](lifecycles/fabric-recovery.md)
+(Q122): while it restores the fabric-primary, no other node becomes fabric-primary or node-admin primary
+of that mesh; the fabric-primary stays assigned to the recovery target's path.name, and when the node
+re-created there is ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary. The
+recovery attempt supplies the target; nothing about a lower id or a matching name displaces a primary
+anywhere else.
 
 ---
 
@@ -293,8 +298,9 @@ vacant (handed over, unheard past the floor, or no record)
        -> lowest complete NodeId
        -> one elected primary
 the node-admin type of a mesh whose unheard mesh-primary was also the fabric-primary (Q122)
-       -> no node-admin is elected: the lowest ReadyForTraffic one runs fabric recovery instead,
-          and the node re-created at the fabric-primary's path.name records itself primary when Ready;
+       -> no node-admin is elected: the lowest ReadyForTraffic one runs fabric recovery instead;
+          the fabric-primary stays assigned to the target's path.name, and the workflow restores the
+          node re-created there as mesh-primary and fabric-primary when it is ReadyForTraffic;
           the mesh's other types elect as above
 ~~~
 
