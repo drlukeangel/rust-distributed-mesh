@@ -13,7 +13,7 @@ use crate::model::PathName;
 use crate::storage::{NodeRow, NodesStorage};
 use crate::topology::Topology;
 use rdm_core::NodeId;
-use rdm_core::status::{NotAuthority, StatusReply, StatusRequest, TagScope};
+use rdm_core::status::{NotPrimary, StatusReply, StatusRequest, TagScope};
 use std::collections::BTreeSet;
 use tokio::sync::RwLock;
 
@@ -122,7 +122,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // this receiver does not hold is the receiver's own fact, never a peer that did not resolve.
     let Some(subject) = view.own(node_id) else {
         span.record("detail", format!("{me}: node {node_id} holds no birth in this admin's view; its tags cannot be written").as_str());
-        return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+        return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
     };
     span.record("subject", subject.name.to_string().as_str());
     // The writer of the row is the mesh-primary of the node's mesh, and no other admin (R-OW1).
@@ -130,13 +130,13 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
         span.record("detail", needed.as_str());
-        return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
+        return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
     }
     match subject.incarnation_id.as_ref() {
         Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
         None => {
             span.record("detail", format!("{me}: {} has no known birth; its tags cannot be written", subject.name).as_str());
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         }
         Some(_) => {}
     }

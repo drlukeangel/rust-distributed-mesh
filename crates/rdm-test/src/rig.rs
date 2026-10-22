@@ -523,7 +523,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             b.serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer: rdm_transport::PeerContext, req: rdm_core::status::StatusRequest| {
                 let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), receiver.clone(), book.clone());
                 async move {
-                    use rdm_core::status::{NodeState, NotAuthority, StatusReply, StatusRequest as R};
+                    use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest as R};
                     if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
                         check_ins.send_modify(|held| held.push(req));
                         return Ok(rdm_core::reply::applied());
@@ -535,7 +535,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                     // member reports again.
                     if let R::DeclareNodeState { node_id, incarnation, state, .. } = &req {
                         let Some(name) = book.get(node_id.as_str()).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| d.node.name) else {
-                            return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+                            return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
                         };
                         use rdm_core::MemberStatus as M;
                         match state {
@@ -586,7 +586,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     };
     let primary = matches!(seat, SideSeat::Primary);
     if primary {
@@ -603,7 +603,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", rdm_core::PublisherId { node: name.to_string(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
         backbone.set_mesh_primary(true);
         if name == "mesh1.admin.1" {
-            backbone.announce_seat(rdm_core::Seat::MeshPrimary, rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 }).await;
+            backbone.hold_primary(rdm_core::Seat::MeshPrimary, rdm_core::Primary { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 });
         }
         let rounds = {
             let (backbone, membership) = (backbone.clone(), membership.clone());

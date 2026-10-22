@@ -44,7 +44,7 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId) -> 
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 

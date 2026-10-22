@@ -168,7 +168,7 @@ fn probe(d: &MeshDigest) -> StatusRequest {
 /// and never ReadyForTraffic, its blocker is named on `rdm.mesh.node.reject.via-before-ready-blocked`,
 /// and the authority's own pull gate answered the pull typed `NotReady`. When the authority's hook
 /// has passed and it publishes ReadyForTraffic, the hook runs again, returns `Ok`, the blocker span
-/// closes naming the event that cleared it (`authority-ready`) and only then does the node publish
+/// closes naming the event that cleared it (`primary-ready`) and only then does the node publish
 /// ReadyForTraffic (`via-ready`). What must NOT happen: the node Ready before its hook passed.
 #[test]
 fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
@@ -190,13 +190,13 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "ReadyForTraffic was published while the hook was blocked: {:?}", seen.lock().unwrap());
         assert_eq!(b.authority.answered(), 0, "the authority answered no rows before its own hook passed");
         assert_eq!(spans_named(&spans, "rdm.node_rpc.request.reject.via-before-ready-not-passed").len(), 1, "the authority's gate refused the pull typed NotReady once");
-        assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string())]);
+        assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string())]);
         let blocker = spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked");
         assert_eq!(blocker.len(), 1, "the blocker is named once");
         assert!(blocker[0]["blocker"].contains("NotReady"), "the blocker names the authority's answer: {:?}", blocker[0]);
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty(), "no via-ready before the hook passed");
         let handle = running.before_ready().expect("a registered hook has a handle");
-        assert!(matches!(handle.state(), BeforeReadyState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{:?}", handle.state());
+        assert!(matches!(handle.state(), BeforeReadyState::Blocked { retry_on: RetryOn::PrimaryReady, .. }), "{:?}", handle.state());
 
         b.authority.gate.open();
         b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
@@ -205,8 +205,8 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
         until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
 
         assert_eq!(*seen.lock().unwrap(), vec![MemberStatus::Pending, MemberStatus::ReadyForTraffic]);
-        assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string()), ("ok".to_string(), String::new())]);
-        assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked")[0]["cleared_by"], "authority-ready");
+        assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
+        assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked")[0]["cleared_by"], "primary-ready");
         assert_eq!(spans_named(&spans, "rdm.mesh.node.update.via-ready").len(), 1, "via-ready follows the successful attempt");
         assert_eq!(before_ready.held().0.len(), 3, "the pull's rows are held");
         running.stop().await;
@@ -216,7 +216,7 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
 
 /// CONTRACT: a retry armed AFTER the event it waits on already happened still completes. The
 /// authority becomes Ready while the first attempt is still running; when the attempt then returns
-/// `Blocked { AuthorityReady }` the node runs the hook again at once, with no further event, and
+/// `Blocked { PrimaryReady }` the node runs the hook again at once, with no further event, and
 /// then runs the rest of its start to ReadyForTraffic. What must NOT happen: the node waits for an
 /// event that already went by.
 #[test]
@@ -231,7 +231,7 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
         let (started, resume) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
-        let before_ready = TestBeforeReady::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Blocked { reason: "the authority was not Ready when this attempt asked".into(), retry_on: RetryOn::AuthorityReady } });
+        let before_ready = TestBeforeReady::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Blocked { reason: "the authority was not Ready when this attempt asked".into(), retry_on: RetryOn::PrimaryReady } });
         let starting = start(&b, &before_ready);
         tokio::time::timeout(WRONG, started.notified()).await.expect("the first attempt began");
         let node_book = before_ready.book().expect("the attempt was handed the node's membership");
@@ -246,7 +246,7 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
         let running = starting.await.unwrap().expect("the node comes up");
         let settled = tokio::time::timeout(WRONG, running.before_ready().expect("handle").settled()).await.expect("the retry completes");
         assert_eq!(settled, BeforeReadyState::Passed);
-        assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string()), ("ok".to_string(), String::new())]);
+        assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
         // node.started follows the hook's pass by the start's topology, Build-floor and rafka-time steps
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
         until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
@@ -282,7 +282,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
         let BeforeReadyState::Blocked { reason: hook_reason, .. } = handle.state() else { panic!("the hook is blocked: {:?}", handle.state()) };
         let probed = command(&b, probe).await;
         let d = running.digest.clone();
-        assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::AuthorityReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
+        assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::PrimaryReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
         assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the retirement ends the hook");
         assert_eq!(settled, BeforeReadyState::Cancelled);
@@ -425,7 +425,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
         let seen = observe(&b);
-        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Blocked { reason: String::new(), retry_on: RetryOn::AuthorityAddressed }));
+        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Blocked { reason: String::new(), retry_on: RetryOn::PrimaryAddressed }));
         let why = match start(&b, &before_ready).await.unwrap() {
             Ok(running) => {
                 let state = running.before_ready().map(|h| h.state());
@@ -438,7 +438,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
         let attempts = spans_named(&spans, "rdm.mesh.node.update.via-before-ready-attempt");
         assert_eq!(attempts.len(), 1, "the hook ran once: {attempts:?}");
         assert_eq!(attempts[0]["outcome"], "failed");
-        assert!(attempts[0]["reason"].contains("no reason") && attempts[0]["reason"].contains("authority-addressed"), "the attempt names the refusal and the event the hook asked for: {attempts:?}");
+        assert!(attempts[0]["reason"].contains("no reason") && attempts[0]["reason"].contains("primary-addressed"), "the attempt names the refusal and the event the hook asked for: {attempts:?}");
         assert!(spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked").is_empty(), "no blocker was opened for a reason that names nothing");
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());

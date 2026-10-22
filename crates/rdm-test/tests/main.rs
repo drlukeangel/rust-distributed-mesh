@@ -132,8 +132,8 @@ mod fabric_primary_loss;
 mod late_authority;
 #[path = "elections/role_cohort.rs"]
 mod role_cohort;
-#[path = "elections/sticky_seat.rs"]
-mod sticky_seat;
+#[path = "elections/node_primary_update.rs"]
+mod node_primary_update;
 #[path = "mesh/canonical_ids.rs"]
 mod canonical_ids;
 #[path = "mesh/mesh_create.rs"]
@@ -260,9 +260,6 @@ mod concern_reserved;
 
 #[path = "gossip/digest_replacement.rs"]
 mod digest_replacement;
-
-#[path = "gossip/seat_replacement.rs"]
-mod seat_replacement;
 
 #[path = "gossip/publication_receive.rs"]
 mod publication_receive;

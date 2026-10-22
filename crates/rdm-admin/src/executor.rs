@@ -877,8 +877,8 @@ mod tests {
         assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothSeats)), "cannot transfer: no secondary of type node-admin in mesh mesh1");
         // And no other mesh-primary either: both searches named.
         nodes.retain(|n| n.mesh != "mesh2");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothSeats)), "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricSeatOutside)), "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothSeats)), "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricSeatOutside)), "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
     }
 
     #[test]

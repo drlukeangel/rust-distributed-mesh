@@ -473,8 +473,8 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
 /// the typed new-seat frame, never `Indeterminate`. `mesh1` holds the fabric-primary seat, and the
 /// Build retires `mesh1`: before the retire is claimed, the fabric-primary moves the fabric seat alone
 /// to `mesh2`'s primary by node.fabric-primary.update (op `0x21`, mesh-delete.md step 1), and the Build
-/// goes on at the new seat. The successor installs the committed row (`seat.update.via-primary-updated`
-/// at the new seat, not a replay) before the old fabric-primary's drive refuses with `Fenced` in its
+/// goes on at the new fabric-primary. The successor installs the election's result the call carries
+/// (`seat.update.via-primary-updated` at the new fabric-primary, `held`) before the old fabric-primary's drive refuses in its
 /// span and names the new seat, so the caller's re-submit by the Build id at the seat the frame names
 /// is accepted and streams to `Complete`.
 /// Must NOT happen: the new seat named to the caller before it installed (its re-submit refused
@@ -494,7 +494,7 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let new_seat = loop {
         match stream.next().await {
-            Some(Ok(BuildFrame::SeatMoved { fabric_primary })) => break fabric_primary.expect("the old seat names the new one"),
+            Some(Ok(BuildFrame::FabricPrimaryMoved { fabric_primary })) => break fabric_primary.expect("the old seat names the new one"),
             Some(Ok(BuildFrame::Complete { .. })) => panic!("the old fabric-primary cannot finish a retire of its own mesh"),
             Some(Ok(BuildFrame::Failed { operation, step, reason, .. })) => panic!("the Build failed at {operation} {step}: {reason}"),
             Some(Ok(_)) => continue,
@@ -520,8 +520,8 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
     let yielded: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-seat-yielded").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
     assert!(!yielded.is_empty(), "the old fabric-primary's dispatch after its seat moved was refused, SeatYielded in its span");
     assert!(yielded.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{yielded:?}");
-    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["replay"]) == "false").collect();
-    assert_eq!(installed.len(), 1, "the new seat installed the committed row once, not a replay: {installed:?}");
+    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["outcome"]) == "held").collect();
+    assert_eq!(installed.len(), 1, "the new fabric-primary installed the election's result once: {installed:?}");
     let installed_at = installed[0]["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
     let early: Vec<_> = yielded.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) <= installed_at).collect();
     assert!(early.is_empty(), "C1 step 8: the old seat's drive names the new seat only once the successor installed ({installed_at}): {early:?}");
@@ -607,7 +607,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts the grown shape");
     let (before_a, (step, reason)) = next_blocked(&mut stream).await;
     assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
-    assert!(reason.contains(BLOCKED) && reason.contains(A) && reason.contains("authority-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
+    assert!(reason.contains(BLOCKED) && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
     assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })));
 
     // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
@@ -631,7 +631,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     // The flame: the blocked birth's probe answers, each naming its blocker.
     let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == BLOCKED && s(&sp["attributes"]["state"]) == "blocked").collect();
     assert!(probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(B)), "the birth answered both blockers Blocked");
-    assert!(probes.iter().all(|sp| s(&sp["attributes"]["retry_on"]) == "authority-addressed"), "every Blocked answer names the hook's retry event");
+    assert!(probes.iter().all(|sp| s(&sp["attributes"]["retry_on"]) == "primary-addressed"), "every Blocked answer names the hook's retry event");
     estate.artifact("blocked-probes", &json!({ "a_reruns": a_reruns, "blocked_probe_answers": probes.len() }));
     estate.record_trace_url(probes[0]["trace_id"].as_str().unwrap_or(""));
 }

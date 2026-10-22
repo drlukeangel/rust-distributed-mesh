@@ -3,11 +3,11 @@
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rdm_core::wire::ProjectionEntry;
-use rdm_core::{IncarnationId, LifecycleOp, PublisherId, Seat, SeatHolder};
+use rdm_core::{IncarnationId, LifecycleOp, PublisherId, Primary};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
-use rdm_core::topology::{SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
+use rdm_core::topology::{PrimaryKind, SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
@@ -41,7 +41,7 @@ fn digest() -> rdm_core::MeshDigest {
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 
@@ -76,12 +76,12 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
         (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 00 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0c79727a34396a333033796834 00 7f000001 50"),
-        (Seats { seat: Seat::FabricPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 2 }, gone: false }, "0c 01 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02 00"),
-        (Seats { seat: Seat::MeshPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 300 }, gone: true }, "0c 00 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 ac02 01"),
+        (Primaries { kind: PrimaryKind::FabricPrimary, primary: Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 2 }, gone: false }, "0c 01 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02 00"),
+        (Primaries { kind: PrimaryKind::MeshPrimary, primary: Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 300 }, gone: true }, "0c 00 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 ac02 01"),
         (Stored { mesh: "m".into(), mesh_id: Some(rdm_core::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rdm_core::EndpointId("k".into()), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0c79727a34396a333033796834 00 7f000001 50"),
-        (RafkaTime { ms: 1_000, seat: None }, "0d e807 00"),
-        (RafkaTime { ms: 300, seat: Some(Seat::FabricPrimary) }, "0d ac02 01 01"),
-        (RafkaTime { ms: 7, seat: Some(Seat::MeshPrimary) }, "0d 07 01 00"),
+        (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
+        (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
+        (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Topology::encode_reply(&r).unwrap()[0]);
@@ -123,12 +123,13 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     };
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], departed: vec![] };
     let hex = "00 05 6d65736831 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
         0c 313132333435363738396162 0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
         01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+        00 00 \
         02 \
         00 00";
     assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
@@ -174,9 +175,9 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Topology::frame_kind(&Started), FrameKind::Started);
     assert_eq!(Topology::frame_kind(&Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 1 }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&End { meshes: 0 }), FrameKind::Terminal);
-    let holder = SeatHolder { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 1 };
-    assert_eq!(Topology::frame_kind(&Seats { seat: Seat::FabricPrimary, holder, gone: false }), FrameKind::Data);
-    assert_eq!(Topology::frame_kind(&RafkaTime { ms: 1, seat: None }), FrameKind::Data);
+    let holder = Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 1 };
+    assert_eq!(Topology::frame_kind(&Primaries { kind: PrimaryKind::FabricPrimary, primary: holder, gone: false }), FrameKind::Data);
+    assert_eq!(Topology::frame_kind(&RafkaTime { ms: 1, kind: None }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
     assert_eq!(Topology::frame_kind(&UnknownMesh { mesh: "m".into() }), FrameKind::Refusal(ReplyKind::new(rdm_core::outcome::Code::NotFound)));
 }

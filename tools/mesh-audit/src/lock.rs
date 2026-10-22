@@ -263,7 +263,7 @@ pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 pub const BUILD_FACTS_SOURCE: &str = "crates/rdm-admin/src/build_facts_read.rs";
 pub const FETCH_BUILD: &str = "crates/rdm-admin/src/fetch_build.rs";
 pub const BUILD_FACTS_CELLS: &str = "crates/rdm-core/tests/build_facts_wire.rs";
-/// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the holder writes the one committed seat-transfer row, the successor installs from it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape and the seat frames.
+/// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the primary calls its successor with the election's result, the successor installs it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape.
 pub const HANDOVER_SOURCE: &str = "crates/rdm-admin/src/fabric_handover.rs";
 pub const HANDOVER_CELLS: &str = "crates/rdm-core/tests/handover_wire.rs";
 
@@ -670,18 +670,28 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_wire", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::StoreLayoutWireIsAtomic => {
-            // The store root's layout (Q28 A, Q35 x): the Build lanes' keys and formats, the fabric's
-            // seat moves and the in-flight row, frozen byte for byte by one cell; a layout that moves
-            // moves them together (`durable format moved`).
-            require(root, "crates/rdm-admin/src/build_lanes.rs", &["pub const FACT_FORMAT: &str = \"build-fact/1\";", "fn the_store_layout_is_frozen_byte_for_byte"], ratchet, &mut out);
-            // The lane key's revision and sequence, as a `LaneKey` writes them (the storage boundary's
-            // type, every backend's key).
-            require(root, "crates/rdm-admin/src/build_state.rs", &["pub(crate) const REV_PREFIX: &str = \"rev-\";", "format!(\"{REV_PREFIX}{revision:020}\")", "format!(\"{seq:020}\")"], ratchet, &mut out);
-            require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "format!(\"{t:020}--{}--{}\", by.node_id, by.incarnation.as_str())"], ratchet, &mut out);
+            // The store root's layout (Q28 A; build.md §5.3): the Build record's format and keys, one
+            // record per fact at its own key and the in-flight row, frozen byte for byte by one cell, and
+            // the retired seat-move format kept for its decoding; a layout that moves moves them together
+            // (`durable format moved`).
+            require(
+                root,
+                "crates/rdm-admin/src/build_state.rs",
+                &[
+                    "pub const RECORD_FORMAT: &str = \"build-record/1\";",
+                    "BuildFact::Accepted(_) => \"accepted\".to_string(),",
+                    "Some(mesh) => format!(\"{mesh}-{attempt}\")",
+                    "BuildFact::Step(s) => format!(\"{}-step-{}-{}\", attempt(&s.mesh, s.attempt), s.operation, s.step)",
+                    "fn the_store_layout_is_frozen_byte_for_byte",
+                ],
+                ratchet,
+                &mut out,
+            );
+            require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "fn an_older_store_roots_move_rows_still_decode_and_it_opens"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";", "const IN_FLIGHT: &str = \"in-flight\";"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateWireIsAtomic => {
-            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 18;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 3;", "const REPLY_VARIANTS: u32 = 13;", "code: crate::outcome::Code"], ratchet, &mut out);
             require(root, "crates/rdm-core/tests/handover_wire.rs", &["fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::ForwardWireIsAtomic => {
@@ -745,7 +755,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             );
         }
         Ratchet::GossipEnvelopeWireIsAtomic => {
-            require(root, "crates/rdm-transport/src/envelope.rs", &["pub const TYPES: [&str; 22]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace", "pub const CHUNK_TYPE: &str = \"rdm.gossip.chunk\""], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/envelope.rs", &["pub const TYPES: [&str; 19]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace", "pub const CHUNK_TYPE: &str = \"rdm.gossip.chunk\""], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/membership.rs", &["rdm.mesh.membership.update.via-context-dropped", "crate::set_remote_parent"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/gossip.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.membership.reject.via-chunk-incomplete"], ratchet, &mut out);
             require(root, "crates/rdm-transport/tests/digest_frames_wire.rs", &["fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
@@ -761,8 +771,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/membership.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.primary.updating"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/membership.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.stopped"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn seat_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
@@ -773,9 +783,9 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
             require(root, FETCH_BUILD, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_eleven_variant_wire_schema"], ratchet, &mut out);
-            require(root, HANDOVER_SOURCE, &["rdm.node_admin.seat.update.via-seat-row-written", "rdm.node_admin.seat.update.via-primary-updated", "rdm.node_admin.seat.reject.via-primary-update", "commit_seat_move"], ratchet, &mut out);
-            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_four_variant_wire_schema", "fn replies_match_the_frozen_eighteen_variant_wire_schema"], ratchet, &mut out);
-            require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema", "fn primary_updated_matches_the_frozen_wire_schema", "fn primary_updating_matches_the_frozen_wire_schema"], ratchet, &mut out);
+            require(root, HANDOVER_SOURCE, &["rdm.node_admin.seat.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
+            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_thirteen_variant_wire_schema"], ratchet, &mut out);
+            require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneRenameWritePath => {

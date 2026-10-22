@@ -29,7 +29,7 @@
 //! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
 //! for a birth the receiver holds a newer incarnation of, or holds as departed, is
 //! `RejectedStaleIncarnation`. A receiver that is not the authority, or a sender that is not the
-//! subject or its primary, is `RejectedNotAuthority`, the reply naming which.
+//! subject or its primary, is `RejectedNotPrimary`, the reply naming which.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
@@ -365,7 +365,7 @@ pub enum StatusRequest {
     /// name only, so the path cannot move: the mesh-primary joins the held record's own path and
     /// `name` for the `path.name` index key. It validates from the record it holds, in order: the
     /// exact birth ([`StatusReply::RejectedStaleIncarnation`]), its own writer role
-    /// ([`NotAuthority::ReceiverNotPrimary`]), the node admitting no connection
+    /// ([`NotPrimary::ReceiverNotPrimary`]), the node admitting no connection
     /// ([`StatusReply::RejectedAdmittingConnections`]), the name grammar ([`StatusReply::RejectedName`]);
     /// then it reads the new name's row and claims it ([`StatusReply::NameHeld`]),
     /// moves the row (put at the new key carrying `renamed_from`, release of the old key), sends a live
@@ -823,7 +823,7 @@ impl StatusRequest {
 
 /// Why a declaration was not applied, by name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NotAuthority {
+pub enum NotPrimary {
     /// The receiver does not hold the seat the declaration needs.
     ReceiverNotPrimary {
         /// The seat the receiver would have to hold.
@@ -838,7 +838,7 @@ pub enum NotAuthority {
     SubjectUnknown,
 }
 
-impl NotAuthority {
+impl NotPrimary {
     /// The reason's name as it appears in spans and replies.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -940,9 +940,9 @@ pub enum StatusReply {
         held: FabricId,
     },
     /// The receiver or sender is not the authority for the call.
-    RejectedNotAuthority {
+    RejectedNotPrimary {
         /// Which authority condition failed.
-        why: NotAuthority,
+        why: NotPrimary,
     },
     /// A node move backward along the legal order.
     RejectedInvalidNodeTransition {
@@ -1336,26 +1336,26 @@ pub enum StatusReply {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RetryOn {
     /// The authority's birth changed or departed.
-    AuthorityChanged,
+    PrimaryChanged,
     /// The named node became reachable (heard after silence, or first heard).
     TargetReachable {
         /// The node waited for.
         node_id: NodeId,
     },
     /// The authority published ReadyForTraffic.
-    AuthorityReady,
+    PrimaryReady,
     /// The authority addressed this node (it sent a down op).
-    AuthorityAddressed,
+    PrimaryAddressed,
 }
 
 impl RetryOn {
     /// The event's name in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::AuthorityChanged => "authority-changed",
+            Self::PrimaryChanged => "primary-changed",
             Self::TargetReachable { .. } => "target-reachable",
-            Self::AuthorityReady => "authority-ready",
-            Self::AuthorityAddressed => "authority-addressed",
+            Self::PrimaryReady => "primary-ready",
+            Self::PrimaryAddressed => "primary-addressed",
         }
     }
 }
@@ -1512,7 +1512,7 @@ impl StatusReply {
             Self::RejectedStaleIncarnation { .. } => "rejected-stale-incarnation",
             Self::RejectedStaleMesh { .. } => "rejected-stale-mesh",
             Self::RejectedStaleFabric { .. } => "rejected-stale-fabric",
-            Self::RejectedNotAuthority { .. } => "rejected-not-authority",
+            Self::RejectedNotPrimary { .. } => "rejected-not-primary",
             Self::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
             Self::RejectedInvalidMeshTransition { .. } => "rejected-invalid-mesh-transition",
             Self::PeerUnresolved { .. } => "peer-unresolved",
@@ -1615,7 +1615,7 @@ impl NodeProtocol for Status {
             StatusReply::RejectedStaleIncarnation { .. } => "rejected-stale-incarnation",
             StatusReply::RejectedStaleMesh { .. } => "rejected-stale-mesh",
             StatusReply::RejectedStaleFabric { .. } => "rejected-stale-fabric",
-            StatusReply::RejectedNotAuthority { .. } => "rejected-not-authority",
+            StatusReply::RejectedNotPrimary { .. } => "rejected-not-primary",
             StatusReply::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
             StatusReply::RejectedInvalidMeshTransition { .. } => "rejected-invalid-mesh-transition",
             StatusReply::PeerUnresolved { .. } => "peer-unresolved",
@@ -1675,9 +1675,9 @@ impl NodeProtocol for Status {
             StatusReply::RejectedStaleIncarnation { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             StatusReply::RejectedStaleMesh { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             StatusReply::RejectedStaleFabric { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
-            StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown { .. } } => ReplyKind::new(crate::outcome::Code::NotFound),
-            StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } } => ReplyKind::new(crate::outcome::Code::PermissionDenied),
+            StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown { .. } } => ReplyKind::new(crate::outcome::Code::NotFound),
+            StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedNotPrimary { why: NotPrimary::SenderNotSubject { .. } } => ReplyKind::new(crate::outcome::Code::PermissionDenied),
             StatusReply::RejectedInvalidNodeTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedInvalidMeshTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
@@ -1813,7 +1813,7 @@ mod tests {
             (StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
-            (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, ReplyKind::new(crate::outcome::Code::NotFound)),
+            (StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
@@ -2029,8 +2029,8 @@ mod tests {
         let len = Status::encode_reply(&r).unwrap().len();
         assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "blocked encodes to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let short = StatusReply::blocked(node_id.clone(), incarnation.clone(), "rows not yet published", RetryOn::AuthorityAddressed);
-        assert_eq!(short, StatusReply::Blocked { node_id, incarnation, reason: "rows not yet published".into(), retry_on: RetryOn::AuthorityAddressed }, "a reason within its budget is kept whole");
+        let short = StatusReply::blocked(node_id.clone(), incarnation.clone(), "rows not yet published", RetryOn::PrimaryAddressed);
+        assert_eq!(short, StatusReply::Blocked { node_id, incarnation, reason: "rows not yet published".into(), retry_on: RetryOn::PrimaryAddressed }, "a reason within its budget is kept whole");
     }
 
     /// CONTRACT (R-CR3: the completion names every id it accounts for; a request names at most

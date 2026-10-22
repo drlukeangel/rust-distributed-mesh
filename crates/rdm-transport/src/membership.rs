@@ -25,8 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rdm_core::seat::transfer::CommittedSeat;
-use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, Primary, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -432,16 +431,6 @@ pub enum Frame {
         /// The Rafka-time of the change.
         changed_at_rafka_ms: u64,
     },
-    /// A seat changed hands: its new holder announces itself, once, on its own mesh channel and the
-    /// backbone (a mesh primary's seat), or on the backbone (the fabric primary's). Every node-admin
-    /// holds the record with the later epoch; a record that does not supersede the held one is
-    /// refused by name. Replayed by a primary to a neighbour that comes up, like a status.
-    Seated {
-        /// The seat that changed hands.
-        seat: Seat,
-        /// Its new holder: the exact birth and the record's epoch.
-        holder: SeatHolder,
-    },
     /// Reserved page position 10 (Luke Q23): its type is refused before decoding data. Gossip never
     /// commands an investigation; the seat watch measures the holder's silence itself.
     Concern {
@@ -483,11 +472,11 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (R-G3; gossip.md, reserved lifecycle frame positions): never sent on any
-    /// channel. A seat update is announced by `PrimaryUpdating` and `PrimaryUpdated`, and a birth's
-    /// contact addresses ride its `Digest` and its mesh-primary's `Members` projection.
+    /// channel: a primary change rides the successor's `Digest` and the mesh-primary's `Members`
+    /// projection, and a birth's contact addresses ride its `Digest` and that projection.
     NewFabricPrimary {
         /// The committed holder: mesh, node, incarnation and the seat's revision.
-        holder: SeatHolder,
+        holder: Primary,
         /// The holder's endpoint key.
         endpoint_id: String,
         /// The holder's bound QUIC UDP address.
@@ -547,29 +536,6 @@ pub enum Frame {
         /// projection of that publisher newer than it, listing the birth, moved past the stop.
         topology_version: u64,
     },
-    /// "primary updated" (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part
-    /// C3 edit 6): the successor of a node.primary.update installed the holder's ONE committed row and
-    /// answered node.primary.updated. Published by the holder on that answer (R-MT1: "NA1 gossips that
-    /// the primary updated to NA2"), on its own mesh channel and the backbone; peer mesh primaries
-    /// carry it unchanged. An announcement, never authority: the committed row is. Every node holds the
-    /// seats together. Its order key in the one receive path is each seat's committed epoch, per
-    /// cohort, an "updated" after the "updating" of the same epoch (R-RX3, `crate::receive_order`).
-    PrimaryUpdated {
-        /// The operation the update precedes; its subject is the holder the seats moved from.
-        op: LifecycleOp,
-        /// Every seat the row moved: its cohort, the successor's exact birth and the committed epoch.
-        seats: Vec<CommittedSeat>,
-    },
-    /// "primary updating" (the same edit): the holder of a seat, its cohort's row writer, says the
-    /// seats are updating to its successor, after its pre-check and before its write cut-off and its
-    /// row, on its own mesh channel and the backbone. It states intent only and moves no seat:
-    /// receivers keep the current holder until the committed row names the next epoch.
-    PrimaryUpdating {
-        /// The operation the update precedes; its subject is the current holder.
-        op: LifecycleOp,
-        /// Every seat that is updating, each naming the successor's exact birth at the epoch it would take.
-        seats: Vec<CommittedSeat>,
-    },
     /// Authored CloudEvents context retained alongside the selected domain data.
     /// This is an in-process carrier, never another wire kind.
     #[serde(skip)]
@@ -601,7 +567,6 @@ impl Frame {
         let encoded = crate::wire::encode(self.data()).expect("domain data serializes");
         encoded[0] as usize
     }
-    pub(crate) fn content_bytes(&self) -> Vec<u8> { crate::wire::encode(self.data()).expect("domain data serializes") }
     /// The frame as one postcard message.
     pub fn encode(&self) -> Vec<u8> {
         match self { Self::Authored { context, frame } => crate::envelope::encode(context, frame).expect("event serializes"), _ => panic!("gossip encoding requires an explicitly supplied author birth") }
@@ -972,7 +937,7 @@ impl StatusBook {
 }
 
 /// The seat holders a node holds: each seat's record with the latest epoch, until a record that
-/// supersedes it (`SeatHolder::supersedes`). A record that does not is refused by name.
+/// supersedes it (`Primary::supersedes`). A record that does not is refused by name.
 #[derive(Debug, Clone)]
 pub struct SeatBook {
     inner: Arc<Mutex<HeldSeats>>,
@@ -991,28 +956,24 @@ impl Default for SeatBook {
 
 #[derive(Debug, Default)]
 struct HeldSeats {
-    contexts: HashMap<(Seat, String), (SeatHolder, crate::envelope::Context)>,
-    together_context: Option<crate::envelope::Context>,
-    fabric: Option<SeatHolder>,
+    fabric: Option<Primary>,
     /// When the fabric seat's record last changed holder here, by every writer (`put`).
     fabric_since: Option<Instant>,
-    meshes: HashMap<String, SeatHolder>,
+    meshes: HashMap<String, Primary>,
     /// Every other (mesh, node type) cohort's primary record, by (mesh, kind).
-    cohorts: HashMap<(String, rdm_core::NodeKind), SeatHolder>,
+    cohorts: HashMap<(String, rdm_core::NodeKind), Primary>,
     /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
-    /// The last update held together: replayed as one `PrimaryUpdated` while its seats are the records held.
-    together: Option<(LifecycleOp, Vec<CommittedSeat>)>,
-    receipts: crate::receive_order::SeatReceipts,
-    /// Seats a written seat move left with no holder, by seat and mesh: the move's revision (i144 Q51:
-    /// a takeover vacates the lost mesh's primary seat). Only a record of a later revision fills one.
-    vacant: HashMap<(Seat, String), u64>,
+    /// Each birth a record held here named before a record naming another birth replaced it, by the
+    /// record's seat and mesh: the primaries this book saw change, so a birth that was never primary
+    /// here is told apart from one an update moved.
+    replaced: std::collections::HashSet<(Seat, String, IncarnationId)>,
 }
 
-/// The slot `seat` of `mesh` is held under: a mesh's node-admin cohort is its primary seat, and the
-/// fabric seat is one per fabric.
-fn slot(seat: Seat, mesh: &str) -> (Seat, String) {
+/// The seat and mesh a record of `seat` in `mesh` is held under: a mesh's node-admin type is its
+/// mesh-primary, and the fabric-primary is one per fabric.
+fn held_under(seat: Seat, mesh: &str) -> (Seat, String) {
     match seat {
         Seat::FabricPrimary => (Seat::FabricPrimary, String::new()),
         Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => (Seat::MeshPrimary, mesh.to_string()),
@@ -1022,7 +983,7 @@ fn slot(seat: Seat, mesh: &str) -> (Seat, String) {
 
 impl HeldSeats {
     /// The record held for `seat` of `mesh` (the mesh is ignored for the fabric seat).
-    fn get(&self, seat: Seat, mesh: &str) -> Option<SeatHolder> {
+    fn get(&self, seat: Seat, mesh: &str) -> Option<Primary> {
         match seat {
             Seat::FabricPrimary => self.fabric.clone(),
             Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
@@ -1030,14 +991,12 @@ impl HeldSeats {
         }
     }
 
-    /// The revision `seat` of `mesh` was left vacant at, while no later record fills it.
-    fn vacancy(&self, seat: Seat, mesh: &str) -> Option<u64> {
-        self.vacant.get(&slot(seat, mesh)).copied()
-    }
-
     /// Hold `record` for `seat` of `mesh`.
-    fn put(&mut self, seat: Seat, mesh: &str, record: SeatHolder) {
-        self.vacant.remove(&slot(seat, mesh));
+    fn put(&mut self, seat: Seat, mesh: &str, record: Primary) {
+        if let Some(held) = self.get(seat, mesh).filter(|h| h.incarnation != record.incarnation) {
+            let (seat, mesh) = held_under(seat, mesh);
+            self.replaced.insert((seat, mesh, held.incarnation));
+        }
         match seat {
             Seat::FabricPrimary => {
                 if self.fabric.as_ref().is_none_or(|held| held.node_id != record.node_id) {
@@ -1055,46 +1014,32 @@ impl HeldSeats {
     }
 }
 
-/// The seat and the mesh a written seat's record is held under.
-fn committed_key(c: &CommittedSeat) -> (Seat, String) {
-    (c.seat.kind(), c.mesh_key().unwrap_or(c.holder.mesh.as_str()).to_string())
-}
-
 /// What [`SeatBook::take`] did with a record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatTaken {
     /// The record was held; `previous` is the record it superseded.
     Held {
         /// The record it superseded.
-        previous: Option<SeatHolder>,
+        previous: Option<Primary>,
     },
     /// The record is the one already held.
     Same,
     /// The record does not supersede the one held, which is named.
     Refused {
         /// The record held, which this one does not supersede.
-        held: SeatHolder,
-    },
-    /// The seat was left vacant at `revision` by a committed move, and the record is not later.
-    RefusedVacant {
-        /// The revision the seat was left vacant at.
-        revision: u64,
+        held: Primary,
     },
 }
 
 impl SeatBook {
     /// Hold `holder` for `seat` if it supersedes what is held.
-    pub fn take(&self, seat: Seat, holder: &SeatHolder) -> SeatTaken {
+    pub fn take(&self, seat: Seat, holder: &Primary) -> SeatTaken {
         let mut held = self.inner.lock().unwrap();
-        if let Some(revision) = held.vacancy(seat, &holder.mesh).filter(|v| holder.revision <= *v) {
-            return SeatTaken::RefusedVacant { revision };
-        }
         match held.get(seat, &holder.mesh) {
             Some(c) if &c == holder => SeatTaken::Same,
             Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
             previous => {
                 held.put(seat, &holder.mesh, holder.clone());
-                held.receipts.installed_seat(seat, holder);
                 self.changed.send_modify(|v| *v += 1);
                 SeatTaken::Held { previous }
             }
@@ -1108,108 +1053,41 @@ impl SeatBook {
         self.inner.lock().unwrap().fabric_since.unwrap_or(self.created).elapsed()
     }
 
-    /// Hold every seat of one committed update together, under one lock: either every seat's record
-    /// supersedes the one held and all are held, or none is (the seats a stale update names stay as
-    /// they are). Returns what happened per seat.
-    pub fn take_together(&self, op: &LifecycleOp, seats: &[CommittedSeat]) -> Vec<SeatTaken> {
+    /// Hold every record of one node.primary.update together, under one lock: either every record
+    /// supersedes the one held and all are held, or none is (the records a stale update names stay as
+    /// they are). Returns what happened per record.
+    pub fn take_together(&self, records: &[(Seat, Primary)]) -> Vec<SeatTaken> {
         let mut held = self.inner.lock().unwrap();
-        let current = |held: &HeldSeats, c: &CommittedSeat| {
-            let (seat, mesh) = committed_key(c);
-            held.get(seat, &mesh)
-        };
-        let vacancy = |held: &HeldSeats, c: &CommittedSeat| {
-            let (seat, mesh) = committed_key(c);
-            held.vacancy(seat, &mesh).filter(|v| c.revision <= *v)
-        };
-        let decided: Vec<SeatTaken> = seats
+        let decided: Vec<SeatTaken> = records
             .iter()
-            .map(|c| match current(&held, c) {
-                _ if vacancy(&held, c).is_some() => SeatTaken::RefusedVacant { revision: vacancy(&held, c).unwrap_or_default() },
-                Some(h) if h == c.record() => SeatTaken::Same,
-                Some(h) if !c.record().supersedes(&h) => SeatTaken::Refused { held: h },
+            .map(|(seat, r)| match held.get(*seat, &r.mesh) {
+                Some(h) if &h == r => SeatTaken::Same,
+                Some(h) if !r.supersedes(&h) => SeatTaken::Refused { held: h },
                 previous => SeatTaken::Held { previous },
             })
             .collect();
-        if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. } | SeatTaken::RefusedVacant { .. })) {
-            return seats
-                .iter()
-                .map(|c| match (vacancy(&held, c), current(&held, c)) {
-                    (Some(revision), _) => SeatTaken::RefusedVacant { revision },
-                    (None, held) => SeatTaken::Refused { held: held.unwrap_or_else(|| c.record()) },
-                })
-                .collect();
+        if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
+            return records.iter().map(|(seat, r)| SeatTaken::Refused { held: held.get(*seat, &r.mesh).unwrap_or_else(|| r.clone()) }).collect();
         }
-        for c in seats {
-            let (seat, mesh) = committed_key(c);
-            held.put(seat, &mesh, c.record());
+        for (seat, r) in records {
+            held.put(*seat, &r.mesh, r.clone());
         }
-        held.together = Some((op.clone(), seats.to_vec()));
-        held.receipts.installed_primary(op, seats);
         if decided.iter().any(|t| matches!(t, SeatTaken::Held { .. })) {
             self.changed.send_modify(|v| *v += 1);
         }
         decided
     }
 
-    /// Classify and install a received seat publication under one lock. Only a settled publication
-    /// changes holder records; rejected rows change neither records nor retained publication data.
-    pub(crate) fn receive(&self, frame: &Frame) -> bool {
-        self.receive_records(frame).is_some()
-    }
-
-    fn receive_records(&self, frame: &Frame) -> Option<Vec<(CommittedSeat, Option<SeatHolder>)>> {
-        let mut held = self.inner.lock().unwrap();
-        let seats = match frame.data() {
-            Frame::Seated { seat, holder } => vec![CommittedSeat::of(*seat, holder)],
-            Frame::PrimaryUpdating { seats, .. } | Frame::PrimaryUpdated { seats, .. } => seats.clone(),
-            _ => unreachable!("only seat publications use the seat book receive door"),
-        };
-        let current: Vec<_> = seats.iter().map(|c| { let (seat, mesh) = committed_key(c); (c.clone(), held.get(seat, &mesh)) }).collect();
-        // A seat a committed move left vacant takes no record of its revision or older (i144 Q51).
-        if seats.iter().any(|c| { let (seat, mesh) = committed_key(c); held.vacancy(seat, &mesh).is_some_and(|v| c.revision <= v) }) { return None; }
-        if !held.receipts.admit(frame, &current) { return None; }
-        if !matches!(frame.data(), Frame::PrimaryUpdating { .. }) {
-            for c in &seats {
-                let (seat, mesh) = committed_key(c);
-                held.put(seat, &mesh, c.record());
-                if let Some(context) = frame.context() { held.contexts.insert((seat, mesh), (c.record(), context.clone())); }
-            }
-            if let Frame::PrimaryUpdated { op, .. } = frame.data() { held.together = Some((op.clone(), seats)); held.together_context = frame.context().cloned(); }
-            self.changed.send_modify(|v| *v += 1);
-        }
-        Some(current)
+    /// Whether a record of `seat` in `mesh` held here named `incarnation` and a record naming another
+    /// birth replaced it: the birth was primary here and is no more.
+    pub fn replaced(&self, seat: Seat, mesh: &str, incarnation: &IncarnationId) -> bool {
+        let (seat, mesh) = held_under(seat, mesh);
+        self.inner.lock().unwrap().replaced.contains(&(seat, mesh, incarnation.clone()))
     }
 
     /// The fabric seat's held record.
-    pub fn fabric(&self) -> Option<SeatHolder> {
+    pub fn fabric(&self) -> Option<Primary> {
         self.inner.lock().unwrap().fabric.clone()
-    }
-
-    /// Leave `seat` of `mesh` vacant at `revision`, as a written seat move with no holder did (i144
-    /// Q51: a takeover vacates the lost mesh's primary seat): its record goes, and only a record of a later
-    /// revision fills it. `false` when the record held, or a vacancy, is already at `revision` or later.
-    pub fn vacate(&self, seat: Seat, mesh: &str, revision: u64) -> bool {
-        let mut held = self.inner.lock().unwrap();
-        if held.get(seat, mesh).is_some_and(|h| h.revision >= revision) || held.vacancy(seat, mesh).is_some_and(|v| v >= revision) {
-            return false;
-        }
-        match slot(seat, mesh) {
-            (Seat::FabricPrimary, _) => held.fabric = None,
-            (Seat::Cohort(kind), m) if kind != rdm_core::NodeKind::NodeAdmin => {
-                held.cohorts.remove(&(m, kind));
-            }
-            (_, m) => {
-                held.meshes.remove(&m);
-            }
-        }
-        held.vacant.insert(slot(seat, mesh), revision);
-        self.changed.send_modify(|v| *v += 1);
-        true
-    }
-
-    /// Every mesh primary seat a committed move left vacant, with the revision it was left at.
-    pub fn vacant_meshes(&self) -> std::collections::BTreeMap<String, u64> {
-        self.inner.lock().unwrap().vacant.iter().filter(|((seat, _), _)| *seat == Seat::MeshPrimary).map(|((_, m), v)| (m.clone(), *v)).collect()
     }
 
 
@@ -1231,79 +1109,25 @@ impl SeatBook {
     }
 
     /// The held record of `mesh`'s primary seat.
-    pub fn mesh(&self, mesh: &str) -> Option<SeatHolder> {
+    pub fn mesh(&self, mesh: &str) -> Option<Primary> {
         self.inner.lock().unwrap().meshes.get(mesh).cloned()
     }
 
     /// Every mesh primary record held, by mesh name.
-    pub fn meshes(&self) -> std::collections::BTreeMap<String, SeatHolder> {
+    pub fn meshes(&self) -> std::collections::BTreeMap<String, Primary> {
         self.inner.lock().unwrap().meshes.iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
-    /// The last update held together whose former holder is the exact birth `(node_id, incarnation)`,
-    /// while every seat it moved is still the record held: the update that birth said, or was to say,
-    /// as "primary updated".
-    pub fn update_of_holder(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(LifecycleOp, Vec<CommittedSeat>)> {
-        let held = self.inner.lock().unwrap();
-        held.together
-            .as_ref()
-            .filter(|(op, _)| &op.node_id == node_id && &op.incarnation == incarnation)
-            .filter(|(_, seats)| {
-                seats.iter().all(|c| {
-                    let (seat, mesh) = committed_key(c);
-                    held.get(seat, &mesh) == Some(c.record())
-                })
-            })
-            .cloned()
-    }
-
     /// The held record of `mesh`'s `kind` cohort primary seat (`node_admin`: its mesh-primary seat).
-    pub fn cohort(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<SeatHolder> {
+    pub fn cohort(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<Primary> {
         self.inner.lock().unwrap().get(Seat::of_cohort(kind), mesh)
     }
 
     /// Every other cohort's primary record held, by (mesh, kind).
-    pub fn cohorts(&self) -> std::collections::BTreeMap<(String, rdm_core::NodeKind), SeatHolder> {
+    pub fn cohorts(&self) -> std::collections::BTreeMap<(String, rdm_core::NodeKind), Primary> {
         self.inner.lock().unwrap().cohorts.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
     }
 
-    /// Every record held, as the frames a primary replays to a neighbour that came up.
-    pub fn held_frames(&self) -> Vec<Frame> {
-        let held = self.inner.lock().unwrap();
-        // The last update, while every seat it moved is still the record held, replays as the one
-        // frame: two `Seated` frames would re-open the window between two installs.
-        let together = held.together.as_ref().filter(|(_, seats)| {
-            seats.iter().all(|c| {
-                let (seat, mesh) = committed_key(c);
-                held.get(seat, &mesh) == Some(c.record())
-            })
-        });
-        let in_together = |seat: Seat, h: &SeatHolder| together.is_some_and(|(_, seats)| seats.iter().any(|c| c.seat.kind() == seat && &c.record() == h));
-        let mut out: Vec<Frame> = held.meshes.values().filter(|h| !in_together(Seat::MeshPrimary, h)).map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
-        out.sort_by_key(|f| if let Frame::Seated { holder, .. } = f.data() { holder.mesh.clone() } else { String::new() });
-        let mut cohorts: Vec<(&(String, rdm_core::NodeKind), &SeatHolder)> = held.cohorts.iter().filter(|((_, kind), h)| !in_together(Seat::Cohort(*kind), h)).collect();
-        cohorts.sort_by(|a, b| a.0.cmp(b.0));
-        out.extend(cohorts.into_iter().map(|((_, kind), h)| Frame::Seated { seat: Seat::Cohort(*kind), holder: h.clone() }));
-        if let Some(h) = held.fabric.as_ref().filter(|h| !in_together(Seat::FabricPrimary, h)) {
-            out.push(Frame::Seated { seat: Seat::FabricPrimary, holder: h.clone() });
-        }
-        if let Some((op, seats)) = together {
-            out.push(Frame::PrimaryUpdated { op: op.clone(), seats: seats.clone() });
-        }
-        out.into_iter().map(|f| {
-            let context = match &f {
-                Frame::Seated { seat, holder } => held.contexts.get(&(*seat, holder.mesh.clone())).filter(|(record, _)| record == holder).map(|(_, c)| c.clone()),
-                Frame::PrimaryUpdated { .. } => held.together_context.clone(),
-                _ => None,
-            };
-            f.with_context(context)
-        }).collect()
-    }
-}
-
-/// The seats an update names, as a span carries them: `<seat>=<holder record>`, comma-separated.
-fn seats_named(seats: &[CommittedSeat]) -> String {
-    seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect::<Vec<_>>().join(",")
 }
 
 /// What a peer mesh's primary puts on its own mesh channel for a lifecycle or status frame it
@@ -1321,8 +1145,6 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeRestarting { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
-        Frame::PrimaryUpdated { op, seats } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdated { op, seats }),
-        Frame::PrimaryUpdating { op, seats } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdating { op, seats }),
         Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::StateCommitting { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitting { hook, forwarded_by: Some(me.to_string()) }),
@@ -2281,20 +2103,6 @@ impl View {
                 self.take_status(f, fabric, via);
                 Vec::new()
             }
-            Frame::Seated { seat, holder } => {
-                self.note_seat_frame(f, *seat, holder, via);
-                Vec::new()
-            }
-            Frame::PrimaryUpdated { op, seats } => {
-                self.note_primary_updated_frame(f, op, seats, via);
-                Vec::new()
-            }
-            Frame::PrimaryUpdating { op, seats } => {
-                if !self.book.seats.receive(f) { return Vec::new(); }
-                tracing::info_span!("rdm.mesh.seat.update.via-primary-updating", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, seats = %seats_named(seats), via)
-                    .in_scope(|| tracing::info!("a seat holder said its seats are updating: receivers keep the current holder until the committed row names the next epoch"));
-                Vec::new()
-            }
             _ => Vec::new(),
         }
     }
@@ -2673,6 +2481,10 @@ impl View {
         let me_name = self.current_name();
         let mut carried = Vec::new();
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
+            // The primary records the entry carries, this node's own among them (gossip.md "A primary
+            // change on gossip": the mesh-primary's `Members` projection carries them): held by revision
+            // whatever else of the entry is taken, and however old its copy of the digest is.
+            self.book.take_primaries(&d);
             // A read carries this node's own digest as the node read holds it: this node's own
             // book is the authority on itself.
             if matches!(side, Side::Read | Side::ReadPeer) && d.node.name.to_string() == me_name {
@@ -2768,27 +2580,13 @@ impl View {
         self.via.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert(via);
     }
 
-    /// Classify a received or read-installed record against the actual held seat, then announce
-    /// only an installation. Local candidate selection uses SeatBook::take directly.
-    fn note_seat(&self, seat: Seat, holder: &SeatHolder, via: &'static str) -> bool {
-        self.note_seat_frame(&Frame::Seated { seat, holder: holder.clone() }, seat, holder, via)
-    }
-
-    fn note_seat_frame(&self, frame: &Frame, seat: Seat, holder: &SeatHolder, via: &'static str) -> bool {
-        let Some(current) = self.book.seats.receive_records(frame) else { return false };
-        let previous = current[0].1.as_ref().map(ToString::to_string).unwrap_or_default();
+    /// Hold a primary record this node elected or read (an entry read), if it supersedes the one held.
+    fn note_seat(&self, seat: Seat, holder: &Primary, via: &'static str) -> bool {
+        let SeatTaken::Held { previous } = self.book.seats.take(seat, holder) else { return false };
+        let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
         tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
-            .in_scope(|| tracing::info!("a seat record was heard"));
+            .in_scope(|| tracing::info!("a primary record was held"));
         true
-    }
-
-    /// The framework installs a complete admitted row before this ordinary apply span. A repeated
-    /// or conflicting row emits only its named receive outcome, and cannot rewrite retained data.
-    fn note_primary_updated_frame(&self, frame: &Frame, op: &LifecycleOp, seats: &[CommittedSeat], via: &'static str) {
-        if !self.book.seats.receive(frame) { return; }
-        let successor = seats.first().map(|c| c.record().to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.mesh.seat.update.via-primary-updated", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %seats_named(seats), via, outcome = "held")
-            .in_scope(|| tracing::info!("primary updated was heard: the seats one committed row moved"));
     }
 
 }
@@ -2846,8 +2644,7 @@ impl Membership {
         let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let replay_me = replay_view.current_name();
-                let mut prefix = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
-                prefix.extend(replay_view.book.seats.held_frames());
+                let prefix = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 let (frames, full_chunks, bytes) = replay_forward_path.replay(&replay_me, prefix, || replay_clock.now_rafka_ms());
                 Replayed { direct: Vec::new(), frames, full_chunks, bytes }
             } else {
@@ -3098,7 +2895,7 @@ impl Membership {
 
     /// Hold the seat records an entry read named (`topology_read`): each only if it supersedes what
     /// this node holds.
-    pub fn learn_seats(&self, records: &[(Seat, SeatHolder, bool)], via: &'static str) {
+    pub fn learn_seats(&self, records: &[(Seat, Primary, bool)], via: &'static str) {
         for (seat, holder, gone) in records {
             self.view.note_seat(*seat, holder, via);
             if *gone {
@@ -3132,6 +2929,9 @@ impl Membership {
         // about itself; its status never travels on its heartbeat.
         d.node_state = rdm_core::NodeState::self_published(d.status);
         d.load = Some(self.load.sample());
+        // The primaries this birth is, as its book holds their records: its digest is their normal
+        // announcement (gossip.md "A primary change on gossip").
+        self.book.recorded_primaries(&mut d);
         d.gossip = Some(rdm_core::GossipStats {
             heard: self.book.current(self.book.staleness_floor()).len() as u32,
             neighbours: self.mesh.neighbors.lock().unwrap().len() as u32,
@@ -3275,7 +3075,10 @@ impl Membership {
                 .into_iter()
                 .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
                 .collect();
-            at.digests.push(own.clone());
+            // Its own digest as every read hands it out: with the primary records the book holds for it.
+            let mut own = own.clone();
+            self.book.recorded_primaries(&mut own);
+            at.digests.push(own);
             at.digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
             (at.in_flight, at.departed) = self.book.overlays_of(mesh);
         }
@@ -3463,7 +3266,7 @@ pub enum NoMeshPrimary {
     /// The record names a birth whose digest the node does not hold.
     HolderNotHeld {
         /// The record held.
-        holder: SeatHolder,
+        holder: Primary,
         /// The birth of the same node the node holds instead, when it holds one.
         held_incarnation: Option<IncarnationId>,
         /// Whether the node holds the holder's node as departed.
@@ -3472,7 +3275,7 @@ pub enum NoMeshPrimary {
     /// The record's birth is held as proven gone.
     HolderGone {
         /// The record held.
-        holder: SeatHolder,
+        holder: Primary,
     },
 }
 
@@ -3487,7 +3290,7 @@ impl NoMeshPrimary {
     }
 
     /// The seat record held, when one is.
-    pub fn holder(&self) -> Option<&SeatHolder> {
+    pub fn holder(&self) -> Option<&Primary> {
         match self {
             Self::NoSeatRecord { .. } => None,
             Self::HolderNotHeld { holder, .. } | Self::HolderGone { holder } => Some(holder),
@@ -3555,9 +3358,6 @@ pub struct Backbone {
     /// Test seam ([`Backbone::withhold_announcements`]): asked before each announcement this
     /// [`Withhold`] covers is handed to a channel. The product sets none.
     withhold: Arc<std::sync::OnceLock<Withhold>>,
-    /// The updates this mesh's primary said "primary updated" for after their holder's stop
-    /// ([`Backbone::announce_update_of_stopped_holder`]), by operation: each is said once.
-    said_after_stop: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// Test seam (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination"):
@@ -3567,7 +3367,6 @@ pub struct Backbone {
 /// out, as a stop's transport cut loses what gossip has not yet pushed. The announcements asked:
 /// - `stopping-aggregate`: the aggregate a node-admin that publishes its mesh's aggregate sends
 ///   once more before its stop's transport cut, itself stopping (node-stop.md step 4);
-/// - `primary-updated`: "primary updated", said by the holder of a node.primary.update;
 /// - `aggregate-in-flight`: a publication round's aggregate of this admin's own mesh while it
 ///   carries a lifecycle operation in flight.
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
@@ -3658,8 +3457,7 @@ impl Backbone {
         let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let replay_me = replay_view.current_name();
-                let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
-                frames.extend(replay_view.book.seats.held_frames());
+                let frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 Replayed::direct(frames, replay_author.lock().unwrap().as_ref().expect("backbone owns its author birth"), replay_clock.now_rafka_ms())
             } else {
                 Replayed::default()
@@ -3684,7 +3482,6 @@ impl Backbone {
             version: Arc::new(Mutex::new(SourceVersion::with_publication_counter(membership.view.forwarder.lock().unwrap().publication_counter()))),
             own: Arc::default(),
             withhold: Arc::default(),
-            said_after_stop: Arc::default(),
         };
         me.spawn_status_sender();
         Ok(me)
@@ -3744,7 +3541,7 @@ impl Backbone {
             let mut mesh = self.mesh_status.lock().unwrap();
             let mut fabric = self.fabric_status.lock().unwrap();
             let author = crate::envelope::Birth::publisher(&self.fabric, &self.current_publisher());
-            let owned = |h: SeatHolder| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
+            let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
             mesh.author = view.book.seats.mesh(&self.mesh).and_then(owned);
             fabric.author = view.book.seats.fabric().and_then(owned);
             let frames = [if mesh.author.is_some() { mesh.observe(mesh_status, heard_mesh, mesh_round, now, now_ms) } else { None }, if fabric.author.is_some() { fabric.observe(fabric_status, heard_fabric, fabric_round, now, now_ms) } else { None }].into_iter().flatten().collect();
@@ -3897,11 +3694,12 @@ impl Backbone {
         let sleep = tokio::time::sleep_until(deadline);
         tokio::pin!(sleep);
         let book = &membership.book;
-        let (mut heard, mut births, mut overlays) = (book.heard_changes(), book.birth_changes(), book.overlay_changes());
+        let (mut heard, mut births, mut overlays, mut primaries) = (book.heard_changes(), book.birth_changes(), book.overlay_changes(), book.seats.subscribe());
         loop {
             heard.borrow_and_update();
             births.borrow_and_update();
             overlays.borrow_and_update();
+            primaries.borrow_and_update();
             if self.publishing.load(Ordering::Relaxed) {
                 let full = self.own_full(membership, self.own_members(membership));
                 let published = self.own.lock().unwrap().as_ref().map(|(v, _)| *v).unwrap_or(0);
@@ -3922,6 +3720,8 @@ impl Backbone {
                 r = heard.changed() => r.is_ok(),
                 r = births.changed() => r.is_ok(),
                 r = overlays.changed() => r.is_ok(),
+                // A primary record this book holds changed: the projection carries it (step 5).
+                r = primaries.changed() => r.is_ok(),
             };
             if !ok {
                 (&mut sleep).await;
@@ -4033,91 +3833,11 @@ impl Backbone {
         let _ = self.channel.broadcast(&carried).await;
     }
 
-    /// This admin took `seat`, or, as its mesh's primary, seated another cohort's holder (R-MT1 Q3): it
-    /// holds the record and says it once. A mesh primary's record and a cohort's go onto its mesh
-    /// channel and the backbone; the fabric primary's onto the backbone. Nothing repeats it: a
-    /// neighbour that comes up is replayed it by the primary, like a status.
-    pub async fn announce_seat(&self, seat: Seat, holder: SeatHolder) {
-        let frame = Frame::Seated { seat, holder: holder.clone() };
+    /// This admin was elected primary, or, as its mesh's primary, recorded another node type's
+    /// primary (R-MT1 Q3): it holds the record. No frame announces it: its next `Digest` carries it,
+    /// and the mesh-primary's `Members` projection.
+    pub fn hold_primary(&self, seat: Seat, holder: Primary) {
         self.membership.view.note_seat(seat, &holder, "own");
-        tracing::info_span!("rdm.mesh.seat.update.via-announce", node = %self.current_name(), seat = seat.name(), holder = %holder).in_scope(|| tracing::info!("seat taken, announced"));
-        let _ = self.channel.broadcast(&frame).await;
-        if seat != Seat::FabricPrimary {
-            let _ = self.membership.forward(&frame).await;
-        }
-    }
-
-    /// "primary updated", said by the holder of a node.primary.update once its successor installed the
-    /// holder's committed row and answered node.primary.updated (proposal Part C1 step 7, R-MT1), or,
-    /// the holder lost after the row, by the next writer to read the row (C1 failure contract): the
-    /// backbone, its own mesh channel and its own view.
-    pub async fn announce_primary_updated(&self, op: LifecycleOp, seats: Vec<CommittedSeat>) {
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updated", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
-        let frame = Frame::PrimaryUpdated { op, seats };
-        let send = async {
-            self.announce_on_both("PrimaryUpdated", &frame).await;
-            let _ = self.membership.view.take(&frame, &self.fabric, "own");
-        };
-        tracing::Instrument::instrument(send, span).await
-    }
-
-    /// The committed update whose former holder is `op`'s birth, said as "primary updated" by this
-    /// mesh's primary, its next writer, once it executed that holder's stop and holds the stop's
-    /// matching completion (R-NS2: "Final aggregates and leadership announcements are best-effort
-    /// dissemination. A stop does not wait for their delivery. Committed lifecycle facts remain
-    /// recoverable after the sender cuts gossip, and the executing authority updates its own view from
-    /// the matching completion and publishes that fact as its author: the mesh-primary for a member";
-    /// proposal Part C1 failure contract: "the next writer to read the row publishes 'updated'.
-    /// Completion needs neither gossip delivery nor the holder's survival"). The holder's own "primary
-    /// updated" was best-effort, and from its stop's transport cut it says nothing more, so this
-    /// primary says it, once per update, before the stop's own status event: every node holds the
-    /// written seat before it holds the former holder stopped. Nothing is said when this admin is
-    /// not `op`'s mesh's primary, or holds no update whose former holder is that exact birth (a
-    /// holder that never moved a seat, or an update a later record superseded). Returns whether it
-    /// said it.
-    pub async fn announce_update_of_stopped_holder(&self, op: &LifecycleOp) -> bool {
-        if op.name.mesh != self.mesh || !self.publishing.load(Ordering::Relaxed) {
-            return false;
-        }
-        let Some((update, seats)) = self.membership.view.book.seats.update_of_holder(&op.node_id, &op.incarnation) else { return false };
-        if !self.said_after_stop.lock().unwrap().insert(update.operation.clone()) {
-            return false;
-        }
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-holder-stopped", node = %self.current_name(), holder = %op.name, holder_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), stop = %op.operation, operation = %update.operation, build_id = %update.build_id, attempt = update.attempt, seats = %seats_named(&seats));
-        span.in_scope(|| tracing::info!("the former holder's stop completed: this mesh's primary, its next writer, says the committed update as primary updated"));
-        tracing::Instrument::instrument(self.announce_primary_updated(update, seats), span).await;
-        true
-    }
-
-    /// "primary updating", said once by the holder of the seats `seats` names, after its pre-check and
-    /// before its write cut-off and its row (proposal Part C1 step 3): the backbone and its own mesh
-    /// channel. It moves no seat.
-    pub async fn announce_primary_updating(&self, op: LifecycleOp, seats: Vec<CommittedSeat>) {
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updating", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
-        let frame = Frame::PrimaryUpdating { op, seats };
-        tracing::Instrument::instrument(self.announce_on_both("PrimaryUpdating", &frame), span).await
-    }
-
-    /// Send `frame` on the backbone and this node's own mesh channel, recording each send's outcome on
-    /// the current span where it happens: `sent` is the frame handed to that channel's gossip topic
-    /// (Plumtree delivers it from there), else the channel's error.
-    async fn announce_on_both(&self, name: &'static str, frame: &Frame) {
-        let outcome = |channel: &'static str, r: Result<()>| match r {
-            Ok(()) => "sent".to_string(),
-            Err(e) => {
-                tracing::info!(channel, error = %e, "{name} not sent on the {channel}");
-                format!("failed: {e}")
-            }
-        };
-        let announcement = match frame.data() {
-            Frame::PrimaryUpdated { .. } => Some("primary-updated"),
-            _ => None,
-        };
-        let withheld = |channel: &'static str| announcement.is_some_and(|a| self.withholds(a, channel));
-        let backbone = if withheld("backbone") { "withheld".to_string() } else { outcome("backbone", self.channel.broadcast(frame).await) };
-        tracing::Span::current().record("backbone", backbone.as_str());
-        let mesh_channel = if withheld("mesh") { "withheld".to_string() } else { outcome("mesh channel", self.membership.forward(frame).await) };
-        tracing::Span::current().record("mesh_channel", mesh_channel.as_str());
     }
 
 
@@ -4294,7 +4014,7 @@ pub struct DigestBook {
     retention: Duration,
     /// The staleness floor.
     staleness_floor: Duration,
-    /// The seat holders this node holds (`Frame::Seated`, an entry read): an input to every election.
+    /// The primaries this node holds (a digest, a `Members` projection, an entry read): an input to every election.
     pub seats: SeatBook,
     /// The mesh and fabric statuses this node holds (`Frame::MeshStatus`, `Frame::FabricStatus`, a
     /// replay or an entry answer): application routing reads a birth's mesh status here.
@@ -5255,18 +4975,21 @@ impl DigestBook {
         !own_mesh.is_empty() && d.node.name.mesh == *own_mesh && !itself
     }
 
-    /// `ds` as every read hands them out: an own-mesh birth ([`Self::own_mesh_member`]) with the one
-    /// status this book holds for it ([`Self::projected_status`]), whatever its held digest says.
-    /// Called with no hold of `inner`.
+    /// `ds` as every read hands them out: each birth with the primary records this book holds for it
+    /// ([`Self::recorded_primaries`]), and an own-mesh birth ([`Self::own_mesh_member`]) with the one
+    /// status this book holds for it ([`Self::projected_status`]), whatever its held digest says. A
+    /// mesh-primary's `Members` projection is such a read, so it carries the recorded primaries (gossip.md
+    /// "A primary change on gossip"). Called with no hold of `inner`.
     fn hand_out<'a>(&self, ds: impl IntoIterator<Item = &'a mut MeshDigest>) {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
-        if own_mesh.is_empty() {
-            return;
-        }
         let own = self.own.lock().unwrap().clone();
         let holder = self.holder.lock().unwrap().clone();
         let statuses = self.member_statuses.lock().unwrap();
         for d in ds {
+            self.recorded_primaries(d);
+            if own_mesh.is_empty() {
+                continue;
+            }
             let itself = own.as_deref() == Some(d.node.node_id.as_str()) || d.node.name.to_string() == holder;
             if d.node.name.mesh == own_mesh && !itself {
                 d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rdm_core::MemberStatus::Pending);
@@ -5549,6 +5272,7 @@ impl DigestBook {
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
+        self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
         drop(inner);
         if heard_changed {
@@ -5559,6 +5283,29 @@ impl DigestBook {
         }
         self.digests.send_modify(|v| *v += 1);
         true
+    }
+
+    /// `d` with the primary records this book holds for its exact birth: its node type's primary of its
+    /// mesh at that record's revision, the fabric-primary at that record's, none it does not hold.
+    pub fn recorded_primaries(&self, d: &mut MeshDigest) {
+        let n = &d.node;
+        d.is_primary = self.seats.cohort(&n.name.mesh, n.name.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.is_fabric_primary = self.seats.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+    }
+
+    /// Hold the primary records `d` carries (gossip.md "A primary change on gossip"): its birth as its
+    /// node type's primary of its mesh at `is_primary`, as the fabric-primary at
+    /// `is_fabric_primary`. A record is held only when it supersedes the one held (a later
+    /// revision); who is primary is the election's, from what the book holds.
+    fn take_primaries(&self, d: &MeshDigest) {
+        let n = &d.node;
+        let record = |revision| Primary { mesh: n.name.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
+        if let Some(revision) = d.is_primary {
+            self.seats.take(Seat::of_cohort(n.name.kind), &record(revision));
+        }
+        if let Some(revision) = d.is_fabric_primary {
+            self.seats.take(Seat::FabricPrimary, &record(revision));
+        }
     }
 
     pub(crate) fn set_own_held_hash(&self, held_hash: [u8; 32]) {
@@ -5623,6 +5370,7 @@ impl DigestBook {
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
+        self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
         drop(inner);
         if heard_changed {
@@ -5675,6 +5423,7 @@ impl DigestBook {
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
+        self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
@@ -5813,8 +5562,8 @@ impl DigestBook {
     }
 
     /// `mesh`'s current primary node-admin: the exact birth the held seat record names, the
-    /// canonical LeadershipView's answer as its holder announced it (`Frame::Seated`, an entry
-    /// read's seats), with that birth's latest digest. Its status and how long it has gone unheard
+    /// canonical LeadershipView's answer as its digest, its mesh-primary's projection or an entry read
+    /// carried it), with that birth's latest digest. Its status and how long it has gone unheard
     /// do not move the seat (only a new record or a proven loss does), so neither is read here.
     pub fn mesh_primary(&self, mesh: &str) -> Result<MeshDigest, NoMeshPrimary> {
         let holder = self.seats.mesh(mesh).ok_or_else(|| NoMeshPrimary::NoSeatRecord { mesh: mesh.to_string() })?;
@@ -5921,6 +5670,62 @@ mod tests {
     use super::*;
     use rdm_core::{EndpointId, IncarnationId, MemberStatus, MeshNode, NodeId};
 
+    /// CONTRACT (gossip.md "A primary change on gossip": "The successor's next `Digest` carries
+    /// `is_primary` (and `is_fabric_primary`) at the next revision, its normal announcement"; elections
+    /// §3: the recorded primary, its exact birth and its revision, is an election input): a digest
+    /// carrying its birth's primary revision and fabric-primary revision is held by the book as those
+    /// records; a later digest of another birth at a lower revision replaces neither; one at a higher
+    /// revision does. What must NOT happen: a stale announcement replacing a later record.
+    #[test]
+    fn a_digest_carries_its_births_primary_records_and_the_book_holds_the_latest() {
+        let book = DigestBook::default();
+        let (a, ai) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
+        let (b, bi) = (NodeId::parse("000000000001").unwrap(), IncarnationId::mint());
+        let mut da = digest(&a, &ai, None, MemberStatus::ReadyForTraffic, 1);
+        da.is_primary = Some(3);
+        da.is_fabric_primary = Some(7);
+        assert!(book.record(da.clone()));
+        let held = |seat| match seat { Seat::FabricPrimary => book.seats.fabric(), _ => book.seats.cohort("mesh1", rdm_core::NodeKind::RpcNode) };
+        assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
+        assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
+        let mut db = digest(&b, &bi, None, MemberStatus::ReadyForTraffic, 1);
+        db.node.name = "mesh1.rpc.2".parse().unwrap();
+        db.is_primary = Some(2);
+        assert!(book.record(db.clone()));
+        assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
+        db.digest_seq += 1;
+        db.is_primary = Some(4);
+        assert!(book.record(db));
+        assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
+        assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
+    }
+
+    /// CONTRACT (gossip.md "A primary change on gossip": "the mesh-primary records it on the node's row
+    /// and its next `Members` projection carries it, its normal publication"; lifecycles/node-primary-update.md
+    /// step 5): a member of mesh1 holds the primary records its mesh-primary's projection carries, its own
+    /// birth's among them, though the projection's copy of its own digest is older than the one it holds.
+    /// Must NOT happen: an rpc node whose mesh-primary named it the rpc-node primary holding no record
+    /// of it.
+    #[test]
+    fn a_member_holds_the_primary_records_its_mesh_primarys_projection_carries() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = test_view("mesh1", "mesh1.rpc.1");
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
+        // The member holds its mesh-primary from its entry read.
+        view.book.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
+        let (me, my_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
+        let (other, other_inc) = (NodeId::parse("000000000003").unwrap(), IncarnationId::mint());
+        assert!(view.book.record(digest(&me, &my_inc, None, MemberStatus::ReadyForTraffic, 5)));
+        let mut mine = digest(&me, &my_inc, None, MemberStatus::ReadyForTraffic, 3);
+        mine.is_primary = Some(1);
+        let mut theirs = digest(&other, &other_inc, None, MemberStatus::ReadyForTraffic, 1);
+        theirs.node.name = "mesh1.rpc.2".parse().unwrap();
+        let members = Frame::Members { mesh: "mesh1".into(), publisher, forwarded_by: Some("mesh1.admin.1".into()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), departed: Vec::new() };
+        let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
+        assert!(heard, "the projection is admitted");
+        assert_eq!(view.book.seats.cohort("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
+    }
+
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
@@ -5943,7 +5748,7 @@ mod tests {
             config: Default::default(),
             load: None,
             gossip: None,
-            data_dir: None,
+            data_dir: None, is_primary: None, is_fabric_primary: None
         }
     }
 
@@ -6440,7 +6245,7 @@ mod tests {
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
 
         // The event from the seated primary, carrying the version its stop changed the birth at (v2).
-        view.book.seats.take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
+        view.book.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.book.get(id.as_str()).is_none() && view.book.in_flight() == vec![stop.clone()]);
         hear(&mut view.order.lock().unwrap(), &view, &members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
@@ -7364,7 +7169,6 @@ mod tests {
             }
         }
         let mut replay = primary.book.statuses.held_frames(&fabric, "mesh2.admin.1");
-        replay.extend(primary.book.seats.held_frames());
         replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 3));
         for f in &replay {
             match f {
@@ -7424,96 +7228,36 @@ mod tests {
         (lower, higher)
     }
 
-    fn seat_of(d: &MeshDigest, revision: u64) -> SeatHolder {
-        SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+    fn seat_of(d: &MeshDigest, revision: u64) -> Primary {
+        Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1: "Every
     /// (mesh, node_type) cohort elects its primary by the one rule ... a living holder keeps its seat"):
     /// a non-admin cohort's seat record is held under its own (mesh, kind), apart from the mesh-primary
-    /// seat of the same mesh, by the same supersede rule, and a primary replays it as its own `Seated`
-    /// frame; a committed update of a cohort seat is held under the cohort too. Must NOT happen: an rpc
+    /// seat of the same mesh, by the same supersede rule; a committed update of a cohort seat is held under the cohort too. Must NOT happen: an rpc
     /// cohort's record overwriting the mesh-primary record of its mesh.
     #[test]
     fn a_cohort_seat_record_is_held_apart_from_its_meshs_primary_seat() {
         use rdm_core::NodeKind;
         let seats = SeatBook::default();
-        let admin = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
-        let rpc = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
+        let admin = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
+        let rpc = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
         assert!(matches!(seats.take(Seat::MeshPrimary, &admin), SeatTaken::Held { .. }));
         assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &rpc), SeatTaken::Held { previous: None }));
         assert_eq!(seats.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
         assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
         assert_eq!(seats.cohort("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin cohort's seat is the mesh-primary seat");
         assert_eq!(seats.cohort("mesh1", NodeKind::Broker), None);
-        let older = SeatHolder { revision: 0, ..rpc.clone() };
+        let older = Primary { revision: 0, ..rpc.clone() };
         assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
-        let frames = seats.held_frames();
-        assert!(frames.iter().any(|f| matches!(f, Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder } if *holder == rpc)), "replayed as its own Seated frame: {frames:?}");
-        // A committed update of the cohort seat is held under the cohort.
-        let next = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
+        // An update of the cohort's primary is held under the cohort.
+        let next = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
         let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0 };
-        let taken = seats.take_together(&op, &[CommittedSeat::of(Seat::Cohort(NodeKind::RpcNode), &next)]);
+        let taken = seats.take_together(&[(Seat::Cohort(NodeKind::RpcNode), next.clone())]);
         assert!(matches!(taken.as_slice(), [SeatTaken::Held { .. }]), "{taken:?}");
         assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(next));
         assert_eq!(seats.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
-    }
-
-    /// CONTRACT (docs/architecture/gossip.md, R-RX3, Luke 2026-10-13 Q2): a `Seated` record's revision
-    /// per complete seat key is its order key in the one gossip receive path (`receive_order.rs`), and
-    /// the installed seat classifier names older records. When a cohort's holder exits and the next holder is
-    /// announced at a higher revision, a late older `Seated` record naming the exited holder is ignored
-    /// by the framework with `rdm.mesh.membership.reject.via-stale` and both revision/stage keys,
-    /// emits no second ordinary apply span, and cannot restore the exited
-    /// holder; records for other cohorts (`mesh-primary`, `broker-primary`, `fabric-primary`) on the
-    /// same channel never suppress each other, and neighbour-up replay carries every cohort's holder.
-    #[test]
-    fn a_late_older_seated_record_is_ignored_by_the_receive_path_and_cannot_restore_an_exited_holder() {
-        use rdm_core::NodeKind;
-        use tracing_subscriber::layer::SubscriberExt;
-        let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let member = test_view("mesh1", "mesh1.rpc.9");
-        let mut channel = crate::receive_order::ReceiveOrder::default();
-        let (admin, exited_rpc, next_rpc, broker) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1), birth_at("mesh1.broker.1", 1));
-
-        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::MeshPrimary, holder: seat_of(&admin, 5) }, &fabric, Side::MeshChannel));
-        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder: seat_of(&exited_rpc, 1) }, &fabric, Side::MeshChannel));
-        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::Broker), holder: seat_of(&broker, 1) }, &fabric, Side::MeshChannel));
-        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::FabricPrimary, holder: seat_of(&admin, 2) }, &fabric, Side::MeshChannel));
-
-        // The rpc cohort's first holder exits and the mesh-primary seats the successor at revision 2.
-        member.book.seats.mark_gone(exited_rpc.node.incarnation.clone());
-        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder: seat_of(&next_rpc, 2) }, &fabric, Side::MeshChannel));
-        assert_eq!(member.book.seats.cohort("mesh1", NodeKind::RpcNode), Some(seat_of(&next_rpc, 2)));
-
-        // A delayed Seated frame naming the exited holder at revision 1 arrives on the channel.
-        assert!(!hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder: seat_of(&exited_rpc, 1) }, &fabric, Side::MeshChannel), "the older Seated frame is ignored by the receive path");
-        assert_eq!(member.book.seats.cohort("mesh1", NodeKind::RpcNode), Some(seat_of(&next_rpc, 2)), "the exited holder is not restored");
-        assert_eq!(member.book.seats.mesh("mesh1"), Some(seat_of(&admin, 5)));
-        assert_eq!(member.book.seats.cohort("mesh1", NodeKind::Broker), Some(seat_of(&broker, 1)));
-        assert_eq!(member.book.seats.fabric(), Some(seat_of(&admin, 2)));
-
-        let ignored = spans.named("rdm.mesh.membership.reject.via-stale");
-        assert_eq!(
-            ignored.iter().map(|f| (f["frame"].as_str(), f["subject"].as_str(), f["held_key"].as_str(), f["frame_key"].as_str())).collect::<Vec<_>>(),
-            vec![("seated", "rpc_node-primary mesh1", "revision=2 updated", "revision=1 updated")],
-            "{ignored:#?}"
-        );
-        let announced = spans.named("rdm.mesh.seat.update.via-announcement");
-        assert!(announced.iter().all(|f| f["outcome"] == "held"), "the handler emits no refused-not-newer span: {announced:#?}");
-
-        // Neighbour-up replay carries every cohort's holder, not only the admin's.
-        let joiner = test_view("mesh1", "mesh1.rpc.8");
-        let mut joiner_ch = crate::receive_order::ReceiveOrder::default();
-        for f in member.book.seats.held_frames() {
-            assert!(hear(&mut joiner_ch, &joiner, &f, &fabric, Side::MeshChannel));
-        }
-        assert_eq!(joiner.book.seats.mesh("mesh1"), Some(seat_of(&admin, 5)));
-        assert_eq!(joiner.book.seats.cohort("mesh1", NodeKind::RpcNode), Some(seat_of(&next_rpc, 2)));
-        assert_eq!(joiner.book.seats.cohort("mesh1", NodeKind::Broker), Some(seat_of(&broker, 1)));
-        assert_eq!(joiner.book.seats.fabric(), Some(seat_of(&admin, 2)));
     }
 
     /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the
@@ -7560,7 +7304,7 @@ mod tests {
     fn a_mesh_primary_that_cannot_be_addressed_names_why() {
         let book = DigestBook::default();
         assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::NoSeatRecord { mesh: "mesh1".into() });
-        let unheard = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
+        let unheard = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
         book.seats.take(Seat::MeshPrimary, &unheard);
         assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderNotHeld { holder: unheard, held_incarnation: None, departed: false });
 
@@ -7786,9 +7530,6 @@ mod tests {
     fn hear(order: &mut crate::receive_order::ReceiveOrder, view: &View, f: &Frame, fabric: &FabricId, side: Side) -> bool {
         if !admitted(order, f, &view.node, side.name()) {
             return false;
-        }
-        if let Frame::Seated { seat, holder } = f {
-            return view.note_seat(*seat, holder, side.name());
         }
         match f {
             Frame::Members { .. } | Frame::MembersDelta { .. } => {

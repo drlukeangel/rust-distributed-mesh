@@ -1,6 +1,6 @@
 //! Independent postcard reference writer for gossip byte goldens. Expected context strings and
 //! data bytes are assembled from the ruled grammar and literal data goldens, without the codec.
-use rdm_core::{FabricId, NodeId, IncarnationId, Seat, NodeKind};
+use rdm_core::{FabricId, NodeId, IncarnationId};
 use rdm_transport::{envelope::Birth, membership::Frame};
 
 pub fn author() -> Birth {
@@ -33,8 +33,9 @@ fn stamp(ms: u64) -> String {
 }
 
 /// A complete golden, including the metadata count, all literal names and both vector prefixes.
-/// The literal data golden includes its historical enum byte solely to select the reference row;
-/// that byte is removed and never appears in the expected wire message.
+/// The literal data golden includes its historical enum byte solely to select the reference row (the
+/// rows keep the historical page order, the removed types included); that byte is removed and never
+/// appears in the expected wire message.
 pub fn golden(f: &Frame, old: &[u8]) -> Vec<u8> { golden_with_trace(f, old, None, None) }
 
 /// The optional standard pairs, supplied as literal expected W3C strings.
@@ -63,18 +64,10 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
             source = format!("rdm://{}/{}/{}", fabric, a.node, a.incarnation);
             ms = *t; seq = Some(format!("00000000000000000002.{t:020}")); (format!("fabric/{fabric}/status"), vec![fabric.to_string(), "2".into(), t.to_string()])
         }
-        Frame::Seated { seat, holder: h } => {
-            seq = Some(format!("{:020}", h.revision));
-            let mut fields = match seat { Seat::FabricPrimary => vec!["fabric".into(), a.fabric.to_string(), "seat".into()], Seat::MeshPrimary | Seat::Cohort(NodeKind::NodeAdmin) => vec!["cohort".into(), h.mesh.clone(), "mesh-primary".into()], Seat::Cohort(k) => vec!["cohort".into(), h.mesh.clone(), k.node_type().into()] };
-            let subject = joined(fields.clone()); fields.push(h.revision.to_string()); (subject, fields)
-        }
         Frame::StateCommitting { hook: h, .. } | Frame::StateCommitted { hook: h, .. } | Frame::TrafficOpening { hook: h, .. } | Frame::TrafficOpened { hook: h, .. } => {
             source = format!("rdm://{}/{}/{}", h.fabric_id, a.node, a.incarnation);
             ms = h.event_at_rafka_ms;
             (format!("round/{}/{}/{}/{}/birth/{}/{}", h.fabric_id, esc(&h.build_id), h.attempt, esc(&h.operation), h.node_id, h.incarnation), vec![h.fabric_id.to_string(), h.build_id.clone(), h.attempt.to_string(), h.operation.clone(), h.node_id.to_string(), h.incarnation.to_string()])
-        }
-        Frame::PrimaryUpdating { op: o, .. } | Frame::PrimaryUpdated { op: o, .. } => {
-            ms = o.event_at_rafka_ms; let id = vec![o.build_id.clone(), o.attempt.to_string(), o.operation.clone()]; (format!("handover/{}", joined(id.clone())), id)
         }
         Frame::NodeDeleting { op: o, .. } | Frame::NodeDeleted { op: o, .. } | Frame::NodeRestarting { op: o, .. } | Frame::NodeStopped { op: o, .. } | Frame::NodeConnectionsDeleting { op: o, .. } | Frame::NodeConnectionsDeleted { op: o, .. } | Frame::NodeLeaving { op: o, .. } | Frame::NodeLeft { op: o, .. } => {
             ms = o.event_at_rafka_ms;

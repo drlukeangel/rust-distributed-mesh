@@ -16,7 +16,7 @@
 use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rdm_core::SeatHolder;
+use rdm_core::Primary;
 use rdm_transport::membership::Membership;
 use rdm_transport::NodeRpcClient;
 use std::collections::HashSet;
@@ -52,7 +52,7 @@ fn birth(n: &Node) -> Option<Birth> {
 /// backbone first): why, and the admin the seat moved to, by the node id the record names (a
 /// member of the view whether or not its seat flags have moved yet; the handover door names it the
 /// same way). `held` carries whether this birth held the record on an earlier pass.
-pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view: &Topology) -> Option<(String, Option<String>)> {
+pub fn seat_yield(record: Option<&Primary>, me: &Birth, held: &mut bool, view: &Topology) -> Option<(String, Option<String>)> {
     match record {
         Some(h) if h.is_birth(&me.0, &me.1) => {
             *held = true;
@@ -66,28 +66,27 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
     }
 }
 
-/// What the committed fabric seat record says of `me`'s Build authority (the approved proposal
-/// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 5: "The writer writes the one seat
-/// row at the next epoch(s) naming the successor. This is the commit. From this write the holder is no
-/// longer primary"; nothing else is written). A record naming this birth, naming none, or naming
-/// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
-/// ends nothing; a record naming another live birth ended this birth's authority at its epoch, and
+/// What the fabric-primary record this admin holds says of `me`'s Build log: the election's result it
+/// installed (lifecycles/node-primary-update.md step 4: the successor "becomes primary" when it installs
+/// it; nothing is written). A record naming this birth, naming none, or naming a birth proven gone
+/// (`lost`, which the election passes over before this birth's own record lands) ends nothing; a
+/// record naming another live birth ends this birth's Build log at its revision, and
 /// names that birth's path.name from `name_of` (the digest book, which holds a birth before the
 /// projected view does). An open record naming this birth names its path.name as the holder; one
 /// naming none or a birth proven gone names no holder. Read from the record alone: no history, no
 /// write.
-pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
-    seat_record("the fabric seat record", record, me, lost, name_of)
+pub fn fabric_seat_record(record: Option<&Primary>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+    seat_record("the fabric-primary record this admin holds", record, me, lost, name_of)
 }
 
 /// [`fabric_seat_record`] of `mesh`'s primary seat record: what it says of `me`'s hold on its
 /// own mesh's drift attempts (R-BI7), judged by the same rule.
-pub fn mesh_seat_record(mesh: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
-    seat_record(&format!("mesh {mesh}'s primary seat record"), record, me, lost, name_of)
+pub fn mesh_seat_record(mesh: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+    seat_record(&format!("the mesh-primary record of mesh {mesh} this admin holds"), record, me, lost, name_of)
 }
 
 
-fn seat_record(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+fn seat_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
             let to = name_of(&h.node_id);
@@ -381,7 +380,7 @@ pub async fn run(w: Watch) {
 /// fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2, "Its own
 /// mesh"; elections §4.3). `None` otherwise: outside the record's mesh the proposal is mesh
 /// investigation's, at its decision step (`investigate::run`), and the holder never proposes its own.
-pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHolder>) -> Option<rdm_core::SeatHolder> {
+pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::Primary>) -> Option<rdm_core::Primary> {
     let record = record?;
     if record.is_birth(&me.0, &me.1) {
         return None;
@@ -391,7 +390,7 @@ pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHo
         return None;
     }
     // Its own mesh (Q89): the fabric-primary held off ready-for-traffic in this admin's view, at the mark,
-    // whatever the provider says of its runtime; the standby that the leadership rule names writes the row.
+    // whatever the provider says of its runtime; the standby the election names is fabric-primary.
     if mine.mesh == record.mesh {
         let held = view.members().any(|n| n.node_id == record.node_id && n.incarnation_id.as_ref() == Some(&record.incarnation) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
         return held.then_some(record);
@@ -437,7 +436,7 @@ mod tests {
     #[test]
     fn a_held_fabric_seat_record_that_moves_owes_one_hand_over_naming_the_new_holder() {
         let (t, holder, standby, outsider) = world();
-        let record = |n: &Node, revision: u64| SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
+        let record = |n: &Node, revision: u64| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
         let (me, mut held) = (me_of(&holder), false);
         assert_eq!(seat_yield(Some(&record(&holder, 1)), &me, &mut held, &t), None, "the record names this birth: nothing yields");
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), Some(("the seat is now mesh2 100000000000".to_string(), Some("mesh2.admin.1".to_string()))), "the fence names the holder the record names");
@@ -455,7 +454,7 @@ mod tests {
     #[test]
     fn the_standby_of_the_fabric_primarys_own_mesh_proposes_the_takeover_at_the_mark_and_an_outsider_never_does() {
         let (mut t, holder, standby, outsider) = world();
-        let record = SeatHolder { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation_id.clone().unwrap(), revision: 7 };
+        let record = Primary { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation_id.clone().unwrap(), revision: 7 };
         assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), Some(record.clone()), "the holder PendingReconnect in the standby's view: the standby proposes at the mark");
         assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone())), None, "an admin outside the holder's mesh proposes from the investigation's decision step, never from the seat watch");
         assert_eq!(takeover_due(&t, &me_of(&holder), Some(record.clone())), None, "the holder never proposes its own takeover");

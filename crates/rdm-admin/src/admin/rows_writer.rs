@@ -76,30 +76,37 @@ impl MeshRowsWriter {
     }
 
     /// One round over the births `held` (every birth of the fabric this admin holds, itself
-    /// included), `seated` when this admin holds its mesh's primary seat now, `departed` whether the
-    /// book holds a node departed.
-    pub(crate) async fn round(&mut self, held: &[MeshDigest], seated: bool, departed: impl Fn(&NodeId) -> bool) {
+    /// included, each with the primaries its book holds for it), `seated` when this admin is its mesh's
+    /// mesh-primary now, `departed` whether the book holds a node departed. Returns whether a row is
+    /// owed: a write or a read the store did not acknowledge, which the caller retries on its own
+    /// clock under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth
+    /// or a primary change.
+    pub(crate) async fn round(&mut self, held: &[MeshDigest], seated: bool, departed: impl Fn(&NodeId) -> bool) -> bool {
         if !seated {
             self.written = None;
             self.claim = None;
-            return;
+            return false;
         }
         if self.claim.is_none() {
             // A store that did not answer decides nothing: the next round asks again.
             self.claim = claim_mesh_name(&*self.meshes, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
+            if self.claim.is_none() {
+                return true;
+            }
         }
         if !matches!(self.claim, Some(Ok(()))) {
-            return;
+            return false;
         }
         if self.written.is_none() {
             match self.nodes.contacts().await {
                 Ok(rows) => self.written = Some(rows.into_iter().filter(|c| c.name.mesh == self.mesh).map(|c| (c.node_id.clone(), c)).collect()),
                 Err(e) => {
                     tracing::info!(mesh = %self.mesh, error = %e, "the mesh's contacts could not be read; none is written this round");
-                    return;
+                    return true;
                 }
             }
         }
+        let mut owed = false;
         let written = self.written.as_mut().expect("read above");
         // A departed birth is never written: its contact is dropped below and stays dropped.
         let members: Vec<MeshDigest> = held.iter().filter(|d| d.node.name.mesh == self.mesh && !departed(&d.node.node_id)).cloned().collect();
@@ -113,20 +120,99 @@ impl MeshRowsWriter {
                 endpoint_id: d.node.endpoint_id.clone(),
                 transport_addr: d.node.transport_addr,
                 listeners: Vec::new(),
+                is_primary: d.is_primary,
+                is_fabric_primary: d.is_fabric_primary,
             };
-            // The contact is what is held, put whole; the declared state and the silence status
-            // are their own rows in status.storage, never carried on it.
-            if written.get(&r.node_id) != Some(&r) && self.nodes.put_contact(&r).await.is_ok() {
-                written.insert(r.node_id.clone(), r);
+            // The contact is what is held, put whole, the primaries recorded on it; the declared state
+            // and the silence status are their own rows in status.storage, never carried on it. It is
+            // marked written only on the store's acknowledgement.
+            if written.get(&r.node_id) == Some(&r) {
+                continue;
+            }
+            match self.nodes.put_contact(&r).await {
+                Ok(()) => {
+                    written.insert(r.node_id.clone(), r);
+                }
+                Err(e) => {
+                    owed = true;
+                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %r.name, node_id = %r.node_id, is_primary = ?r.is_primary, is_fabric_primary = ?r.is_fabric_primary, outcome = "owed", error = %e)
+                        .in_scope(|| tracing::info!("the store did not acknowledge the node's row: it is owed and written again under the one backoff rule"));
+                }
             }
         }
         let dropped: Vec<crate::storage::NodeRecord> = dropped_contacts(written, &members, &departed).into_iter().filter_map(|id| written.get(&id).cloned()).collect();
         for r in dropped {
             if self.nodes.remove_contact(&r.name.mesh, &r.node_id).await.is_ok() {
                 written.remove(&r.node_id);
+            } else {
+                owed = true;
             }
         }
+        owed
     }
+}
+
+/// The mesh rows writer's loop: a round over what `book` holds of `fabric` each time a birth or a
+/// primary record changes there or `own_seat` (whether this admin is its mesh's mesh-primary) moves,
+/// each birth carrying the primaries the book holds for it. A row the store did not acknowledge is
+/// owed: the round runs again on this writer's own clock under the one backoff rule (node-rpc.md §43),
+/// never waiting for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each
+/// round takes its turn of `park`.
+pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook, fabric: FabricId, mut own_seat: tokio::sync::watch::Receiver<bool>, park: crate::stop_gate::StopGate) {
+    let mut births = book.birth_changes();
+    let mut primaries = book.seats.subscribe();
+    let pacing = rdm_transport::delivery::Pacing::from_cadences();
+    let mut owed_rounds = 0u32;
+    loop {
+        // Held here while the admin is parked: its own wait, outside every lock.
+        let turn = park.turn("mesh-rows").await;
+        births.borrow_and_update();
+        primaries.borrow_and_update();
+        let seated = *own_seat.borrow_and_update();
+        let held: Vec<MeshDigest> = book
+            .all()
+            .into_iter()
+            .filter(|d| d.fabric_id == fabric)
+            .map(|mut d| {
+                book.recorded_primaries(&mut d);
+                d
+            })
+            .collect();
+        let owed = writer.round(&held, seated, |id| book.is_departed(id.as_str())).await;
+        owed_rounds = if owed { owed_rounds + 1 } else { 0 };
+        drop(turn);
+        let again = async {
+            if owed_rounds == 0 {
+                std::future::pending::<()>().await
+            }
+            tokio::time::sleep(pacing.after(owed_rounds)).await
+        };
+        tokio::select! {
+            changed = births.changed() => if changed.is_err() { return },
+            changed = primaries.changed() => if changed.is_err() { return },
+            changed = own_seat.changed() => if changed.is_err() { return },
+            () = again => {}
+        }
+    }
+}
+
+/// Hold the primaries the node rows of `fabric` on the store root record (`is_primary`,
+/// `is_fabric_primary`), the own row's included: an election input (elections §3), each held only when
+/// it supersedes the record held. The rows record the role; the election decides it.
+pub(crate) async fn take_recorded_primaries(nodes: &dyn crate::storage::NodesStorage, fabric: &FabricId, seats: &rdm_transport::membership::SeatBook) -> Result<usize, crate::storage_error::StorageError> {
+    let mut rows = nodes.contacts().await?;
+    rows.extend(nodes.own().await?);
+    let mut taken = 0;
+    for r in rows.iter().filter(|r| &r.fabric_id == fabric) {
+        let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: r.incarnation_id.clone(), revision };
+        if let Some(revision) = r.is_primary {
+            taken += usize::from(matches!(seats.take(rdm_core::Seat::of_cohort(r.name.kind), &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
+        }
+        if let Some(revision) = r.is_fabric_primary {
+            taken += usize::from(matches!(seats.take(rdm_core::Seat::FabricPrimary, &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
+        }
+    }
+    Ok(taken)
 }
 
 /// The Mesh row of the mesh a restarting node-admin's own row names, read by that mesh's id (R-MN1: a
@@ -344,10 +430,9 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
 /// birth holds the fabric seat it writes the Fabric identity it is configured for, so a seat that
 /// came to it before the fabric's first state-commit, from a holder whose held rows were dropped,
-/// still leaves the Fabric row on the store root. Seats are no `fabric/` rows: the leadership view is
-/// folded from the seat-transfer rows (proposal node-primary-update-fabric-mesh-and-node-type.md
-/// Part C2: "The per-seat rows under `fabric/seats` go"). The Fabric row carries no pointer to the
-/// newest Build (R-BI3). The claim of the
+/// still leaves the Fabric row on the store root. Who is primary is no `fabric/` row: it is the
+/// election's result, recorded as `is_primary` and `is_fabric_primary` on the node rows (build.md
+/// §5.3). The Fabric row carries no pointer to the newest Build (R-BI3). The claim of the
 /// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another
 /// Fabric's identity holds leaves `fabric/` unwritten by this writer, named once. While it does not
 /// hold the seat it writes nothing to `fabric/`.

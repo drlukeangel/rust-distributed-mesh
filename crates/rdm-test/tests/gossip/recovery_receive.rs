@@ -1,8 +1,7 @@
 //! A real node.topology.get installs the recovery floor; subsequent gossip cannot roll it back.
 use tracing::Instrument;
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, SeatHolder};
-use rdm_core::seat::transfer::CommittedSeat;
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, Primary};
 use rdm_transport::membership::{learn_addresses, mesh_channel, Frame, Membership, StatusEvent};
 use rdm_transport::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -22,7 +21,7 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, fr
     }).await.expect("the following frame proves this receipt finished");
 }
 fn birth(fabric: &FabricId, mesh: &MeshId, path: &str, ordinal: u16) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, config: Default::default(), load: None, gossip: None }
+    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None }
 }
 fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
     LifecycleOp { build_id: "recovery-receive".into(), attempt: 1, operation: format!("node.{command}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
@@ -63,7 +62,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let (restart,stop,delete)=(operation(&restarted,"restart"),operation(&started,"stop"),operation(&deleted,"delete"));
         let full=vec![own.clone(),restarted.clone(),started.clone(),holder.clone()];
         assert!(matches!(server_membership.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],departed:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
-        let seat_of=|d:&MeshDigest,revision|SeatHolder{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
+        let seat_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
         for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_membership.seats().take(seat,&seat_of(d,10));}
         let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_membership.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
         let mut serial=0;
@@ -92,9 +91,6 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
             Frame::Digest{digest:stale.clone()},
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
-            Frame::Seated{seat:Seat::Cohort(NodeKind::RpcNode),holder:seat_of(&restarted,9)},
-            Frame::PrimaryUpdating{op:operation(&own,"primary.update"),seats:vec![CommittedSeat::of(Seat::MeshPrimary,&seat_of(&restarted,9)),CommittedSeat::of(Seat::FabricPrimary,&seat_of(&restarted,9))]},
-            Frame::PrimaryUpdated{op:operation(&own,"primary.update"),seats:vec![CommittedSeat::of(Seat::MeshPrimary,&seat_of(&restarted,9)),CommittedSeat::of(Seat::FabricPrimary,&seat_of(&restarted,9))]},
             Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},
             Frame::MembersDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![holder.node.node_id.to_string()],in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},
             StatusEvent::Restarting.frame(restart,publisher.clone(),10),StatusEvent::Stopped.frame(stop,publisher.clone(),10),StatusEvent::Deleting.frame(delete.clone(),publisher.clone(),10),
@@ -121,7 +117,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
     assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.membership.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
     for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.membership.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
     assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-snapshot-installed"&&s["attributes"]["node"]=="mesh1.rpc.9"&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
-    for frame in ["digest","mesh-status","fabric-status","seated","primary-updating","primary-updated","members","members-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
+    for frame in ["digest","mesh-status","fabric-status","members","members-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
     assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-duplicate"&&s["attributes"]["frame"]=="node-deleted"));
     for position in 10..=15 {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-reserved"&&s["attributes"]["position"]==position.to_string()));}
 }

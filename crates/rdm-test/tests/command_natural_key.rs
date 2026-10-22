@@ -265,11 +265,11 @@ impl rdm_admin::fabric_rounds::RoundActions for HeldActions {
 }
 
 impl Birth {
-    /// `admin` announces itself holder of `mesh1`'s primary seat at `revision`; resolves once this
-    /// birth holds that record.
+    /// `admin` records itself `mesh1`'s mesh-primary at `revision`, which its next digest carries;
+    /// resolves once this birth holds that record.
     async fn seat(&self, admin: &crate::common::AdminSide, revision: u64) {
-        let holder = rdm_core::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
-        admin.observer.membership.publish_lifecycle(&rdm_transport::membership::Frame::Seated { seat: rdm_core::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
+        let holder = rdm_core::seat::Primary { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
+        admin.observer.membership.seats().take(rdm_core::seat::Seat::MeshPrimary, &holder);
         let seats = self.running.membership.seats();
         let mut changed = seats.subscribe();
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -413,10 +413,10 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
 /// admin2, which commands the birth at once; the birth has not yet heard the seat move, so its seat
 /// book still names admin1. The command is admitted and the birth's check-in goes to admin2, the
 /// commander the call came from. What must NOT happen: the check-in addressed to the holder the
-/// birth's seat book names, which no longer holds the round, refuses it `RejectedNotAuthority` and
+/// birth's seat book names, which no longer holds the round, refuses it `RejectedNotPrimary` and
 /// never asks again: admin2's command was answered `Applied`, so it never re-sends and its
 /// checklist never completes (gate red, tree b24a4303, mesh_elections__sticky_seat trace
-/// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-authority).
+/// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-primary).
 #[test]
 fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_checked_in_to_that_commander() {
     let cell = "a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_checked_in_to_that_commander";

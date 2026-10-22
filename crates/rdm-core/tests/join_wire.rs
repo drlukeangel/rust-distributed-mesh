@@ -35,7 +35,7 @@ fn digest() -> rdm_core::MeshDigest {
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 
@@ -58,8 +58,8 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
     let fixtures = [
         (Joined { answer: vec![1] }, "000101"),
         (JoinMismatch { field: "a".into(), deployed: "b".into(), reported: "c".into() }, "010161016201 63"),
-        (NotAuthority { primary: Some("m".into()) }, "0201016d"),
-        (NotAuthority { primary: None }, "0200"),
+        (NotPrimary { primary: Some("m".into()) }, "0201016d"),
+        (NotPrimary { primary: None }, "0200"),
         (PeerUnresolved { reason: "p".into() }, "030170"),
         (NotReady { reason: "n".into() }, "04016e"),
         (Busy { reason: "b".into() }, "050162"),
@@ -76,20 +76,29 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
     }
 }
 
-/// The digest's wire shape ends `load`, then `gossip`, every field present: `gossip` absent is one
-/// `00` byte after the `00` of an absent `load`; present it is `01` then `heard`, `neighbours`
-/// (u32 varints) and `frames_sent`, `frames_received` (u64 varints). A field added to the struct
-/// moves these bytes again.
+/// The digest's wire shape ends `load`, `gossip`, the held hash, then the primary revision and the
+/// fabric-primary revision (gossip.md "A primary change on gossip"), every field present: `gossip`
+/// absent is one `00` byte after the `00` of an absent `load`; present it is `01` then `heard`,
+/// `neighbours` (u32 varints) and `frames_sent`, `frames_received` (u64 varints). A revision absent is
+/// one `00`; present it is `01` then the revision (a u64 varint). A field added to the struct moves
+/// these bytes again.
 #[test]
 fn a_join_keeps_gossip_positions_then_appends_the_held_hash_and_type_declaration() {
     use rdm_core::GossipStats;
     let mut d = digest();
     let none = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d) }).unwrap();
-    assert_eq!(&none[none.len() - 35..none.len() - 33], bytes("0000").as_slice(), "load absent, gossip absent");
+    assert_eq!(&none[none.len() - 37..none.len() - 35], bytes("0000").as_slice(), "load absent, gossip absent");
     d.gossip = Some(GossipStats { heard: 2, neighbours: 3, frames_sent: 300, frames_received: 5 });
     let some = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d) }).unwrap();
-    assert_eq!(&some[some.len() - 40..some.len() - 33], bytes("00010203ac0205").as_slice());
+    assert_eq!(&some[some.len() - 42..some.len() - 35], bytes("00010203ac0205").as_slice());
     let JoinRequest::JoinNode { digest: back, .. } = Join::decode_request(&some).unwrap();
     assert_eq!(rdm_core::MeshDigest::from(back).gossip, d.gossip);
-    assert_eq!(&some[some.len()-33..], &[0;33], "held hash is 32 fixed bytes, then the empty types list");
+    assert_eq!(&some[some.len()-35..], &[0;35], "held hash is 32 fixed bytes, both revisions absent, then the empty types list");
+    d.is_primary = Some(4);
+    d.is_fabric_primary = Some(300);
+    let primary = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d) }).unwrap();
+    assert_eq!(&primary[primary.len() - 6..], bytes("010401ac0200").as_slice(), "the primary revision, the fabric-primary revision, then the empty types list");
+    let JoinRequest::JoinNode { digest: back, .. } = Join::decode_request(&primary).unwrap();
+    let back = rdm_core::MeshDigest::from(back);
+    assert_eq!((back.is_primary, back.is_fabric_primary), (Some(4), Some(300)));
 }

@@ -12,7 +12,7 @@
 //! input because of who sent it.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary};
 use rdm_transport::membership::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
 use rdm_transport::snapshot::PublisherId;
 use serde_json::Value;
@@ -52,12 +52,12 @@ fn digest(name: &str, port: u16) -> MeshDigest {
         in_flight: None,
         load: None,
         gossip: None,
-        config: Default::default(),
+        config: Default::default(), is_primary: None, is_fabric_primary: None
     }
 }
 
-fn seat_of(d: &MeshDigest, revision: u64) -> SeatHolder {
-    SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+fn seat_of(d: &MeshDigest, revision: u64) -> Primary {
+    Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
 }
 
 struct Node {
@@ -143,7 +143,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         }
 
         // mesh1.admin.1 is seated and publishes: the member holds its projection.
-        bb1.announce_seat(Seat::MeshPrimary, seat_of(&p1_d, 1)).await;
+        bb1.hold_primary(Seat::MeshPrimary, seat_of(&p1_d, 1));
         bb1.set_mesh_primary(true);
         bb1.publish(&m1, bb1.own_members(&m1)).await;
         until("the member to hold mesh1.admin.1's projection", || held_at_member().is_some_and(|(p, _)| p == pub1)).await;
@@ -154,7 +154,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
 
         // The seat moves to mesh1.admin.2: its full, then its delta.
         bb1.set_mesh_primary(false);
-        bb2.announce_seat(Seat::MeshPrimary, seat_of(&p2_d, 2)).await;
+        bb2.hold_primary(Seat::MeshPrimary, seat_of(&p2_d, 2));
         bb2.set_mesh_primary(true);
         bb2.publish(&m2, bb2.own_members(&m2)).await;
         until("the member to install the successor's full", || held_at_member().is_some_and(|(p, _)| p == pub2)).await;

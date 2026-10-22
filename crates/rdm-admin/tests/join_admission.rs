@@ -111,13 +111,13 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 
 /// CONTRACT (R-J1): the admin that deployed a birth answers its `JoinNode` only for the birth it
 /// deployed. A digest with another incarnation is refused as `JoinMismatch` naming the field and
-/// both incarnations; a digest of a node this admin deployed nothing for is `NotAuthority`;
+/// both incarnations; a digest of a node this admin deployed nothing for is `NotPrimary`;
 /// neither installs an address or completes the wait for the node's report. The matching digest
 /// installs exactly the address the node reported (the OS-assigned port), and that report is what
 /// the deployment's `WaitForBind` receives. Nothing inside the mesh checks who is calling
@@ -176,7 +176,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         let mut wrong_node = digest_of(&dep, "127.0.0.1:34567");
         wrong_node.node.node_id = NodeId::mint();
         let unknown = door.serve(peer.clone(), ask(&wrong_node)).await;
-        assert_eq!(unknown, JoinReply::NotAuthority { primary: Some("mesh1.admin.2".into()) });
+        assert_eq!(unknown, JoinReply::NotPrimary { primary: Some("mesh1.admin.2".into()) });
         assert!(installed.lock().unwrap().is_empty(), "a refused join installs nothing");
         assert!(reported.borrow().is_none(), "a refused join completes no WaitForBind");
 

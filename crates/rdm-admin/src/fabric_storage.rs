@@ -77,62 +77,7 @@ fn claim_fabric_against(held: Option<&FabricIdentity>, identity: &FabricIdentity
     }
 }
 
-/// A committed node.primary.update as the handover reads it (proposal Part C1 step 5: "The writer
-/// writes the one seat row at the next epoch(s) naming the successor. This is the commit"): every seat
-/// the holder moved to its successor at the next revision, and the update it commits. It is the
-/// [`SeatMoveRow`] of the update's operation: the commit. The holder's authority ends at
-/// these revisions, the successor installs from it, and an identical call replays it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeatTransferRow {
-    /// The update's operation identity, which names its move.
-    pub operation: String,
-    /// The Build whose stop, delete, restart, replace or connections delete the update precedes.
-    pub build_id: String,
-    /// That attempt.
-    pub attempt: u32,
-    /// The former holder of every seat moved.
-    pub holder: rdm_core::handover::HandoverBirth,
-    /// The successor the pre-check named, which installs from the move.
-    pub successor: rdm_core::handover::HandoverBirth,
-    /// The seats and the revisions the holder held them at.
-    pub expected: Vec<rdm_core::handover::SeatRevision>,
-    /// Every seat moved, at its committed revision.
-    pub seats: Vec<rdm_core::seat::transfer::CommittedSeat>,
-    /// The exact birth that writes the move: the holder for the node-admin cohort, the mesh-primary
-    /// for every other cohort.
-    pub by: rdm_core::handover::HandoverBirth,
-}
-
-impl SeatTransferRow {
-    /// The seat-move row that commits this transfer: each seat from the revision the holder held it
-    /// at to its committed one.
-    pub fn seat_move(&self) -> SeatMoveRow {
-        let from = |seat: &rdm_core::seat::transfer::Seat| self.expected.iter().find(|e| &e.seat == seat).map(|e| e.expected_revision);
-        SeatMoveRow {
-            seats: self.seats.iter().map(|c| MovedSeat { seat: c.seat.clone(), from_revision: from(&c.seat).unwrap_or(c.revision.saturating_sub(1)), revision: c.revision, holder: Some(c.holder.clone()), from: Some(self.holder.clone()) }).collect(),
-            cause: MoveCause::Handover { operation: self.operation.clone(), build_id: self.build_id.clone(), attempt: self.attempt },
-            by: self.by.clone(),
-        }
-    }
-
-    /// The transfer a committed handover is; `None` for an election, a takeover or a move of no seat.
-    pub fn of_move(row: &SeatMoveRow) -> Option<Self> {
-        let MoveCause::Handover { operation, build_id, attempt } = &row.cause else { return None };
-        let first = row.seats.first()?;
-        Some(Self {
-            operation: operation.clone(),
-            build_id: build_id.clone(),
-            attempt: *attempt,
-            holder: first.from.clone()?,
-            successor: first.holder.clone()?,
-            expected: row.seats.iter().map(|m| rdm_core::handover::SeatRevision { seat: m.seat.clone(), expected_revision: m.from_revision }).collect(),
-            seats: row.seats.iter().map(|m| Some(rdm_core::seat::transfer::CommittedSeat { seat: m.seat.clone(), holder: m.holder.clone()?, revision: m.revision })).collect::<Option<Vec<_>>>()?,
-            by: row.by.clone(),
-        })
-    }
-}
-
-/// One seat a seat move moves (Q35: `(seat, from_revision, revision, holder, from)`).
+/// One seat a seat move moved (`seat-move/1`, retired: decoding kept, nothing reads or writes it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MovedSeat {
     /// The seat.
@@ -168,22 +113,9 @@ pub enum MoveCause {
     Takeover,
 }
 
-/// The birth the fabric seat was taken from and the birth the takeover seated, with the move's `t`,
-/// when the fabric seat's latest move in `moves` is a takeover (elections §5): the lost fabric-primary,
-/// whose mesh's node-admin the new fabric-primary re-creates from the fabric lane (elections §4.3,
-/// node-recovery.md `R-FM2`) and to whose path.name the seat is owed back (fabric-recovery.md step 4),
-/// and the seat's holder on the store root. `None` when that move is an election or a handover, or no
-/// move seated the fabric seat.
-pub fn fabric_seat_taken_from(moves: &[SeatMove]) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
-    let (t, cause, moved) = moves.iter().rev().find_map(|m| m.row.seats.iter().find(|s| s.seat == rdm_core::seat::transfer::Seat::FabricPrimary).map(|s| (m.t, &m.row.cause, s)))?;
-    if *cause != MoveCause::Takeover {
-        return None;
-    }
-    Some((t, moved.from.clone()?, moved.holder.clone()?))
-}
-
-/// One row of the fabric's seat-move sequence (`seat-move/1`, Q35 x): the seats it moves, what moved
-/// them, and the exact birth that wrote it.
+/// One row of the fabric's retired seat-move sequence (`seat-move/1`): who is primary is the election's
+/// result, recorded as `is_primary` and `is_fabric_primary` on the node rows; this shape is kept so an
+/// older store root's rows still decode, and nothing reads or writes them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatMoveRow {
     /// Every seat moved, one row however many.
@@ -194,127 +126,13 @@ pub struct SeatMoveRow {
     pub by: rdm_core::handover::HandoverBirth,
 }
 
-/// A written seat move: its place `t` in the fabric-wide sequence, and its row.
+/// A written seat move of an older store root: its place `t` in the sequence its key names, and its row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatMove {
     /// Its place in the sequence, from 1.
     pub t: u64,
     /// The row.
     pub row: SeatMoveRow,
-}
-
-/// The fabric's seat moves folded in order: each seat's revision as the moves left it.
-#[derive(Debug, Clone)]
-struct MoveLog {
-    next: u64,
-    moves: Vec<SeatMove>,
-    seats: std::collections::HashMap<rdm_core::seat::transfer::Seat, u64>,
-}
-
-impl Default for MoveLog {
-    fn default() -> Self {
-        Self { next: 1, moves: Vec::new(), seats: Default::default() }
-    }
-}
-
-impl MoveLog {
-    /// `rows` folded in order of `t`, as every reader folds them (Q109): a row that does not follow the
-    /// fold is ignored. The next `t` is past every row stored, an ignored one included, so a write
-    /// never lands on a stored key.
-    fn fold(rows: &[SeatMove]) -> Self {
-        let mut rows = rows.to_vec();
-        rows.sort_by(|a, b| (a.t, move_key(a.t, &a.row.by)).cmp(&(b.t, move_key(b.t, &b.row.by))));
-        let mut log = Self::default();
-        for m in &rows {
-            if log.admits(&m.row).is_ok() {
-                log.take(m.t, m.row.clone());
-            }
-        }
-        log.next = rows.last().map_or(1, |m| m.t + 1);
-        log
-    }
-
-    /// Whether `row` follows the fold at the log's end (Q48 A): each seat steps its own revision by
-    /// one, from exactly the revision the moves before it left it at (0 for a seat no move has seated).
-    /// A move computed against any other view does not, naming the seat.
-    fn admits(&self, row: &SeatMoveRow) -> Result<(), String> {
-        if row.seats.is_empty() {
-            return Err("the move moves no seat".into());
-        }
-        for m in &row.seats {
-            if m.from_revision.checked_add(1) != Some(m.revision) {
-                return Err(format!("the {} seat moves from revision {} to {}: a seat's revision steps by one", m.seat.name(), m.from_revision, m.revision));
-            }
-            let logged = self.seats.get(&m.seat).copied().unwrap_or(0);
-            if m.from_revision != logged {
-                return Err(format!("the {} seat moves from revision {} and the moves before it left it at revision {logged}", m.seat.name(), m.from_revision));
-            }
-        }
-        Ok(())
-    }
-
-    fn take(&mut self, t: u64, row: SeatMoveRow) {
-        for m in &row.seats {
-            self.seats.insert(m.seat.clone(), m.revision);
-        }
-        self.moves.push(SeatMove { t, row });
-        self.next = t + 1;
-    }
-
-    fn transfer(&self, operation: &str) -> Option<SeatTransferRow> {
-        self.moves.iter().rev().filter_map(|m| SeatTransferRow::of_move(&m.row)).find(|r| r.operation == operation)
-    }
-}
-
-/// What the writer's commit of a seat move came to ([`commit_seat_move`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MoveCommit {
-    /// The row is written at its `t`.
-    Committed(SeatMove),
-    /// The row does not follow the writer's fold of the moves before it, naming why: a seat it moves
-    /// moved meanwhile. Nothing is written.
-    Refused(String),
-}
-
-/// Commit `row` as the fabric's next seat move: the writer folds every earlier move and decides
-/// (node-primary-update.md: "inserted at the next `T` once the writer has folded every earlier move"),
-/// then writes the row at the next `t`. A row that does not follow the fold is not written. The
-/// storage decides nothing (Q109).
-pub async fn commit_seat_move(storage: &dyn FabricStorage, row: &SeatMoveRow) -> Result<MoveCommit, FabricStorageError> {
-    let _one = COMMITS.lock().await;
-    let log = MoveLog::fold(&storage.seat_moves().await?);
-    if let Err(why) = log.admits(row) {
-        return Ok(MoveCommit::Refused(why));
-    }
-    let moved = SeatMove { t: log.next, row: row.clone() };
-    storage.put_seat_move(&moved).await?;
-    Ok(MoveCommit::Committed(moved))
-}
-
-/// The writer's commits, one at a time: each folds the row the one before it wrote, so no two of its
-/// rows take one `t` (Q109: no write replaces another).
-static COMMITS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Every seat move as the readers fold them (Q109): the rows `storage` holds, in key order, a row
-/// that does not follow the fold ignored.
-pub async fn folded_moves(storage: &dyn FabricStorage) -> Result<Vec<SeatMove>, FabricStorageError> {
-    Ok(fold(&storage.seat_moves().await?))
-}
-
-/// `rows` as every reader folds them (Q109): in key order, a row that does not follow the fold ignored.
-pub fn fold(rows: &[SeatMove]) -> Vec<SeatMove> {
-    MoveLog::fold(rows).moves
-}
-
-/// The move of `operation` among the folded moves, as the handover reads it: `None` when none was
-/// committed (the transfer never happened).
-pub async fn seat_transfer(storage: &dyn FabricStorage, operation: &str) -> Result<Option<SeatTransferRow>, FabricStorageError> {
-    Ok(MoveLog::fold(&storage.seat_moves().await?).transfer(operation))
-}
-
-/// Every move of an operation among the folded moves, in order, as the handover reads them.
-pub async fn seat_transfers(storage: &dyn FabricStorage) -> Result<Vec<SeatTransferRow>, FabricStorageError> {
-    Ok(folded_moves(storage).await?.iter().filter_map(|m| SeatTransferRow::of_move(&m.row)).collect())
 }
 
 /// Why a `fabric.storage` read or write failed.
@@ -371,19 +189,12 @@ pub trait FabricStorage: Send + Sync {
     async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError>;
     /// Write `identity` as the Fabric's identity row, as given.
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError>;
-    /// Write `moved`, a row of the fabric's seat-move sequence, at its `t`, as given (Q109: storage
-    /// stores and returns what it is given). The writer folded the moves before it
-    /// ([`commit_seat_move`]).
-    async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError>;
-    /// Every seat move this storage holds, in order of `t`, as written.
-    async fn seat_moves(&self) -> Result<Vec<SeatMove>, FabricStorageError>;
 }
 
 /// A fabric store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
-    moves: Mutex<Vec<SeatMove>>,
 }
 
 impl MemoryFabricStorage {
@@ -417,16 +228,6 @@ impl FabricStorage for MemoryFabricStorage {
         *self.identity.lock().unwrap() = Some(identity.clone());
         Ok(())
     }
-    async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError> {
-        let mut moves = self.moves.lock().unwrap();
-        moves.retain(|m| (m.t, &m.row.by) != (moved.t, &moved.row.by));
-        moves.push(moved.clone());
-        moves.sort_by(|a, b| (a.t, move_key(a.t, &a.row.by)).cmp(&(b.t, move_key(b.t, &b.row.by))));
-        Ok(())
-    }
-    async fn seat_moves(&self) -> Result<Vec<SeatMove>, FabricStorageError> {
-        Ok(self.moves.lock().unwrap().clone())
-    }
 }
 
 /// The directory inside the fabric's store root.
@@ -454,9 +255,10 @@ const RETIRED_HANDOVER_FORMAT: &str = "fabric-handover/1";
 const REFUSED_TRANSFERS_DIR: &str = "seat-transfers";
 #[cfg(feature = "file-backend")]
 const REFUSED_TRANSFER_FORMAT: &str = "fabric-seat-transfer/1";
-/// The fabric's seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>.json`.
+/// Where an older store root holds its seat moves, `seat-moves/<T>--<node.id>--<incarnation>.json`
+/// (retired: nothing reads or writes them).
 pub const SEAT_MOVES_DIR: &str = "seat-moves";
-/// The format of one seat move.
+/// The retired format of one seat move, kept so its rows decode.
 pub const SEAT_MOVE_FORMAT: &str = "seat-move/1";
 #[cfg(feature = "file-backend")]
 const IDENTITY_KEY: &str = "identity";
@@ -472,16 +274,13 @@ const NAME_FORMAT: &str = "fabric-name/1";
 
 #[cfg(feature = "file-backend")]
 /// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json`
-/// (`crate::record_store`); the fabric's seat moves under `<store root>/seat-moves/`.
+/// (`crate::record_store`).
 #[derive(Debug)]
 pub struct FileFabricStorage {
     /// `<store_dir>/fabrics/`: the fabrics' name index above the per-fabric roots (R-FN1), where this
     /// fabric's claim of its name is the first of its rows.
     names: crate::record_store::FileRecords,
     records: crate::record_store::FileRecords,
-    /// `<store root>/seat-moves/`: one key per seat move, `<T>`, and the moves this process holds
-    /// until the fabric's first state-commit.
-    moves: std::sync::Arc<MoveStore>,
 }
 
 #[cfg(feature = "file-backend")]
@@ -513,8 +312,7 @@ impl FileFabricStorage {
         for dir in transfer_dirs {
             refuse_retired(&dir, &format!("the seat-transfer row format {REFUSED_TRANSFER_FORMAT} is retired: every seat move is one row of the fabric's sequence under {SEAT_MOVES_DIR}/ ({SEAT_MOVE_FORMAT})")).await?;
         }
-        let moves = MoveStore::open(root, writer).await?;
-        Ok(Self { names, records, moves })
+        Ok(Self { names, records })
     }
 
     /// Finishes every write of the fabric's name claim and identity this store has issued
@@ -543,97 +341,6 @@ impl FabricStorage for FileFabricStorage {
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
         self.records.write(IDENTITY_KEY, IDENTITY_FORMAT, identity).await
     }
-    async fn put_seat_move(&self, moved: &SeatMove) -> Result<(), FabricStorageError> {
-        self.moves.put(moved).await
-    }
-    async fn seat_moves(&self) -> Result<Vec<SeatMove>, FabricStorageError> {
-        self.moves.rows().await
-    }
-}
-
-#[cfg(feature = "file-backend")]
-/// The fabric's seat moves on its store root (`seat-moves/<T>--<node.id>--<incarnation>`), as one
-/// process reads and writes them:
-/// each row stored at its `t` as given. Before the fabric's first state-commit every row a process
-/// writes is held in its scratchpad (R14) and written at its `t` at the publication.
-struct MoveStore {
-    records: crate::record_store::FileRecords,
-    /// `Some` while this process holds its moves. Locked across a read of the root and across the
-    /// publication, so every read sees each row either held or written.
-    held: tokio::sync::Mutex<Option<Vec<SeatMove>>>,
-}
-
-#[cfg(feature = "file-backend")]
-impl std::fmt::Debug for MoveStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MoveStore").field("records", &self.records).finish()
-    }
-}
-
-#[cfg(feature = "file-backend")]
-impl MoveStore {
-    async fn open(root: &crate::store_root::StoreRoot, writer: &crate::model::IncarnationId) -> Result<std::sync::Arc<Self>, FabricStorageError> {
-        let records = crate::record_store::FileRecords::open(root.dir(), SEAT_MOVES_DIR, writer).await?;
-        let store = std::sync::Arc::new(Self { records, held: tokio::sync::Mutex::new(Some(Vec::new())) });
-        if !root.scratchpad().is_some_and(|s| s.enrol(store.clone())) {
-            *store.held.lock().await = None;
-        }
-        Ok(store)
-    }
-
-    /// The rows on the root, then this process's held ones, in key order: by `t`, then by writer.
-    async fn rows(&self) -> Result<Vec<SeatMove>, FabricStorageError> {
-        let held = self.held.lock().await;
-        let mut rows = Vec::new();
-        for (key, row) in self.records.list_keyed::<SeatMoveRow>(SEAT_MOVE_FORMAT).await? {
-            let t = move_key_t(&key).ok_or_else(|| FabricStorageError::Unrecognised { file: format!("{SEAT_MOVES_DIR}/{key}.json"), reason: "the key names no t".into() })?;
-            rows.push(SeatMove { t, row });
-        }
-        rows.extend(held.iter().flatten().cloned());
-        rows.sort_by(|a, b| (a.t, move_key(a.t, &a.row.by)).cmp(&(b.t, move_key(b.t, &b.row.by))));
-        rows.dedup_by(|a, b| (a.t, &a.row.by) == (b.t, &b.row.by));
-        Ok(rows)
-    }
-
-    async fn put(&self, moved: &SeatMove) -> Result<(), FabricStorageError> {
-        let mut held = self.held.lock().await;
-        if let Some(held) = held.as_mut() {
-            held.push(moved.clone());
-            return Ok(());
-        }
-        self.records.write(&move_key(moved.t, &moved.row.by), SEAT_MOVE_FORMAT, &moved.row).await
-    }
-}
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl crate::record_store::HeldStore for MoveStore {
-    async fn publish(&self) -> Result<crate::record_store::StorePublished, crate::storage_error::StorageError> {
-        let mut done = crate::record_store::StorePublished { store: SEAT_MOVES_DIR.into(), ..Default::default() };
-        let mut held = self.held.lock().await;
-        let Some(rows) = held.as_ref() else {
-            return Ok(done);
-        };
-        for moved in rows {
-            self.records.write(&move_key(moved.t, &moved.row.by), SEAT_MOVE_FORMAT, &moved.row).await?;
-            done.written += 1;
-        }
-        *held = None;
-        Ok(done)
-    }
-}
-
-#[cfg(feature = "file-backend")]
-/// The key of the seat move at `t`: 20-digit zero-padded, so a listing sorts in order.
-/// A seat move's key: its `t`, then its writer's exact birth, so no writer's row replaces another's
-/// (Q109: "the row's key names its writer's birth with T").
-fn move_key(t: u64, by: &rdm_core::handover::HandoverBirth) -> String {
-    format!("{t:020}--{}--{}", by.node_id, by.incarnation.as_str())
-}
-
-/// The `t` a seat move's key names.
-fn move_key_t(key: &str) -> Option<u64> {
-    key.split("--").next()?.parse().ok()
 }
 
 #[cfg(feature = "file-backend")]
@@ -676,174 +383,23 @@ fn name_key<'a>(records: &crate::record_store::FileRecords, name: &'a str) -> Re
 mod tests {
     use super::*;
 
-    fn birth(node: &str, inc: &str) -> rdm_core::handover::HandoverBirth {
-        rdm_core::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rdm_core::NodeId::parse(node).unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap() }
-    }
-
-    /// The transfer of `operation` from `p` to `n` of the mesh seat at `mesh_from` and, when given,
-    /// the fabric seat at `fabric_from`.
-    fn transfer(operation: &str, mesh_from: u64, fabric_from: Option<u64>) -> SeatTransferRow {
-        use rdm_core::seat::transfer::Seat;
-        let (p, n) = (birth("100000000000", "p"), birth("200000000000", "n"));
-        let mut moved = vec![(Seat::MeshPrimary { mesh: "mesh1".into() }, mesh_from)];
-        moved.extend(fabric_from.map(|f| (Seat::FabricPrimary, f)));
-        SeatTransferRow {
-            operation: operation.into(),
-            build_id: "b1".into(),
-            attempt: 2,
-            holder: p.clone(),
-            successor: n.clone(),
-            expected: moved.iter().map(|(seat, from)| rdm_core::handover::SeatRevision { seat: seat.clone(), expected_revision: *from }).collect(),
-            seats: moved.iter().map(|(seat, from)| rdm_core::seat::transfer::CommittedSeat { seat: seat.clone(), holder: n.clone(), revision: from + 1 }).collect(),
-            by: p,
-        }
-    }
-
-    fn committed(c: MoveCommit) -> SeatMove {
-        match c {
-            MoveCommit::Committed(m) => m,
-            MoveCommit::Refused(why) => panic!("refused: {why}"),
-        }
-    }
-
-    /// CONTRACT (Q35 x: "a two-seat move is one row, atomic"; node-primary-update.md "Where the row
-    /// lives": the row "at the next `T` once the writer has folded every earlier move"): a node.primary.update moving both seats is
-    /// ONE row of the fabric's seat-move sequence, `seat-moves/00000000000000000001` in the
-    /// `seat-move/1` shape, each seat stepped by one from the revision it was held at; a reopened store
-    /// folds it back and finds it by its operation, in both stores. A format this build does not know
-    /// is refused by name. Must NOT happen: a two-seat move written as two rows, a revision stepping by
-    /// more than one, a row keyed by its holder's mesh.
+    /// CONTRACT (the made-up words' removal §7 item 4: "`seat-move/1` retired under the durable-format
+    /// rule, its decoding kept"): who is primary is the election's result recorded on the node rows, so
+    /// nothing reads or writes the fabric's seat moves; a store root an older build left them on opens,
+    /// and each of its rows still decodes in the `seat-move/1` shape.
     #[tokio::test]
-    async fn a_two_seat_move_is_one_row_of_the_fabrics_sequence_with_both_revisions_stepped() {
-        let row = transfer("node.connections.delete:mesh1.admin.1", 0, Some(0));
+    async fn an_older_store_roots_move_rows_still_decode_and_it_opens() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap();
-        let memory = MemoryFabricStorage::new();
-        for store in [&s as &dyn FabricStorage, &memory] {
-            let m = committed(commit_seat_move(store, &row.seat_move()).await.unwrap());
-            assert_eq!(m.t, 1, "the fabric's first seat move");
-            assert_eq!(m.row.seats.iter().map(|x| (x.seat.name(), x.from_revision, x.revision)).collect::<Vec<_>>(), vec![("mesh-primary", 0, 1), ("fabric-primary", 0, 1)], "both seats in the one row, each stepped by one");
-            assert_eq!(seat_transfer(store, "node.connections.delete:mesh1.admin.1").await.unwrap(), Some(row.clone()), "the move read back as the transfer it commits");
-            assert_eq!(seat_transfer(store, "node.stop:mesh1.admin.1").await.unwrap(), None);
-        }
-        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap();
-        assert_eq!(seat_transfers(&reopened).await.unwrap(), vec![row.clone()]);
-        let files: Vec<String> = std::fs::read_dir(d.join(SEAT_MOVES_DIR)).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|f| f.ends_with(".json")).collect();
-        let key = format!("{}.json", move_key(1, &row.seat_move().by));
-        assert_eq!(files, vec![key.clone()], "one row, keyed by its t and its writer's birth");
-        assert!(!d.join("meshes").join("mesh1").join("seat-transfers").exists(), "no row under the holder's mesh");
-        let file = d.join(SEAT_MOVES_DIR).join(&key);
-        let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with(r#"{"format":"seat-move/1","record":{"seats":[{"seat":{"MeshPrimary":{"mesh":"mesh1"}},"from_revision":0,"revision":1"#), "{text}");
-        std::fs::write(&file, br#"{"format":"seat-move/9","record":{}}"#).unwrap();
-        let fresh = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap();
-        assert!(matches!(fresh.seat_moves().await, Err(FabricStorageError::Unrecognised { .. })));
-    }
-
-    /// CONTRACT (Q48 A: "every seat change is one row in seat-moves, including a seat filled by the
-    /// ordinary rule after a proven exit ... and day 0's first seating"; "a vacancy filled by the rule
-    /// writes seat-moves/<T>; a move computed against the pre-fill revision is refused by the fold";
-    /// Q109: the writer's fold):
-    /// day 0's election seats P in mesh1's and the fabric's seats as ONE row of kind `election`, each
-    /// from revision 0 with no previous holder. P hands mesh1's seat to N (revision 2); N's exit is
-    /// proven, and the rule fills the vacancy with M: an `election` row from N at revision 2 to M at 3,
-    /// written before it is announced. N's handover computed against revision 2 is refused by the fold,
-    /// naming the seat and the revision the moves left it at; so is a second election computed
-    /// against the pre-fill view, whose refusal folds the moves into the seat book (M at 3). Must NOT
-    /// happen: a seat's revision advancing with no row, or a move from a revision the log no longer
-    /// holds committing.
-    #[tokio::test]
-    async fn a_vacancy_filled_by_the_rule_writes_its_seat_move_and_a_move_from_the_pre_fill_revision_is_refused() {
-        use crate::fabric_handover::elect;
-        use rdm_core::Seat;
-        let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap();
-        let book = rdm_transport::membership::DigestBook::default();
-        let holder = |b: &rdm_core::handover::HandoverBirth, revision: u64| rdm_core::SeatHolder { mesh: b.mesh.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), revision };
-        let (p, n, m) = (birth("100000000000", "p"), birth("200000000000", "n"), birth("300000000000", "m"));
-        let none = crate::election::Incumbency::default();
-        let day0 = elect(&s, &book.seats, &p, &none, vec![(Seat::MeshPrimary, holder(&p, 1)), (Seat::FabricPrimary, holder(&p, 1))]).await;
-        assert_eq!(day0.len(), 2, "day 0's first seating is committed and announced");
-        let moves = s.seat_moves().await.unwrap();
-        assert_eq!((moves.len(), moves[0].row.cause.clone(), moves[0].row.seats.iter().map(|x| (x.from_revision, x.revision, x.from.clone())).collect::<Vec<_>>()), (1, MoveCause::Election, vec![(0, 1, None), (0, 1, None)]), "one election row, both seats from revision 0 and no holder");
-        assert!(matches!(commit_seat_move(&s, &transfer("node.stop:mesh1.admin.1", 1, None).seat_move()).await.unwrap(), MoveCommit::Committed(SeatMove { t: 2, .. })), "P hands mesh1's seat to N at revision 2");
-        // N's exit is proven: the rule fills the vacancy with M, from N's record at revision 2.
-        let decided = crate::election::Incumbency { meshes: [("mesh1".to_string(), holder(&n, 2))].into(), ..Default::default() };
-        let filled = elect(&s, &book.seats, &m, &decided, vec![(Seat::MeshPrimary, holder(&m, 3))]).await;
-        assert_eq!(filled, vec![(Seat::MeshPrimary, holder(&m, 3))], "the fill is committed before it is announced");
-        let row = s.seat_moves().await.unwrap().pop().unwrap();
-        assert_eq!((row.t, row.row.cause.clone(), row.row.seats[0].from_revision, row.row.seats[0].revision, row.row.seats[0].from.clone(), row.row.by.clone()), (3, MoveCause::Election, 2, 3, Some(n.clone()), m.clone()), "the fill's row: seat-moves/3, from N at 2 to M at 3, written by M");
-        assert!(d.join(SEAT_MOVES_DIR).join(format!("{}.json", move_key(3, &m))).is_file());
-        // A move computed against the pre-fill revision is refused by the fold.
-        let mut stale = transfer("node.restart:mesh1.admin.2", 2, None);
-        stale.holder = n.clone();
-        stale.by = n.clone();
-        assert!(matches!(commit_seat_move(&s, &stale.seat_move()).await.unwrap(), MoveCommit::Refused(why) if why.contains("mesh-primary") && why.contains("from revision 2") && why.contains("left it at revision 3")));
-        let late = elect(&s, &book.seats, &p, &decided, vec![(Seat::MeshPrimary, holder(&p, 3))]).await;
-        assert!(late.is_empty(), "an election computed against the pre-fill view commits nothing and announces nothing");
-        assert_eq!(book.seats.mesh("mesh1"), Some(holder(&m, 3)), "its refusal folds the moves into the seat book");
-        assert_eq!(s.seat_moves().await.unwrap().len(), 3, "nothing else was written");
-    }
-
-    /// CONTRACT (rulings INDEX Q109: "storage stores and returns what it is given, and decides
-    /// nothing"; "the writer, node-admin, folds every earlier move and decides"; "every reader folds the
-    /// stored rows the same way, and a row that does not follow the fold is ignored by every reader,
-    /// refused by no storage"): a row written straight to the store that does not follow the fold (a
-    /// seat moved from a revision the moves already left) is stored as given, in both stores; every
-    /// reader's fold ignores it, so no transfer reads it; the writer's next row goes past it at the
-    /// next `t`. A row whose revision does not step by one is refused by the writer and not written.
-    /// Must NOT happen: a store refusing a row, a reader taking an ignored row, a write over a stored key.
-    #[tokio::test]
-    async fn a_row_that_does_not_follow_the_fold_is_stored_and_every_reader_ignores_it() {
-        let d = tempdir();
-        let file = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap();
-        let memory = MemoryFabricStorage::new();
-        for store in [&file as &dyn FabricStorage, &memory] {
-            committed(commit_seat_move(store, &transfer("node.stop:mesh1.admin.1", 0, None).seat_move()).await.unwrap());
-            // A superseded writer's row, from the revision the first move already left.
-            let behind = SeatMove { t: 2, row: transfer("node.restart:mesh1.admin.1", 0, None).seat_move() };
-            store.put_seat_move(&behind).await.unwrap();
-            assert_eq!(store.seat_moves().await.unwrap().len(), 2, "the store holds the row it was given");
-            assert_eq!(folded_moves(store).await.unwrap().iter().map(|m| m.t).collect::<Vec<_>>(), vec![1], "every reader's fold ignores it");
-            assert_eq!(seat_transfer(store, "node.restart:mesh1.admin.1").await.unwrap(), None, "no transfer reads it");
-            let next = committed(commit_seat_move(store, &transfer("node.stop:mesh1.admin.2", 1, None).seat_move()).await.unwrap());
-            assert_eq!(next.t, 3, "the writer's next row goes past the stored key");
-            let mut bad = transfer("node.stop:mesh1.admin.3", 2, None).seat_move();
-            bad.seats[0].revision = 6;
-            assert!(matches!(commit_seat_move(store, &bad).await.unwrap(), MoveCommit::Refused(why) if why.contains("steps by one")));
-            assert_eq!(store.seat_moves().await.unwrap().len(), 3, "a refused row is not written");
-        }
-    }
-
-    /// CONTRACT (Q109: "the row's key names its writer's birth with T", so no write replaces another;
-    /// node-primary-update.md: "inserted at the next `T` once the writer has folded every earlier
-    /// move"): one writer's commits made at once, each moving its own seat, each stand at their own
-    /// `t`, in both stores. Must NOT happen: two of them folded at one end and written at one key, the
-    /// later replacing the earlier.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn one_writers_commits_made_at_once_each_stand_at_their_own_t() {
-        let d = tempdir();
-        let file: std::sync::Arc<dyn FabricStorage> = std::sync::Arc::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.unwrap());
-        let memory: std::sync::Arc<dyn FabricStorage> = std::sync::Arc::new(MemoryFabricStorage::new());
-        let by = birth("100000000000", "p");
-        for store in [file, memory] {
-            let commits = (1..=16u64)
-                .map(|i| {
-                    let (store, by) = (store.clone(), by.clone());
-                    tokio::spawn(async move {
-                        let seat = MovedSeat { seat: rdm_core::seat::transfer::Seat::MeshPrimary { mesh: format!("mesh{i}") }, from_revision: 0, revision: 1, holder: Some(by.clone()), from: None };
-                        committed(commit_seat_move(&*store, &SeatMoveRow { seats: vec![seat], cause: MoveCause::Election, by }).await.unwrap()).t
-                    })
-                })
-                .collect::<Vec<_>>();
-            let mut ts = Vec::new();
-            for c in commits {
-                ts.push(c.await.unwrap());
-            }
-            ts.sort();
-            assert_eq!(ts, (1..=16).collect::<Vec<u64>>(), "each commit took its own t");
-            assert_eq!(folded_moves(&*store).await.unwrap().len(), 16, "every row stands: none replaced another");
-        }
+        let dir = d.join(SEAT_MOVES_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let birth = rdm_core::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rdm_core::NodeId::parse("100000000000").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap() };
+        let row = SeatMoveRow { seats: vec![MovedSeat { seat: rdm_core::seat::transfer::Seat::FabricPrimary, from_revision: 0, revision: 1, holder: Some(birth.clone()), from: None }], cause: MoveCause::Election, by: birth };
+        let file = serde_json::json!({ "format": SEAT_MOVE_FORMAT, "record": row });
+        std::fs::write(dir.join("00000000000000000001--100000000000--p.json"), serde_json::to_vec(&file).unwrap()).unwrap();
+        FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::mint()).await.expect("a store root holding retired seat moves opens");
+        let read: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("00000000000000000001--100000000000--p.json")).unwrap()).unwrap();
+        assert_eq!(read["format"], SEAT_MOVE_FORMAT);
+        assert_eq!(serde_json::from_value::<SeatMoveRow>(read["record"].clone()).unwrap(), row, "the retired row decodes");
     }
 
     #[tokio::test]

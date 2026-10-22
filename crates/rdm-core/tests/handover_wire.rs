@@ -1,135 +1,105 @@
-//! Fixed bytes for the `0x21` node-primary-update family (the approved proposal
-//! node-primary-update-fabric-mesh-and-node-type.md Part C3 edit 5 and Part D: "0x21 carries the
-//! primitive's `PrimaryUpdate` / `PrimaryUpdated` for both seats; the incumbent writes the row").
-//! These literals lock discriminants, the nested birth fields and the positional field order
-//! independently of codec round trips; enums are append-only. Never regenerate expectations from the
-//! Rust serializer to make a schema change pass.
+//! Fixed bytes for the `0x21` node-primary-update family (node-rpc-envelope.md "PrimaryUpdate, op
+//! `0x21`, rdm"). These literals lock discriminants, the nested birth fields and the positional field
+//! order independently of codec round trips; enums are append-only. Never regenerate expectations from
+//! the Rust serializer to make a schema change pass.
 //!
 //! Hand derivation (postcard): an enum is its variant index as a varint; a string is its byte
-//! length as a varint then its bytes; a u64 is a varint; a NodeId and an IncarnationId are strings.
-//! A birth is `mesh | node_id | incarnation`.
+//! length as a varint then its bytes; a u64 and a u32 are varints; a NodeId and an IncarnationId are
+//! strings; a tuple is its fields in order. A birth is `node_id | incarnation`; a take-over's birth is
+//! `mesh | node_id | incarnation`.
 
-use rdm_core::{IncarnationId, NodeId};
-use rdm_core::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatRevision, SeatUpdate};
+use rdm_core::framing::Birth;
+use rdm_core::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
+use rdm_core::{IncarnationId, NodeId};
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
 }
 
-fn holder() -> HandoverBirth {
-    HandoverBirth { mesh: "m".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
+fn primary() -> Birth {
+    Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
 }
 
-fn successor() -> HandoverBirth {
-    HandoverBirth { mesh: "m".into(), node_id: NodeId::parse("0123456789cd").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("j")).unwrap() }
+fn successor() -> Birth {
+    Birth { node_id: NodeId::parse("0123456789cd").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("j")).unwrap() }
 }
 
-/// The holder's call on its successor moving both seats in one row (Q1): the mesh seat of `m` to
-/// revision 4 and the fabric seat to revision 8.
-fn primary_update() -> NodePrimaryUpdateRequest {
-    NodePrimaryUpdateRequest::PrimaryUpdate {
-        seats: vec![SeatUpdate { seat: Seat::MeshPrimary { mesh: "m".into() }, holder: holder(), successor: successor(), revision: 4 }, SeatUpdate { seat: Seat::FabricPrimary, holder: holder(), successor: successor(), revision: 8 }],
-        build_id: "b".into(),
-        attempt: 2,
-        operation: "o".into(),
-    }
+fn handover(b: Birth) -> HandoverBirth {
+    HandoverBirth { mesh: "m".into(), node_id: b.node_id, incarnation: b.incarnation }
 }
 
-/// The successor holding the fabric seat at revision 8.
-fn committed() -> CommittedSeat {
-    CommittedSeat { seat: Seat::FabricPrimary, holder: successor(), revision: 8 }
+/// The fabric-primary's entry: the primary's and the successor's exact births at revision 8.
+fn fabric_entry() -> (String, Birth, Birth, u64) {
+    ("fabric".into(), primary(), successor(), 8)
 }
 
-/// `m`, `0123456789ab`, `i`.
-const HOLDER: &str = "01 6d  0c 303132333435363738396162  0c 79727a34396a333033796834";
-/// `m`, `0123456789cd`, `j`.
-const SUCCESSOR: &str = "01 6d  0c 303132333435363738396364  0c 79727a37396a3330337a7378";
+/// `0123456789ab`, `i`.
+const PRIMARY: &str = "0c 303132333435363738396162  0c 79727a34396a333033796834";
+/// `0123456789cd`, `j`.
+const SUCCESSOR: &str = "0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
-/// CONTRACT: the family's four requests. `PrimaryUpdate` (variant 0) is the holder's call on its
-/// successor carrying the committed row's content: every seat with its cohort, both exact births and
-/// the committed revision, then the Build, its attempt and the operation. `UpdatePrimary` (variant 1) is
-/// the commander's command to the holder of a node-admin seat, or to the mesh-primary of any other
-/// cohort. `UpdatePrimaryFromRow` (variant 2) is a mesh-primary's command to the holder of a cohort
-/// that is not node-admin, after its row and carrying the row's content (proposal Part C1: "its
-/// command to the holder B1 comes after the row and carries it"). `TakeOverFabricSeat` (variant 3) is
-/// a mesh-primary's proposal of a takeover to the winner (elections §5): the lost fabric-primary's
-/// birth, the revision it is held at, the winner and the proposer. What must NOT happen: a name in
-/// place of a birth, a field moved, a variant inserted before the end.
+/// CONTRACT: the family's three requests. `PrimaryUpdate` (variant 0) is the primary's call on its
+/// successor carrying the election's result: one entry per primary that moves, `(node_type, primary,
+/// successor, revision)`, the fabric-primary an entry of node type `fabric`, then the Build, its run and
+/// the operation. `UpdatePrimary` (variant 1) is the command from above: the node type whose primary
+/// moves, the Build, its run and the operation. `TakeOverFabricPrimary` (variant 2) is a take-over's
+/// call on the winner: the lost fabric-primary's birth, the revision it is held at, the winner and the
+/// proposer. What must NOT happen: a name in place of a birth, a field moved, a variant inserted before
+/// the end.
 #[test]
-fn requests_match_the_frozen_four_variant_wire_schema() {
+fn requests_match_the_frozen_three_variant_wire_schema() {
+    let m = "01 6d";
     let fixtures = [
-        // variant 0 | seats (len 2: MeshPrimary=1 { mesh "m" } holder successor revision 4, FabricPrimary=0
-        // holder successor revision 8) | build_id | attempt | operation
-        (primary_update(), format!("00 02 01 016d {HOLDER} {SUCCESSOR} 04 00 {HOLDER} {SUCCESSOR} 08 0162 02 016f")),
-        // variant 1 | fabric | holder | seats (len 1: MeshPrimary=1 { mesh "m" } revision 3) | build_id | attempt | operation
+        // variant 0 | primaries (len 2: "node-admin" primary successor 4, "fabric" primary successor 8) | build_id | run | operation
         (
-            NodePrimaryUpdateRequest::UpdatePrimary { fabric: "f".into(), holder: holder(), seats: vec![SeatRevision { seat: Seat::MeshPrimary { mesh: "m".into() }, expected_revision: 3 }], build_id: "b".into(), attempt: 2, operation: "o".into() },
-            format!("01 0166 {HOLDER} 01 01 016d 03 0162 02 016f"),
+            NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: "o".into() },
+            format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 02 016f"),
         ),
-        // variant 2 | fabric | seats (len 1: Cohort=2 { mesh "m", kind RpcNode=1 } holder successor revision 3) | build_id | attempt | operation
+        // variant 1 | node_type "rpc-node" | build_id | run | operation
+        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into() }, "01 08 7270632d6e6f6465 0162 02 016f".to_string()),
+        // variant 2 | fabric | lost | expected_revision 7 | successor | proposer
         (
-            NodePrimaryUpdateRequest::UpdatePrimaryFromRow {
-                fabric: "f".into(),
-                seats: vec![SeatUpdate { seat: Seat::Cohort { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode }, holder: holder(), successor: successor(), revision: 3 }],
-                build_id: "b".into(),
-                attempt: 2,
-                operation: "o".into(),
-            },
-            format!("02 0166 01 02 016d 01 {HOLDER} {SUCCESSOR} 03 0162 02 016f"),
-        ),
-        // variant 3 | fabric | lost | expected_revision 7 | successor | proposer
-        (
-            NodePrimaryUpdateRequest::TakeOverFabricSeat { fabric: "f".into(), lost: holder(), expected_revision: 7, successor: successor(), proposer: holder() },
-            format!("03 0166 {HOLDER} 07 {SUCCESSOR} {HOLDER}"),
+            NodePrimaryUpdateRequest::TakeOverFabricPrimary { fabric: "f".into(), lost: handover(primary()), expected_revision: 7, successor: handover(successor()), proposer: handover(primary()) },
+            format!("02 0166 {m} {PRIMARY} 07 {m} {SUCCESSOR} {m} {PRIMARY}"),
         ),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
         assert_eq!(NodePrimaryUpdate::decode_request(&bytes(&hex)).unwrap(), q);
     }
-    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 4);
-    assert_eq!(NodePrimaryUpdate::decode_request(&[4]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 3);
+    assert_eq!(NodePrimaryUpdate::decode_request(&[3]), Err(DecodeFailure::UnknownVariant));
 }
 
-/// CONTRACT: the family's eighteen replies. `PrimaryUpdated` (node.primary.updated) first, then the
-/// successor's two refusals (a conflicting payload, the initial fabric not ready), the holder's
-/// refusals before the row, the runtime facts, `Incomplete` (the call after the row did not answer),
-/// the framework's outcomes, `Failed` (the step ended failed after the committed row), and
-/// `AlreadyApplied` (a takeover committed already to the successor named). There is no wrong-birth
-/// refusal (R-UC1a, R-RX5).
+/// CONTRACT: the family's thirteen replies. `PrimaryUpdated` (node.primary.updated) first, then the
+/// receiver's refusals (a conflicting payload, the initial fabric not ready, not the primary the call
+/// needs, a take-over at a stale revision), the framework's outcomes, `Failed` (the commanded update
+/// ended failed) and `AlreadyApplied` (a take-over applied already to the successor named). There is no
+/// wrong-birth refusal (R-UC1a, R-RX5).
 #[test]
-fn replies_match_the_frozen_eighteen_variant_wire_schema() {
+fn replies_match_the_frozen_thirteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use NodePrimaryUpdateReply::*;
     let fixtures = [
-        // revisions (len 1) | seat FabricPrimary=0 | holder birth | revision 8
-        (PrimaryUpdated { revisions: vec![committed()] }, format!("00 01 00 {SUCCESSOR} 08")),
-        (RejectedConflict { operation: "o".into() }, "01 01 6f".to_string()),
+        // revisions (len 1) | "fabric" | primary | successor | revision 8
+        (PrimaryUpdated { revisions: vec![fabric_entry()] }, format!("00 01 06 666162726963 {PRIMARY} {SUCCESSOR} 08")),
+        (RejectedConflictingPayload { operation: "o".into() }, "01 01 6f".to_string()),
         (RejectedFabricNotReady { reason: "r".into() }, "02 01 72".to_string()),
-        (RejectedNoSuccessor { reason: "n".into() }, "03 01 6e".to_string()),
-        (RejectedNotAuthority { reason: "a".into() }, "04 01 61".to_string()),
-        // seat MeshPrimary=1 { mesh "m" } | expected | current
-        (RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 3, current: 4 }, "05 01 016d 03 04".to_string()),
-        // seat MeshPrimary=1 { mesh "m" } | revision u64::MAX, the ten-byte varint ff×9 01
-        (RejectedRevisionOverflow { seat: Seat::MeshPrimary { mesh: "m".into() }, revision: u64::MAX }, "06 01 016d ffffffffffffffffff01".to_string()),
-        // source "s" | op "o" | cause "c"
-        (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "07 0173 016f 0163".to_string()),
-        // record "r" | holder "h"
-        (RejectedRecordAbsent { record: "r".into(), holder: "h".into() }, "08 0172 0168".to_string()),
-        (Incomplete { reason: "i".into() }, "09 01 69".to_string()),
-        (NotReady { reason: "n".into() }, "0a 01 6e".to_string()),
-        (Malformed { kind: MalformedKind::Corrupt }, "0b 02".to_string()),
-        (PeerUnresolved { reason: "p".into() }, "0c 01 70".to_string()),
-        (Busy { reason: "b".into() }, "0d 01 62".to_string()),
-        (ConnectionsDeleting { reason: "d".into() }, "0e 01 64".to_string()),
-        (Unauthorized { reason: "u".into() }, "0f 01 75".to_string()),
-        // step "s" | reason "r"
-        (Failed { step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition }, "10 0173 0172 09".to_string()),
-        // revisions (len 1) | seat FabricPrimary=0 | holder birth | revision 8
-        (AlreadyApplied { revisions: vec![committed()] }, format!("11 01 00 {SUCCESSOR} 08")),
+        (RejectedNotPrimary { reason: "a".into() }, "03 01 61".to_string()),
+        // node_type "fabric" | expected | current
+        (RejectedStaleRevision { node_type: "fabric".into(), expected: 3, current: 4 }, "04 06 666162726963 03 04".to_string()),
+        (NotReady { reason: "n".into() }, "05 01 6e".to_string()),
+        (Malformed { kind: MalformedKind::Corrupt }, "06 02".to_string()),
+        (PeerUnresolved { reason: "p".into() }, "07 01 70".to_string()),
+        (Busy { reason: "b".into() }, "08 01 62".to_string()),
+        (ConnectionsDeleting { reason: "d".into() }, "09 01 64".to_string()),
+        (Unauthorized { reason: "u".into() }, "0a 01 75".to_string()),
+        // step "s" | reason "r" | code FailedPrecondition 9
+        (Failed { step: "s".into(), reason: "r".into(), code: rdm_core::outcome::Code::FailedPrecondition }, "0b 0173 0172 09".to_string()),
+        (AlreadyApplied { revisions: vec![fabric_entry()] }, format!("0c 01 06 666162726963 {PRIMARY} {SUCCESSOR} 08")),
     ];
     for (r, hex) in fixtures {
         variants.insert(NodePrimaryUpdate::encode_reply(&r).unwrap()[0]);
@@ -137,8 +107,8 @@ fn replies_match_the_frozen_eighteen_variant_wire_schema() {
         assert_eq!(NodePrimaryUpdate::encode_reply(&r).unwrap(), bytes(&hex), "{r:?}");
         assert_eq!(NodePrimaryUpdate::decode_reply(&bytes(&hex)).unwrap(), r);
     }
-    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 18);
-    assert_eq!(NodePrimaryUpdate::decode_reply(&[18]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 13);
+    assert_eq!(NodePrimaryUpdate::decode_reply(&[13]), Err(DecodeFailure::UnknownVariant));
     assert_eq!(variants.len(), NodePrimaryUpdate::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<NodePrimaryUpdate>();
 }
@@ -146,60 +116,47 @@ fn replies_match_the_frozen_eighteen_variant_wire_schema() {
 #[test]
 fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classified() {
     use NodePrimaryUpdateReply::*;
+    use rdm_core::outcome::Code;
     assert_eq!(NodePrimaryUpdate::OP, 0x21);
     assert_eq!(NodePrimaryUpdate::NAME, "node-primary-update");
     assert!(!NodePrimaryUpdate::FORWARDABLE);
-    assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { revisions: vec![committed()] }), ReplyKind::Success);
-    for r in [
-        RejectedConflict { operation: "o".into() },
-        RejectedFabricNotReady { reason: "r".into() },
-        RejectedNoSuccessor { reason: "n".into() },
-        RejectedNotAuthority { reason: "a".into() },
-        RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 1, current: 2 },
-        RejectedRevisionOverflow { seat: Seat::FabricPrimary, revision: u64::MAX },
-        RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() },
-        RejectedRecordAbsent { record: "r".into(), holder: "h".into() },
-        Incomplete { reason: "i".into() },
-        Failed { step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition },
+    assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { revisions: vec![fabric_entry()] }), ReplyKind::Success);
+    for (r, code) in [
+        (RejectedConflictingPayload { operation: "o".into() }, Code::Aborted),
+        (RejectedFabricNotReady { reason: "r".into() }, Code::FailedPrecondition),
+        (RejectedNotPrimary { reason: "a".into() }, Code::FailedPrecondition),
+        (RejectedStaleRevision { node_type: "fabric".into(), expected: 1, current: 2 }, Code::Aborted),
+        (Failed { step: "s".into(), reason: "r".into(), code: Code::FailedPrecondition }, Code::FailedPrecondition),
+        (AlreadyApplied { revisions: vec![fabric_entry()] }, Code::AlreadyExists),
     ] {
-        assert_eq!(NodePrimaryUpdate::classify_reply(&r).code(), match r { RejectedStaleSeat { .. } | RejectedConflict { .. } => rdm_core::outcome::Code::Aborted, RejectedRecordAbsent { .. } => rdm_core::outcome::Code::NotFound, _ => rdm_core::outcome::Code::FailedPrecondition }, "{r:?}");
+        assert_eq!(NodePrimaryUpdate::classify_reply(&r).code(), code, "{r:?}");
     }
 }
 
 #[test]
 fn the_largest_request_fits_the_frame_ceiling() {
     let long = "x".repeat(128);
-    let b = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
-    let seats = vec![SeatUpdate { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), successor: b(), revision: u64::MAX }, SeatUpdate { seat: Seat::FabricPrimary, holder: b(), successor: b(), revision: u64::MAX }];
-    let q = NodePrimaryUpdateRequest::PrimaryUpdate { seats, build_id: long.clone(), attempt: u32::MAX, operation: long.clone() };
+    let b = || Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
+    let primaries = vec![(long.clone(), b(), b(), u64::MAX), (long.clone(), b(), b(), u64::MAX)];
+    let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), run: u32::MAX, operation: long.clone() };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
-    let seats = vec![SeatRevision { seat: Seat::MeshPrimary { mesh: long.clone() }, expected_revision: u64::MAX }, SeatRevision { seat: Seat::FabricPrimary, expected_revision: u64::MAX }];
-    let q = NodePrimaryUpdateRequest::UpdatePrimary { fabric: long.clone(), holder: b(), seats, build_id: long.clone(), attempt: u32::MAX, operation: long.clone() };
+    let hb = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
+    let q = NodePrimaryUpdateRequest::TakeOverFabricPrimary { fabric: long.clone(), lost: hb(), expected_revision: u64::MAX, successor: hb(), proposer: hb() };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
-    let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: vec![CommittedSeat { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), revision: u64::MAX }, CommittedSeat { seat: Seat::FabricPrimary, holder: b(), revision: u64::MAX }] };
+    let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: primaries };
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);
-    // A source failure whose fields are each longer than the bound is cut to its budgets, never reset.
-    let huge = "x".repeat(4 * NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);
-    let r = NodePrimaryUpdateReply::source_failed(&huge, &huge, &huge);
-    assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
-    // So is an absent record whose record and holder are each longer than the bound.
-    let r = NodePrimaryUpdateReply::record_absent(&huge, &huge);
-    assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
-    let NodePrimaryUpdateReply::RejectedRecordAbsent { record, holder } = &r else { unreachable!() };
-    assert!(record.ends_with('…') && holder.ends_with('…'), "a cut field says it was cut: {r:?}");
-    let short = NodePrimaryUpdateReply::record_absent("the seat-transfer row o under mesh m", "mesh2.admin.1");
-    assert_eq!(short, NodePrimaryUpdateReply::RejectedRecordAbsent { record: "the seat-transfer row o under mesh m".into(), holder: "mesh2.admin.1".into() }, "fields within their budgets are kept whole");
     // A failed step whose step and reason are each longer than the bound is cut to its budgets, never reset.
+    let huge = "x".repeat(4 * NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);
     let r = NodePrimaryUpdateReply::failed(&huge, &huge, rdm_core::outcome::Code::FailedPrecondition);
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
     // Each refusal's reason is cut to the reply's bound, never reset.
-    let r = NodePrimaryUpdateReply::no_successor(&huge);
+    let r = NodePrimaryUpdateReply::not_primary(&huge);
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
 }
 
 #[test]
 fn every_reply_variant_of_node_primary_update_classifies_to_one_code() {
-    replies_match_the_frozen_eighteen_variant_wire_schema();
+    replies_match_the_frozen_thirteen_variant_wire_schema();
 }
 
 #[test]
@@ -207,10 +164,10 @@ fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position()
     use rdm_core::outcome::Code;
     for (code, n) in [(Code::Unknown, 2), (Code::DeadlineExceeded, 4), (Code::Unavailable, 14)] {
         let frame = NodePrimaryUpdateReply::failed("s", "r", code);
-        let golden = vec![16, 1, b's', 1, b'r', n];
+        let golden = vec![11, 1, b's', 1, b'r', n];
         assert_eq!(NodePrimaryUpdate::encode_reply(&frame).unwrap(), golden);
         assert_eq!(NodePrimaryUpdate::decode_reply(&golden).unwrap(), frame);
         assert_eq!(NodePrimaryUpdate::classify_reply(&frame).code(), code);
     }
-    assert_eq!(NodePrimaryUpdate::decode_reply(&[16, 1, b's', 1, b'r']), Err(rdm_core::protocol::DecodeFailure::Corrupt));
+    assert_eq!(NodePrimaryUpdate::decode_reply(&[11, 1, b's', 1, b'r']), Err(rdm_core::protocol::DecodeFailure::Corrupt));
 }

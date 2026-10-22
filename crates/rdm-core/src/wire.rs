@@ -57,6 +57,8 @@ pub struct WireDigest {
     load: Option<NodeLoad>,
     gossip: Option<GossipStats>,
     held_hash: [u8; 32],
+    is_primary: Option<u64>,
+    is_fabric_primary: Option<u64>,
 }
 
 impl From<&MeshDigest> for WireDigest {
@@ -93,6 +95,8 @@ impl From<&MeshDigest> for WireDigest {
             load: d.load,
             gossip: d.gossip,
             held_hash: d.held_hash,
+            is_primary: d.is_primary,
+            is_fabric_primary: d.is_fabric_primary,
         }
     }
 }
@@ -135,6 +139,8 @@ impl From<WireDigest> for MeshDigest {
             load: w.load,
             gossip: w.gossip,
             held_hash: w.held_hash,
+            is_primary: w.is_primary,
+            is_fabric_primary: w.is_fabric_primary,
         }
     }
 }

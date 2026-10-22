@@ -8,10 +8,10 @@
 //! 1. The node's `ReadyForTraffic` asked again through the oracle: `AlreadyApplied` (one logical
 //!    event); membership's `status` is untouched.
 //! 2. `Pending` after `ReadyForTraffic`: `RejectedInvalidNodeTransition`.
-//! 3. A declaration naming a node the authority does not hold: `RejectedNotAuthority`
+//! 3. A declaration naming a node the authority does not hold: `RejectedNotPrimary`
 //!    (subject-unknown; decided for the subject, never the caller); under a wrong incarnation:
 //!    `RejectedStaleIncarnation`.
-//! 4. A declaration to the non-primary admin: `RejectedNotAuthority` (receiver-not-primary).
+//! 4. A declaration to the non-primary admin: `RejectedNotPrimary` (receiver-not-primary).
 //! 5. `ConnectionsDeleting`, then `Leaving`: `Applied`, and the view follows.
 //! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the authority.
 
@@ -83,7 +83,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let never_born = rdm_core::NodeId::mint();
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting", "--as-node-id", never_born.as_str()]);
     let (reply, detail) = declared(&r);
-    assert_eq!(reply, "rejected-not-authority", "{r}");
+    assert_eq!(reply, "rejected-not-primary", "{r}");
     assert!(detail.contains("SubjectUnknown"), "{r}");
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting", "--as-incarnation", rdm_core::IncarnationId::mint().as_str()]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
@@ -92,7 +92,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let not_primary = format!("exact:{}", other_admin["node_id"].as_str().unwrap());
     let r = estate.probe(&["declare", "--target", &node, "--to", &not_primary, "--state", "connections-deleting"]);
     let (reply, detail) = declared(&r);
-    assert_eq!(reply, "rejected-not-authority", "{r}");
+    assert_eq!(reply, "rejected-not-primary", "{r}");
     assert!(detail.contains("ReceiverNotPrimary"), "{r}");
     assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "ReadyForTraffic", "a refusal applies nothing");
 
@@ -117,11 +117,11 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert!(backward.iter().any(|s| s["attributes"]["detail"] == "ReadyForTraffic"), "Pending after ReadyForTraffic: {backward:?}");
     assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Stopped"), "{backward:?}");
     assert_eq!(on_primary("rejected-stale-incarnation"), 1);
-    assert_eq!(on_primary("rejected-not-authority"), 1, "subject-unknown on the primary");
-    assert!(decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-not-authority").all(|s| s["attributes"]["detail"] == "subject-unknown"), "the primary refuses no caller: {decided:?}");
+    assert_eq!(on_primary("rejected-not-primary"), 1, "subject-unknown on the primary");
+    assert!(decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-not-primary").all(|s| s["attributes"]["detail"] == "subject-unknown"), "the primary refuses no caller: {decided:?}");
     // Births try their mesh's admins in path order, so the non-primary admin refuses each once
     // (receiver-not-primary) besides the oracle's probe.
-    let not_primary: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == other_admin["name"] && s["attributes"]["outcome"] == "rejected-not-authority").collect();
+    let not_primary: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == other_admin["name"] && s["attributes"]["outcome"] == "rejected-not-primary").collect();
     assert!(not_primary.iter().any(|s| s["attributes"]["sender"] == "mesh1.rpc.1" && s["attributes"]["detail"] == "receiver-not-primary"), "{not_primary:?}");
     // A birth's declaration that reaches the non-primary admin before its view holds the birth names a
     // subject it does not hold yet.
@@ -147,7 +147,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
 /// for an upward declaration. The declare probe makes `mesh1.rpc.2` declare its state straight to
 /// `mesh1.rpc.1`, which answers `RequestNotHandled` naming the request (`declare-node-state`), decided by
 /// dispatch alone, on its reject span `rdm.node.status.reject.via-request-not-handled` (`request`, and
-/// `node` the receiver's held name) in the probe's own trace. Must NOT happen: `RejectedNotAuthority {
+/// `node` the receiver's held name) in the probe's own trace. Must NOT happen: `RejectedNotPrimary {
 /// ReceiverNotPrimary }`, a missing handler answered as an authority refusal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_reject_span() {
@@ -176,7 +176,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
 /// `mesh1.admin.2` (`node.stop` runs `node.primary.update` first) and starts again as itself, holding no
 /// seat. `mesh1.rpc.1`, restarted, declares its state to `mesh1.admin.2`, the seat's holder, which takes
 /// it (`definitive=true`), and to no other admin. A declaration sent straight to `mesh1.admin.1` (the
-/// declare probe) is answered `RejectedNotAuthority { ReceiverNotPrimary { needed: "mesh-primary of
+/// declare probe) is answered `RejectedNotPrimary { ReceiverNotPrimary { needed: "mesh-primary of
 /// mesh1" } }`, its own seat decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
 /// addressed to the admin holding no seat, or `RequestNotHandled` from a node-admin for a declaration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -190,7 +190,7 @@ async fn a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_it
     estate.enter(&a2).await;
     let mut stop = estate.nodes_obj().await.stop(&a1).await.expect("node.stop of mesh1.admin.1");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds the seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
@@ -207,7 +207,7 @@ async fn a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_it
     let seatless = format!("exact:{}", a1v["node_id"].as_str().unwrap());
     let r = estate.probe(&["declare", "--target", &node, "--to", &seatless, "--state", "ready-for-traffic"]);
     let (reply, detail) = declared(&r);
-    assert_eq!(reply, "rejected-not-authority", "the admin holding no seat answers by its seat decision: {r}");
+    assert_eq!(reply, "rejected-not-primary", "the admin holding no seat answers by its seat decision: {r}");
     assert!(detail.contains("ReceiverNotPrimary") && detail.contains("mesh-primary of mesh1"), "{r}");
     estate.stop().await;
 

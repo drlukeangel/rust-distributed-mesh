@@ -248,7 +248,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut stop = estate.nodes_obj().await.stop(&fp_name.parse().unwrap()).await.expect("node.stop of fp_name");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     if fp_name == "mesh1.admin.1" {

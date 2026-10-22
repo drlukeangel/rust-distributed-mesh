@@ -369,7 +369,7 @@ fn a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call() 
 /// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": a Blocked hook runs again only when its
 /// `retry_on` occurs; node-start.md step 2: the stopped node holds no record of the commander and
 /// learns who answered from the join answer): an rpc node is stopped and started by an admin no
-/// record it holds names, and its hook answers `Blocked { AuthorityAddressed }` after that start. The
+/// record it holds names, and its hook answers `Blocked { PrimaryAddressed }` after that start. The
 /// commander then addresses the node with a down op (a probe): the hook runs again at once, passes,
 /// and the node is ReadyForTraffic. The authority is known by the endpoint of the call it answered
 /// on, so its down op is counted whatever record names it. Must NOT happen: the hook waiting on, and
@@ -393,11 +393,11 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         // After this start the hook waits on its authority's word.
-        before_ready.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::AuthorityAddressed }));
+        before_ready.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::PrimaryAddressed }));
         assert_eq!(call(&commander, &target, &start).await, StatusReply::Started, "the start joins the commander over its call; its hook runs on, blocked");
         let handle = running.before_ready().expect("a registered hook has a handle");
         tokio::time::timeout(NEVER, async {
-            while !matches!(handle.state(), BeforeReadyState::Blocked { retry_on: RetryOn::AuthorityAddressed, .. }) {
+            while !matches!(handle.state(), BeforeReadyState::Blocked { retry_on: RetryOn::PrimaryAddressed, .. }) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
@@ -415,8 +415,8 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         })
         .await
         .expect("the started node never answered ReadyForTraffic");
-        let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-before-ready-blocked" && f.get("cleared_by").map(String::as_str) == Some("authority-addressed")).count();
-        assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, authority-addressed");
+        let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-before-ready-blocked" && f.get("cleared_by").map(String::as_str) == Some("primary-addressed")).count();
+        assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, primary-addressed");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

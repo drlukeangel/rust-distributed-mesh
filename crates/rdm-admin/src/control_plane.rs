@@ -144,7 +144,7 @@ impl ControlPlane {
         if primary.as_ref() != Some(&me) {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-authority", route, node = %me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("topology is changed only by the fabric-primary"));
-            return Err(Refusal::NotAuthority(primary.map(|p| p.to_string())));
+            return Err(Refusal::NotPrimary(primary.map(|p| p.to_string())));
         }
         Ok(())
     }
@@ -1050,7 +1050,7 @@ pub enum Refusal {
         mesh_primary: Option<String>,
     },
     /// This admin is not the fabric-primary (named when known).
-    NotAuthority(Option<String>),
+    NotPrimary(Option<String>),
     /// The attempt number this request computed was opened first by another action.
     AttemptTaken(String),
     /// The admin cannot decide the request yet (it holds no Build).
@@ -1332,7 +1332,7 @@ mod tests {
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2
     /// "Successor search for the commanded transfer": "2. only when that mesh has none ... the lowest
     /// NodeId among the other ReadyForTraffic mesh-primaries; 3. neither found: refused by name,
-    /// `cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh <mesh>, no other
+    /// `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh <mesh>, no other
     /// mesh-primary ReadyForTraffic` ... the commanding workflow fails with that reason"; C1: "the
     /// delete of a mesh's only node skips the update"): the fabric primary `mesh2.admin.1` is mesh2's
     /// only node. Its retire and delete skip node.primary.update, and its fabric seat moves out of
@@ -1358,7 +1358,7 @@ mod tests {
         }
         for action in ["retire", "delete"] {
             match last_admin(&fp, action, &t) {
-                Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh2, no other mesh-primary ReadyForTraffic", "{action}"),
+                Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh2, no other mesh-primary ReadyForTraffic", "{action}"),
                 other => panic!("{action}: no other mesh-primary is ReadyForTraffic: refused last-admin: {other:?}"),
             }
         }

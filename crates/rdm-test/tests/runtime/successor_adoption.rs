@@ -72,7 +72,7 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.enter(&successor.name).await;
     let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.admin.1");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();

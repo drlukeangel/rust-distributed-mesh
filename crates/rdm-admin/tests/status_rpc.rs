@@ -17,7 +17,7 @@ use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
-use rdm_core::status::{MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::status::{MeshState, NodeState, NotPrimary, Status, StatusReply, StatusRequest};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -305,7 +305,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     assert_eq!(forged_reply, StatusReply::Applied, "a declaration is decided for the birth it names, whoever sends it");
     let never_born = birth("mesh2.rpc.9", NodeKind::RpcNode, "mesh2", false, false);
     let unknown = StatusRequest::DeclareNodeState { node_id: never_born.node.node_id.clone(), incarnation: never_born.node.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: None };
-    assert_eq!(reply(&call(&rig, &member, &unknown, &CallOptions::default()).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a birth this admin does not hold");
+    assert_eq!(reply(&call(&rig, &member, &unknown, &CallOptions::default()).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a birth this admin does not hold");
     let meshes_final = rig.authority.declared.lock().unwrap().meshes.clone();
     assert_eq!(meshes_final.len(), 1, "one mesh held, by its own id");
 
@@ -870,38 +870,38 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let stranger = birth("mesh9.rpc.1", NodeKind::RpcNode, "mesh9", false, false);
         let receiver = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
         let rig = rig(receiver, &[&fp, &rpc, &other_admin], BTreeMap::new()).await;
-        let not_authority = |r: &StatusReply, name: &str| match r {
-            StatusReply::RejectedNotAuthority { why } => assert_eq!(why.as_str(), name, "{r:?}"),
-            other => panic!("expected rejected-not-authority/{name}: {other:?}"),
+        let not_primary = |r: &StatusReply, name: &str| match r {
+            StatusReply::RejectedNotPrimary { why } => assert_eq!(why.as_str(), name, "{r:?}"),
+            other => panic!("expected rejected-not-primary/{name}: {other:?}"),
         };
         let decl_node = |b: &Birth| StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         // An ordinary node declares to a non-primary admin.
         let r = reply(&call(&rig, &rpc, &decl_node(&rpc), &CallOptions::default()).await);
-        not_authority(&r, "receiver-not-primary");
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh1"), "{r:?}");
+        not_primary(&r, "receiver-not-primary");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh1"), "{r:?}");
         // A node-admin declares to an admin that is not its mesh's primary.
         let r = reply(&call(&rig, &other_admin, &decl_node(&other_admin), &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh2"), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh2"), "{r:?}");
         // A Mesh primary declares its Mesh to a non-fabric-primary.
         let mesh2 = MeshId::mint();
         let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::ReadyForTraffic }, &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
         // The fabric-primary applies an event at an admin that is not a mesh primary.
         let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
         let r = reply(&call(&rig, &fp, &event, &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         // The fabric-primary applies a Mesh state at an admin of another mesh.
         let r = reply(&call(&rig, &fp, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending }, &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "an admin of mesh2"), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "an admin of mesh2"), "{r:?}");
         // The same applies from a sender that is not the fabric-primary are refused for the
         // receiver, never the caller (node-rpc.md §14).
         let r = reply(&call(&rig, &other_admin, &event, &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         let r = reply(&call(&rig, &rpc, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed.starts_with("the mesh-primary of mesh1")), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.starts_with("the mesh-primary of mesh1")), "{r:?}");
         // A subject the view does not hold, from a stranger the view does not hold either.
         let r = reply(&call(&rig, &stranger, &decl_node(&stranger), &CallOptions::default()).await);
-        not_authority(&r, "subject-unknown");
+        not_primary(&r, "subject-unknown");
         // Stale ids: another Fabric's event at the mesh primary; another Mesh id for a held name.
         let mp_receiver = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", true, false);
         let held = MeshId::mint();
@@ -915,11 +915,11 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         assert!(rig.authority.declared.lock().unwrap().nodes.is_empty() && rig.authority.declared.lock().unwrap().meshes.is_empty() && rig.authority.declared.lock().unwrap().fabric.is_empty(), "nothing applied by any refusal");
 
         let spans = finish(&capture, &dir, json!({"cell": cell, "refusals": 10}));
-        for outcome in ["rejected-not-authority", "rejected-stale-fabric", "rejected-stale-mesh"] {
+        for outcome in ["rejected-not-primary", "rejected-stale-fabric", "rejected-stale-mesh"] {
             assert!(!spans_where(&spans, DECLARATION, &[("outcome", outcome)]).is_empty(), "{outcome} is spanned");
         }
-        assert_eq!(spans_where(&spans, DECLARATION, &[("outcome", "rejected-not-authority")]).len(), 8);
-        assert!(!spans_where(&spans, DECLARATION, &[("outcome", "rejected-not-authority"), ("detail", "receiver-not-primary")]).is_empty());
+        assert_eq!(spans_where(&spans, DECLARATION, &[("outcome", "rejected-not-primary")]).len(), 8);
+        assert!(!spans_where(&spans, DECLARATION, &[("outcome", "rejected-not-primary"), ("detail", "receiver-not-primary")]).is_empty());
     });
 }
 
@@ -981,7 +981,7 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
         let spans = finish(&capture, &dir, json!({"cell": cell, "old_authority": format!("{old:?}"), "events_held": store.fabric_events().await.unwrap().len()}));
         assert_eq!(store.fabric_events().await.unwrap().len(), 2, "each event is one row");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 2);
-        assert!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-authority")]).is_empty(), "no event refused for its caller");
+        assert!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-primary")]).is_empty(), "no event refused for its caller");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 5);
     });
 }
@@ -1233,11 +1233,11 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
         let own_mesh = reply(&call(&rig, &mesh1_primary, &declare(&id2), &CallOptions::default()).await);
         assert_eq!(own_mesh, StatusReply::Applied, "the Mesh this holder's own Build created");
         let unknown = reply(&call(&rig, &mesh1_primary, &declare(&MeshId::mint()), &CallOptions::default()).await);
-        assert_eq!(unknown, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a Mesh this holder holds neither way");
+        assert_eq!(unknown, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a Mesh this holder holds neither way");
         assert_eq!(reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await), StatusReply::AlreadyApplied);
         let spans = finish(&capture, &dir, json!({"cell": cell, "applied": format!("{applied:?}"), "non_primary": format!("{not_primary:?}"), "own_mesh": format!("{own_mesh:?}"), "unknown_mesh": format!("{unknown:?}")}));
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "applied")]).len(), 2);
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-authority")]).len(), 1);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-primary")]).len(), 1);
     });
 }
 

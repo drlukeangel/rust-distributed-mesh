@@ -439,7 +439,7 @@ mod tests {
             CutSpec::CatchUp,
             CutSpec::StateSync,
             CutSpec::TopologyRead,
-            CutSpec::Announcement { announcement: "primary-updated".into(), channel: "any".into() },
+            CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },
         ]
     }

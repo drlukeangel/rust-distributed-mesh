@@ -1,4 +1,4 @@
-//! Rafka-time: Day-0 root and seat-move pull (`rafka-node-admin-core`).
+//! Rafka-time: Day-0 root and the pull when the fabric-primary moved (`rdm-admin`).
 
 use rdm_core::NodeId;
 use rdm_transport::clock::{Adopted, RafkaTime};
@@ -89,8 +89,8 @@ async fn pull_from_fabric_primary(
     me_id: &NodeId,
     client: &rdm_transport::NodeRpcClient,
     membership: &rdm_transport::membership::Membership,
-    moved_to: rdm_core::SeatHolder,
-) -> (String, u32, Option<rdm_core::SeatHolder>) {
+    moved_to: rdm_core::Primary,
+) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
     let mut holder = moved_to;
     for attempt in 1..=SEAT_MOVE_ATTEMPTS {
@@ -169,7 +169,7 @@ pub(crate) async fn adopt_from_reachable(
             match crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me.to_string(), Some(&c.name.mesh), None).await {
                 Ok(read) => match read.rafka_time {
                     Some(t) => {
-                        adopt_pulled(time, Puller::Member, &me.to_string(), Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, seat: t.seat }).expect("a member adopts from whoever answers");
+                        adopt_pulled(time, Puller::Member, &me.to_string(), Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, kind: t.kind }).expect("a member adopts from whoever answers");
                         span.record("attempts", attempts);
                         return Ok(c.name.to_string());
                     }

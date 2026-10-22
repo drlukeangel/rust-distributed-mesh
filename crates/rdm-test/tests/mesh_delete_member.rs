@@ -37,7 +37,6 @@ impl LifecycleEvents for Recorder {
         self.1.lock().unwrap().push(format!("NodeStopped:{}", op.operation));
         self.0.lock().unwrap().push(op.clone());
     }
-    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("node.joined:{}", op.operation));
     }

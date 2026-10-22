@@ -22,23 +22,24 @@
 //!
 //! Neither side estimates network delay: the value is adopted as the authority read it.
 
-use rdm_core::{NodeId, Seat};
+use rdm_core::topology::PrimaryKind;
+use rdm_core::NodeId;
 use rdm_transport::clock::{Adopted, RafkaTime};
 use rdm_transport::membership::SeatBook;
 
-/// Who is pulling, by the seat it holds in its own seat records when it pulls.
+/// Who is pulling, by the primary it is in its own view when it pulls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Puller {
-    /// Holds no mesh seat: adopts from whichever node answers.
+    /// Is no primary: adopts from whichever node answers.
     Member,
-    /// Holds its mesh's primary seat: adopts only from a fabric-primary.
+    /// Is its mesh's mesh-primary: adopts only from the fabric-primary.
     MeshPrimary,
 }
 
 impl Puller {
-    /// The puller `node_id` of `mesh` is, from its own seat records.
+    /// The puller `node_id` of `mesh` is, from the primaries its view holds.
     pub fn of(seats: &SeatBook, mesh: &str, node_id: &NodeId) -> Self {
-        if seat_held(seats, mesh, node_id).is_some() {
+        if primary_held(seats, mesh, node_id).is_some() {
             Self::MeshPrimary
         } else {
             Self::Member
@@ -46,13 +47,13 @@ impl Puller {
     }
 }
 
-/// The seat `node_id` of `mesh` holds in `seats`: the fabric seat when it holds it, else its
-/// mesh's, else none (a replica).
-pub fn seat_held(seats: &SeatBook, mesh: &str, node_id: &NodeId) -> Option<Seat> {
+/// Which primary `node_id` of `mesh` is in the primaries `seats` holds: the fabric-primary when it is,
+/// else its mesh's mesh-primary, else none.
+pub fn primary_held(seats: &SeatBook, mesh: &str, node_id: &NodeId) -> Option<PrimaryKind> {
     if seats.fabric().is_some_and(|h| &h.node_id == node_id) {
-        return Some(Seat::FabricPrimary);
+        return Some(PrimaryKind::FabricPrimary);
     }
-    seats.mesh(mesh).filter(|h| &h.node_id == node_id).map(|_| Seat::MeshPrimary)
+    seats.mesh(mesh).filter(|h| &h.node_id == node_id).map(|_| PrimaryKind::MeshPrimary)
 }
 
 /// Why a mesh primary refused an answer's time, by its span `reason`.
@@ -81,7 +82,7 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// One answer's time: who served it, the seat it held, and the value.
+/// One answer's time: who served it, which primary it was, and the value.
 #[derive(Debug, Clone, Copy)]
 pub struct Served<'a> {
     /// The pull that carried it: `join` (a birth's `JoinNode`) or `get-topology`.
@@ -90,18 +91,17 @@ pub struct Served<'a> {
     pub served_by: &'a str,
     /// The authority's rafka-time in milliseconds.
     pub ms: u64,
-    /// The seat the answering node held, `None` for a replica. A join answer carries no seat: a
-    /// join is a birth, a birth is a member, and a member adopts from whoever answers.
-    pub seat: Option<Seat>,
+    /// Which primary the answering node was, `None` for none. A join answer carries none: a join is
+    /// a birth, a birth is a member, and a member adopts from whoever answers.
+    pub kind: Option<PrimaryKind>,
 }
 
-/// The verdict, with no side effect: whether `puller` may adopt from an answer served under `seat`.
-pub fn verdict(puller: Puller, seat: Option<Seat>) -> Result<(), Refusal> {
-    match (puller, seat) {
-        (Puller::Member, _) | (Puller::MeshPrimary, Some(Seat::FabricPrimary)) => Ok(()),
-        (Puller::MeshPrimary, Some(Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin))) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
-        // Another cohort's primary holds no time authority: it answers as a replica does.
-        (Puller::MeshPrimary, None | Some(Seat::Cohort(_))) => Err(Refusal::ServedByAReplica),
+/// The verdict, with no side effect: whether `puller` may adopt from an answer served as `kind`.
+pub fn verdict(puller: Puller, kind: Option<PrimaryKind>) -> Result<(), Refusal> {
+    match (puller, kind) {
+        (Puller::Member, _) | (Puller::MeshPrimary, Some(PrimaryKind::FabricPrimary)) => Ok(()),
+        (Puller::MeshPrimary, Some(PrimaryKind::MeshPrimary)) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
+        (Puller::MeshPrimary, None) => Err(Refusal::ServedByAReplica),
     }
 }
 
@@ -117,15 +117,15 @@ pub fn adopt_pulled(time: &RafkaTime, puller: Puller, node: &str, served: Served
 /// [`adopt_pulled`], its spans children of `parent` (a birth's boot span is never entered: a step
 /// of it names it as its parent).
 pub fn adopt_pulled_in(parent: &tracing::Span, time: &RafkaTime, puller: Puller, node: &str, served: Served<'_>) -> Result<Adopted, Refusal> {
-    let seat = if served.via == "join" { "not-carried" } else { served.seat.map_or("none", Seat::name) };
-    if let Err(refusal) = verdict(puller, served.seat) {
+    let kind = if served.via == "join" { "not-carried" } else { served.kind.map_or("none", PrimaryKind::name) };
+    if let Err(refusal) = verdict(puller, served.kind) {
         tracing::info_span!(
             parent: parent,
             "rdm.mesh.entry.reject.via-rafka-time-from-non-primary",
             node,
             via = served.via,
             served_by = served.served_by,
-            seat,
+            kind,
             reason = refusal.reason(),
             offered_ms = served.ms,
             held_ms = time.try_now_ms().map_or(-1, |m| m as i64),
@@ -143,7 +143,7 @@ pub fn adopt_pulled_in(parent: &tracing::Span, time: &RafkaTime, puller: Puller,
         via = served.via,
         reason,
         served_by = served.served_by,
-        seat,
+        kind,
         reference_ms = adopted.reference_ms,
         previous_ms = adopted.previous_ms.map_or(-1, |m| m as i64),
         stalls_ms = adopted.stalls_ms,
@@ -154,7 +154,7 @@ pub fn adopt_pulled_in(parent: &tracing::Span, time: &RafkaTime, puller: Puller,
 
 /// A birth adopts the time its `JoinNode` answer carries: the one entry point of a join.
 pub fn adopt_join_answer(parent: &tracing::Span, time: &RafkaTime, node: &str, answer: &crate::wire::JoinAnswer) -> Adopted {
-    adopt_pulled_in(parent, time, Puller::Member, node, Served { via: "join", served_by: &answer.served_by, ms: answer.control.rafka_time_ms, seat: None })
+    adopt_pulled_in(parent, time, Puller::Member, node, Served { via: "join", served_by: &answer.served_by, ms: answer.control.rafka_time_ms, kind: None })
         .expect("a member adopts from whoever answers")
 }
 
@@ -169,16 +169,16 @@ mod tests {
 
     #[test]
     fn a_member_adopts_from_whoever_answers() {
-        for seat in [None, Some(Seat::MeshPrimary), Some(Seat::FabricPrimary)] {
-            assert_eq!(verdict(Puller::Member, seat), Ok(()), "{seat:?}");
+        for kind in [None, Some(PrimaryKind::MeshPrimary), Some(PrimaryKind::FabricPrimary)] {
+            assert_eq!(verdict(Puller::Member, kind), Ok(()), "{kind:?}");
         }
     }
 
     #[test]
     fn a_mesh_primary_adopts_only_from_a_fabric_primary_seat() {
-        assert_eq!(verdict(Puller::MeshPrimary, Some(Seat::FabricPrimary)), Ok(()));
+        assert_eq!(verdict(Puller::MeshPrimary, Some(PrimaryKind::FabricPrimary)), Ok(()));
         assert_eq!(verdict(Puller::MeshPrimary, None), Err(Refusal::ServedByAReplica));
-        assert_eq!(verdict(Puller::MeshPrimary, Some(Seat::MeshPrimary)), Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
+        assert_eq!(verdict(Puller::MeshPrimary, Some(PrimaryKind::MeshPrimary)), Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
         assert_eq!(Refusal::ServedByAReplica.reason(), "served-by-a-replica");
         assert_eq!(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary.reason(), "a-mesh-primary-takes-only-the-fabric-primary");
     }
@@ -187,10 +187,10 @@ mod tests {
     fn a_refused_answer_leaves_the_held_time_unchanged() {
         let time = RafkaTime::unadopted();
         time.adopt(1_000_000);
-        let served = Served { via: "get-topology", served_by: "mesh2.admin.2", ms: 9_000_000, seat: None };
+        let served = Served { via: "get-topology", served_by: "mesh2.admin.2", ms: 9_000_000, kind: None };
         assert_eq!(adopt_pulled(&time, Puller::MeshPrimary, "mesh1.admin.1", served).unwrap_err(), Refusal::ServedByAReplica);
         assert!(time.now_ms() < 2_000_000, "the offered time was not taken");
-        let served = Served { seat: Some(Seat::FabricPrimary), ..served };
+        let served = Served { kind: Some(PrimaryKind::FabricPrimary), ..served };
         adopt_pulled(&time, Puller::MeshPrimary, "mesh1.admin.1", served).unwrap();
         assert!(time.now_ms() >= 9_000_000);
     }

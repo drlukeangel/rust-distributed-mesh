@@ -526,6 +526,8 @@ fn member_digest(n: &Member) -> rdm_core::MeshDigest {
         load: None,
         gossip: None,
         held_hash: n.membership.held_hash(),
+        is_primary: None,
+        is_fabric_primary: None,
     }
 }
 

@@ -12,7 +12,7 @@
 //! the same deployment's next registration (the Build's next attempt) is handed it. A disagreement is
 //! refused by name with both values. A join for a birth whose create ended without hearing it is
 //! refused as `DeploymentAbandoned`, naming the Build, the attempt and the exact birth: this admin
-//! is the birth's authority and never answers `NotAuthority` about itself.
+//! is the birth's authority and never answers `NotPrimary` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::{NodesStorage, RuntimeRow};
@@ -461,7 +461,7 @@ impl JoinDoor {
                 let primary = (self.primary)();
                 tracing::info_span!("rdm.node_admin.node.reject.via-join-unknown", node = %d.node.name, node_id = %d.node.node_id, primary = ?primary)
                     .in_scope(|| tracing::warn!("this admin deployed no such birth and holds no member of it"));
-                rdm_core::reply::join::not_authority(primary)
+                rdm_core::reply::join::not_primary(primary)
             }
         }
     }
@@ -545,7 +545,7 @@ mod tests {
             in_flight: None,
             config: Default::default(),
             load: None,
-            gossip: None,
+            gossip: None, is_primary: None, is_fabric_primary: None
         }
     }
 

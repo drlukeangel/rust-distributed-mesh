@@ -126,8 +126,8 @@ pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&A
 }
 
 /// The publisher of NodeStopped a status authority calls once it applies a birth's Leaving that names
-/// the operation which stopped it (i146 Q29, Q36): a former seat holder's update said first (R-NS2),
-/// then NodeStopped, the operation stamped with this admin's Rafka-time.
+/// the operation which stopped it (i146 Q29, Q36): NodeStopped, the operation stamped with this
+/// admin's Rafka-time.
 pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
     Arc::new(move |row: crate::status_storage::NodeDeclaredRow, operation: rdm_core::status::DeclaredOperation| {
         let (membership, backbone, project) = (membership.clone(), backbone.clone(), project.clone());
@@ -141,7 +141,6 @@ pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, proj
                 name: row.name,
                 event_at_rafka_ms: membership.clock().now_rafka_ms(),
             };
-            backbone.announce_update_of_stopped_holder(&op).await;
             publish_node_stopped(&backbone, project.as_ref(), &op).await;
         })
     })
@@ -184,9 +183,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             }
             None => publish_node_stopped(&self.backbone, self.project.as_ref(), op).await,
         }
-    }
-    async fn stop_completed(&self, op: &rdm_core::LifecycleOp) {
-        self.backbone.announce_update_of_stopped_holder(op).await;
     }
     async fn joined(&self, op: &rdm_core::LifecycleOp) {
         let _ = crate::status_rpc::set_member_status(&self.membership.book, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });

@@ -160,7 +160,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 

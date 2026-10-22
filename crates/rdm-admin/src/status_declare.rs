@@ -6,13 +6,13 @@
 //! fabric-primary moves; the key does not). A declaration is sent when it becomes owed, and again
 //! only on an eligible event (R-S2): the authoritative destination changes to a deliverable birth,
 //! a failed delivery gains a viable route, or the authority addresses this admin with its down op
-//! (`DeclareWake::addressed_by`). A typed reply is terminal, `RejectedNotAuthority` included, and a
+//! (`DeclareWake::addressed_by`). A typed reply is terminal, `RejectedNotPrimary` included, and a
 //! target going unreachable sends nothing. One `DeclareWake` wakes the declarer; no timer does.
 //! The outcomes:
 //!
 //! ```text
 //! Applied | AlreadyApplied          done
-//! RejectedNotAuthority             terminal until an eligible event: the authority's down op, or
+//! RejectedNotPrimary             terminal until an eligible event: the authority's down op, or
 //!                                  a destination change, sends it again
 //!
 //! A key is owed again when the authority is another node or a new incarnation of the same node.
@@ -835,7 +835,7 @@ mod tests {
     }
 
     /// CONTRACT: the receiver's view catches up while the sender's target tuple stays identical:
-    /// the declaration answered `RejectedNotAuthority` (typed, terminal) is sent again exactly
+    /// the declaration answered `RejectedNotPrimary` (typed, terminal) is sent again exactly
     /// once, when the authority's down op addresses this admin, and not before.
     #[test]
     fn a_typed_refusal_is_sent_again_once_when_the_authority_addresses_this_admin() {

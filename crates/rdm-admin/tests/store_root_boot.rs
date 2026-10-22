@@ -328,6 +328,8 @@ impl Prepared {
                 endpoint_id: EndpointId(key.public().to_string()),
                 transport_addr: "127.0.0.1:1".parse().unwrap(),
                 listeners: Vec::new(),
+                is_primary: None,
+                is_fabric_primary: None,
             };
             nodes.put_own(&own).await.unwrap();
             let mut runtime = rdm_core::RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();

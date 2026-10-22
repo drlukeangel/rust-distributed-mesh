@@ -20,7 +20,7 @@ use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::executor::RunEnd;
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::mesh_delete::{accepted_roster, manifest_reference, members_exited, Admitted, ExitManifest, MeshDeleteKey, MeshDeleter, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_DELETED, STEP_MESH_LEFT};
-use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
 /// What serves `DeleteMesh` and `MeshDeleted` for a running admin.
@@ -100,16 +100,16 @@ impl AdminRunner {
             crate::mesh_delete::OwnerResume::Lead => {}
         }
         let node_rpc = &self.node_rpc;
-        // Step 1: this owner is the fabric-primary. When the departing mesh held the fabric seat it
-        // moved first by node.fabric-primary.update with the mesh excluded: the leave opens only once
-        // that committed row is installed here, its node.primary.updated (the approved proposal
-        // node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2: "`node.primary.updated`
-        // confirms the committed transfer before any member is deleted"). During fabric.delete, on
+        // Step 1 (lifecycles/mesh-delete.md): this owner is the fabric-primary. When the departing mesh
+        // held the fabric-primary, it moved first by node.fabric-primary.update with the mesh excluded:
+        // the leave opens only once this admin's view names a fabric-primary outside the mesh
+        // ("`node.fabric-primary.updated` confirms the committed transfer before any member is
+        // deleted"). During fabric.delete, on
         // the fabric-primary's own mesh, the fabric-primary seat stays put so mesh.delete skips its
         // node.fabric-primary.update step (lifecycles/fabric-delete.md step 1).
         if !build.topology.meshes.is_empty() || mesh != self.me.mesh.as_str() {
             let fabric_update = crate::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, outer);
-            self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
+            self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: {e}"))?;
         }
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which proves
@@ -552,11 +552,11 @@ impl AdminRunner {
         let held = self.records.meshes.lock().unwrap().get(&me.mesh).cloned().or_else(|| view.meshes.iter().find(|m| m.name == me.mesh).and_then(|m| m.id.clone()));
         match held {
             Some(h) if &h != mesh_id => return rdm_core::reply::status::rejected_stale_mesh(h),
-            None => return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("an admin of the mesh {mesh_id}") }),
+            None => return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("an admin of the mesh {mesh_id}") }),
             Some(_) => {}
         }
         if !me.is_primary {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", me.mesh) });
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {}", me.mesh) });
         }
         // The handoff goes back to whoever owns the workflow: the admin whose call sent this command,
         // reached back over that call's endpoint and path with no record of it read, else the

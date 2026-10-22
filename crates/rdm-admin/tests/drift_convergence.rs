@@ -262,7 +262,7 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     });
     n
 }
@@ -2390,9 +2390,9 @@ enum HandBackEnd {
     CommitsAnswerLost,
 }
 
-/// The fabric seat as the fabric's store root holds it after a takeover (elections §5), for the
-/// hand-back cells: the takeover's lost birth and the winner it seated while its row is the fabric
-/// seat's latest move, none once a hand-back's row commits ([`rdm_admin::fabric_storage::fabric_seat_taken_from`]). It is the
+/// The take-over the fabric-primary made (fabric-recovery.md step 4), for the hand-back cells: the lost
+/// birth and the winner while the hand-back is owed, none once the hand-back applied
+/// ([`rdm_admin::fabric_handover::TakenOver`]). It is the
 /// fabric-primary's drive's departure proof (its `taken_from`, read each pass) and its gate, whose
 /// node.fabric-primary.update ends as the cell says, in order.
 struct HandBack {
@@ -2423,9 +2423,8 @@ impl rdm_admin::build_drive::Gate for HandBack {
         self.asked.lock().unwrap().push((m.holder.name.to_string(), to.clone(), update.clone(), format!("{end:?}")));
         // As `HandoverDoor::move_own_seats` renders a refusal before the row.
         let refused = |r: rdm_core::handover::NodePrimaryUpdateReply| rdm_admin::build_drive::SeatMoveEnd::Refused(format!("{}: {r:?}", r.name()));
-        let source = format!("fabric.storage of {}, the seat move of {update}", m.holder.name);
         match end {
-            HandBackEnd::ReadFails => Err(refused(rdm_core::reply::handover::bounded_source_failed(&source, &format!("read the seat move of {update}"), "planted: the disk refused"))),
+            HandBackEnd::ReadFails => Err(refused(rdm_core::reply::handover::not_ready(format!("{}: whether the fabric first reached ready-for-traffic could not be read for {update}: planted: the disk refused", m.holder.name)))),
             HandBackEnd::Commits => {
                 *self.taken.lock().unwrap() = None;
                 // The holder took the seats the row moved: its view names the successor the fabric-primary.
@@ -2436,7 +2435,7 @@ impl rdm_admin::build_drive::Gate for HandBack {
             }
             HandBackEnd::CommitsAnswerLost => {
                 *self.taken.lock().unwrap() = None;
-                Err(refused(rdm_core::reply::handover::bounded_source_failed(&source, &format!("commit the seat move of {update} moving 1 seat(s) to {to}"), "planted: the write's answer was lost")))
+                Err(refused(rdm_core::reply::handover::not_ready(format!("{}: the answer of {update} to {to} was lost", m.holder.name))))
             }
         }
     }
@@ -2505,8 +2504,8 @@ async fn verdicts_after(e: &Estate, build_id: &BuildId, after: u32) -> Vec<(u32,
 /// holder hands every seat it took back to it; Q104: a hand-back that is owed is planned again on every
 /// drift pass until its row commits, and a refusal or a failed attempt is never terminal for it): after
 /// a takeover, the winner's drift opens the hand-back's attempt one floor after the lost fabric-primary
-/// is Ready again; its node.fabric-primary.update is refused before its row because the store's read of
-/// its seat move fails (`RejectedSourceFailed`), and the attempt ends Failed. The next pass, with
+/// is Ready again; its node.fabric-primary.update is refused before its call because the store's read of
+/// the fabric's first ready-for-traffic row fails (`NotReady`), and the attempt ends Failed. The next pass, with
 /// nothing else moved, plans the hand-back again in the next attempt, whose update commits: that
 /// attempt ends HandedOff to the lost fabric-primary, which the view names the fabric-primary. What
 /// must NOT happen: the refused hand-back's attempt taken as the last word (`via-drift-unchanged`, no
@@ -2525,7 +2524,7 @@ async fn an_owed_hand_back_refused_by_a_store_read_is_planned_again_on_the_next_
     let end = env.run(&Drive::detached(before.build_id.clone())).await;
     assert_eq!(end, DriveEnd::Terminal, "the refused hand-back ends its attempt");
     let failed = verdicts_after(&e, &before.build_id, before.attempt).await;
-    assert!(matches!(failed.as_slice(), [(a, rdm_admin::build_state::AttemptOutcome::Failed { reason, .. })] if *a == before.attempt + 1 && reason.contains("source-failed")), "the hand-back's attempt ended Failed, refused before its row: {failed:?}");
+    assert!(matches!(failed.as_slice(), [(a, rdm_admin::build_state::AttemptOutcome::Failed { reason, .. })] if *a == before.attempt + 1 && reason.contains("not-ready")), "the hand-back's attempt ended Failed, refused before its call: {failed:?}");
     let second = hand_back_pass(&e, &winner, &hb, &mut started).await;
     assert_eq!(second, Some((before.build_id.clone(), before.attempt + 2)), "the next pass plans the owed hand-back again: a refusal is never terminal for it");
     let end = env.run(&Drive::detached(before.build_id.clone())).await;

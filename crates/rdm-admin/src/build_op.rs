@@ -47,56 +47,15 @@ pub struct BuildDoor {
     pub env: Arc<DriveEnv>,
     /// The executor's door for `build.attempt.run`.
     pub run: Arc<RunDoor>,
-    /// The seat records this admin holds: a written seat transfer installs into it before the
-    /// executor's next step runs, so it names this birth the fabric-primary before the view does.
+    /// The primary records this admin holds: node.primary.update's successor installs into it before
+    /// the executor's next step runs, so it names this birth the fabric-primary before the view does.
     pub seats: SeatBook,
     /// This admin's exact birth (with `env.door.node_id`): what the seat book is read against.
     pub incarnation: IncarnationId,
-    /// Where a re-submitted Build this admin's own log holds no fact of is read: the incumbent the
-    /// committed transfer of its fabric seat names.
-    pub incumbent: Arc<dyn IncumbentFacts>,
 }
 
 /// The door a running admin fills once it holds a view.
 pub type BuildSlot = Arc<OnceLock<Arc<BuildDoor>>>;
-
-/// The facts of a Build this admin's own log holds no fact of, read from the incumbent the committed
-/// update of its fabric seat names (node.fabric-primary.update; the approved proposal
-/// node-primary-update-fabric-mesh-and-node-type.md Part C1 step 8: "Only then does the commanding
-/// Build continue", at the new fabric-primary, which resumes the same attempt; build.md §5.2:
-/// "the fabric-primary's claim log reaches every admin through the Build topic and FetchBuildFacts
-/// (`0x1F`)"). The incumbent keeps serving after the seat row, so one read reaches the admin that
-/// accepted the Build; no other admin is asked and nothing is read again.
-#[async_trait::async_trait]
-pub trait IncumbentFacts: Send + Sync {
-    /// One `FetchBuildFacts` of `build_id` to the incumbent.
-    async fn read(&self, build_id: &BuildId) -> IncumbentRead;
-}
-
-/// What [`IncumbentFacts::read`] found.
-#[derive(Debug)]
-pub enum IncumbentRead {
-    /// No committed transfer seated this birth in the fabric seat it holds (it holds no fabric seat,
-    /// or took it by election or at Day 0): its own log is the only one its Build door answers from.
-    NoTransfer,
-    /// The incumbent `incumbent` (its `path.name` and node id) was read: its facts, or why none came.
-    Read {
-        /// The incumbent, named.
-        incumbent: String,
-        /// The facts, or the read's own failure.
-        read: Result<crate::build_facts_read::Fetched, crate::build_facts_read::FetchFailure>,
-    },
-}
-
-/// A Build door that took no fabric seat by a transfer (an admin built without a seat transfer door).
-pub struct NoIncumbent;
-
-#[async_trait::async_trait]
-impl IncumbentFacts for NoIncumbent {
-    async fn read(&self, _: &BuildId) -> IncumbentRead {
-        IncumbentRead::NoTransfer
-    }
-}
 
 fn counts(m: &MeshCounts) -> MeshDesired {
     MeshDesired { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
@@ -111,7 +70,7 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
         Refusal::Conflict(d) => rdm_core::reply::build::rejected("conflict".into(), d),
         Refusal::BuildInProgress(held) => rdm_core::reply::build::build_in_progress(held.current_build_id.to_string(), held.mesh, held.held_by),
         Refusal::NotClaimant { mesh, fabric_primary, mesh_primary } => rdm_core::reply::build::not_claimant(Some(mesh), fabric_primary, mesh_primary),
-        Refusal::NotAuthority(p) => rdm_core::reply::build::not_fabric_primary(p),
+        Refusal::NotPrimary(p) => rdm_core::reply::build::not_fabric_primary(p),
         Refusal::AttemptTaken(d) => rdm_core::reply::build::attempt_taken(d),
         Refusal::Unavailable(d) => rdm_core::reply::build::not_ready(d),
         Refusal::State(BuildStateError::SeatYielded { node, by, .. }) => rdm_core::reply::build::seat_yielded(node, by),
@@ -295,10 +254,7 @@ impl BuildDoor {
         let me = self.held_name().await;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
-            Err(BuildStateError::UnknownBuild(_)) => match self.from_incumbent(&id).await {
-                Ok(p) => p,
-                Err(refusal) => return Ok(refusal),
-            },
+            Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
             Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
         };
         // The drive's own record answers a Build that ended: the frames it took off the calls it
@@ -322,77 +278,6 @@ impl BuildDoor {
         let drive = self.drives.ensure(&self.env, &id, p.attempt_to_drive());
         let sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: from_attempt, disposition }).await?;
         stream_frames(sink, drive.reader(from_attempt)).await
-    }
-
-    /// A re-submitted Build this admin's own log holds no fact of: the new seat has not heard it yet
-    /// (the Build topic carries the facts apart, and the re-submit outran it). Its facts are read once
-    /// from the incumbent the committed transfer of this admin's fabric seat names, which accepted it
-    /// and keeps serving after its row (proposal Part C1 step 6: the holder calls after the row), and are absorbed into
-    /// this admin's own log as the Build topic's are (node-rpc-envelope.md, "Build facts": "Facts are
-    /// absorbed through the existing Build log"). No Build gossip is authored and nothing is read again.
-    ///
-    /// Only a Build no admin holds stays `UnknownBuild`: this admin took no seat by a transfer (its own
-    /// log is the one it answers from), or the incumbent holds no fact of it either. A read that failed,
-    /// or holdings the incumbent says are not whole, is `NotReady` naming the incumbent and the cause.
-    async fn from_incumbent(&self, id: &BuildId) -> Result<crate::build_state::BuildProjection, BuildReply> {
-        let me = self.held_name().await;
-        let span = tracing::info_span!(
-            "rdm.node_admin.build.update.via-incumbent-facts",
-            node = %me,
-            build_id = %id.log(),
-            incumbent = tracing::field::Empty,
-            facts = tracing::field::Empty,
-            chunks = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-        );
-        let me = &me;
-        async {
-            let span = tracing::Span::current();
-            let (incumbent, read) = match self.incumbent.read(id).await {
-                IncumbentRead::NoTransfer => {
-                    span.record("outcome", "no-transfer");
-                    span.in_scope(|| tracing::info!("this admin took its fabric seat by no transfer: its own log is the one it answers from"));
-                    return Err(rdm_core::reply::build::unknown_build(id.to_string()));
-                }
-                IncumbentRead::Read { incumbent, read } => (incumbent, read),
-            };
-            span.record("incumbent", incumbent.as_str());
-            let fetched = match read {
-                Ok(f) if f.complete => f,
-                Ok(f) => {
-                    span.record("facts", f.facts.len() as u64);
-                    span.record("outcome", "incomplete");
-                    span.in_scope(|| tracing::info!("the incumbent says its holdings of the Build are not whole: nothing is absorbed"));
-                    return Err(rdm_core::reply::build::not_ready(format!("{me}: Build {id} is not in this admin's log, and {incumbent}, whose fabric seat this admin took, holds {} facts of it that it says are not whole: nothing is absorbed", f.facts.len())));
-                }
-                Err(crate::build_facts_read::FetchFailure::UnknownBuild(_)) => {
-                    span.record("outcome", "unknown-build");
-                    span.in_scope(|| tracing::info!("the incumbent holds no fact of the Build either"));
-                    return Err(rdm_core::reply::build::unknown_build(id.to_string()));
-                }
-                Err(e) => {
-                    span.record("outcome", e.reason());
-                    span.in_scope(|| tracing::info!(detail = %e, "the incumbent's facts of the Build could not be read"));
-                    return Err(rdm_core::reply::build::not_ready(format!("{me}: Build {id} is not in this admin's log, and its facts could not be read from {incumbent}, whose fabric seat this admin took: {e}")));
-                }
-            };
-            span.record("facts", fetched.facts.len() as u64);
-            span.record("chunks", fetched.chunks);
-            self.run.local.absorb_facts(&fetched.facts).await;
-            match self.control.builds.read_build(id).await {
-                Ok(p) => {
-                    span.record("outcome", "absorbed");
-                    span.in_scope(|| tracing::info!("the incumbent's facts of the re-submitted Build are absorbed into this admin's own log"));
-                    Ok(p)
-                }
-                Err(e) => {
-                    span.record("outcome", "unreadable-after-absorb");
-                    Err(rdm_core::reply::build::not_ready(format!("{me}: the {} facts of Build {id} read from {incumbent} were absorbed, and this admin's own log still cannot read it: {e}", fetched.facts.len())))
-                }
-            }
-        }
-        .instrument(span)
-        .await
     }
 
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
@@ -477,9 +362,9 @@ impl BuildDoor {
     #[allow(clippy::too_many_arguments)]
     async fn attempt_run(&self, id: BuildId, attempt: u32, executor: String, context: CallContext, intent: Vec<Vec<u8>>, operations: Vec<Vec<u8>>, hand_off_to: Option<String>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         // The caller of `build.attempt.run` is the fabric-primary that drives the Build. When this
-        // executor took that seat during the run (a written seat transfer of the attempt's own
-        // SeatTransfer step), the caller is no longer the driver: its seat row fenced it and its
-        // stream ends here with the typed new-seat frame naming this admin, never with a write into
+        // executor became fabric-primary during the run (the attempt's own node.primary.update), the
+        // caller is no longer the driver: its fence is set and its stream ends here with
+        // FabricPrimaryMoved naming this admin, never with a write into
         // a stream the old driver stopped. The run goes on in its own task; this admin's own drive
         // reads its frames.
         let held_at_start = self.holds_fabric_seat();
@@ -511,7 +396,7 @@ impl BuildDoor {
                         let me = self.held_name().await;
                         tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
                             .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
-                        return Ok(BuildReply::SeatMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
+                        return Ok(BuildReply::FabricPrimaryMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
                     }
                     match f {
                         BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
@@ -534,7 +419,7 @@ async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Resul
 }
 
 /// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream with
-/// the typed `SeatMoved` terminal naming the new seat: the caller re-submits the Build id there.
+/// the typed `FabricPrimaryMoved` terminal naming the new seat: the caller re-submits the Build id there.
 async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
     while let Some(t) = reader.next().await {
         match t {
@@ -542,7 +427,7 @@ async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streami
             Read::Terminal(t) => return Ok(t),
             Read::SeatLost(loss) => {
                 tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
-                return Ok(BuildReply::SeatMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
+                return Ok(BuildReply::FabricPrimaryMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
             }
         }
     }

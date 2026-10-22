@@ -184,14 +184,14 @@ pub struct FabricBuildStateAdapter {
     joined: std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>,
     /// The authority gate every fabric-primary mutation passes (ruling R-A2).
     authority: Authority,
-    /// The gate of this admin's drift-lane opens and claims (R-BI7): the written seat record of its
-    /// own mesh's primary seat, never the fabric seat's, so an admin that yielded the fabric seat
-    /// still opens and claims its own mesh's drift attempts while it holds its mesh's seat.
+    /// The gate of this admin's drift-lane opens and claims (R-BI7): the mesh-primary record of its own
+    /// mesh this admin holds, never the fabric-primary's, so an admin that is fabric-primary no more
+    /// still opens and claims its own mesh's drift attempts while it is its mesh's primary.
     mesh_seat_gate: Authority,
     book: rdm_transport::membership::LocationBook,
 }
 
-/// What the committed fabric seat record says of this birth's Build authority.
+/// What the fabric-primary record this admin holds says of this birth's Build log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatRecord {
     /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
@@ -209,8 +209,8 @@ pub enum SeatRecord {
     },
 }
 
-/// Where a Build log reads its authority: the written seat record, and a receiver that wakes each
-/// time a seat record is held.
+/// Where a Build log reads its fence: the primary record this admin holds, and a receiver that wakes
+/// each time a record is held.
 #[derive(Clone)]
 pub struct SeatSource {
     /// The record's answer for this birth, read now.
@@ -227,15 +227,15 @@ impl SeatSource {
 }
 
 /// The gate of the fabric-primary's mutations: one lock, held from the decision through its
-/// durable commit and its broadcast, and the committed fabric seat record read under it. A seat
-/// commit on this admin (node.primary.update's row at its holder, the install at its successor) holds
-/// the same lock across the record's move, so a decision is either wholly committed before the record
-/// moves or refused by it. The record is the target every decision is judged against (proposal
-/// node-primary-update Part C1 step 5): nothing else is written for the log.
+/// durable commit and its broadcast, and the fabric-primary record this admin holds read under it.
+/// The successor's install of node.primary.update on this admin holds the same lock across the
+/// record's move, so a decision is either wholly committed before the record moves or refused by it.
+/// The record is the target every decision is judged against (lifecycles/node-primary-update.md
+/// step 4): nothing else is written for the log.
 pub struct Authority {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
-    /// The written seat record this birth's authority is read from.
+    /// The primary record this birth's fence is read from.
     seat: SeatSource,
 }
 
@@ -774,10 +774,10 @@ mod tests {
     #[tokio::test]
     async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
         use futures_util::FutureExt as _;
-        use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
+        use rdm_core::{IncarnationId, NodeId, Seat, Primary};
         let seats = rdm_transport::membership::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
-        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
+        let next = Primary { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
             let changed = Some(seats.subscribe());
@@ -787,7 +787,7 @@ mod tests {
             SeatSource { read, changed }
         };
         let authority = Authority::new("mesh2.admin.2".into(), source);
-        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
+        seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         assert!(authority.enter().await.is_ok(), "the record names this birth: it decides");
         assert!(authority.fence_set().now_or_never().is_none(), "no fence while the record names this birth");
         seats.take(Seat::FabricPrimary, &next);
@@ -809,7 +809,7 @@ mod tests {
     /// name.
     #[tokio::test]
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
-        use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
+        use rdm_core::{IncarnationId, NodeId, Seat, Primary};
         let seats = rdm_transport::membership::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
@@ -817,14 +817,14 @@ mod tests {
             let (seats, me) = (seats.clone(), me.clone());
             SeatSource { read: std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
         };
-        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
+        seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = authority.enter().await.unwrap();
         let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
+            book.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

@@ -59,7 +59,7 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
     // The frames that existed keep their positions.
     assert_eq!(Frame::NodeConnectionsDeleted { op: rdm_core::LifecycleOp {
         build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
-        forwarded_by: None }.type_position(), 13);
+        forwarded_by: None }.type_position(), 12);
 }
 
 /// CONTRACT: a peer mesh's primary forwards a round hook onto its own channel, the authored fields
@@ -68,10 +68,10 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
 #[test]
 fn a_peer_mesh_primary_forwards_round_hooks_unchanged_and_the_authors_mesh_does_not() {
     for (original, kind) in [
-        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 15u8),
-        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 16),
-        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 17),
-        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 18),
+        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 14u8),
+        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 15),
+        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 16),
+        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 17),
     ] {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
         assert_eq!(forwarded.type_position(), kind);

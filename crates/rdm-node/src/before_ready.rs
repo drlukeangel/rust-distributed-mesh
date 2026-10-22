@@ -147,7 +147,7 @@ impl BeforeReadyCtx {
     /// The outcome for a pull the authority answered with its typed `NotReady`: wait for that
     /// authority to be Ready.
     pub fn authority_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
-        HookOutcome::Blocked { reason: reason.into(), retry_on: RetryOn::AuthorityReady }
+        HookOutcome::Blocked { reason: reason.into(), retry_on: RetryOn::PrimaryReady }
     }
 }
 
@@ -310,13 +310,13 @@ impl Events {
         let Some(authority) = authority else { return false };
         let birth = self.birth_of(authority);
         match on {
-            RetryOn::AuthorityChanged => match &birth {
+            RetryOn::PrimaryChanged => match &birth {
                 Some((d, _)) => self.book.is_departed(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
                 None => mark.authority_incarnation.is_some(),
             },
-            RetryOn::AuthorityReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
+            RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
-            RetryOn::AuthorityAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
+            RetryOn::PrimaryAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
         }
     }
 
@@ -628,9 +628,9 @@ mod tests {
     /// attempt counter in the blocker, which would frame a new `Blocked` on every rerun.
     #[test]
     fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_blocker() {
-        let blocked = |attempt, reason: &str| BeforeReadyState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::AuthorityAddressed };
+        let blocked = |attempt, reason: &str| BeforeReadyState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::PrimaryAddressed };
         let first = blocked(1, "rows not yet published").probe_blocker().expect("blocked answers its blocker");
-        assert_eq!(first, ("rows not yet published".to_string(), RetryOn::AuthorityAddressed), "the hook's own reason and event");
+        assert_eq!(first, ("rows not yet published".to_string(), RetryOn::PrimaryAddressed), "the hook's own reason and event");
         assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(), "the attempt is not part of the blocker");
         assert_ne!(Some(first), blocked(8, "the authority is draining").probe_blocker(), "a changed reason is a new blocker");
         for other in [BeforeReadyState::Running { attempt: 2 }, BeforeReadyState::Passed, BeforeReadyState::Failed("x".into()), BeforeReadyState::Cancelled] {

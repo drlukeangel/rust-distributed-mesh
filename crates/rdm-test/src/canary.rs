@@ -140,15 +140,15 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let handoff_dispatch = named(&spans, "rdm.node_admin.build.update.via-dispatch")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str())
-        .expect("the attempt opened by the restart call dispatched the seat holder's primary update");
-    assert_eq!(handoff_dispatch["attributes"]["outcome"], "handed-off", "the seat holder's primary update attempt ended handed-off: {handoff_dispatch}");
+        .expect("the attempt opened by the restart call dispatched the rpc-node primary's node.primary.update");
+    assert_eq!(handoff_dispatch["attributes"]["outcome"], "handed-off", "the rpc-node primary's node.primary.update attempt ended handed-off: {handoff_dispatch}");
     assert_eq!(handoff_dispatch["parent_span_id"], rest["span_id"], "the hand-off dispatch is a child of the restart call's request span: {handoff_dispatch}");
-    let primary_update = named(&spans, "rdm.node_admin.seat.update.via-primary-update")
+    let primary_update = named(&spans, "rdm.node_admin.primary.update.via-command")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str() && s["attributes"]["holder"] == node_name)
-        .expect("rdm.node_admin.seat.update.via-primary-update for the restarted rpc seat holder");
-    assert_eq!(primary_update["attributes"]["outcome"], "updated", "node.primary.update moved the rpc cohort seat before the restart: {primary_update}");
-    assert!(descends_from(&spans, primary_update, handoff_dispatch), "the seat update descends from the hand-off attempt's dispatch span");
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str() && s["attributes"]["primary"] == node_name)
+        .expect("rdm.node_admin.primary.update.via-command for the restarted rpc-node primary");
+    assert_eq!(primary_update["attributes"]["outcome"], "updated", "node.primary.update moved the rpc-node primary before the restart: {primary_update}");
+    assert!(descends_from(&spans, primary_update, handoff_dispatch), "node.primary.update descends from the hand-off attempt's dispatch span");
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)))

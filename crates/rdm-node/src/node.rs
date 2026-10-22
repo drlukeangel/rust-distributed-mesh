@@ -496,8 +496,8 @@ async fn start_booted(
     let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
     let seams = NodeSeams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), name: held_name.clone() };
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
-    // node.primary.update (op 0x21) on a node that is not a node-admin: the holder its mesh-primary
-    // commands with the committed row, and the successor the holder calls (proposal Part C1, Q3).
+    // node.primary.update (op 0x21) on a node that is not a node-admin (lifecycles/node-primary-update.md):
+    // the primary its mesh-primary commands, and the successor that primary calls.
     let primary_update_slot: crate::member_handover::MemberSlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
@@ -554,7 +554,7 @@ async fn start_booted(
         config: Default::default(),
         load: None,
         gossip: None,
-        data_dir: Some(launch.data_dir.display().to_string()),
+        data_dir: Some(launch.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
     };
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
     // admin that deployed it; the admin verifies it against the deployment and answers what it
@@ -726,7 +726,7 @@ async fn start_booted(
                                         // The seat moving is the one retargeting (i146 Q39): a call still in flight
                                         // to the old holder is cancelled, and the next pass declares to the holder
                                         // the seat names now.
-                                        if owed.lock().unwrap().owed.is_some() && declare_until_seat_moves(&node, &membership, &client, &owed, &held).await == Declared::SeatMoved {
+                                        if owed.lock().unwrap().owed.is_some() && declare_until_seat_moves(&node, &membership, &client, &owed, &held).await == Declared::FabricPrimaryMoved {
                                             continue;
                                         }
                                         if owed.lock().unwrap().owed.is_none() {
@@ -1184,7 +1184,7 @@ impl Becoming {
 /// Whether the primary seat of this birth's mesh moved to another birth than the one this birth
 /// last told its state: the holder it told is `told`, the holder its seat record names is `holder`.
 /// A birth that told no holder yet has nothing to repeat.
-fn authority_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rdm_core::SeatHolder>) -> bool {
+fn authority_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rdm_core::Primary>) -> bool {
     match (told, holder) {
         (Some((node, incarnation)), Some(h)) => !h.is_birth(node, incarnation),
         _ => false,
@@ -1223,14 +1223,14 @@ enum Declared {
     /// The attempt ran to its end (answered, refused, or not delivered: still owed).
     Attempted,
     /// The mesh's primary seat moved while the attempt was in flight: its call was cancelled.
-    SeatMoved,
+    FabricPrimaryMoved,
 }
 
 /// [`declare_once`] until this birth's mesh's primary seat moves (i146 Q39): the seat moving is the one
 /// retargeting, so a call still in flight to the old holder is cancelled, and the declaration stays
 /// owed to the holder the seat names next. A seat record of another mesh changes nothing here.
 async fn declare_until_seat_moves(me: &MeshNode, membership: &Membership, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>) -> Declared {
-    let birth = |h: Option<rdm_core::SeatHolder>| h.map(|h| (h.node_id, h.incarnation));
+    let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
     let mut seats = membership.seats().subscribe();
     seats.borrow_and_update();
     let from = birth(membership.seats().mesh(&me.name.mesh));
@@ -1249,7 +1249,7 @@ async fn declare_until_seat_moves(me: &MeshNode, membership: &Membership, client
         () = moved => {
             tracing::info_span!("rdm.node_rpc.status.remove.via-seat-moved", node = %membership.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
-            Declared::SeatMoved
+            Declared::FabricPrimaryMoved
         }
     }
 }
@@ -1315,7 +1315,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rdm_trans
     let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &req, &opts).await;
     let (outcome, definitive) = match &out {
         RpcOutcome::Reply(r) => match r.value() {
-            StatusReply::RejectedNotAuthority { .. } => (format!("{:?}", r.value()), false),
+            StatusReply::RejectedNotPrimary { .. } => (format!("{:?}", r.value()), false),
             v => (v.name().to_string(), true),
         },
         other => (format!("{}: {other:?}", other.name()), false),
@@ -1575,10 +1575,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 #[cfg(test)]
 mod authority_tests {
     use super::*;
-    use rdm_core::SeatHolder;
+    use rdm_core::Primary;
 
-    fn holder(node: &NodeId, incarnation: &IncarnationId, revision: u64) -> SeatHolder {
-        SeatHolder { mesh: "mesh1".into(), node_id: node.clone(), incarnation: incarnation.clone(), revision }
+    fn holder(node: &NodeId, incarnation: &IncarnationId, revision: u64) -> Primary {
+        Primary { mesh: "mesh1".into(), node_id: node.clone(), incarnation: incarnation.clone(), revision }
     }
 
     /// CONTRACT (R-S2): a birth owes its state again when its mesh's primary seat names another birth than the

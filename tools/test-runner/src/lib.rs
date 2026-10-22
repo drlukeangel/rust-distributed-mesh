@@ -65,7 +65,7 @@ const SCRUBBED: &[&str] = &[
 const GATE_SCENARIOS: &[&str] = &[
     "node_delete", "node_connections_delete", "node_stop", "node_replace", "node_restart", "routing", "status",
     "shape_reconcile", "live_resize", "role_build", "role_cohort", "restart_target",
-    "role_routing", "role_context", "role_wedge", "provider_state", "late_authority", "sticky_seat",
+    "role_routing", "role_context", "role_wedge", "provider_state", "late_authority", "node_primary_update",
     "mesh_create", "fabric_primary_handover", "canonical_ids", "cohort_election", "fabric_primary", "rpc_proof_store",
     "accepted_topology", "build_op", "cohort_recovery", "rpc_certainty", "peer_mesh_investigation", "joiner_build_facts", "rafka_time_discipline", "issuance", "rounds",
     "mesh_delete_resume", "mesh_delete_no_survivor",

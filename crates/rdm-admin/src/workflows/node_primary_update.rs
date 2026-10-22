@@ -5,6 +5,6 @@
 
 pub use crate::election::{elect, Candidate, ElectionLog, Incumbency, Moving};
 pub use crate::fabric_handover::{
-    update_operation, FinishWrites, HandoverDoor, ProjectView, SourceFailure,
+    update_operation, FinishWrites, HandoverDoor, ProjectView,
     UpdateLocks, UpdateMemo,
 };

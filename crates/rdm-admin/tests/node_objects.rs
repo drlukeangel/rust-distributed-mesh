@@ -232,7 +232,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rdm_admin::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -260,7 +260,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rdm_admin::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -287,7 +287,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: fp }),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rdm_admin::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -427,7 +427,7 @@ impl Rig {
                     in_flight: None,
                     config: Default::default(),
                     load: None,
-                    gossip: None,
+                    gossip: None, is_primary: None, is_fabric_primary: None
                 };
                 self.joins.report(&digest);
                 return;
@@ -547,7 +547,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     let cap = capture();
     let (blocked, after) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let why = "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready";
+        let why = "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
         *rig.membership.not_ready.lock().unwrap() = Some(why.to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
@@ -577,7 +577,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         Frame::Blocked {
             operation: "node.create:mesh1.rpc.3".into(),
             step: "WaitForNodeReady".into(),
-            reason: "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready".into()
+            reason: "mesh1.rpc.3: before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
         }
     );
     assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
@@ -979,7 +979,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
-        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone(), incumbent: before.incumbent.clone() });
+        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();

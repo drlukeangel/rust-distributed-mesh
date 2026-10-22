@@ -41,7 +41,7 @@ fn view() -> Topology {
 /// A gate the cell opens and closes.
 struct Switch {
     fenced: AtomicBool,
-    /// The admin a written seat transfer named in the fence, when the cell sets one.
+    /// The admin the fence names, when the cell sets one.
     successor: Mutex<Option<String>>,
     /// Set with `fenced` by a cell that fences while a dispatch is in flight.
     fence_tx: tokio::sync::watch::Sender<bool>,
@@ -138,8 +138,8 @@ async fn next_within(reader: &mut rdm_admin::build_drive::DriveReader) -> Option
     tokio::time::timeout(Duration::from_millis(50), reader.next()).await.ok().flatten()
 }
 
-/// CONTRACT: a fabric-primary whose written seat record moved dispatches nothing. The Build
-/// log's sticky fence is checked before the claim: the drive ends `SeatLost` naming the fence, no attempt is
+/// CONTRACT: a fabric-primary whose fabric-primary record names another live birth dispatches nothing.
+/// The Build log's fence is checked before the claim: the drive ends `SeatLost` naming the fence, no attempt is
 /// claimed, no executor is called, and the callers' streams end with the seat loss (the caller
 /// re-submits by the Build id at the new seat).
 #[tokio::test]
@@ -149,7 +149,7 @@ async fn a_fabric_primary_whose_seat_record_moved_claims_and_dispatches_nothing(
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("no longer holds the fabric-primary seat: the written seat row moved it"), "{why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "{why}"),
         other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
     }
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
@@ -186,9 +186,9 @@ async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.is_none()), "the record names no holder");
 }
 
-/// CONTRACT (proposal node-primary-update Part C1 step 5: "From this write the holder is no longer
-/// primary"): the written seat record,
-/// never the view, names where the seat is. A fabric-primary whose record still names this birth
+/// CONTRACT (lifecycles/node-primary-update.md step 4: the successor becomes primary when it installs
+/// the election's result): the fabric-primary record this admin holds, never the view, names the
+/// fabric-primary. A fabric-primary whose record still names this birth
 /// while its view shows another admin holding the seat dispatches nothing, and the callers'
 /// streams end naming the holder the record names (this birth), never the view's; a record naming
 /// none names no holder.
@@ -205,7 +205,7 @@ async fn a_fabric_primary_whose_view_shows_another_holder_names_the_seat_records
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("does not hold the fabric-primary seat") && why.contains("seat record names mesh1.admin.1"), "the refusal names what the record names: {why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("does not hold the fabric-primary seat") && why.contains("the fabric-primary record it holds names mesh1.admin.1"), "the refusal names what the record names: {why}"),
         other => panic!("a view showing another holder ends the drive SeatLost: {other:?}"),
     }
     let loss = match next_within(&mut reader).await {
@@ -217,12 +217,12 @@ async fn a_fabric_primary_whose_view_shows_another_holder_names_the_seat_records
     *r.switch.record_holder.lock().unwrap() = None;
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
-    assert!(matches!(r.env.run(&drive).await, DriveEnd::SeatLost(why) if why.contains("seat record names none")));
+    assert!(matches!(r.env.run(&drive).await, DriveEnd::SeatLost(why) if why.contains("the fabric-primary record it holds names none")));
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.is_none()), "a record naming none names no holder");
 }
 
-/// CONTRACT (proposal node-primary-update Part C1 step 5: "From this write the holder is no longer
-/// primary"; Build dispatch from the old seat is refused `Fenced`): the seat record decides before the view does. A fabric-primary
+/// CONTRACT (lifecycles/node-primary-update.md step 4; Build dispatch from the old fabric-primary is
+/// refused `Fenced`): the fabric-primary record decides before the view does. A fabric-primary
 /// whose seat record moved is refused `Fenced` while its view still shows it as the holder and
 /// holds no row of the new one yet, and the callers' streams end naming the holder the record names,
 /// never the view's. No executor is called.
@@ -234,16 +234,16 @@ async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_n
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("no longer holds the fabric-primary seat: the written seat row moved it"), "the fence refused it, not the view: {why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "the fence refused it, not the view: {why}"),
         other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
     }
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")));
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
 }
 
-/// CONTRACT: a written seat transfer names the new holder in the fence itself. The old seat's view
+/// CONTRACT: node.primary.update names the new fabric-primary in the fence itself. The old seat's view
 /// is re-projected on its own clock, so right after the transfer it may still show this admin as the
-/// fabric-primary: the callers' streams still end naming the successor the transfer committed, never
+/// fabric-primary: the callers' streams still end naming the successor the update installed, never
 /// an empty seat read from a view that has not moved yet.
 #[tokio::test]
 async fn a_fence_set_by_a_committed_transfer_names_the_successor_while_the_view_still_shows_the_old_seat() {
@@ -912,7 +912,7 @@ async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_al
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("the written seat row moved it"), "the drive ends at the written seat record: {why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "the drive ends at the fence: {why}"),
         other => panic!("the old seat holder's drive ends SeatLost once the seat moved: {other:?}"),
     }
     let moved = gate.moved.lock().unwrap().clone();
@@ -997,8 +997,8 @@ impl OperationRunner for HeldOpen {
     }
 }
 
-/// CONTRACT (proposal node-primary-update Part C1 step 5): the written seat row is the target every
-/// decision is judged against. The fence is set while the drive waits on an executor's run, and the
+/// CONTRACT (lifecycles/node-primary-update.md step 4): the fabric-primary record this admin holds is
+/// the target every decision is judged against. The fence is set while the drive waits on an executor's run, and the
 /// record names another holder than that executor: the drive ends `SeatLost` at the fence, without
 /// waiting for that run's stream to end, the callers' streams end naming the holder the record names,
 /// and no later attempt is claimed.
@@ -1015,7 +1015,7 @@ async fn a_seat_row_naming_another_holder_than_the_executor_ends_the_drive_namin
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
     r.switch.fence_to(Some("mesh2.admin.1"));
     let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends at the fence while the executor's run is still open").unwrap();
-    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("no longer holds the fabric-primary seat: the written seat row moved it")), "the fence ends the drive SeatLost: {end:?}");
+    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("is no longer the fabric-primary: ")), "the fence ends the drive SeatLost: {end:?}");
     match next_within(&mut reader).await {
         Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the holder the record names: {loss:?}"),
         other => panic!("the reader ends with the seat loss, got {other:?}"),
@@ -1049,14 +1049,13 @@ impl rdm_admin::build_drive::Dispatcher for Fed {
     }
 }
 
-/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer": "after the row P ends the
-/// caller's outer stream with the typed new-seat frame, the caller resubmits the same build_id to N,
-/// and N resumes the same attempt as the new fabric-primary"; "The reply opens N's execution gate"):
-/// the fence is set while the drive waits on the executor's run, and the record names that executor:
-/// the transfer is the run's own SeatTransfer step. The executor is the fabric-primary once it has
-/// installed the written seats, and it says so on the run's own stream, which it ends with
-/// SeatMoved naming itself. Until then the callers' streams carry the run's frames and no seat loss;
-/// on the executor's SeatMoved the drive ends `SeatLost` naming the executor, and no later attempt
+/// CONTRACT (node-rpc-envelope.md 0x20: "A fabric-primary change ends the outer stream with
+/// FabricPrimaryMoved, **not Indeterminate**"; FabricPrimaryMoved: "caller resubmits the same build_id
+/// there"): the fence is set while the drive waits on the executor's run, and the record names that
+/// executor: the run's own node.primary.update made it fabric-primary. The executor is the fabric-primary once it has
+/// installed the election's result, and it says so on the run's own stream, which it ends with
+/// FabricPrimaryMoved naming itself. Until then the callers' streams carry the run's frames and no seat loss;
+/// on the executor's FabricPrimaryMoved the drive ends `SeatLost` naming the executor, and no later attempt
 /// is claimed (the executor resumes the same attempt).
 /// Must NOT happen: a caller's stream ending with the seat loss, which sends the caller to the
 /// executor, before the executor's run said it holds the seat.
@@ -1095,10 +1094,10 @@ async fn a_seat_row_naming_the_executor_ends_the_drive_on_the_executors_new_seat
     }
     assert!(next_within(&mut reader).await.is_none(), "no seat loss before the executor's new-seat frame");
     assert!(!running.is_finished(), "the drive waits for the executor's new-seat frame");
-    // The executor installed the written seats: its run's stream ends with the new seat.
-    feed.send(InnerItem::Frame(BuildReply::SeatMoved { build_id: r.build.to_string(), fabric_primary: Some("mesh1.admin.2".into()) })).unwrap();
+    // The executor installed the election's result: its run's stream ends FabricPrimaryMoved.
+    feed.send(InnerItem::Frame(BuildReply::FabricPrimaryMoved { build_id: r.build.to_string(), fabric_primary: Some("mesh1.admin.2".into()) })).unwrap();
     let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends on the executor's new-seat frame").unwrap();
-    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("no longer holds the fabric-primary seat: the written seat row moved it")), "the fence ends the drive SeatLost: {end:?}");
+    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("is no longer the fabric-primary: ")), "the fence ends the drive SeatLost: {end:?}");
     match next_within(&mut reader).await {
         Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the executor the transfer seated: {loss:?}"),
         other => panic!("the reader ends with the seat loss, got {other:?}"),

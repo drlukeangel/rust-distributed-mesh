@@ -414,7 +414,7 @@ async fn rendered(refusal: Refusal) -> serde_json::Value {
 /// Build and claims it on mesh2's rows (`(build_id, mesh2, attempt)`, decided by mesh2's
 /// mesh-primary, won); the node.create's attempt in mesh1 is untouched and still running. Must NOT
 /// happen: the recovery refused because a Build runs in another mesh (`BuildInProgress`), or
-/// refused because the submitter is not the fabric-primary (`NotAuthority`).
+/// refused because the submitter is not the fabric-primary (`NotPrimary`).
 #[tokio::test]
 async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_runs_in_mesh1() {
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();

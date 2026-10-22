@@ -41,7 +41,7 @@ pub struct TopologyDoor {
 }
 
 /// Whether the node holds a recorded seat holder's exact birth as proven gone.
-pub type GoneSource = Arc<dyn Fn(&rdm_core::SeatHolder) -> bool + Send + Sync>;
+pub type GoneSource = Arc<dyn Fn(&rdm_core::Primary) -> bool + Send + Sync>;
 
 /// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
 /// it stored for each mesh.
@@ -111,9 +111,9 @@ impl TopologyDoor {
             unchanged = tracing::field::Empty,
             stored = tracing::field::Empty,
             stored_nodes = tracing::field::Empty,
-            seats = tracing::field::Empty,
+            primaries = tracing::field::Empty,
             rafka_time_ms = tracing::field::Empty,
-            seat = tracing::field::Empty,
+            kind = tracing::field::Empty,
             bytes = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -193,34 +193,33 @@ impl TopologyDoor {
                 }
                 answered += 1;
             }
-            // The seat records this node holds: who holds the fabric seat, each mesh's and each other
-            // cohort's, so the reader computes no seat before it knows them (ruling R-A2).
-            let mut records: Vec<(rdm_core::Seat, rdm_core::SeatHolder)> = self.membership.seats().meshes().into_values().map(|h| (rdm_core::Seat::MeshPrimary, h)).collect();
-            records.extend(self.membership.seats().cohorts().into_iter().map(|((_, kind), h)| (rdm_core::Seat::Cohort(kind), h)));
-            records.extend(self.membership.seats().fabric().map(|h| (rdm_core::Seat::FabricPrimary, h)));
-            let seat_records = records.len() as u64;
-            for (seat, holder) in records {
-                let gone = self.gone.as_ref().is_some_and(|g| g(&holder));
-                let r = TopologyReply::Seats { seat, holder, gone };
+            // The recorded primaries this node holds: the fabric-primary and each mesh's mesh-primary, an
+            // election input the reader holds before it computes any (elections §3).
+            let mut records: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary)> = self.membership.seats().meshes().into_values().map(|h| (rdm_core::topology::PrimaryKind::MeshPrimary, h)).collect();
+            records.extend(self.membership.seats().fabric().map(|h| (rdm_core::topology::PrimaryKind::FabricPrimary, h)));
+            let primary_records = records.len() as u64;
+            for (kind, primary) in records {
+                let gone = self.gone.as_ref().is_some_and(|g| g(&primary));
+                let r = TopologyReply::Primaries { kind, primary, gone };
                 bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                 if let Err(e) = sink.data(r).await {
                     span.record("outcome", format!("caller-gone: {e:?}").as_str());
                     return TopologyReply::End { meshes: answered };
                 }
             }
-            // The rafka-time this node adopted and the seat it holds, read from its own seat
-            // records: the puller applies its own rule to the pair (`rafka_time::adopt_pulled`).
+            // The rafka-time this node adopted and which primary it is, read from the primaries it
+            // holds: the puller applies its own rule to the pair (`rafka_time::adopt_pulled`).
             let time_ms = self.time.try_now_ms().unwrap_or(time_ms);
-            let seat = crate::rafka_time::seat_held(self.membership.seats(), &me.node.name.mesh, &me.node.node_id);
-            let r = TopologyReply::RafkaTime { ms: time_ms, seat };
+            let kind = crate::rafka_time::primary_held(self.membership.seats(), &me.node.name.mesh, &me.node.node_id);
+            let r = TopologyReply::RafkaTime { ms: time_ms, kind };
             bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
             if let Err(e) = sink.data(r).await {
                 span.record("outcome", format!("caller-gone: {e:?}").as_str());
                 return TopologyReply::End { meshes: answered };
             }
             span.record("rafka_time_ms", time_ms);
-            span.record("seat", seat.map_or("none", rdm_core::Seat::name));
-            span.record("seats", seat_records);
+            span.record("kind", kind.map_or("none", rdm_core::topology::PrimaryKind::name));
+            span.record("primaries", primary_records);
             span.record("stored", stored_meshes);
             span.record("meshes", answered);
             span.record("snapshots", snapshots);
@@ -261,7 +260,7 @@ pub struct TopologyRead {
     /// installed and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
     /// The seat records the target holds, in the order it sent them.
-    pub seats: Vec<(rdm_core::Seat, rdm_core::SeatHolder, bool)>,
+    pub seats: Vec<(rdm_core::Seat, rdm_core::Primary, bool)>,
     /// The rafka-time the target served and the seat it held when it served it. Every accepted
     /// read carries it.
     pub rafka_time: Option<ServedTime>,
@@ -272,8 +271,8 @@ pub struct TopologyRead {
 pub struct ServedTime {
     /// The target's rafka-time in milliseconds.
     pub ms: u64,
-    /// The seat the target held, `None` for a replica.
-    pub seat: Option<rdm_core::Seat>,
+    /// Which primary the target was, `None` for none.
+    pub kind: Option<rdm_core::topology::PrimaryKind>,
 }
 
 impl TopologyRead {
@@ -283,7 +282,7 @@ impl TopologyRead {
     pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
         let puller = crate::rafka_time::Puller::of(membership.seats(), mesh, node_id);
-        crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, seat: served.seat }).map_err(TimeNotAdopted::Refused)
+        crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, kind: served.kind }).map_err(TimeNotAdopted::Refused)
     }
 }
 
@@ -465,8 +464,11 @@ async fn read_with(
                 Some(m) => m.nodes.extend(nodes),
                 None => read.stored.push(StoredMesh { mesh, mesh_id, nodes }),
             },
-            StreamItem::Frame(_, TopologyReply::Seats { seat, holder, gone }) => read.seats.push((seat, holder, gone)),
-            StreamItem::Frame(_, TopologyReply::RafkaTime { ms, seat }) => read.rafka_time = Some(ServedTime { ms, seat }),
+            StreamItem::Frame(_, TopologyReply::Primaries { kind, primary, gone }) => read.seats.push((match kind {
+                rdm_core::topology::PrimaryKind::MeshPrimary => rdm_core::Seat::MeshPrimary,
+                rdm_core::topology::PrimaryKind::FabricPrimary => rdm_core::Seat::FabricPrimary,
+            }, primary, gone)),
+            StreamItem::Frame(_, TopologyReply::RafkaTime { ms, kind }) => read.rafka_time = Some(ServedTime { ms, kind }),
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),

@@ -69,8 +69,8 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
     ] {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
         let (want_op, kind) = match &original {
-            Frame::NodeConnectionsDeleting { op, .. } => (op.clone(), 10u8),
-            Frame::NodeConnectionsDeleted { op, .. } => (op.clone(), 13),
+            Frame::NodeConnectionsDeleting { op, .. } => (op.clone(), 9u8),
+            Frame::NodeConnectionsDeleted { op, .. } => (op.clone(), 12),
             _ => unreachable!(),
         };
         assert_eq!(forwarded.type_position(), kind);

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// A primary seat. The discriminants are the wire positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Seat {
-    /// The node-admin primary of one mesh (named by [`SeatHolder::mesh`]).
+    /// The node-admin primary of one mesh (named by [`Primary::mesh`]).
     MeshPrimary,
     /// The fabric primary: a mesh primary that also holds the fabric's control.
     FabricPrimary,
@@ -50,25 +50,27 @@ impl Seat {
     }
 }
 
-/// The holder of a seat: the exact birth, the mesh it belongs to, and the revision of the record.
+/// A primary as it is recorded (`is_primary`, `is_fabric_primary` at its revision) and as the topology
+/// answers it (node-rpc-envelope.md `Primary`): the exact birth, the mesh it belongs to and the revision
+/// of the record. The election's result; the record does not grant the role.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SeatHolder {
-    /// The mesh the holder belongs to.
+pub struct Primary {
+    /// The mesh the primary belongs to.
     pub mesh: String,
-    /// The holder's node.
+    /// The primary's node.
     pub node_id: NodeId,
-    /// The holder's exact birth.
+    /// The primary's exact birth.
     pub incarnation: IncarnationId,
     /// The record's revision: a later revision supersedes an earlier one.
     pub revision: u64,
 }
 
-impl SeatHolder {
+impl Primary {
     /// Whether this record replaces `held`: a later revision, or the same revision announced by a
     /// different birth with the lower NodeId (two births that took the same vacancy at once; the
     /// order is the one every election uses, so every observer settles on the same one). The same
     /// record again, or an older one, replaces nothing.
-    pub fn supersedes(&self, held: &SeatHolder) -> bool {
+    pub fn supersedes(&self, held: &Primary) -> bool {
         if self.revision != held.revision {
             return self.revision > held.revision;
         }
@@ -81,23 +83,19 @@ impl SeatHolder {
     }
 }
 
-impl std::fmt::Display for SeatHolder {
+impl std::fmt::Display for Primary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}@{} (revision {})", self.mesh, self.node_id, self.incarnation, self.revision)
     }
 }
 
-/// The seat update's own wire types (the approved proposal node-primary-update-fabric-mesh-and-node-type.md,
-/// Part C3 edits 5 and 6: node.primary.update on op `0x21`, and the "primary updating" and "primary
-/// updated" gossip frames): the shapes the 0x21 family and the `PrimaryUpdating` / `PrimaryUpdated`
-/// frames carry, in the doc's field order and enum positions. They convert to and from the seat records ([`super::Seat`], [`SeatHolder`]) at the
-/// edges; nothing else reads them.
+/// The exact birth `TakeOverFabricPrimary` names on op `0x21`, and the seat names of the `seat-move/1`
+/// rows an older store root holds, decoded and never written (durable-format rule).
 pub mod transfer {
-    use super::SeatHolder;
     use crate::ids::{IncarnationId, NodeId};
     use serde::{Deserialize, Serialize};
 
-    /// An exact birth named by a handover or a seat transfer: its mesh, node and incarnation.
+    /// An exact birth: its mesh, node and incarnation.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct HandoverBirth {
         /// The mesh the birth belongs to.
@@ -108,7 +106,7 @@ pub mod transfer {
         pub incarnation: IncarnationId,
     }
 
-    /// A seat as a transfer names it. The discriminants are the wire positions.
+    /// A seat as a `seat-move/1` row names it. The discriminants are its positions.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub enum Seat {
         /// The fabric primary.
@@ -150,43 +148,14 @@ pub mod transfer {
         }
     }
 
-    /// One seat a transfer committed: the seat, its committed holder's exact birth and the revision.
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub struct CommittedSeat {
-        /// The seat that moved.
-        pub seat: Seat,
-        /// Its committed holder.
-        pub holder: HandoverBirth,
-        /// The revision the transfer committed.
-        pub revision: u64,
-    }
-
-    impl CommittedSeat {
-        /// The written seat of the record `holder` holds for `seat`.
-        pub fn of(seat: super::Seat, holder: &SeatHolder) -> Self {
-            Self { seat: Seat::of(seat, &holder.mesh), holder: HandoverBirth { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation.clone() }, revision: holder.revision }
-        }
-        /// The seat record it commits.
-        pub fn record(&self) -> SeatHolder {
-            SeatHolder { mesh: self.holder.mesh.clone(), node_id: self.holder.node_id.clone(), incarnation: self.holder.incarnation.clone(), revision: self.revision }
-        }
-        /// The mesh the record is keyed by: the seat's mesh for a mesh primary or a cohort's, none for
-        /// the fabric's.
-        pub fn mesh_key(&self) -> Option<&str> {
-            match &self.seat {
-                Seat::MeshPrimary { mesh } | Seat::Cohort { mesh, .. } => Some(mesh),
-                Seat::FabricPrimary => None,
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn holder(node: &str, inc: &str, revision: u64) -> SeatHolder {
-        SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId::parse(&crate::ids::fixture_crockford60(inc)).unwrap(), revision }
+    fn holder(node: &str, inc: &str, revision: u64) -> Primary {
+        Primary { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId::parse(&crate::ids::fixture_crockford60(inc)).unwrap(), revision }
     }
 
     #[test]

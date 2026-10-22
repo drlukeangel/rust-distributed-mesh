@@ -574,7 +574,7 @@ impl Estate {
     }
 
     /// A Build stream to its `Complete`, followed by the client's watcher ([`rdm_client::follow_with`]):
-    /// a stream that breaks (its connection closed) or ends `SeatMoved` (a planned fabric-primary
+    /// a stream that breaks (its connection closed) or ends `FabricPrimaryMoved` (a planned fabric-primary
     /// handover) is reattached by its build id from the attempt it carried, at the seat the carrier
     /// reaches now. A failed Build or a reattachment refused is a defect of the cell, named.
     pub async fn follow(&self, stream: BuildStream) -> Reconciled {
@@ -606,7 +606,7 @@ impl Estate {
         }
     }
 
-    /// The stream's frames to `Complete`, or to the `SeatMoved` that ends it (the frames read and the
+    /// The stream's frames to `Complete`, or to the `FabricPrimaryMoved` that ends it (the frames read and the
     /// new seat the old one named).
     async fn read_to_end(stream: &mut BuildStream) -> Result<Reconciled, (Vec<BuildFrame>, Option<String>)> {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
@@ -617,7 +617,7 @@ impl Estate {
             match frame {
                 BuildFrame::Complete { .. } => return Ok(Reconciled { build_id, attempt, frames }),
                 BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("Build {build_id} attempt {attempt} failed at {operation} {step}: {reason}"),
-                BuildFrame::SeatMoved { fabric_primary } => return Err((frames, fabric_primary)),
+                BuildFrame::FabricPrimaryMoved { fabric_primary } => return Err((frames, fabric_primary)),
                 _ => {}
             }
         }

@@ -472,14 +472,11 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
     plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &[], None)
 }
 
-/// The re-created node-admin the fabric seat is owed back to (elections §4.3: "Once that admin is Ready,
-/// the fabric-primary hands the seat back to it by the committed handover of §4.4, naming it as the
-/// successor"): the fabric seat's latest committed move on the store root is the takeover `taken`
-/// (`crate::fabric_storage::fabric_seat_taken_from`: its `t`, the lost birth and the holder it seated),
-/// and the node at the lost birth's path.name, or that mesh's primary, is a ReadyForTraffic node-admin
-/// other than that holder. Whether it is still owed is read from the written seat move, never from
-/// the observed view (Q104): `None` once a later move committed (the hand-back's row), and for a
-/// fabric seat no takeover moved.
+/// The re-created node-admin the fabric-primary is owed back to (fabric-recovery.md step 4): `taken` is
+/// the take-over this admin made (its `t`, the lost birth and the fabric-primary it made), held while
+/// the hand-back is owed (`fabric_handover::TakenOver`, cleared once a node.fabric-primary.update from
+/// this admin succeeds), and the node at the lost birth's path.name, or that mesh's primary, is a
+/// ReadyForTraffic node-admin other than that fabric-primary. `None` with no take-over held.
 pub fn handback_due(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>) -> Option<PathName> {
     let (_, lost, holder) = taken?;
     // The node at the lost fabric-primary's path.name (Q89): the lost birth itself, heard again and
@@ -976,8 +973,8 @@ mod tests {
         assert_eq!(handback_due(&o, Some(&taken), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "owed to mesh1's re-created, Ready primary");
         assert_eq!(handback_due(&o, None, None), None, "no takeover moved the seat");
         assert_eq!(handback_due(&view(P, true), Some(&taken), None), None, "the re-created admin is still Pending");
-        assert_eq!(handback_due(&view(R, false), None, None), None, "the seat is back in mesh1: the store's latest fabric seat move is the hand-back's row, no takeover");
-        assert_eq!(handback_due(&view(R, false), Some(&taken), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "a view naming mesh1's admin the fabric-primary decides nothing: the store's takeover row does (Q104)");
+        assert_eq!(handback_due(&view(R, false), None, None), None, "the fabric-primary is back in mesh1: the hand-back cleared the take-over");
+        assert_eq!(handback_due(&view(R, false), Some(&taken), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "a view naming mesh1's admin the fabric-primary decides nothing: the take-over this admin holds does");
         let as_lost = (taken.0, rdm_core::handover::HandoverBirth { node_id: o.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone(), ..taken.1.clone() }, taken.2.clone());
         assert_eq!(handback_due(&o, Some(&as_lost), None).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "the lost birth itself, returned and Ready at its path.name, is owed the seats back (Q89)");
         let cur = t(&[("mesh1", 1, 1), ("mesh2", 1, 1)]);

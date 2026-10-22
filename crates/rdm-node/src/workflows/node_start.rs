@@ -35,7 +35,7 @@
 //! The rafka-time refresh reads the authority's `GetTopology` naming a mesh the topology step installed
 //! at the version it installed (an `Unchanged` answer carrying `RafkaTime`; an authority that answered
 //! no snapshot is read whole again), and installs nothing: op `0x1E` is the read that carries
-//! rafka-time to a started node (`rafka_time.rs`, the seat-move pull reads it the same way).
+//! rafka-time to a started node (`rafka_time.rs`, the pull when the fabric-primary moved reads it the same way).
 
 use crate::before_ready::{AcceptingAuthority, Authority, Birth, End, Events, HookDriver, BeforeReadyCtx, BeforeReadyHook, BeforeReadyHandle, NoAuthority, StartKind, Step};
 use crate::model::{NodeId, PathName};

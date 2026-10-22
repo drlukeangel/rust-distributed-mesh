@@ -30,7 +30,7 @@ use crate::wiring::{FabricHooks, StateSyncRound, SyncState};
 use rdm_transport::membership::{Announced, DigestBook};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use rdm_core::MemberStatus;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -1174,7 +1174,7 @@ impl FabricRounds {
     #[allow(clippy::too_many_arguments)]
     async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() });
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
         let me_name = self.held_name_in(view);
         // Answered by the admin the call reached (R-RX5: no receiver refuses a downward call for the
@@ -1191,7 +1191,7 @@ impl FabricRounds {
             return rdm_core::reply::status::not_ready(format!("{me_name}: {} names operation {}, the round's is {want}", req.op(), op.operation));
         }
         if me.is_fabric_primary {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("a mesh-primary the fabric-primary commands, or a member of a mesh: {me_name} holds the fabric seat and carries {} down", req.op()) });
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("a mesh-primary the fabric-primary commands, or a member of a mesh: {me_name} holds the fabric seat and carries {} down", req.op()) });
         }
         if me.is_primary {
             // This admin is a mesh primary: it runs its mesh's round and reports to the fabric-primary.
@@ -1227,11 +1227,11 @@ impl FabricRounds {
     /// its mesh's primary.
     fn serve_up(&self, view: &Topology, req: &StatusRequest, op: &RoundOp<'_>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() });
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
         let me_name = self.held_name_in(view).to_string();
         let Some(subject) = view.births().find(|n| n.node_id == *op.node_id) else {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         };
         let held = Some((subject.incarnation_id.as_ref(), subject.name.to_string()));
         let held = held.as_ref().map(|(i, n)| (*i, n.as_str()));
@@ -1242,7 +1242,7 @@ impl FabricRounds {
         } else if me.is_primary && subject.mesh == me.mesh && subject.node_id != me.node_id {
             self.mesh_book.check_in(&me_name, held, req)
         } else {
-            rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) })
+            rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) })
         }
     }
 }
@@ -1756,7 +1756,7 @@ mod tests {
         for admitted in [StatusReply::Applied, StatusReply::AlreadyApplied] {
             assert!(matches!(delivery_of(Some(&admitted), "Reply"), Delivery::Answered(_)), "{admitted:?}");
         }
-        let refusal = StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the mesh-primary of mesh1".into() } };
+        let refusal = StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "the mesh-primary of mesh1".into() } };
         assert!(matches!(delivery_of(Some(&refusal), "Reply"), Delivery::Undelivered { typed: true, .. }), "a refusal by name is undelivered, typed");
         let not_ready = StatusReply::NotReady { reason: "authority not filled".into() };
         assert!(matches!(delivery_of(Some(&not_ready), "Reply"), Delivery::Undelivered { typed: true, .. }));
@@ -1896,6 +1896,8 @@ mod tests {
             config: Default::default(),
             load: None,
             gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
         }
     }
 

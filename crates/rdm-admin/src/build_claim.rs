@@ -10,9 +10,9 @@
 //! its in-flight row on the store root (`crate::mesh_claims`, one attempt in flight per mesh), then
 //! the claim key `(build_id, mesh, attempt)` is an insert-and-fail on the claimant's Build log. The
 //! door is also served on `BuildClaim` (op `0x1C`) for a caller that puts a claim over Node RPC; the
-//! product has no such caller. An admin whose committed fabric seat record names another birth
-//! decides no fabric-lane claim; one whose mesh seat record names another birth decides no claim of
-//! that mesh's drift lane.
+//! product has no such caller. An admin whose view names another birth fabric-primary decides no
+//! fabric-lane claim; one whose view names another birth its mesh-primary decides no claim of that
+//! mesh's drift lane.
 //!
 //! Context is attempt-scoped. The fabric-primary keeps one [`CallContext`] per `(build_id,
 //! attempt)` on its Build log ([`AttemptContexts`]; the file backend keeps it in its own data dir,

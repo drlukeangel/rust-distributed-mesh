@@ -119,7 +119,17 @@ pub struct MeshDigest {
     /// Hash of this birth's joined app types; the list is read with node.get.
     #[serde(default)]
     pub held_hash: [u8; 32],
-
+    /// The revision at which this birth is its node type's primary in its mesh (`is_primary`), when it
+    /// is (gossip.md "A primary change on gossip"): on its own digest, the election's result it
+    /// installed; on a member of its mesh-primary's `Members` projection, the primary recorded on the
+    /// node's row. A node that hears it installs a member fact, never a primary by advertisement: the
+    /// election decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<u64>,
+    /// The revision at which this birth is the fabric-primary (`is_fabric_primary`), when it is, as
+    /// [`Self::is_primary`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_fabric_primary: Option<u64>,
 }
 
 /// One birth's view of its own mesh channel, sampled when it publishes its digest.

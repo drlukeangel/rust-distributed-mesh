@@ -466,17 +466,17 @@ fn store_layout_wire_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
     t.edit("crates/rdm-admin/src/fabric_storage.rs", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/2\";");
     only(check(t.root()), Ratchet::StoreLayoutWireIsAtomic);
     let k = Planted::of_tree();
-    k.edit("crates/rdm-admin/src/build_state.rs", "format!(\"{seq:020}\")", "format!(\"{seq:016}\")");
+    k.edit("crates/rdm-admin/src/build_state.rs", "BuildFact::Accepted(_) => \"accepted\".to_string(),", "BuildFact::Accepted(_) => \"acceptance\".to_string(),");
     only(check(k.root()), Ratchet::StoreLayoutWireIsAtomic);
     let f = Planted::of_tree();
-    f.edit("crates/rdm-admin/src/build_lanes.rs", "fn the_store_layout_is_frozen_byte_for_byte", "fn changed_store_layout_cell");
+    f.edit("crates/rdm-admin/src/build_state.rs", "fn the_store_layout_is_frozen_byte_for_byte", "fn changed_store_layout_cell");
     only(check(f.root()), Ratchet::StoreLayoutWireIsAtomic);
 }
 
 #[test]
 fn handover_wire_refuses_a_moved_position_or_a_lost_golden() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/handover.rs", "const REPLY_VARIANTS: u32 = 18;", "const REPLY_VARIANTS: u32 = 19;");
+    t.edit("crates/rdm-core/src/handover.rs", "const REPLY_VARIANTS: u32 = 13;", "const REPLY_VARIANTS: u32 = 14;");
     only(check(t.root()), Ratchet::PrimaryUpdateWireIsAtomic);
     let f = Planted::of_tree();
     f.edit("crates/rdm-core/tests/handover_wire.rs", "fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "fn changed_failed_primary_update_cell");

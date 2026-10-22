@@ -130,7 +130,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE).cloned().expect("the restart's node update");
     let opened = attempt_of(&accepted);
     let seat_move = if holder {
-        let moved = named(&spans, "rdm.node_admin.seat.update.via-primary-update")
+        let moved = named(&spans, "rdm.node_admin.primary.update.via-command")
             .into_iter()
             .filter(of_build)
             .find(|sp| attempt_of(sp) == opened && s(&sp["attributes"]["operation"]).ends_with(&format!(":{opened}:node.restart:{NODE}")))

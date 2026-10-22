@@ -18,7 +18,7 @@ use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::status::{FabricEvent, MeshState, NodeState, NotPrimary, Status, StatusReply, StatusRequest};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -270,7 +270,7 @@ async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
     // A subject the view does not hold at all.
     let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
     let r = reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await);
-    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+    assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
     // A stale birth: the view holds a newer incarnation of the subject.
     let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic, operation: None };
     assert_eq!(reply(&call(&rig, rpc1, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
@@ -278,13 +278,13 @@ async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
     rig.topology.write().await.nodes.push(foreign.node.clone());
     let r = reply(&call(&rig, &foreign, &declare(&foreign, NodeState::ReadyForTraffic)).await);
-    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
+    assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
     // A node-admin declares to its own mesh's primary (this admin is mesh1's): Applied.
     assert_eq!(reply(&call(&rig, admin2, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
     // A node-admin of another mesh is refused by the seat it needs, its own mesh's primary, though
     // this admin holds the fabric seat (node-status.md: "A node reports to its mesh's primary").
     let r = reply(&call(&rig, m2admin, &declare(m2admin, NodeState::ReadyForTraffic)).await);
-    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
+    assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
 }
 
 /// CONTRACT: nothing inside the mesh checks who is calling (node-rpc.md §14; node-rpc-envelope.md,
@@ -311,14 +311,14 @@ async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_
     let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, &stranger, &m2).await), StatusReply::Applied);
     // The direction refusals stay.
-    assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
     let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
-    assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a mesh the fabric-primary does not hold");
+    assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a mesh the fabric-primary does not hold");
     let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: None };
     assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
     rig.topology.write().await.nodes.push(foreign.node.clone());
-    assert_eq!(reply(&call(&rig, &stranger, &declare(&foreign, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&foreign, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -336,7 +336,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     assert_eq!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::AlreadyApplied);
     let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
-    assert_eq!(reply(&call(&rig, m2admin, &unknown).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+    assert_eq!(reply(&call(&rig, m2admin, &unknown).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
     // A fabric event is applied at a mesh primary (this admin is mesh1's), whoever sends it, once.
     let ev = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: FabricEvent::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::Applied);
@@ -347,7 +347,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     // mesh1's; mesh2's Pending is not its to apply, mesh1's is, and a foreign mesh id is refused.
     let pend = |id: &MeshId, name: &str| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: name.into(), state: MeshState::Pending };
     let (m1id, m2id, other) = (rig.mesh_id("mesh1"), rig.mesh_id("mesh2"), MeshId::mint());
-    assert!(matches!(reply(&call(&rig, m2admin, &pend(&m2id, "mesh2")).await), StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
+    assert!(matches!(reply(&call(&rig, m2admin, &pend(&m2id, "mesh2")).await), StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }));
     assert_eq!(reply(&call(&rig, m2admin, &pend(&other, "mesh1")).await), StatusReply::RejectedStaleMesh { held: m1id.clone() }, "never a replacement mesh id");
     assert_eq!(reply(&call(&rig, m2admin, &pend(&m1id, "mesh1")).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, rpc1, &pend(&m1id, "mesh1")).await), StatusReply::AlreadyApplied, "the Pending is decided for the mesh it names, whoever sends it");
@@ -430,7 +430,7 @@ async fn a_connections_deleting_authority_accepts_upward_status_and_decides_it_f
     let for_another = declare(&b["rpc1"], NodeState::Stopped);
     assert_eq!(reply(&call(&rig, &b["rpc2"], &for_another).await), StatusReply::AlreadyApplied, "decided for rpc.1, whoever sends it");
     let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
-    assert_eq!(reply(&call(&rig, &b["rpc2"], &declare(&stranger, NodeState::Stopped)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+    assert_eq!(reply(&call(&rig, &b["rpc2"], &declare(&stranger, NodeState::Stopped)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
 }
 
 /// A birth of the fixture serving Status on its own key, recording every request it decodes and
@@ -778,7 +778,7 @@ async fn door_at(key: &SecretKey, node: &ServedNode) -> rdm_admin::node_config::
 /// record → the node): a config update for mesh2.rpc.1 sent to the fabric-primary (mesh1's primary)
 /// is refused by name, `ReceiverNotPrimary` naming mesh2's primary node-admin; no row is written and
 /// nothing is told. The same update at mesh2's primary writes the row and tells the birth directly,
-/// once, and ends `ConfigUpdated`. Two via-config spans: `rejected-not-authority` at mesh1.admin.1,
+/// once, and ends `ConfigUpdated`. Two via-config spans: `rejected-not-primary` at mesh1.admin.1,
 /// `config-updated` at mesh2.admin.1.
 #[test]
 fn a_config_update_is_refused_by_name_at_the_fabric_primary_and_written_by_the_nodes_mesh_primary() {
@@ -794,7 +794,7 @@ fn a_config_update_is_refused_by_name_at_the_fabric_primary_and_written_by_the_n
         let req = StatusRequest::UpdateNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config: config.clone() };
         // At the fabric-primary, over the wire: refused by name.
         let refused = reply(&call(&rig, admin2, &req).await);
-        let StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } = &refused else { panic!("the fabric-primary is not mesh2's writer: {refused:?}") };
+        let StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } = &refused else { panic!("the fabric-primary is not mesh2's writer: {refused:?}") };
         assert!(needed.contains("mesh2") && needed.contains("mesh2.admin.1"), "the refusal names mesh2's primary node-admin: {needed}");
         assert!(rig.nodes.node_row_at(&m2rpc.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
         assert!(node.seen.lock().unwrap().is_empty(), "nothing is told by an admin that is not the writer");
@@ -816,11 +816,11 @@ fn a_config_update_is_refused_by_name_at_the_fabric_primary_and_written_by_the_n
     assert_eq!(spans.len(), 2, "{spans:?}");
     let at = |n: &str| spans.iter().find(|(_, a)| a.get("node").map(String::as_str) == Some(n)).unwrap_or_else(|| panic!("a via-config span at {n}: {spans:?}"));
     let (fp_trace, fp) = at("mesh1.admin.1");
-    assert_eq!(fp.get("outcome").map(String::as_str), Some("rejected-not-authority"), "{fp:?}");
+    assert_eq!(fp.get("outcome").map(String::as_str), Some("rejected-not-primary"), "{fp:?}");
     let (mp_trace, mp) = at("mesh2.admin.1");
     assert_eq!(mp.get("outcome").map(String::as_str), Some("config-updated"), "{mp:?}");
     assert_eq!(mp.get("subject").map(String::as_str), Some("mesh2.rpc.1"), "{mp:?}");
-    eprintln!("trace {fp_trace}: rdm.node_admin.node.update.via-config node=mesh1.admin.1 subject=mesh2.rpc.1 outcome=rejected-not-authority");
+    eprintln!("trace {fp_trace}: rdm.node_admin.node.update.via-config node=mesh1.admin.1 subject=mesh2.rpc.1 outcome=rejected-not-primary");
     eprintln!("trace {mp_trace}: rdm.node_admin.node.update.via-config node=mesh2.admin.1 subject=mesh2.rpc.1 outcome=config-updated");
 }
 
@@ -2123,12 +2123,12 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }
 
-/// CONTRACT (node-rpc-envelope.md Status: "`RejectedNotAuthority` says the receiver is not the
+/// CONTRACT (node-rpc-envelope.md Status: "`RejectedNotPrimary` says the receiver is not the
 /// authority for the call: ... `SubjectUnknown` when the receiver does not hold the subject at all.
 /// ... a caller-side `PeerUnresolved` likewise [keeps its codec position and a mesh receiver never
 /// sends it]"; node-rpc.md §14): mesh1's primary asked to put the config of, put the record of, or
 /// delete the connections of a node its view does not hold, or of a node whose birth it does not
-/// know, answers `RejectedNotAuthority { SubjectUnknown }` each time: the fact is the receiver's own.
+/// know, answers `RejectedNotPrimary { SubjectUnknown }` each time: the fact is the receiver's own.
 /// Must NOT happen: `PeerUnresolved`, which names a peer the caller could not resolve.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_never_peer_unresolved() {
@@ -2149,7 +2149,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
         ];
         for req in requests {
             let got = reply(&call(&rig, caller, &req).await);
-            assert_eq!(got, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "{case}: {} answers the receiver's own fact", req.op());
+            assert_eq!(got, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "{case}: {} answers the receiver's own fact", req.op());
         }
     }
 }
@@ -2316,7 +2316,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         assert!(membership.book.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
+            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
         let (sd, cd) = (server_delivery.clone(), caller_delivery.clone());
@@ -2469,7 +2469,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         assert!(membership.book.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
+            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
         let (sd, cd) = (server_delivery.clone(), caller_delivery.clone());
@@ -2539,7 +2539,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         assert!(book.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
-            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
+            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         // The birth's stop: its Stopped row, and the book's stop of it.
         let stop = rdm_core::LifecycleOp { node_id: rpc.node.node_id.clone(), incarnation: incarnation.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: format!("node.stop:{}", rpc.node.name), event_at_rafka_ms: 1 };

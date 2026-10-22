@@ -12,7 +12,7 @@
 use rdm_core::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotPrimary, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
 use rdm_core::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -112,7 +112,7 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
         (RejectedStaleIncarnation { held: birth() }, "040c397763707266677776746879"),
         (RejectedStaleMesh { held: mesh() }, "050c313132333435363738396162"),
         (RejectedStaleFabric { held: fabric() }, "060c323132333435363738396162"),
-        (RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "peer-path".into() } }, "070109706565722d70617468"),
+        (RejectedNotPrimary { why: NotPrimary::SenderNotSubject { sender: "peer-path".into() } }, "070109706565722d70617468"),
         (RejectedInvalidNodeTransition { current: NodeState::Stopped }, "0803"),
         (RejectedInvalidMeshTransition { current: MeshState::Dead }, "0903"),
         (PeerUnresolved { reason: "p".into() }, "0a0170"),
@@ -340,17 +340,17 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(Some(op), "010162020b6e6f64652e73746f703a6d");
     golden(FabricEvent::ReadyForTraffic, "00");
     golden(FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() }, "010d6d657368312e61646d696e2e31");
-    golden(NotAuthority::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");
-    golden(NotAuthority::SenderNotSubject { sender: "peer-path".into() }, "0109706565722d70617468");
-    golden(NotAuthority::SubjectUnknown, "02");
+    golden(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");
+    golden(NotPrimary::SenderNotSubject { sender: "peer-path".into() }, "0109706565722d70617468");
+    golden(NotPrimary::SubjectUnknown, "02");
     golden(MalformedKind::TooLarge, "00");
     golden(MalformedKind::UnknownVariant, "01");
     golden(MalformedKind::Corrupt, "02");
     golden(MalformedKind::TypesOverCap, "03");
-    golden(RetryOn::AuthorityChanged, "00");
+    golden(RetryOn::PrimaryChanged, "00");
     golden(RetryOn::TargetReachable { node_id: node() }, "010c303132333435363738396162");
-    golden(RetryOn::AuthorityReady, "02");
-    golden(RetryOn::AuthorityAddressed, "03");
+    golden(RetryOn::PrimaryReady, "02");
+    golden(RetryOn::PrimaryAddressed, "03");
     golden(ConnectionScope::All, "00");
     golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
     golden(NodeSelect::Id(node()), "000c303132333435363738396162");

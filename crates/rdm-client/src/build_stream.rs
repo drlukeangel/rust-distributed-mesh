@@ -105,7 +105,7 @@ pub enum BuildFrame {
     },
     /// Terminal of `build.create`: the fabric-primary seat moved while the Build ran (a planned
     /// handover). The Build goes on at the new seat; re-submit the same build id there.
-    SeatMoved {
+    FabricPrimaryMoved {
         /// The admin (path.name) that holds the seat now, when the old seat's view named one.
         fabric_primary: Option<String>,
     },
@@ -188,9 +188,9 @@ impl BuildStream {
                     self.ended = true;
                     return Some(Ok(BuildFrame::Deleted));
                 }
-                BuildReply::SeatMoved { fabric_primary, .. } => {
+                BuildReply::FabricPrimaryMoved { fabric_primary, .. } => {
                     self.ended = true;
-                    return Some(Ok(BuildFrame::SeatMoved { fabric_primary }));
+                    return Some(Ok(BuildFrame::FabricPrimaryMoved { fabric_primary }));
                 }
                 other => {
                     self.ended = true;
@@ -226,7 +226,7 @@ fn refusal(reply: BuildReply) -> CallEnd {
             mesh_primary.as_deref().unwrap_or("none seen")
         ),
         BuildReply::AttemptTaken { detail } => detail.clone(),
-        BuildReply::SeatYielded { node, by } => format!("{node} no longer holds the fabric-primary seat: the written seat row moved it ({by})"),
+        BuildReply::SeatYielded { node, by } => format!("{node} is no longer the fabric-primary: {by}"),
         BuildReply::CannotDelete { build_id, reason } => format!("Build {build_id} stays in history: {reason}"),
         BuildReply::PeerUnresolved { reason } | BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::ConnectionsDeleting { reason } | BuildReply::Unauthorized { reason } => reason.clone(),
         BuildReply::Malformed { kind } => format!("{kind:?}"),
@@ -246,7 +246,7 @@ fn refusal(reply: BuildReply) -> CallEnd {
 pub struct Followed {
     /// The frames, the terminal last.
     pub frames: Vec<BuildFrame>,
-    /// The reattachments made: one per stream that broke or ended `SeatMoved`.
+    /// The reattachments made: one per stream that broke or ended `FabricPrimaryMoved`.
     pub reattached: u32,
 }
 
@@ -263,7 +263,7 @@ pub struct Reattached {
 /// Follow `stream` to its terminal (build.md: "a live run is reattached, never re-claimed"; i146 Q22:
 /// the reattach after a `Budget::Stream` connection closes is the owner's). A stream that breaks
 /// before its terminal (its connection closed: `Indeterminate`), ends without one, or ends
-/// `SeatMoved` is reattached through `reattach` by its `build_id` from the attempt it carried: the
+/// `FabricPrimaryMoved` is reattached through `reattach` by its `build_id` from the attempt it carried: the
 /// receipts it reads are kept as step frames, each completed step once, then the stream it opens again
 /// is read on, a step it replays kept once. The terminal is `Complete`, `Failed`, `Got` or `Deleted`.
 /// `Err` is a reattachment refused or not made, named: nothing here waits or tries again on its own.
@@ -287,7 +287,7 @@ where
                     continue;
                 }
             }
-            let moved = matches!(frame, BuildFrame::SeatMoved { .. });
+            let moved = matches!(frame, BuildFrame::FabricPrimaryMoved { .. });
             let terminal = matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::Got { .. } | BuildFrame::Deleted);
             out.frames.push(frame);
             if terminal {
@@ -471,7 +471,7 @@ mod tests {
                     for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
                         sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "node.create:mesh1.admin.1".into(), step: step.into() }).await.map_err(gone)?;
                     }
-                    Ok(BuildReply::SeatMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
+                    Ok(BuildReply::FabricPrimaryMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
                 }
             })
             .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
@@ -499,6 +499,6 @@ mod tests {
         .await;
         let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: "node.create:mesh1.admin.1".into(), step: s.into() });
         assert!(read.is_ok(), "the stream delivered no terminal within 10 s; it delivered {got:?}");
-        assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::SeatMoved { fabric_primary: Some("mesh1.admin.2".into()) })]);
+        assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::FabricPrimaryMoved { fabric_primary: Some("mesh1.admin.2".into()) })]);
     }
 }

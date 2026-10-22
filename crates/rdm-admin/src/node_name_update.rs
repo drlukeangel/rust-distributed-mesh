@@ -25,7 +25,7 @@ use crate::topology::Topology;
 use rdm_core::ConnectionId;
 use rdm_client::{ExactBirth, NodeRpc};
 use rdm_transport::{CallOptions, NodeTarget, RouteChoice};
-use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
+use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
 
 /// What a mesh-primary's `node.name.update` acts through: the door its record changes take turns at
@@ -132,7 +132,7 @@ async fn rename(
     // peer that did not resolve.
     let Some(held) = now.nodes.iter().find(|n| n.node_id == *node_id).cloned() else {
         span.record("detail", format!("{me}: node {node_id} is not in the mesh-primary's view; it cannot be renamed").as_str());
-        return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+        return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
     };
     span.record("from", held.name.to_string().as_str());
     // 1. The exact birth.
@@ -140,7 +140,7 @@ async fn rename(
         Some(h) if h != incarnation => return rdm_core::reply::stale(h.clone()),
         None => {
             span.record("detail", format!("{me}: {} has no known birth; it cannot be renamed", held.name).as_str());
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         }
         Some(_) => {}
     }
@@ -149,7 +149,7 @@ async fn rename(
         let held_by = now.cohort_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", held.mesh, held.name);
         span.record("detail", needed.as_str());
-        return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
+        return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
     }
     // 3. The node is live, admits no connection and has left its mesh.
     let admission = admission_of(&held, deleted, left);

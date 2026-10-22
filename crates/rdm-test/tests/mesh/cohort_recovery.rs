@@ -57,7 +57,7 @@ async fn hand_fabric_seat_over(estate: &mut Estate, former: &str) -> String {
     estate.enter(&Estate::path(&successor)).await;
     let mut stream = estate.nodes_obj().await.stop(&Estate::path(former)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {former}: {e}"));
     let accepted = stream.accepted().clone();
-    if matches!(Estate::frames_of(&mut stream).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stream).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.until_node(&successor, &format!("{successor} holds the fabric seat {former} handed over"), Duration::from_secs(60), |n| n.filter(|n| n.is_fabric_primary).map(|_| ())).await;

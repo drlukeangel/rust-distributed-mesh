@@ -320,7 +320,7 @@ impl<'a> NodeRpc<'a> {
     /// reachable, executed exactly as chosen (`NodeRpcClient::call_routed`). `ConfigUpdated` is
     /// `node.config.updated`: the mesh-primary wrote the node's row and the birth applied the config.
     /// A config past its cap is `RejectedConfig`, naming the cap; an admin that is not the birth's
-    /// mesh-primary refuses `RejectedNotAuthority`, naming the seat.
+    /// mesh-primary refuses `RejectedNotPrimary`, naming the seat.
     pub async fn config_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
         let span = NodeOp::ConfigUpdate.span();
@@ -437,7 +437,7 @@ impl<'a> NodeRpc<'a> {
                     view.in_flight.extend(in_flight);
                     view.departed.extend(departed);
                 }
-                TopologyReply::Started | TopologyReply::End { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } => {}
+                TopologyReply::Started | TopologyReply::End { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } => {}
                 other => return Err(CallEnd::Indeterminate { code: <Topology as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code(), reason: format!("{} answered {other:?} to the topology read", target_name(target)) }),
             }
         }
@@ -483,22 +483,15 @@ impl<'a> NodeRpc<'a> {
         Ok(frames)
     }
 
-    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at
-    /// `holder` to move its mesh-primary seat (and the fabric-primary seat with it in the same row when
-    /// it holds both) to its same-mesh successor.
-    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        use rdm_core::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateRequest, Seat, SeatRevision};
-        let mesh = holder.mesh.clone();
+    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary at
+    /// `holder` to move its primary (and the fabric-primary with it when it is both) to the successor the
+    /// election names in its own view.
+    pub async fn primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
-            fabric: fabric.to_string(),
-            holder: HandoverBirth {
-                mesh: mesh.clone(),
-                node_id: NodeId::parse("100000000000").expect("valid syntactic placeholder; receiver judges by its own held seats (R-UC1a)"),
-                incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("primary-update")).expect("valid syntactic placeholder"),
-            },
-            seats: vec![SeatRevision { seat: Seat::MeshPrimary { mesh }, expected_revision: 0 }],
+            node_type: holder.node_type().to_string(),
             build_id: build_id.to_string(),
-            attempt,
+            run: attempt,
             operation: format!("node.primary.update:{build_id}:{attempt}:{holder}"),
         };
         let span = NodeOp::PrimaryUpdate.span();
@@ -512,23 +505,15 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` C2): command the
-    /// fabric-primary holder at `holder` to move the fabric-primary seat (searching its own mesh first
-    /// per C2 step 1 so both seats move together when a same-mesh secondary admin is ReadyForTraffic,
-    /// and falling back to another mesh's primary per C2 step 2 when none is).
-    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        use rdm_core::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatRevision};
-        let mesh = holder.mesh.clone();
+    /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
+    /// command the fabric-primary at `holder` to move the fabric-primary: its own mesh first, so both
+    /// move together when a same-mesh node-admin is ReadyForTraffic, else another mesh's mesh-primary.
+    pub async fn fabric_primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
-            fabric: fabric.to_string(),
-            holder: HandoverBirth {
-                mesh,
-                node_id: NodeId::parse("100000000000").expect("valid syntactic placeholder; receiver judges by its own held seats (R-UC1a)"),
-                incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("fabric-primary-update")).expect("valid syntactic placeholder"),
-            },
-            seats: vec![SeatRevision { seat: Seat::FabricPrimary, expected_revision: 0 }],
+            node_type: rdm_core::handover::FABRIC.to_string(),
             build_id: build_id.to_string(),
-            attempt,
+            run: attempt,
             operation: format!("node.fabric-primary.update:{build_id}:{attempt}:{holder}"),
         };
         let span = NodeOp::FabricPrimaryUpdate.span();

@@ -4,7 +4,7 @@
 //! A declaration reaches this admin over Node RPC (`Status`, op `0x1B`). Nothing inside the mesh
 //! checks who is calling (node-rpc.md §14): a declaration is decided for the subject the request
 //! names, as this admin's view holds it. The admin applies it only when it holds the seat the
-//! subject's declaration needs (`RejectedNotAuthority` names the receiver, never the caller),
+//! subject's declaration needs (`RejectedNotPrimary` names the receiver, never the caller),
 //! idempotently on the natural key, forward along the legal order, and answers what happened.
 //! `Applied` means the declared state is held in this admin's entity state and, for a node,
 //! written to `nodes.storage` as the subject's row.
@@ -16,7 +16,7 @@ use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId
 use crate::topology::Topology;
 use rdm_transport::{PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
-use rdm_core::status::{transition, DeclaredOperation, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
+use rdm_core::status::{transition, DeclaredOperation, FabricEvent, MeshState, NodeState, NotPrimary, Status, StatusReply, StatusRequest, Transition};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
@@ -483,7 +483,7 @@ pub enum Effect {
 pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
     let me = match view.own(&auth.node_id) {
         Some(n) => n,
-        None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() }), None),
+        None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() }), None),
     };
     let me_name = auth.held_name_in(view);
     match req {
@@ -498,20 +498,20 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                     watched = auth.durable.lock().unwrap().iter().find(|n| n.node_id == *node_id).cloned();
                     match watched.as_ref() {
                         Some(n) => n,
-                        None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None),
+                        None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
                     }
                 }
             };
             // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
             // which sets its status (node-status.md "Status report").
             if !(me.is_primary && me.mesh == subject.mesh) {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
             }
             // The exact birth: a declaration for an incarnation the view no longer holds is stale.
             match subject.incarnation_id.as_ref() {
                 Some(held) if held == incarnation => {}
                 Some(held) => return (rdm_core::reply::stale(held.clone()), None),
-                None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None),
+                None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
             }
             if let Some(operation) = operation {
                 let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
@@ -535,14 +535,14 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         StatusRequest::DeclareMeshState { mesh_id, state } => {
             if !me.is_fabric_primary {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "fabric-primary".into() }), None);
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "fabric-primary".into() }), None);
             }
             // The subject Mesh, as this holder knows it: an id its own Build created, else the id a
             // Mesh carries in the view. The fabric seat moves to whichever admin has the lowest node
             // id, which may hold a Mesh it never created.
             let held = (auth.mesh_ids)().values().any(|id| id == mesh_id) || view.meshes.iter().any(|m| m.id.as_ref() == Some(mesh_id));
             if !held {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None);
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None);
             }
             apply_mesh(declared, mesh_id, *state)
         }
@@ -558,13 +558,13 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
             if me.mesh != *mesh_name {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") }), None);
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") }), None);
             }
             // The mesh's primary writes its status (node-identity-and-state.md 4.3): an admin whose view
             // names another admin the mesh's primary is not the receiver. One whose view names none
             // yet is the admin the hand-off created, before its own seat shows in its view.
             if let Some(primary) = view.cohort_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) }), None);
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) }), None);
             }
             // Never a replacement mesh id to satisfy the operation.
             if let Some(held) = (auth.mesh_ids)().get(mesh_name) {
@@ -576,7 +576,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         StatusRequest::ApplyFabricEvent { fabric_id, event } => {
             if !me.is_primary {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "mesh-primary".into() }), None);
+                return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }), None);
             }
             if *fabric_id != auth.fabric_id {
                 return (rdm_core::reply::status::rejected_stale_fabric(auth.fabric_id.clone()), None);
@@ -714,18 +714,18 @@ impl StatusAuthority {
         let end = async {
             let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
                 tracing::Span::current().record("detail", format!("{me_name}: node {node_id} is not in the mesh-primary's view; it cannot be commanded off its mesh through it").as_str());
-                return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+                return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
             };
             tracing::Span::current().record("subject", subject.name.to_string().as_str());
             if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
-                return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) }));
+                return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) }));
             }
             match subject.incarnation_id.clone() {
                 Some(held) if held != *incarnation => return Ok(rdm_core::reply::stale(held)),
                 Some(_) => {}
                 None => {
                     tracing::Span::current().record("detail", format!("{me_name}: {} has no known birth; it cannot be commanded off its mesh", subject.name).as_str());
-                    return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+                    return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
                 }
             }
             let Some(configs) = self.configs.get() else {
@@ -908,10 +908,10 @@ impl StatusAuthority {
     /// call naming the birth held (R-RX5: the birth the call reached answers it).
     fn own_birth(&self, view: &Topology, incarnation: &IncarnationId) -> Result<crate::model::Node, StatusReply> {
         let Some(me) = view.own(&self.node_id) else {
-            return Err(rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() }));
+            return Err(rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() }));
         };
         match me.incarnation_id.as_ref() {
-            None => Err(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown)),
+            None => Err(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown)),
             Some(held) if held != incarnation => Err(rdm_core::reply::stale(held.clone())),
             Some(_) => Ok(me.clone()),
         }
@@ -971,10 +971,10 @@ impl StatusAuthority {
     /// node id it names); another incarnation is refused naming the one held.
     async fn read_connections(&self, view: &Topology, incarnation: &IncarnationId) -> StatusReply {
         let Some(me) = view.own(&self.node_id) else {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() });
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
         match me.incarnation_id.as_ref() {
-            None => return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown),
+            None => return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown),
             Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
             Some(_) => {}
         }
@@ -1300,18 +1300,18 @@ impl StatusAuthority {
             // a peer that did not resolve.
             let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
                 tracing::Span::current().record("detail", format!("{me_name}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it").as_str());
-                return CarryEnd::Refused(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+                return CarryEnd::Refused(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
             };
             tracing::Span::current().record("subject", subject.name.to_string().as_str()).record("status_at_cut", format!("{:?}", subject.status).as_str());
             if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
-                return CarryEnd::Refused(rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) }));
+                return CarryEnd::Refused(rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) }));
             }
             if subject.incarnation_id.as_ref() != Some(incarnation) {
                 return match subject.incarnation_id.clone() {
                     Some(held) => CarryEnd::Refused(rdm_core::reply::stale(held)),
                     None => {
                         tracing::Span::current().record("detail", format!("{me_name}: {} has no known birth; its connections cannot be deleted", subject.name).as_str());
-                        CarryEnd::Refused(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown))
+                        CarryEnd::Refused(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown))
                     }
                 };
             }
@@ -1622,7 +1622,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     // The exact birth the call names is checked, so a call that reached another birth is refused
     // naming the one held.
     let Some(held) = me.incarnation_id.as_ref() else {
-        return Some(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+        return Some(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
     };
     if held != incarnation {
         return Some(rdm_core::reply::stale(held.clone()));
@@ -1804,7 +1804,7 @@ fn declared_state(req: &StatusRequest) -> String {
 
 fn detail(r: &StatusReply) -> String {
     match r {
-        StatusReply::RejectedNotAuthority { why } => why.as_str().to_string(),
+        StatusReply::RejectedNotPrimary { why } => why.as_str().to_string(),
         StatusReply::RejectedStaleIncarnation { held } => held.to_string(),
         StatusReply::RejectedStaleMesh { held } => held.to_string(),
         StatusReply::RejectedStaleFabric { held } => held.to_string(),
@@ -2265,6 +2265,8 @@ mod tests {
             config: Default::default(),
             load: None,
             gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
         };
         // The birth's last cycle's cut, as this mesh-primary holds it: a begun cycle forgets it.
         let cut = || { authority.declared.lock().unwrap().meshes_left.insert((rpc.node_id.clone(), birth.clone())); };
@@ -2620,7 +2622,7 @@ mod tests {
         assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic, None)) if row.node_id == member.node_id && row.name == member.name), "{effect:?}");
         let stranger = node("mesh2.rpc.9");
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(&stranger));
-        assert_eq!(reply, R::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a birth neither viewed nor watched is unknown");
+        assert_eq!(reply, R::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a birth neither viewed nor watched is unknown");
         assert!(effect.is_none());
     }
 
@@ -2648,7 +2650,7 @@ mod tests {
         assert_eq!(reply, R::Applied, "mesh2's primary applies its own mesh's admin's ReadyForTraffic");
         assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic, None)) if row.node_id == m2a.node_id), "{effect:?}");
         let (reply, effect) = decide(&authority_of(&fp, view.clone()), &view, &Declared::default(), &declare);
-        assert_eq!(reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "the fabric-primary of mesh1 is not mesh2.admin.2's authority");
+        assert_eq!(reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "the fabric-primary of mesh1 is not mesh2.admin.2's authority");
         assert!(effect.is_none());
     }
 
@@ -2709,7 +2711,7 @@ mod tests {
 
         let (reply, effect) = decide(&authority_of(&second, seated.clone()), &seated, &Declared::default(), &pending);
         assert!(
-            matches!(&reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
+            matches!(&reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
             "an admin whose view names mesh2.admin.1 mesh2's primary applies no Mesh status of mesh2: {reply:?}"
         );
 
@@ -2760,7 +2762,7 @@ mod tests {
         assert_ne!(retired.node_id, successor.node_id, "a replace mints a new node id");
         assert_eq!(view.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh1's seat in this view");
         let auth = authority_of(&successor, view.clone());
-        let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
+        let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
         let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
@@ -2877,7 +2879,7 @@ mod tests {
             config: BTreeMap::new(),
             load: None,
             gossip: None,
-            data_dir: None,
+            data_dir: None, is_primary: None, is_fabric_primary: None
         }
     }
 

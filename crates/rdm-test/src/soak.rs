@@ -773,49 +773,6 @@ fn fabric_primaries(nodes: &[Value]) -> String {
     crate::elections::advertised_fabric_primaries(nodes).join(",")
 }
 
-/// The fabric's written seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>.json`
-/// (`seat-move/1`), folded as every reader folds them (Q109), in
-/// their order: the durable fact a hand-back being owed is read from (Q104: the written seat move on
-/// the store root, never a view). A row that cannot be read is left out by name in `unread`.
-fn seat_moves(root: &std::path::Path) -> (Vec<rdm_admin::fabric_storage::SeatMove>, Vec<String>) {
-    let dir = root.join(rdm_admin::fabric_storage::SEAT_MOVES_DIR);
-    let mut files: Vec<(u64, std::path::PathBuf)> = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter_map(|p| p.file_stem().and_then(|t| t.to_str()).and_then(|k| k.split("--").next()?.parse::<u64>().ok()).map(|t| (t, p.clone())))
-        .collect();
-    files.sort();
-    let (mut moves, mut unread) = (Vec::new(), Vec::new());
-    for (t, p) in files {
-        let row = std::fs::read(&p).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string())).and_then(|v| {
-            (v["format"] == rdm_admin::fabric_storage::SEAT_MOVE_FORMAT).then_some(()).ok_or_else(|| format!("format {}", v["format"]))?;
-            serde_json::from_value::<rdm_admin::fabric_storage::SeatMoveRow>(v["record"].clone()).map_err(|e| e.to_string())
-        });
-        match row {
-            Ok(row) => moves.push(rdm_admin::fabric_storage::SeatMove { t, row }),
-            Err(e) => unread.push(format!("{}: {e}", p.display())),
-        }
-    }
-    // Every reader folds the stored rows the same way (Q109): a row that does not follow is ignored.
-    (rdm_admin::fabric_storage::fold(&moves), unread)
-}
-
-/// The path.name the fabric seat belongs to, read from the written seat moves and named from the
-/// view's births: while the fabric seat's latest move is a takeover, its hand-back is owed and its home
-/// is the path.name of the birth it was taken from (fabric-recovery.md "The loss of the fabric-primary
-/// while a node-admin lives" step 4; Q107 (4): the seat is temporary, handed back to the node at the
-/// first primary's path.name); otherwise the holder that move seated. `None` when no move seated the
-/// fabric seat, or the view holds neither birth.
-fn fabric_home(moves: &[rdm_admin::fabric_storage::SeatMove], nodes: &[Value]) -> Option<String> {
-    let home = match rdm_admin::fabric_storage::fabric_seat_taken_from(moves) {
-        Some((_, lost, _)) => lost,
-        None => moves.iter().rev().find_map(|m| m.row.seats.iter().find(|st| st.seat == rdm_core::seat::transfer::Seat::FabricPrimary)).and_then(|st| st.holder.clone())?,
-    };
-    nodes.iter().find(|n| n["node_id"] == home.node_id.as_str()).map(|n| s(&n["name"]))
-}
-
 /// The Build attempts gained since `before` that acted on the birth at `path`, each with its
 /// receipts, keyed by lane (`fabric`, or the mesh of a drift lane, whose attempts it numbers itself:
 /// R-BI7) and attempt. An attempt acts on the birth when a receipt of it creates, deletes, restarts or
@@ -1589,7 +1546,7 @@ impl Driver {
         Ok(())
     }
 
-    /// A workflow stream to its `Complete`, within 120 s; a stream that ends `SeatMoved` (a planned fabric-primary
+    /// A workflow stream to its `Complete`, within 120 s; a stream that ends `FabricPrimaryMoved` (a planned fabric-primary
     /// hand-off) is followed at the new seat. The Build and attempt the call opened, as the round row records them.
     async fn await_build(&mut self, mut stream: WorkflowStream) -> Result<Value, Broken> {
         let accepted = stream.accepted().clone();
@@ -1601,7 +1558,7 @@ impl Driver {
                 Ok(Some(Err(end))) => return Err(broken("build-completes", format!("the stream of Build {} attempt {} broke: {end}", accepted.build_id, accepted.attempt))),
                 Ok(Some(Ok(Frame::Complete))) => return Ok(accepted_json(&accepted)),
                 Ok(Some(Ok(Frame::Failed { step, reason }))) => return Err(broken("build-completes", format!("Build {} failed at {step:?}: {reason}", accepted.build_id))),
-                Ok(Some(Ok(Frame::SeatMoved { fabric_primary }))) => {
+                Ok(Some(Ok(Frame::FabricPrimaryMoved { fabric_primary }))) => {
                     stream = self
                         .estate
                         .nodes_obj()
@@ -1695,11 +1652,9 @@ impl Driver {
         let nodes0 = self.estate.node_values().await;
         let (seats_before, detail_before) = seats(&nodes0);
         let fp_before = fabric_primaries(&nodes0);
-        // Where the fabric seat belongs as the hold begins, from the written seat moves: a hand-back
-        // owed then (fabric-recovery.md step 4) takes the seat home during the hold, which no stall did.
-        let (moves, unread) = seat_moves(&self.estate.fabric_store_root());
-        let home = fabric_home(&moves, &nodes0).unwrap_or_else(|| fp_before.clone());
-        entry["fabric_seat"] = json!({"advertised": fp_before, "home": home, "moves": moves.len(), "unread": unread});
+        // Where the fabric-primary belongs as the hold begins: the one advertised.
+        let home = fp_before.clone();
+        entry["fabric_seat"] = json!({"advertised": fp_before, "home": home});
         let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:{path}"));
         // The hold: SIGSTOP of the exact runtime, or `docker pause` of the exact container.
         let release: Box<dyn Fn() -> Result<Value, String> + Send>;
@@ -2305,70 +2260,6 @@ mod tests {
         let held = |now: u64| held_unheard_by(m1, "mesh1", FLOOR, now, &rows(now));
         assert!(held(1792624350 * S).is_some_and(|why| why.contains("\"unreachable\" at 10030 ms")), "{:?}", held(1792624350 * S));
         assert_eq!(held(1792624380 * S), None, "the seat taken again, the rows written before hold nothing");
-    }
-
-    /// One row of the fabric's seat-move sequence as the store root holds it (`seat-move/1`).
-    fn move_row(t: u64, record: Value) -> rdm_admin::fabric_storage::SeatMove {
-        rdm_admin::fabric_storage::SeatMove { t, row: serde_json::from_value(record).expect("a seat-move/1 record") }
-    }
-
-    /// The births of the 300 s floors soak on `0afae287` (lane e6s8, step 205) the moves below name.
-    const M1: (&str, &str, &str) = ("mesh1", "cf8c3c63sj5w", "yjcg5a1qdf0d");
-    const M2: (&str, &str, &str) = ("mesh2", "43z44439b7w8", "86myw0cv9vcs");
-
-    fn birth((mesh, node_id, incarnation): (&str, &str, &str)) -> Value {
-        json!({ "mesh": mesh, "node_id": node_id, "incarnation": incarnation })
-    }
-
-    /// The fabric seat's moves of that run, numbered among themselves: mesh1.admin.1 seated on day 0;
-    /// mesh2.admin.1's takeover past the floor (`rdm.node_admin.seat.update.via-takeover` committed at
-    /// revision 2, lost `mesh1:cf8c3c63sj5w:yjcg5a1qdf0d`); the hand-back, attempt 3 of the Build
-    /// (`via-seat-row-written`, revision 3, successor mesh1.admin.1).
-    fn e6s8_moves() -> Vec<rdm_admin::fabric_storage::SeatMove> {
-        vec![
-            move_row(1, json!({ "seats": [{ "seat": "FabricPrimary", "from_revision": 0, "revision": 1, "holder": birth(M1), "from": null }], "cause": "election", "by": birth(M1) })),
-            move_row(2, json!({ "seats": [{ "seat": "FabricPrimary", "from_revision": 1, "revision": 2, "holder": birth(M2), "from": birth(M1) }], "cause": "takeover", "by": birth(M2) })),
-            move_row(
-                3,
-                json!({ "seats": [{ "seat": "FabricPrimary", "from_revision": 2, "revision": 3, "holder": birth(M1), "from": birth(M2) }], "cause": { "handover": { "operation": "node.fabric-primary.update:sccfg43n86nq:3:node.fabric-primary.update:mesh1.admin.1", "build_id": "sccfg43n86nq", "attempt": 3 } }, "by": birth(M2) }),
-            ),
-        ]
-    }
-
-    /// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4:
-    /// once the node at the lost fabric-primary's path.name has been ReadyForTraffic for one floor, the
-    /// holder hands every seat back, "the seats return only that way"; Q107 (4): the fabric seat taken
-    /// is temporary; Q104: whether a hand-back is owed is read from the written seat move on the store
-    /// root): the seat's home is the first fabric-primary's path.name while the takeover's hand-back is
-    /// owed, whoever is advertised. At `0afae287` (step 205) the hold of mesh1.broker.2 began with the
-    /// hand-back owed; the driver took mesh2.admin.1, the temporary holder, as home, and judged the
-    /// hand-back during the hold as the seat not coming home.
-    #[test]
-    fn the_fabric_seat_is_judged_at_its_home_while_a_hand_back_is_owed() {
-        let nodes = vec![json!({ "name": "mesh1.admin.1", "node_id": M1.1 }), json!({ "name": "mesh2.admin.1", "node_id": M2.1 })];
-        let moves = e6s8_moves();
-        assert_eq!(fabric_home(&moves[..1], &nodes).as_deref(), Some("mesh1.admin.1"), "day 0: its holder");
-        assert_eq!(fabric_home(&moves[..2], &nodes).as_deref(), Some("mesh1.admin.1"), "taken: owed back to the path.name it was taken from");
-        assert_eq!(fabric_home(&moves, &nodes).as_deref(), Some("mesh1.admin.1"), "handed back: its holder");
-        assert_eq!(fabric_home(&[], &nodes), None, "no move seated it: the driver keeps the advertised holder");
-    }
-
-    /// CONTRACT (the same pages): the reader takes the store root's `seat-moves/<T>--<node.id>--<incarnation>.json` rows in their
-    /// order, the format the fabric's storage writes (`seat-move/1`), and names a row it cannot read.
-    #[test]
-    fn the_seat_moves_are_read_from_the_store_root_in_order() {
-        let root = std::env::temp_dir().join(format!("soak-seat-moves-{}", std::process::id()));
-        let dir = root.join(rdm_admin::fabric_storage::SEAT_MOVES_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        for m in e6s8_moves().into_iter().rev() {
-            let file = json!({ "format": rdm_admin::fabric_storage::SEAT_MOVE_FORMAT, "record": serde_json::to_value(&m.row).unwrap() });
-            std::fs::write(dir.join(format!("{:020}--{}--{}.json", m.t, m.row.by.node_id, m.row.by.incarnation.as_str())), serde_json::to_vec(&file).unwrap()).unwrap();
-        }
-        std::fs::write(dir.join(format!("{:020}.json", 4)), b"{\"format\":\"seat-move/0\"}").unwrap();
-        let (moves, unread) = seat_moves(&root);
-        let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(moves, e6s8_moves(), "every readable row, in order");
-        assert_eq!(unread.len(), 1, "the row of another format is named: {unread:?}");
     }
 
     /// The Build as the driver reads it in the floors soak on `b6695529` (seed 1431101, step 33):

@@ -67,7 +67,7 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
                         Err(e) => ("answered", Err(JoinFailure::Refused(format!("the answer does not decode: {e}")))),
                     },
                     JoinReply::JoinMismatch { field, deployed, reported } => ("refused", Err(JoinFailure::Refused(format!("{field}: deployed {deployed}, reported {reported}")))),
-                    JoinReply::NotAuthority { primary } => ("refused", Err(JoinFailure::Refused(format!("the admin deployed no such birth (it sees mesh primary {primary:?})")))),
+                    JoinReply::NotPrimary { primary } => ("refused", Err(JoinFailure::Refused(format!("the admin deployed no such birth (it sees mesh primary {primary:?})")))),
                     JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } => {
                         ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, attempt {attempt}, node {node_id}, incarnation {incarnation})"))))
                     }

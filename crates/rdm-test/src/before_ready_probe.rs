@@ -188,7 +188,7 @@ impl PullServer {
 /// What a [`TestBeforeReady`] does on an attempt.
 #[derive(Debug, Clone)]
 pub enum Mode {
-    /// Pull from the accepting authority; its `NotReady` is `Blocked { AuthorityReady }`.
+    /// Pull from the accepting authority; its `NotReady` is `Blocked { PrimaryReady }`.
     Pull,
     /// Complete from local state: no pull (the Day-0 root).
     Local,
@@ -343,7 +343,7 @@ impl BeforeReady for TestBeforeReady {
                         PullReply::NotReady { reason } => ctx.authority_not_ready(format!("{} answered NotReady: {reason}", authority.name)),
                         other => HookOutcome::Failed { reason: format!("{} answered the pull with {other:?}", authority.name) },
                     },
-                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", authority.name, other.name()), retry_on: RetryOn::AuthorityChanged },
+                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", authority.name, other.name()), retry_on: RetryOn::PrimaryChanged },
                 }
             }
         }
@@ -382,7 +382,7 @@ impl BeforeReady for KnobBeforeReady {
             return HookOutcome::Ok;
         }
         let outcome = match std::fs::read_to_string(&self.file) {
-            Ok(text) if text.trim() != "pass" => HookOutcome::Blocked { reason: text.trim().to_string(), retry_on: RetryOn::AuthorityAddressed },
+            Ok(text) if text.trim() != "pass" => HookOutcome::Blocked { reason: text.trim().to_string(), retry_on: RetryOn::PrimaryAddressed },
             _ => HookOutcome::Ok,
         };
         // One line per attempt beside the knob (`<path.name>.attempts`): what the scenario waits on.

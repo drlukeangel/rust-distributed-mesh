@@ -645,14 +645,13 @@ fn refused<T>(what: &str, call: Result<T, CallEnd>) -> CallEnd {
 /// accepted, and its one attempt is the only one the Build gains. One
 /// `rdm.node_admin.build.reject.via-fabric-not-ready` span per refused Build and one
 /// `rdm.node_admin.node.reject.via-fabric-not-ready` for the refused node.tags.create say the same, and no
-/// node.primary.update span is ever written (the approved proposal
-/// node-primary-update-fabric-mesh-and-node-type.md, Part C1: "Before the initial fabric first reaches
-/// ready-for-traffic, every call is refused `fabric-not-ready` (R-PB1)"; "Refused before the row ...
-/// nothing changed"): no command (`seat.update.via-primary-update`), no "primary
-/// updating" (`via-primary-updating`), no issued writes finished for it (`via-issued-writes-finished`), no row
-/// (`via-seat-row-written`), no install (`via-primary-updated`, `via-seats-installed`).
-/// What must NOT happen: a seat or a row moved while the Fabric row, the Mesh rows and the Node rows live
-/// only in their holders' scratchpads.
+/// node.primary.update span is ever written (lifecycles/node-primary-update.md "Precondition": "Before
+/// the initial fabric first reaches ready-for-traffic, every call is refused `fabric-not-ready`"; failure
+/// contract: "Refused before the row ...: refused by name, nothing changed"): no command
+/// (`primary.update.via-command`), no update at a primary (`primary.update.via-update-primary`), no issued
+/// writes finished for it (`via-issued-writes-finished`), no install (`seat.update.via-primary-updated`).
+/// What must NOT happen: a primary moved while the Fabric row, the Mesh rows and the Node rows live only
+/// in their writers' scratchpads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt() {
     let test = "a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
@@ -736,15 +735,13 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     let node_rejects = named(&spans, "rdm.node_admin.node.reject.via-fabric-not-ready");
     assert_eq!(node_rejects.len(), 1, "one refusal span for the refused node.tags.create: {node_rejects:?}");
     assert_eq!((s(&node_rejects[0]["attributes"]["workflow"]).as_str(), s(&node_rejects[0]["attributes"]["status"]).as_str()), ("node.tags.create mesh2.rpc.1", "state-sync"));
-    for seat_span in [
-        "rdm.node_admin.seat.update.via-primary-update",
-        "rdm.node_admin.seat.update.via-primary-updating",
+    for update_span in [
+        "rdm.node_admin.primary.update.via-command",
+        "rdm.node_admin.primary.update.via-update-primary",
         "rdm.node_admin.primary.update.via-issued-writes-finished",
-        "rdm.node_admin.seat.update.via-seat-row-written",
         "rdm.node_admin.seat.update.via-primary-updated",
-        "rdm.node_admin.seat.update.via-seats-installed",
     ] {
-        assert!(named(&spans, seat_span).is_empty(), "no seat moved: {seat_span} was written");
+        assert!(named(&spans, update_span).is_empty(), "no primary moved: {update_span} was written");
     }
     estate.record_trace_url(&s(&rejects[0]["trace_id"]));
     for r in &rejects {

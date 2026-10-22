@@ -1,5 +1,5 @@
 //! i143 R-B2 (Luke), D: a `JoinNode` that arrives after the deploying admin ended the birth's
-//! deployment is refused by name (`DeploymentAbandoned`), never as `NotAuthority`.
+//! deployment is refused by name (`DeploymentAbandoned`), never as `NotPrimary`.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rdm_admin::build::BuildId;
@@ -108,7 +108,7 @@ fn receipt_output(view: &rdm_admin::build_state::BuildProjection, step: &str) ->
 /// naming the Build, the attempt, the node id and the incarnation of exactly that birth, and its
 /// `via-join` span records outcome `deployment-abandoned` with the Build and attempt. A digest of
 /// the same node under another incarnation is not that birth: it is refused as a mismatch by its
-/// field, never as abandoned. The reply is never `NotAuthority`.
+/// field, never as abandoned. The reply is never `NotPrimary`.
 #[test]
 fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_and_birth() {
     let cap = capture();
@@ -178,7 +178,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             in_flight: None,
             config: Default::default(),
             load: None,
-            gossip: None,
+            gossip: None, is_primary: None, is_fabric_primary: None
         };
         let installed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = installed.clone();

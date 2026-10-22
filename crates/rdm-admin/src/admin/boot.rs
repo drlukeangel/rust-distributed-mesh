@@ -580,6 +580,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The takeover this admin holds because the store could not commit it: written by its handover
     // door, read by its fabric.get.
     let held_takeover: crate::fabric_handover::HeldTakeovers = Default::default();
+    let taken_over: crate::fabric_handover::TakenOver = Default::default();
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
@@ -692,7 +693,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         config: BTreeMap::new(),
         load: None,
         gossip: None,
-        data_dir: Some(cfg.data_dir.display().to_string()),
+        data_dir: Some(cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
     });
     let joining = match &joins_through {
         Some((_, launcher, _)) => crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() },
@@ -846,10 +847,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // such mesh, as every node does. Held behind the gate: a parked admin tops up nothing, and a
                 // gap signalled while it was parked is topped up once it runs again.
                 tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
-                // The seat-transfer rows on the store root: this admin enters knowing who holds every seat a
-                // committed node.primary.update moved, its own included (proposal Part C1 failure contract:
-                // a holder that died before its row's rename reads here whether its row was written).
-                crate::fabric_handover::enter_seats(&*fabric_storage, &membership, &backbone, &name, &node_id).await?;
+                // The primaries recorded on the node rows of the fabric's store root: an election input this admin
+                // enters with (elections §3), its own included. A record older than one held changes nothing.
+                crate::admin::rows_writer::take_recorded_primaries(&*nodes_storage, &cfg.fabric_id, membership.seats()).await.map_err(storage_err)?;
                 if let Some(own) = &inherited {
                     membership.book.seats.mark_gone(own.incarnation_id.clone());
                 }
@@ -1208,18 +1208,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 topology: control.topology.clone(),
                                 membership: membership.clone(),
                                 backbone: backbone.clone(),
-                                storage: fabric_storage.clone(),
                                 client: node_rpc.client.clone(),
                                 book: book.clone(),
                                 records: records.clone(),
                                 locks: Default::default(),
                                 memo: Default::default(),
                                 decisions: builds.decisions(),
-                                builds: builds_dyn.clone(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 finish_writes: finish_writes.clone(),
                                 looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                                 held_takeover: held_takeover.clone(),
+                                taken_over: taken_over.clone(),
                             });
                             let _ = handover_slot.set(handover.clone());
                             let runner = Arc::new(AdminRunner {
@@ -1290,12 +1289,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         me: name.clone(),
                                         topology: control.topology.clone(),
                                         refresh: refresh_view,
-                                        book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone(), fabric: fabric_storage.clone(), authority: authority.clone() }),
+                                        book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone(), taken_over: taken_over.clone(), authority: authority.clone() }),
                                     verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
                                     turns: park_gate.clone(),
                                 });
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()).with_written(written.clone())));
-                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone(), incumbent: handover.clone() }));
+                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
                                 env
                             };
 
@@ -1358,7 +1357,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 config: handed.as_ref().and_then(|(_, c)| c.clone()).unwrap_or_default(),
                                 load: None,
                                 gossip: None,
-                                data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
+                                data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
                             }));
                             // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
                             // the same logical node in the same Mesh.
@@ -1374,6 +1373,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         endpoint_id: d.node.endpoint_id.clone(),
                                         transport_addr: d.node.transport_addr,
                                         listeners: Vec::new(),
+                                        is_primary: None,
+                                        is_fabric_primary: None,
                                     })
                                     .await.map_err(storage_err)?;
                             }
@@ -1385,27 +1386,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // (the view install's seat watch): a hint that waits on a timer is lost to a restart that comes
                             // first. A contact whose node departed, or whose birth the book no longer holds at a path
                             // another logical node now holds, is dropped (`dropped_contacts`). Nothing here is topology.
-                            let (own_seat_tx, mut own_seat) = tokio::sync::watch::channel(false);
+                            let (own_seat_tx, own_seat) = tokio::sync::watch::channel(false);
                             let contacts_task = {
                                 let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
-                                let mut writer = MeshRowsWriter::new(&name.to_string(), cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
+                                let writer = MeshRowsWriter::new(&name.to_string(), cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
                                 let park = park_gate.clone();
-                                tokio::spawn(async move {
-                                    let mut births = book.birth_changes();
-                                    loop {
-                                        // Held here while the admin is parked: its own wait, outside every lock.
-                                        let turn = park.turn("mesh-rows").await;
-                                        births.borrow_and_update();
-                                        let seated = *own_seat.borrow_and_update();
-                                        let held: Vec<MeshDigest> = book.all().into_iter().filter(|d| d.fabric_id == fabric_id).collect();
-                                        writer.round(&held, seated, |id| book.is_departed(id.as_str())).await;
-                                        drop(turn);
-                                        tokio::select! {
-                                            changed = births.changed() => if changed.is_err() { return },
-                                            changed = own_seat.changed() => if changed.is_err() { return },
-                                        }
-                                    }
-                                })
+                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, book, fabric_id, own_seat, park))
                             };
                             if let Some(a) = adoption {
                                 let digest = digest.clone();
@@ -1522,7 +1508,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 });
                                 let gone: crate::topology_read::GoneSource = {
                                     let (book, records) = (book.clone(), records.clone());
-                                    Arc::new(move |h: &rdm_core::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
+                                    Arc::new(move |h: &rdm_core::Primary| incumbency_of(&book, &records).lost.contains(&h.incarnation))
                                 };
                                 let own_membership = membership.clone();
                                 let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_membership.with_config(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone)));
@@ -1739,7 +1725,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                          let (records, authority, mesh_name, fabric_name, view_provider, backbone_ready) =
                                             (records.clone(), authority.clone(), cfg.mesh.clone(), cfg.fabric.clone(), policy.provider, backbone.clone());
                                         let park = park_gate.clone();
-                                        let election_storage = fabric_storage.clone();
                                         tasks.push(tokio::spawn(async move {
                                             let mut reported = None;
                                             loop {
@@ -1795,11 +1780,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let reads = ViewReads::read(&me, &book, &records, &fabric_id).await;
                                                     let decided = incumbency_of(&book, &records);
                                                     let t = project_decided(&fabric_name, &fabric_id, view_provider, &book, &records, &decided, &reads);
-                                                    // Each seat taken is written as the fabric's next seat move before it is said (Q48).
-                                                    let said = seat_announcements(&t, &mesh_name, (&node_id, &incarnation), &decided);
-                                                    let me_birth = rdm_core::handover::HandoverBirth { mesh: mesh_name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
-                                                    for (seat, holder) in crate::fabric_handover::elect(&*election_storage, membership.seats(), &me_birth, &decided, said).await {
-                                                        backbone_ready.announce_seat(seat, holder).await;
+                                                    // The election's result this admin holds: its digest carries it and, as its
+                                                    // mesh's writer, it records it on the rows.
+                                                    for (seat, holder) in seat_announcements(&t, &mesh_name, (&node_id, &incarnation), &decided) {
+                                                        backbone_ready.hold_primary(seat, holder);
                                                     }
                                                     // The current Build the not-ready check above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
@@ -2058,6 +2042,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let ladder_heard_again = heard_again_slot.clone();
                                         // The ladder's leads: the by-destination index of the store (Q107 item 1).
                                         let ladder_connections = connections_storage.clone();
+                                        // The take-over this admin holds while its hand-back is owed (fabric-recovery.md step 3).
+                                        let taken_over = taken_over.clone();
                                         tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight, and the last verdict
                                             // named per birth. The tick never waits on either.
@@ -2092,17 +2078,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
-                                                // The fabric-primary is the authority above the node-admins of a mesh that has no
-                                                // ReadyForTraffic node-admin of its own (fabric-recovery.md "The loss of the
-                                                // fabric-primary while a node-admin lives" step 3): it watches them, tickles them and
-                                                // commands them back when heard again.
+                                                // The fabric-primary that took over is above the node-admins of the lost mesh while
+                                                // it has no ReadyForTraffic node-admin of its own (fabric-recovery.md step 3): it
+                                                // watches them, tickles them and commands them back when heard again.
                                                 // Watched for the tickle and the command back only: their marks, their TRUE OFFLINE
                                                 // and their recovery are their own mesh's (node-recovery.md, the mesh-primary's), never
                                                 // this admin's writes on another mesh's rows.
                                                 let mut commanded_only: HashSet<String> = HashSet::new();
-                                                let vacant = recovery.book.seats.vacant_meshes();
+                                                let taken_from = taken_over.lock().unwrap().as_ref().map(|(_, lost, _)| lost.mesh.clone());
                                                 if view.holds_fabric_seat(&me_id) {
-                                                    for n in crate::admin::recovery::admins_of_meshes_without_a_ready_admin(&view, &mesh, &vacant) {
+                                                    for n in crate::admin::recovery::admins_of_meshes_without_a_ready_admin(&view, &mesh, taken_from) {
                                                         commanded_only.insert(n.node_id.to_string());
                                                         watched.entry(n.node_id.to_string()).or_insert_with(|| n.clone());
                                                     }
@@ -2403,7 +2388,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
                                         let (view_fabric, view_fabric_id, view_provider, view_book) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone());
                                         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
-                                        let seat_storage = fabric_storage.clone();
                                         let adapter = runner.builds.clone();
                                         let records = records.clone();
                                         let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
@@ -2500,13 +2484,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The fabric-primary's climb through the fabric states, one non-blocking turn per round
                                                 // of this loop; every other admin serves the state the holder published.
                                                 fabric_rounds.climb_step(crate::fabric_rounds::ClimbInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
-                                                // A seat taken is announced once, when it changes hands: the mesh primary first, then
-                                                // the fabric primary (R-A2).
-                                                // Each seat taken is written as the fabric's next seat move before it is said (Q48).
-                                                let said = seat_announcements(&t, &mesh, (&seat_node_id, &seat_incarnation), &decided);
-                                                let me_birth = rdm_core::handover::HandoverBirth { mesh: mesh.clone(), node_id: seat_node_id.clone(), incarnation: seat_incarnation.clone() };
-                                                for (seat, holder) in crate::fabric_handover::elect(&*seat_storage, membership.seats(), &me_birth, &decided, said).await {
-                                                    backbone.announce_seat(seat, holder).await;
+                                                // The election's result this admin holds when a primary changes: the mesh-primary
+                                                // first, then the fabric-primary (R-A2); its digest carries it and the rows record it.
+                                                for (seat, holder) in seat_announcements(&t, &mesh, (&seat_node_id, &seat_incarnation), &decided) {
+                                                    backbone.hold_primary(seat, holder);
                                                 }
                                                 if let Some(announced) = announcing {
                                                     drop(announced);

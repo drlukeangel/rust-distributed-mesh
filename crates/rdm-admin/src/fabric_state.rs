@@ -14,7 +14,7 @@ use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
 use crate::status_declare::{eligible, Destination, Sent};
 use crate::topology::Topology;
 use crate::round::Missing;
-use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
+use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::watch;
@@ -428,11 +428,11 @@ impl RoundBook {
         let Some(op) = RoundOp::of(req).filter(|o| !o.is_down) else { return rdm_core::reply::status::not_ready(format!("{receiver}: {} is not a completion call", req.op())) };
         let completion = op.kind.completion();
         let Some((held, from_name)) = subject else {
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         };
         match held {
             Some(held) if held != op.incarnation => return rdm_core::reply::stale(held.clone()),
-            None => return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown),
+            None => return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown),
             Some(_) => {}
         }
         let key = op.key();
@@ -517,7 +517,7 @@ mod tests {
         assert!(matches!(&old, StatusReply::NotReady { reason } if reason.contains("field attempt: round holds 1, reported 2")), "{old:?}");
         let other = IncarnationId::mint();
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &other), &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
-        assert_eq!(book.check_in("mesh1.admin.1", None, &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
+        assert_eq!(book.check_in("mesh1.admin.1", None, &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
 
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::Applied);
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::AlreadyApplied);
@@ -541,7 +541,7 @@ mod tests {
         book.open(&k);
         book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
         let up = RoundKind::StateCommit.up(&k, node.clone(), inc.clone());
-        assert_eq!(book.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+        assert_eq!(book.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
         assert!(!book.complete(&k), "nothing counted");
     }
 

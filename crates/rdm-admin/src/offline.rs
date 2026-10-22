@@ -1655,7 +1655,7 @@ pub(crate) mod tests {
             config: Default::default(),
             load: None,
             gossip: None,
-            data_dir: None,
+            data_dir: None, is_primary: None, is_fabric_primary: None
         };
         let node_of = |d: &MeshDigest| {
             let mut n = crate::model::Node::allocated(d.node.name.clone());

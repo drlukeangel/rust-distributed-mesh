@@ -17,8 +17,8 @@
 //! Step { build_id, attempt, operation, step }      only after the step's Complete receipt is durable
 //!                                                   on the executor that wrote it
 //! Blocked { build_id, attempt, operation, step, reason }   non-terminal, never durable, never a step outcome
-//! Complete | Failed { step, reason } | HandedOff { to } | SeatMoved { fabric_primary }
-//!                                                  the terminal of Create / AttemptRun (SeatMoved on
+//! Complete | Failed { step, reason } | HandedOff { to } | FabricPrimaryMoved { fabric_primary }
+//!                                                  the terminal of Create / AttemptRun (FabricPrimaryMoved on
 //!                                                  AttemptRun: the executor took the fabric-primary
 //!                                                  seat during the run and names itself)
 //! Got | Deleted                                    the terminal of Get / Delete
@@ -488,8 +488,8 @@ pub enum BuildReply {
         /// What holds the number.
         detail: String,
     },
-    /// Refusal: the committed fabric seat record moved the seat off the receiver, which dispatches
-    /// nothing.
+    /// Refusal: the fabric-primary record the receiver holds names another live birth, so the
+    /// receiver dispatches nothing (node-rpc-envelope.md's second `NotFabricPrimary { node, by }`).
     SeatYielded {
         /// The admin whose Build log yielded the seat.
         node: String,
@@ -536,7 +536,7 @@ pub enum BuildReply {
     /// Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a
     /// node.fabric-primary.update, op `0x21`). The Build goes on at the new seat; the caller re-submits the
     /// same `build_id` there. Never `Indeterminate` on a planned move.
-    SeatMoved {
+    FabricPrimaryMoved {
         /// The Build.
         build_id: String,
         /// The admin (path.name) that holds the seat now, when the receiver's view names one.
@@ -583,7 +583,7 @@ impl BuildReply {
             Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
-            Self::SeatMoved { .. } => "seat-moved",
+            Self::FabricPrimaryMoved { .. } => "fabric-primary-moved",
             Self::NotClaimant { .. } => "not-claimant",
         }
     }
@@ -640,7 +640,7 @@ impl NodeProtocol for Build {
             BuildReply::ConnectionsDeleting { .. } => "connections-deleting",
             BuildReply::Malformed { .. } => "malformed",
             BuildReply::Unauthorized { .. } => "unauthorized",
-            BuildReply::SeatMoved { .. } => "seat-moved",
+            BuildReply::FabricPrimaryMoved { .. } => "fabric-primary-moved",
             BuildReply::NotClaimant { .. } => "not-claimant",
         }
     }
@@ -672,7 +672,7 @@ impl NodeProtocol for Build {
             BuildReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildReply::Unauthorized { .. } => ReplyKind::Unauthorized,
-            BuildReply::SeatMoved { .. } => ReplyKind::Success,
+            BuildReply::FabricPrimaryMoved { .. } => ReplyKind::Success,
             BuildReply::NotClaimant { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
@@ -702,7 +702,7 @@ impl StreamingProtocol for Build {
         match frame {
             BuildReply::Started { .. } => FrameKind::Started,
             BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Steps { .. } => FrameKind::Data,
-            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::SeatMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } => FrameKind::Terminal,
+            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::FabricPrimaryMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Build::classify_reply(other)),
         }
     }

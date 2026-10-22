@@ -1,5 +1,5 @@
 //! Reserved positions are refused before any fact, status, seat or carrier path runs.
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder, LifecycleOp};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary, LifecycleOp};
 use rdm_transport::membership::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, Membership};
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 #[derive(Clone, Copy)]
 enum Kind { ConnectionsDeleting, ConnectionsDeleted, Leaving, Left, FabricPrimary }
 impl Kind {
+    fn type_name(self) -> &'static str { match self { Self::ConnectionsDeleting => "rdm.node.connections.deleting", Self::ConnectionsDeleted => "rdm.node.connections.deleted", Self::Leaving => "rdm.node.leaving", Self::Left => "rdm.node.left", Self::FabricPrimary => "rdm.fabric.primary.new" } }
     fn named(self) -> (&'static str, u8) { match self { Self::ConnectionsDeleting => ("node-connections-deleting", 11), Self::ConnectionsDeleted => ("node-connections-deleted", 14), Self::Leaving => ("node-leaving", 12), Self::Left => ("node-left", 13), Self::FabricPrimary => ("new-fabric-primary", 15) } }
 }
 fn reserved(kind: Kind) {
@@ -37,10 +38,10 @@ fn reserved(kind: Kind) {
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
         let (backbone_sender, _backbone_rx) = backbone_channel.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         receiver.book.record(digest);
         assert!(receiver.book.started(&node_id, &incarnation, &"mesh1.admin.2".parse().unwrap()));
-        let holder = SeatHolder { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
+        let holder = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
         receiver.seats().take(Seat::FabricPrimary, &holder);
         receiver.seats().take(Seat::MeshPrimary, &holder);
         receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
@@ -65,9 +66,9 @@ fn reserved(kind: Kind) {
             Kind::ConnectionsDeleted => Frame::NodeConnectionsDeleted { op, forwarded_by: None },
             Kind::Leaving => Frame::NodeLeaving { op, forwarded_by: None },
             Kind::Left => Frame::NodeLeft { op, forwarded_by: None },
-            Kind::FabricPrimary => Frame::NewFabricPrimary { holder: SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
+            Kind::FabricPrimary => Frame::NewFabricPrimary { holder: Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
         };
-        assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, rdm_transport::envelope::TYPES[kind.named().1 as usize - 1], "the reserved type retains its historical page position");
+        assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, kind.type_name(), "the reserved frame travels as its reserved type");
         for (n, sender) in [&mesh_sender, &backbone_sender].into_iter().enumerate() {
             sender.broadcast_neighbors(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             // A following frame on this same channel proves processing finished, without changing

@@ -148,18 +148,17 @@ fn next_lowest(nodes: &[Value], c: &Cohort, holder: &str) -> (String, String) {
         .unwrap_or_else(|| panic!("no other ready member of {c:?} than {holder}: {nodes:#?}"))
 }
 
-/// The "primary updated" announcement of the update `operation_suffix` (a Build operation's key, the
-/// end of the update's operation identity) that committed `c`'s seat to the NodeId `successor`
-/// (proposal Part C1 step 7).
-/// When the mesh-primary first announced `c`'s seat updated to `successor` by the operation ending
-/// `operation_suffix` (its `via-announce-primary-updated` span's start), if it did.
+/// When the successor, the NodeId `successor`, installed itself as `c`'s primary by the update
+/// `operation_suffix` (a Build operation's key, the end of the update's operation identity) and answered
+/// node.primary.updated (lifecycles/node-primary-update.md step 4: its `via-primary-updated` span's
+/// start), if it did.
 fn primary_updated(spans: &[Value], c: &Cohort, operation_suffix: &str, successor: &str) -> Option<u64> {
-    let seat = format!("{}-primary={}:{successor}@", c.1, c.0);
-    named(spans, "rdm.mesh.seat.update.via-announce-primary-updated")
+    let entry = format!("{} ", c.1.replace('_', "-"));
+    named(spans, "rdm.node_admin.seat.update.via-primary-updated")
         .iter()
         .filter(|sp| {
             let a = &sp["attributes"];
-            a["operation"].as_str().is_some_and(|o| o.ends_with(operation_suffix)) && a["seats"].as_str().is_some_and(|v| v.contains(&seat))
+            a["operation"].as_str().is_some_and(|o| o.ends_with(operation_suffix)) && a["primaries"].as_str().is_some_and(|v| v.starts_with(&entry) && v.contains(&format!("-> {successor}/")))
         })
         .filter_map(|sp| sp["start_unix_nano"].as_u64())
         .min()
@@ -376,10 +375,10 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     assert!(own("rdm.mesh.election.resolve.via-fabric-recompute", "fabric_primary"), "day 0: fabric primary");
     assert!(announced(&spans, &rpc, &succ_id, &killed_id), "the successor to the killed primary was announced");
     assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
-    // The restart's node.primary.update moved the rpc seat to the next-lowest ready NodeId, and
-    // the mesh-primary announced it (C1 step 7).
+    // The restart's node.primary.update moved the rpc-node primary to the next-lowest ready NodeId,
+    // which installed itself and answered (node-primary-update.md step 4).
     let seat_moved_at = primary_updated(&spans, &rpc, &format!("node.restart:{rpc_p}"), &succ_r_id)
-        .unwrap_or_else(|| panic!("the mesh-primary announced the rpc seat updated to {succ_r} ({succ_r_id}) before the restart of {rpc_p}"));
+        .unwrap_or_else(|| panic!("{succ_r} ({succ_r_id}) installed itself as the rpc-node primary before the restart of {rpc_p}"));
     // The restarted node never took its seat back while the holder lived: from the restart's seat move
     // until the kill. Before that move the cohort's first election (no holder record) seats the lowest
     // ready NodeId as each member of the forming MN becomes ready, which may move the seat from the

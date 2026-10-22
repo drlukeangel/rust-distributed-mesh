@@ -64,7 +64,7 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
         config: Default::default(),
         load: None,
         gossip: None,
-        data_dir: None,
+        data_dir: None, is_primary: None, is_fabric_primary: None
     };
     let back = MeshDigest::decode(&d.encode()).unwrap();
     assert_eq!(back, d);

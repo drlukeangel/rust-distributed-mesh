@@ -686,14 +686,14 @@ pub enum BuildStateError {
         /// What this open asked for.
         wanted: String,
     },
-    /// The committed fabric seat record names another live birth: this admin's Build log decides
-    /// nothing from that record's revision (the fence is sticky for this birth).
+    /// The fabric-primary record this admin holds names another live birth: this admin's Build log
+    /// decides nothing from that record's revision on (the fence stays set for this birth).
     SeatYielded {
         /// The admin whose Build log yielded the seat.
         node: String,
         /// The record that moved the seat, in words.
         by: String,
-        /// The admin (path.name) a written seat transfer moved the seat to, when it named one.
+        /// The admin (path.name) the record names, when a digest of it is held.
         to: Option<String>,
     },
 }
@@ -705,7 +705,7 @@ impl std::fmt::Display for BuildStateError {
             Self::ConflictingIntent(id) => write!(f, "Build {id} was published with a different intent"),
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
             Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
-            Self::SeatYielded { node, by, .. } => write!(f, "{node} no longer holds the fabric-primary seat: the written seat row moved it ({by}); its Build log decides nothing any more"),
+            Self::SeatYielded { node, by, .. } => write!(f, "{node} is no longer the fabric-primary: {by}; its Build log decides nothing any more"),
             Self::AttemptTaken { build_id, attempt, held, wanted } => {
                 write!(f, "attempt {attempt} of Build {build_id} is already open for {held}; this open asked for {wanted} and lost the number")
             }
@@ -3343,8 +3343,7 @@ mod tests {
 
     /// CONTRACT (ruling R-PU2: "The caller's resubmit opens the next attempt of the same Build ...
     /// that attempt's node.primary.update is a new transfer key, (build_id, attempt), never the Build id
-    /// alone"; proposal Part C1: "A later attempt that reads the committed row has discovered the
-    /// commit"): attempt 1 of b1 hands off and attempt 2 continues its run (run 1); attempt 2 fails,
+    /// alone"): attempt 1 of b1 hands off and attempt 2 continues its run (run 1); attempt 2 fails,
     /// and the attempt a resubmit opens after it, attempt 3, begins run 3, as does attempt 4 continuing
     /// it. Must NOT happen: a resubmitted attempt in the failed run, or a hand-off starting a new one.
     #[tokio::test]
@@ -3698,9 +3697,9 @@ mod tests {
     }
 
     /// CONTRACT (Q28 A: "a mesh-audit ratchet for the store layout"): the store root's layout, byte for
-    /// byte: a Build record at `fabric/builds/<build_id>/<key>.json` (`build-record/1`, build.md §5.3), a
-    /// seat move at `seat-moves/<T>--<node.id>--<incarnation>.json` (`seat-move/1`) and a mesh's in-flight
-    /// row (`mesh-in-flight/2`). A layout that moves moves this cell with it (`durable format moved`).
+    /// byte: a Build record at `fabric/builds/<build_id>/<key>.json` (`build-record/1`, build.md §5.3) and
+    /// a mesh's in-flight row (`mesh-in-flight/2`). A layout that moves moves this cell with it (`durable
+    /// format moved`).
     #[tokio::test]
     async fn the_store_layout_is_frozen_byte_for_byte() {
         let d = crate::test_support::tempdir("store-layout");
@@ -3710,19 +3709,6 @@ mod tests {
         let j = open_at(&d).await.unwrap();
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         assert_eq!(read(&format!("fabric/builds/{b1}/1-result.json")), format!(r#"{{"format":"build-record/1","record":{{"seq":1,"fact":{{"fact":"attempt","build_id":"{b1}","attempt":1,"outcome":"converged"}}}}}}"#));
-        let by = rdm_core::handover::HandoverBirth { mesh: "mesh2".into(), node_id: rdm_core::NodeId::parse("200000000000").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("n")).unwrap() };
-        let storage = crate::fabric_storage::FileFabricStorage::open(&root, &crate::model::IncarnationId::mint()).await.unwrap();
-        let moved = crate::fabric_storage::SeatMoveRow {
-            seats: vec![crate::fabric_storage::MovedSeat { seat: rdm_core::seat::transfer::Seat::FabricPrimary, from_revision: 0, revision: 1, holder: Some(by.clone()), from: None }],
-            cause: crate::fabric_storage::MoveCause::Election,
-            by,
-        };
-        assert!(matches!(crate::fabric_storage::commit_seat_move(&storage, &moved).await.unwrap(), crate::fabric_storage::MoveCommit::Committed(crate::fabric_storage::SeatMove { t: 1, .. })));
-        let birth = format!(r#"{{"mesh":"mesh2","node_id":"200000000000","incarnation":"{}"}}"#, rdm_core::fixture_crockford60("n"));
-        assert_eq!(
-            read(&format!("seat-moves/00000000000000000001--200000000000--{}.json", rdm_core::fixture_crockford60("n"))),
-            format!(r#"{{"format":"seat-move/1","record":{{"seats":[{{"seat":"FabricPrimary","from_revision":0,"revision":1,"holder":{birth},"from":null}}],"cause":"election","by":{birth}}}}}"#)
-        );
         use crate::storage::MeshStorage as _;
         let claims = crate::storage::FileMeshStorage::open(&root, &crate::model::IncarnationId::mint()).await.unwrap();
         let row = crate::mesh_claims::InFlight { build_id: BuildId::parse(&b1).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into() };

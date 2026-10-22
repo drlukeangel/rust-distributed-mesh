@@ -47,7 +47,7 @@ fn digest(fabric: &FabricId, name: &str, mesh_id: &MeshId) -> MeshDigest {
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 

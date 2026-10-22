@@ -5,7 +5,7 @@
 //! The probe asks the node to declare: the call goes out from the node's own endpoint. Two
 //! testkit-only overrides exist so a scenario can prove the refusals, which are decided for the
 //! subject the declaration names and never for its caller (node-rpc.md §14): a `node_id` the
-//! authority does not hold (`RejectedNotAuthority: subject-unknown`) and an `incarnation` that is
+//! authority does not hold (`RejectedNotPrimary: subject-unknown`) and an `incarnation` that is
 //! not its birth's (`RejectedStaleIncarnation`). Testkit range only ([`TESTKIT_OPS`]); never a
 //! product binary.
 //!

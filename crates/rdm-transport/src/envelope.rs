@@ -2,7 +2,7 @@
 
 use crate::membership::Frame;
 use crate::wire::{self, WireError};
-use rdm_core::{FabricId, NodeId, IncarnationId, PublisherId, Seat};
+use rdm_core::{FabricId, NodeId, IncarnationId, PublisherId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -60,16 +60,16 @@ pub struct Context {
 }
 
 /// The catalog's literal types, in historical page order.
-pub const TYPES: [&str; 22] = [
+pub const TYPES: [&str; 19] = [
     "rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting",
     "rdm.node.deleted", "rdm.node.restarting", "rdm.mesh.status", "rdm.fabric.status",
-    "rdm.seat.seated", "rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving",
+    "rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving",
     "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new",
     "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening",
-    "rdm.fabric.traffic.opened", "rdm.node.stopped", "rdm.node.primary.updated", "rdm.node.primary.updating",
+    "rdm.fabric.traffic.opened", "rdm.node.stopped",
 ];
 
-/// The twenty-third RDM type, carried on an application channel only.
+/// The twentieth RDM type, carried on an application channel only.
 pub const CHUNK_TYPE: &str = "rdm.gossip.chunk";
 
 /// A valid type refusal, before domain data decoding, or malformed context/data.
@@ -161,23 +161,10 @@ impl Context {
                 identity = vec![fabric.to_string(), seat_revision.to_string(), time_ms.to_string()];
                 format!("fabric/{fabric}/status")
             }
-            Frame::Seated { seat, holder } => {
-                sequence = Some(p(holder.revision));
-                let scope = match seat {
-                    Seat::FabricPrimary => format!("fabric/{}/seat", author.fabric),
-                    Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => format!("cohort/{}/mesh-primary", escaped(&holder.mesh)),
-                    Seat::Cohort(kind) => format!("cohort/{}/{}", escaped(&holder.mesh), escaped(kind.node_type())),
-                };
-                identity = scope.split('/').map(str::to_string).collect(); identity.push(holder.revision.to_string()); scope
-            }
             Frame::StateCommitting { hook, .. } | Frame::StateCommitted { hook, .. } | Frame::TrafficOpening { hook, .. } | Frame::TrafficOpened { hook, .. } => {
                 identity = vec![hook.fabric_id.to_string(), hook.build_id.clone(), hook.attempt.to_string(), hook.operation.clone(), hook.node_id.to_string(), hook.incarnation.to_string()];
                 time_ms = hook.event_at_rafka_ms;
                 format!("round/{}/{}/{}/{}/birth/{}/{}", hook.fabric_id, escaped(&hook.build_id), hook.attempt, escaped(&hook.operation), hook.node_id, hook.incarnation)
-            }
-            Frame::PrimaryUpdating { op, .. } | Frame::PrimaryUpdated { op, .. } => {
-                identity = vec![op.build_id.clone(), op.attempt.to_string(), op.operation.clone()]; time_ms = op.event_at_rafka_ms;
-                format!("handover/{}", path(&identity))
             }
             Frame::NodeDeleting { op, .. } | Frame::NodeDeleted { op, .. } | Frame::NodeRestarting { op, .. } | Frame::NodeStopped { op, .. }
             | Frame::NodeConnectionsDeleting { op, .. } | Frame::NodeConnectionsDeleted { op, .. } | Frame::NodeLeaving { op, .. } | Frame::NodeLeft { op, .. } => {
@@ -203,7 +190,7 @@ impl Context {
         Ok(a)
     }
 
-    /// The written seat revision in a status sequence.
+    /// The primary record's revision in a status sequence.
     pub fn seat_revision(&self) -> Option<u64> { self.sequence.as_deref()?.split_once('.').and_then(|(r, _)| scalar(r).ok()) }
 }
 
@@ -319,12 +306,14 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     let index = TYPES.iter().position(|t| *t == kind);
     // Required context is checked before the named type outcome; no domain data is decoded.
     let Some(index) = index else { return Err(DecodeError::Unknown(kind)); };
-    if (9..=14).contains(&index) {
+    if (8..=13).contains(&index) {
         if sequence.is_some() { return Err(invalid("reserved type declares sequence").into()); }
-        return Err(DecodeError::Reserved(kind, index + 1));
+        // Its historical page position (gossip.md "Reserved lifecycle frame positions": the reserved
+        // types "retain their historical page positions"), which the types removed before them move not.
+        return Err(DecodeError::Reserved(kind, index + 2));
     }
     match index {
-        0 | 1 | 2 | 8 => { scalar(sequence.as_deref().ok_or_else(|| invalid("missing sequence"))?)?; }
+        0 | 1 | 2 => { scalar(sequence.as_deref().ok_or_else(|| invalid("missing sequence"))?)?; }
         6 | 7 => {
             let (r, t) = sequence.as_deref().and_then(|s| s.split_once('.')).ok_or_else(|| invalid("status sequence"))?;
             scalar(r)?; scalar(t)?;
@@ -471,14 +460,6 @@ mod tests {
         assert!(matches!(decode(&[6, 1, 0xff]), Err(DecodeError::Malformed(_))));
         assert!(matches!(decode(&wire::encode(event().data()).unwrap()), Err(DecodeError::Malformed(_))), "the old domain enum has no gossip decoder");
     }
-    #[test]
-    fn seat_subjects_use_the_complete_canonical_cohort() {
-        let holder = rdm_core::SeatHolder { mesh: "m".into(), node_id: author().node, incarnation: author().incarnation, revision: 2 };
-        for (seat, subject) in [(Seat::Cohort(rdm_core::NodeKind::RpcNode), "cohort/m/rpc-node"), (Seat::MeshPrimary, "cohort/m/mesh-primary"), (Seat::Cohort(rdm_core::NodeKind::NodeAdmin), "cohort/m/mesh-primary"), (Seat::FabricPrimary, "fabric/1123456789ab/seat")] {
-            assert_eq!(Frame::Seated { seat, holder: holder.clone() }.authored(&author(), 0, 1).context().unwrap().subject, subject);
-        }
-    }
-
     #[test]
     fn operation_sequence_is_absent_and_source_survives_forwarding() {
         let op = rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: author().node, incarnation: author().incarnation, name: "m.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };

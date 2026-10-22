@@ -160,8 +160,8 @@ A carrier's answer to a Forward call.
 | `NAME` | `"status"` |
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `30` |
-| `REPLY_VARIANTS` | `52` |
+| `REQUEST_VARIANTS` | `32` |
+| `REPLY_VARIANTS` | `55` |
 | `MAX_REQUEST_FRAME_BYTES` | `if MAX_CONFIG_REQUEST_BYTES>MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES }` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -169,7 +169,7 @@ A carrier's answer to a Forward call.
 
 ### `StatusRequest`
 
-`crates/rdm-core/src/status.rs` · enum · 30 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 32 variants · rdm-core
 
 A Status call.
 
@@ -317,12 +317,21 @@ A Status call.
 | 29.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 29.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 29.4 | `operation` | `String` |  |  | The operation: `leave-mesh:<path.name>` or `node.stop:<path.name>`. |
+| 30 | **`RenewCert`** |  |  | `op() = "node.cert.renew"` | Downward (`node.cert.renew`; node-cert-renew.md): the birth's issuing authority installs a |
+| 30.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth renewed. |
+| 30.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 30.2 | `cert` | `Vec<u8>` |  |  | The member cert, as the join carries it (`rdm_core::certs::cert_to_bytes`). |
+| 31 | **`UpdateIssuer`** |  |  | `op() = "node.issuer.update"` | Downward (`node.issuer.update`; node-issuer-update.md): the fabric-primary installs its mesh's |
+| 31.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node-admin. |
+| 31.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that node-admin. |
+| 31.2 | `key` | `IssuingKeyHex` → [`IssuingKeyHex`](#t-rdm_core-status-IssuingKeyHex) |  |  | The issuing key's secret, as hex. |
+| 31.3 | `cert` | `String` |  |  | The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`). |
 
 <a id="t-rdm_core-status-StatusReply"></a>
 
 ### `StatusReply`
 
-`crates/rdm-core/src/status.rs` · enum · 52 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 55 variants · rdm-core
 
 The typed result of a Status call.
 
@@ -342,8 +351,8 @@ The typed result of a Status call.
 | 5.0 | `held` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh id held. |
 | 6 | **`RejectedStaleFabric`** |  |  | `name() = "rejected-stale-fabric"` | The receiver holds another fabric id. |
 | 6.0 | `held` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric id held. |
-| 7 | **`RejectedNotAuthority`** |  |  | `name() = "rejected-not-authority"` | The receiver or sender is not the authority for the call. |
-| 7.0 | `why` | `NotAuthority` → [`NotAuthority`](#t-rdm_core-status-NotAuthority) |  |  | Which authority condition failed. |
+| 7 | **`RejectedNotPrimary`** |  |  | `name() = "rejected-not-primary"` | The receiver or sender is not the authority for the call. |
+| 7.0 | `why` | `NotPrimary` → [`NotPrimary`](#t-rdm_core-status-NotPrimary) |  |  | Which authority condition failed. |
 | 8 | **`RejectedInvalidNodeTransition`** |  |  | `name() = "rejected-invalid-node-transition"` | A node move backward along the legal order. |
 | 8.0 | `current` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state the node holds. |
 | 9 | **`RejectedInvalidMeshTransition`** |  |  | `name() = "rejected-invalid-mesh-transition"` | A mesh move backward along the legal order. |
@@ -396,7 +405,7 @@ The typed result of a Status call.
 | 27 | **`RejectedAdmittingConnections`** |  |  | `name() = "rejected-admitting-connections"` | The `UpdateName` was not made: the node admits connections (R-CR1). Its status is not |
 | 27.0 | `status` | `NodeStatus` → [`NodeStatus`](#t-rdm_core-views-NodeStatus) |  |  | The node's status as its mesh-primary holds it (at the cut, when it holds one). |
 | 27.1 | `held_connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The connections the node still held after its last `node.connections.delete`, at most |
-| 28 | **`NameHeld`** |  |  | `name() = "name-held"` | The `UpdateName` was not made: another node holds the name (insert-and-fail on its key in |
+| 28 | **`NameHeld`** |  |  | `name() = "name-held"` | The `UpdateName` was not made: another node holds the name (the row writer read its row). |
 | 28.0 | `name` | `String` |  |  | The name claimed. |
 | 28.1 | `by` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node that holds it. |
 | 29 | **`NodeRowRefused`** |  |  | `name() = "node-row-refused"` | The `UpdateName` was not made: the nodes store refused the claim or the put at the new key, so |
@@ -468,6 +477,16 @@ The typed result of a Status call.
 | 50.2 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rdm_core-status-WhichMesh) |  |  | The mesh channels left, in order. |
 | 51 | **`RequestNotHandled`** |  |  | `name() = "request-not-handled"` | The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch |
 | 51.0 | `request` | `String` |  |  | The request's op name. |
+| 52 | **`CertRenewed`** |  |  | `name() = "cert-renewed"` | `node.cert.renewed`: the exact birth holds and presents the new member cert. |
+| 52.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth renewed. |
+| 52.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 52.2 | `expires_at` | `u64` |  |  | When the installed cert expires, rafka-time ms. |
+| 53 | **`IssuerUpdated`** |  |  | `name() = "issuer-updated"` | `node.issuer.updated`: the node-admin holds its mesh's new issuing material and signs member |
+| 53.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node-admin. |
+| 53.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that node-admin. |
+| 53.2 | `issuer_expires_at` | `u64` |  |  | When the installed issuing cert expires, rafka-time ms. |
+| 54 | **`RejectedCert`** |  |  | `name() = "rejected-cert"` | A cert or issuing material refused by name (node-cert-renew.md, node-issuer-update.md): it does |
+| 54.0 | `reason` | `String` |  |  | Why, by name; within `MAX_REFUSAL_REASON_BYTES`. |
 
 ## 0x1C `build-claim`
 
@@ -583,7 +602,7 @@ The deploying node-admin's answer to a join.
 | 1.0 | `field` | `String` |  |  | The field that differs. |
 | 1.1 | `deployed` | `String` |  |  | The value the admin deployed. |
 | 1.2 | `reported` | `String` |  |  | The value the node reported. |
-| 2 | **`NotAuthority`** |  |  | `name() = "not-authority"` | The receiver did not deploy this birth; `primary` is the mesh primary it sees, if any. |
+| 2 | **`NotPrimary`** |  |  | `name() = "not-authority"` | The receiver did not deploy this birth; `primary` is the mesh primary it sees, if any. |
 | 2.0 | `primary` | `Option<String>` |  |  | The mesh primary the receiver sees, when it sees one. |
 | 3 | **`PeerUnresolved`** |  |  | `name() = "peer-unresolved"` | The peer the call needed could not be resolved. |
 | 3.0 | `reason` | `String` |  |  | Why the peer could not be resolved. |
@@ -680,13 +699,13 @@ One frame of a topology read.
 | 11.0 | `mesh` | `String` |  |  | The mesh's name. |
 | 11.1 | `mesh_id` | `Option<MeshId>` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The id the target stored for the mesh, when it stored one. |
 | 11.2 | `nodes` | `Vec<StoredNode>` → [`StoredNode`](#t-rdm_core-topology-StoredNode) |  |  | The births the target stored for the mesh. |
-| 12 | **`Seats`** |  |  | `name() = "seats"` | The record the target holds for one seat: a node entering the fabric learns who holds the |
-| 12.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-Seat) |  |  | The seat the record is for. |
-| 12.1 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rdm_core-seat-SeatHolder) |  |  | The seat's holder as the target records it. |
-| 12.2 | `gone` | `bool` |  |  | Whether the target holds the holder's exact birth as proven gone. |
-| 13 | **`RafkaTime`** |  |  | `name() = "rafka-time"` | The rafka-time the target holds, and the seat it holds: one frame, sent after the `Seats` |
+| 12 | **`Primaries`** |  |  | `name() = "primaries"` | A primary the target holds as the election's result the mesh-primary recorded (`is_primary`, |
+| 12.0 | `kind` | `PrimaryKind` → [`PrimaryKind`](#t-rdm_core-topology-PrimaryKind) |  |  | Which primary the record is. |
+| 12.1 | `primary` | `Primary` → [`Primary`](#t-rdm_core-seat-Primary) |  |  | The primary as the target records it. |
+| 12.2 | `gone` | `bool` |  |  | Whether the target holds the primary's exact birth as gone. |
+| 13 | **`RafkaTime`** |  |  | `name() = "rafka-time"` | The rafka-time the target holds, and which primary it is: one frame, sent after the |
 | 13.0 | `ms` | `u64` |  |  | The target's rafka-time now, in milliseconds. |
-| 13.1 | `seat` | `Option<Seat>` → [`Seat`](#t-rdm_core-seat-Seat) |  |  | The seat the target holds, from its own seat records: the fabric seat when it holds it, |
+| 13.1 | `kind` | `Option<PrimaryKind>` → [`PrimaryKind`](#t-rdm_core-topology-PrimaryKind) |  |  | Which primary the target is, from the primaries it holds: the fabric-primary when it is, |
 
 ## 0x1F `build-facts`
 
@@ -698,8 +717,8 @@ One frame of a topology read.
 | `NAME` | `"build-facts"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `1` |
-| `REPLY_VARIANTS` | `10` |
+| `REQUEST_VARIANTS` | `2` |
+| `REPLY_VARIANTS` | `11` |
 | `MAX_REQUEST_FRAME_BYTES` | `1024` |
 | `MAX_REPLY_FRAME_BYTES` | `8 * 1024` |
 
@@ -707,7 +726,7 @@ One frame of a topology read.
 
 ### `BuildFactsRequest`
 
-`crates/rdm-core/src/build_facts.rs` · enum · 1 variants · rdm-core
+`crates/rdm-core/src/build_facts.rs` · enum · 2 variants · rdm-core
 
 A BuildFacts call.
 
@@ -715,12 +734,13 @@ A BuildFacts call.
 |---|---|---|---|---|---|
 | 0 | **`FetchBuildFacts`** |  |  | `op() = "fetch-build-facts"` | Every fact the target holds for `build_id`. |
 | 0.0 | `build_id` | `String` |  |  | The Build whose facts are fetched. |
+| 1 | **`FetchCurrentBuild`** |  |  | `op() = "fetch-current-build"` | Every fact the target holds for its current accepted Build, whose id the stream's `End` |
 
 <a id="t-rdm_core-build_facts-BuildFactsReply"></a>
 
 ### `BuildFactsReply`
 
-`crates/rdm-core/src/build_facts.rs` · enum · 10 variants · rdm-core
+`crates/rdm-core/src/build_facts.rs` · enum · 11 variants · rdm-core
 
 One frame of a BuildFacts read.
 
@@ -751,6 +771,8 @@ One frame of a BuildFacts read.
 | 8 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 8.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 9 | **`Started`** |  |  | `name() = "started"` | The stream begins: sent before the first chunk of an accepted read. |
+| 10 | **`NoCurrentBuild`** |  |  | `name() = "no-current-build"` | `FetchCurrentBuild` found no current Build: no Build in the target's builds store is in |
+| 10.0 | `reason` | `String` |  |  | Why the target holds none. |
 
 ## 0x20 `build`
 
@@ -867,7 +889,7 @@ One frame of a Build stream.
 | 14.2 | `held_by` | `Option<String>` |  |  | The admin that claimed the holding attempt (the fabric-primary for a topology attempt, |
 | 15 | **`AttemptTaken`** |  |  | `name() = "attempt-taken"` | Refusal: the attempt number was opened first by another action. |
 | 15.0 | `detail` | `String` |  |  | What holds the number. |
-| 16 | **`SeatYielded`** |  |  | `name() = "seat-yielded"` | Refusal: the committed fabric seat record moved the seat off the receiver, which dispatches |
+| 16 | **`SeatYielded`** |  |  | `name() = "seat-yielded"` | Refusal: the fabric-primary record the receiver holds names another live birth, so the |
 | 16.0 | `node` | `String` |  |  | The admin whose Build log yielded the seat. |
 | 16.1 | `by` | `String` |  |  | The record that moved the seat, in words. |
 | 17 | **`CannotDelete`** |  |  | `name() = "cannot-delete"` | Refusal: the Build cannot leave history. |
@@ -885,7 +907,7 @@ One frame of a Build stream.
 | 22.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 23 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | Refusal: the caller is not allowed this call. |
 | 23.0 | `reason` | `String` |  |  | Why the call is refused. |
-| 24 | **`SeatMoved`** |  |  | `name() = "seat-moved"` | Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a |
+| 24 | **`FabricPrimaryMoved`** |  |  | `name() = "fabric-primary-moved"` | Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a |
 | 24.0 | `build_id` | `String` |  |  | The Build. |
 | 24.1 | `fabric_primary` | `Option<String>` |  |  | The admin (path.name) that holds the seat now, when the receiver's view names one. |
 | 25 | **`NotClaimant`** |  |  | `name() = "not-claimant"` | Refusal: the receiver may not claim on the mesh the request acts in (R-BI7): a topology |
@@ -903,8 +925,8 @@ One frame of a Build stream.
 | `NAME` | `"node-primary-update"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `4` |
-| `REPLY_VARIANTS` | `18` |
+| `REQUEST_VARIANTS` | `3` |
+| `REPLY_VARIANTS` | `13` |
 | `MAX_REQUEST_FRAME_BYTES` | `2048` |
 | `MAX_REPLY_FRAME_BYTES` | `1024` |
 
@@ -912,91 +934,69 @@ One frame of a Build stream.
 
 ### `NodePrimaryUpdateRequest`
 
-`crates/rdm-core/src/handover.rs` · enum · 4 variants · rdm-core
+`crates/rdm-core/src/handover.rs` · enum · 3 variants · rdm-core
 
 The directed calls of node.primary.update.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`PrimaryUpdate`** |  |  | `op() = "primary-update"` | node.primary.update, the holder to the successor its pre-check named, after its one committed |
-| 0.0 | `seats` | `Vec<SeatUpdate>` → [`SeatUpdate`](#t-rdm_core-handover-SeatUpdate) |  |  | Every seat the row moves (one, or both when the holder held both, Q1). |
+| 0 | **`PrimaryUpdate`** |  |  | `op() = "primary-update"` | node.primary.update, the primary to its successor's exact birth: the election's result the |
+| 0.0 | `primaries` | `Vec<(String, Birth, Birth, u64)>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | Every primary that moves: its node type (`fabric` for the fabric-primary), the primary's |
 | 0.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
-| 0.2 | `attempt` | `u32` |  |  | That Build's attempt. |
-| 0.3 | `operation` | `String` |  |  | The update's operation identity: the row's key. |
-| 1 | **`UpdatePrimary`** |  |  | `op() = "update-primary"` | node.primary.update commanded from above: the commander to the holder of the seats named. |
-| 1.0 | `fabric` | `String` |  |  | The fabric. |
-| 1.1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The exact birth the commander holds as the seats' holder. |
-| 1.2 | `seats` | `Vec<SeatRevision>` → [`SeatRevision`](#t-rdm_core-handover-SeatRevision) |  |  | Every seat that moves, each with the revision the commander holds it at. |
-| 1.3 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete moves the seats. |
-| 1.4 | `attempt` | `u32` |  |  | That Build's attempt. |
-| 1.5 | `operation` | `String` |  |  | The update's operation identity. |
-| 2 | **`UpdatePrimaryFromRow`** |  |  | `op() = "update-primary-from-row"` | node.primary.update of a cohort that is not node-admin, commanded by its mesh-primary, the |
+| 0.2 | `run` | `u32` |  |  | The run of that Build: the first attempt of the series a submission opened. |
+| 0.3 | `operation` | `String` |  |  | The update's operation identity, `node.primary.update:<build_id>:<run>:<op>`. |
+| 1 | **`UpdatePrimary`** |  |  | `op() = "update-primary"` | node.primary.update commanded from above, on the primary of `node_type` in the receiver's mesh, |
+| 1.0 | `node_type` | `String` |  |  | The node type whose primary moves. |
+| 1.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
+| 1.2 | `run` | `u32` |  |  | The run of that Build. |
+| 1.3 | `operation` | `String` |  |  | The update's operation identity. |
+| 2 | **`TakeOverFabricPrimary`** |  |  | `op() = "take-over-fabric-primary"` | node.fabric-primary.update of a take-over (fabric-recovery.md step 2): an admin that holds the |
 | 2.0 | `fabric` | `String` |  |  | The fabric. |
-| 2.1 | `seats` | `Vec<SeatUpdate>` → [`SeatUpdate`](#t-rdm_core-handover-SeatUpdate) |  |  | The seat the row moves, its holder and successor births and its committed revision. |
-| 2.2 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
-| 2.3 | `attempt` | `u32` |  |  | That Build's attempt. |
-| 2.4 | `operation` | `String` |  |  | The update's operation identity: the row's key. |
-| 3 | **`TakeOverFabricSeat`** |  |  | `op() = "take-over-fabric-seat"` | node.fabric-primary.update of a takeover (fabric-node-lifecycle-elections.md §5, Q24): a |
-| 3.0 | `fabric` | `String` |  |  | The fabric. |
-| 3.1 | `lost` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The fabric-primary's exact birth the proposer holds as lost. |
-| 3.2 | `expected_revision` | `u64` |  |  | The fabric seat's revision the proposer holds the lost birth at. |
-| 3.3 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The winner the backbone rule names in the proposer's view: the receiver. |
-| 3.4 | `proposer` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The mesh-primary that found the hold expired. |
+| 2.1 | `lost` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The fabric-primary's exact birth the proposer holds as unheard. |
+| 2.2 | `expected_revision` | `u64` |  |  | The fabric-primary's revision the proposer holds the lost birth at. |
+| 2.3 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The winner the election names in the proposer's view: the receiver. |
+| 2.4 | `proposer` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The admin that proposes it. |
 
 <a id="t-rdm_core-handover-NodePrimaryUpdateReply"></a>
 
 ### `NodePrimaryUpdateReply`
 
-`crates/rdm-core/src/handover.rs` · enum · 18 variants · rdm-core
+`crates/rdm-core/src/handover.rs` · enum · 13 variants · rdm-core
 
 The answer to a node.primary.update call.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`PrimaryUpdated`** |  |  | `name() = "primary-updated"` | node.primary.updated: the successor installed the committed row, every seat at its revision. |
-| 0.0 | `revisions` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rdm_core-seat-transfer-CommittedSeat) |  |  | The committed seats: each seat, its committed holder's exact birth and its revision. |
-| 1 | **`RejectedConflict`** |  |  | `name() = "rejected-conflict"` | The operation's committed row names another payload: the row decides. |
+| 0 | **`PrimaryUpdated`** |  |  | `name() = "primary-updated"` | node.primary.updated: the successor installed the election's result, every entry at its revision. |
+| 0.0 | `revisions` | `Vec<(String, Birth, Birth, u64)>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | The entries installed, as `NodePrimaryUpdateRequest::PrimaryUpdate` carries them. |
+| 1 | **`RejectedConflictingPayload`** |  |  | `name() = "rejected-conflicting-payload"` | The operation was answered for another payload. |
 | 1.0 | `operation` | `String` |  |  | The operation in conflict. |
-| 2 | **`RejectedFabricNotReady`** |  |  | `name() = "rejected-fabric-not-ready"` | The initial fabric has not first reached ready-for-traffic (R-PB1): no seat moves. |
+| 2 | **`RejectedFabricNotReady`** |  |  | `name() = "rejected-fabric-not-ready"` | The initial fabric has not first reached ready-for-traffic (R-PB1): no primary moves. |
 | 2.0 | `reason` | `String` |  |  | The workflow refused and the fabric's state. |
-| 3 | **`RejectedNoSuccessor`** |  |  | `name() = "rejected-no-successor"` | No successor (proposal Q7): `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, |
-| 3.0 | `reason` | `String` |  |  | The refusal's exact text. |
-| 4 | **`RejectedNotAuthority`** |  |  | `name() = "rejected-not-authority"` | The receiver holds no seat the command names. |
-| 4.0 | `reason` | `String` |  |  | What the receiver holds instead. |
-| 5 | **`RejectedStaleSeat`** |  |  | `name() = "rejected-stale-seat"` | A seat's revision is not the one the command named: the holder's pre-check of the call's revision. |
-| 5.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  |  | The seat. |
-| 5.1 | `expected` | `u64` |  |  | The revision the call named. |
-| 5.2 | `current` | `u64` |  |  | The revision the holder holds. |
-| 6 | **`RejectedRevisionOverflow`** |  |  | `name() = "rejected-revision-overflow"` | A seat's revision cannot advance: it is at `u64::MAX`, so no row can commit at its next revision |
-| 6.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  |  | The seat whose revision cannot advance. |
-| 6.1 | `revision` | `u64` |  |  | The revision it is at. |
-| 7 | **`RejectedSourceFailed`** |  |  | `name() = "rejected-source-failed"` | What the receiver had to read or write to decide or commit the call failed: its `fabric.storage` |
-| 7.0 | `source` | `String` |  |  | What failed, named with its owner and row. |
-| 7.1 | `op` | `String` |  |  | The operation on it that failed, with its subject. |
-| 7.2 | `cause` | `String` |  |  | Why it failed: the store's or the peer's own error. |
-| 8 | **`RejectedRecordAbsent`** |  |  | `name() = "rejected-record-absent"` | A record the receiver needed was never written where it looked (CLAUDE.md error rule: "'Never |
-| 8.0 | `record` | `String` |  |  | The record never written, named with its subject. Within `MAX_RECORD_ABSENT_RECORD_BYTES`. |
-| 8.1 | `holder` | `String` |  |  | The admin whose store holds no such record (its path.name). Within |
-| 9 | **`Incomplete`** |  |  | `name() = "incomplete"` | The holder wrote its row, and its call on the successor did not answer node.primary.updated: |
-| 9.0 | `reason` | `String` |  |  | The call, the successor and how it ended. |
-| 10 | **`NotReady`** |  |  | `name() = "not-ready"` | The receiver cannot decide yet. |
-| 10.0 | `reason` | `String` |  |  | What it waits for. |
-| 11 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 11.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
-| 12 | **`PeerUnresolved`** |  |  | `name() = "peer-unresolved"` | The peer the call needed could not be resolved. |
-| 12.0 | `reason` | `String` |  |  | Why. |
-| 13 | **`Busy`** |  |  | `name() = "busy"` | The receiver is at its admission bound. |
-| 13.0 | `reason` | `String` |  |  | Which bound. |
-| 14 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The receiver is connections-deleting and takes no new work. |
-| 14.0 | `reason` | `String` |  |  | Why. |
-| 15 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
-| 15.0 | `reason` | `String` |  |  | Why. |
-| 16 | **`Failed`** |  |  | `name() = "failed"` | The commanded `node.primary.update` ended failed after the committed row (Q10, R-PU2, R-BI4): |
-| 16.0 | `step` | `String` |  |  | The step that failed (`primary-update`). Within `MAX_FAILED_STEP_BYTES`. |
-| 16.1 | `reason` | `String` |  |  | Why the step failed. Within `MAX_FAILED_REASON_BYTES`. |
-| 16.2 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The standard code captured where the failure occurred. |
-| 17 | **`AlreadyApplied`** |  |  | `name() = "already-applied"` | The takeover a `TakeOverFabricSeat` names is committed already, to the successor it names: |
-| 17.0 | `revisions` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rdm_core-seat-transfer-CommittedSeat) |  |  | The committed seat: the fabric seat, its committed holder's exact birth and its revision. |
+| 3 | **`RejectedNotPrimary`** |  |  | `name() = "rejected-not-primary"` | The receiver is not the primary the call needs: a command on a node that is not the primary of |
+| 3.0 | `reason` | `String` |  |  | What the receiver holds instead. |
+| 4 | **`RejectedStaleRevision`** |  |  | `name() = "rejected-stale-revision"` | A take-over at a revision the recorded primary no longer holds. |
+| 4.0 | `node_type` | `String` |  |  | The node type whose revision moved (`fabric`). |
+| 4.1 | `expected` | `u64` |  |  | The revision the call named. |
+| 4.2 | `current` | `u64` |  |  | The revision the receiver holds. |
+| 5 | **`NotReady`** |  |  | `name() = "not-ready"` | The receiver cannot decide yet. |
+| 5.0 | `reason` | `String` |  |  | What it waits for. |
+| 6 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
+| 6.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 7 | **`PeerUnresolved`** |  |  | `name() = "peer-unresolved"` | The peer the call needed could not be resolved. |
+| 7.0 | `reason` | `String` |  |  | Why. |
+| 8 | **`Busy`** |  |  | `name() = "busy"` | The receiver is at its admission bound. |
+| 8.0 | `reason` | `String` |  |  | Which bound. |
+| 9 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The receiver is connections-deleting and takes no new work. |
+| 9.0 | `reason` | `String` |  |  | Why. |
+| 10 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
+| 10.0 | `reason` | `String` |  |  | Why. |
+| 11 | **`Failed`** |  |  | `name() = "failed"` | The commanded update ended failed (R-BI4): the Build carrier's own terminal, recording the step |
+| 11.0 | `step` | `String` |  |  | The step that failed (`primary-update`). Within `MAX_FAILED_STEP_BYTES`. |
+| 11.1 | `reason` | `String` |  |  | Why the step failed. Within `MAX_FAILED_REASON_BYTES`. |
+| 11.2 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The standard code captured where the failure occurred. |
+| 12 | **`AlreadyApplied`** |  |  | `name() = "already-applied"` | The take-over is applied already, to the successor it names. |
+| 12.0 | `revisions` | `Vec<(String, Birth, Birth, u64)>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | The fabric-primary's entry, at its revision. |
 
 ## 0x22 `node-command`
 
@@ -1368,8 +1368,8 @@ A declare probe answer.
 | `NAME` | `"originate"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
-| `REQUEST_VARIANTS` | `7` |
-| `REPLY_VARIANTS` | `14` |
+| `REQUEST_VARIANTS` | `8` |
+| `REPLY_VARIANTS` | `16` |
 | `MAX_REQUEST_FRAME_BYTES` | `4096` |
 | `MAX_REPLY_FRAME_BYTES` | `65536` |
 
@@ -1377,7 +1377,7 @@ A declare probe answer.
 
 ### `OriginateRequest`
 
-`crates/rdm-test/src/originate.rs` · enum · 7 variants · rdm-test
+`crates/rdm-test/src/originate.rs` · enum · 8 variants · rdm-test
 
 An originate door call.
 
@@ -1398,14 +1398,17 @@ An originate door call.
 | 4.2 | `failed_attempts` | `u32` |  | The number of Direct Failed observations to record first. |
 | 5 | **`Dial`** |  |  | One direct core Ping to `destination`, outside route resolution, as a node's own |
 | 5.0 | `destination` | `String` |  | The `path.name` to ping. |
-| 6 | **`StopTransport`** |  |  | Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription |
-| 6.0 | `reason` | `String` |  | The reason the transport stopped. |
+| 6 | **`Stream`** |  |  | Open a data-plane stream (connections.md §5: `Connections::open`, `open_bi`) to the current |
+| 6.0 | `destination` | `String` |  | The `path.name` to stream to. |
+| 6.1 | `payload` | `Vec<u8>` |  | The bytes written. |
+| 7 | **`StopTransport`** |  |  | Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription |
+| 7.0 | `reason` | `String` |  | The reason the transport stopped. |
 
 <a id="t-rdm_test-originate-OriginateReply"></a>
 
 ### `OriginateReply`
 
-`crates/rdm-test/src/originate.rs` · enum · 14 variants · rdm-test
+`crates/rdm-test/src/originate.rs` · enum · 16 variants · rdm-test
 
 An originate door answer.
 
@@ -1460,9 +1463,18 @@ An originate door answer.
 | 12.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who dialled. |
 | 12.1 | `destination_node_id` | `String` |  | The destination's node id. |
 | 12.2 | `outcome` | `String` |  | The Ping's outcome name. |
-| 13 | **`TransportStopMarked`** |  |  | The transport stop is marked; the process is exiting. |
-| 13.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who marked the stop. |
-| 13.1 | `reason` | `String` |  | The reason recorded. |
+| 13 | **`Streamed`** |  |  | The stream was opened, written and answered. |
+| 13.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who opened it. |
+| 13.1 | `peer` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | The far peer the connection reached (its exact birth). |
+| 13.2 | `kind` | `String` |  | `direct` or `proxy`. |
+| 13.3 | `connection_id` | `String` |  | The connection row's id. |
+| 13.4 | `answered` | `Vec<u8>` |  | What the far role answered on the stream. |
+| 14 | **`StreamFailed`** |  |  | The stream could not be opened, written or read. |
+| 14.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who tried. |
+| 14.1 | `reason` | `String` |  | Why, by name. |
+| 15 | **`TransportStopMarked`** |  |  | The transport stop is marked; the process is exiting. |
+| 15.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who marked the stop. |
+| 15.1 | `reason` | `String` |  | The reason recorded. |
 
 ## 0x74 `before-ready-pull`
 
@@ -1616,6 +1628,19 @@ Who answered.
 | 1 | `node` | `String` |  | The answering node's `path.name`. |
 | 2 | `incarnation_id` | `String` |  | The answering node's incarnation id. |
 
+<a id="t-rdm_core-framing-Birth"></a>
+
+### `Birth`
+
+`crates/rdm-core/src/framing.rs` · struct · 2 fields · rdm-core
+
+A sending node's exact birth, `(node.id, incarnation)`: the first half of every delivery identity.
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The node's minted id. |
+| 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth. |
+
 <a id="t-rdm_core-build-BuildChange"></a>
 
 ### `BuildChange`
@@ -1731,20 +1756,6 @@ serde: `try_from = "u8", into = "u8"`
 | 14 | **`Unavailable`** = `14` |  |  | `name() = "UNAVAILABLE"` | Standard code 14: `UNAVAILABLE`. |
 | 15 | **`DataLoss`** = `15` |  |  | `name() = "DATA_LOSS"` | Standard code 15: `DATA_LOSS`. |
 | 16 | **`Unauthenticated`** = `16` |  |  | `name() = "UNAUTHENTICATED"` | Standard code 16: `UNAUTHENTICATED`. |
-
-<a id="t-rdm_core-seat-transfer-CommittedSeat"></a>
-
-### `CommittedSeat`
-
-`crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
-
-One seat a transfer committed: the seat, its committed holder's exact birth and the revision.
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat that moved. |
-| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | Its committed holder. |
-| 2 | `revision` | `u64` |  | The revision the transfer committed. |
 
 <a id="t-rdm_core-digest-ConfigOverCap"></a>
 
@@ -2021,7 +2032,7 @@ The logical Fabric's identity, kept for the Fabric's lifetime.
 
 ### `FabricView`
 
-`crates/rdm-core/src/views.rs` · struct · 10 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 11 fields · rdm-core
 
 The fabric as the answering node-admin's view holds it (`fabric.get`).
 
@@ -2037,6 +2048,7 @@ The fabric as the answering node-admin's view holds it (`fabric.get`).
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
 | 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
 | 9 | `takeover` | `Option<HeldTakeover>` → [`HeldTakeover`](#t-rdm_core-views-HeldTakeover) | `default` | A fabric-seat takeover the store could not commit, while it is held (elections §5). |
+| 10 | `next_expiry` | `Option<u64>` | `default` | The next member cert expiry across the fabric's cert rows, rafka-time ms (fabric-certs.md |
 
 <a id="t-rdm_test-fault_door-FaultState"></a>
 
@@ -2073,7 +2085,7 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 
 `crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
 
-An exact birth named by a handover or a seat transfer: its mesh, node and incarnation.
+An exact birth: its mesh, node and incarnation.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
@@ -2202,6 +2214,20 @@ The typed reason an inner invocation has no reply; the explanation is a separate
 | 5 | **`CorruptReply`** |  |  | The reply bytes are corrupt. |
 | 6 | **`ProtocolViolation`** |  |  | The response violated its framing or ordering contract. |
 
+<a id="t-rdm_core-status-IssuingKeyHex"></a>
+
+### `IssuingKeyHex`
+
+`crates/rdm-core/src/status.rs` · tuple struct · 1 fields · rdm-core
+
+An issuing key's secret carried by `StatusRequest::UpdateIssuer`, as hex: its debug form names its
+
+serde: `transparent`
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `0` | `String` |  |  |
+
 <a id="t-rdm_core-lifecycle-LifecycleOp"></a>
 
 ### `LifecycleOp`
@@ -2312,7 +2338,7 @@ A Mesh's status, as declared.
 
 ### `MeshView`
 
-`crates/rdm-core/src/views.rs` · struct · 6 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 7 fields · rdm-core
 
 One mesh as the answering node-admin's view holds it (`mesh.get`).
 
@@ -2324,6 +2350,21 @@ One mesh as the answering node-admin's view holds it (`mesh.get`).
 | 3 | `primary_admin` | `Option<PathName>` → [`PathName`](#t-rdm_core-path-PathName) |  | The node-admin that is the mesh's primary, when one is seated. |
 | 4 | `admin_api_base` | `Option<String>` |  | The control API base of the mesh's primary. |
 | 5 | `nodes` | `Vec<PathName>` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` of every node of the mesh. |
+| 6 | `renewals` | `Option<Renewals>` → [`Renewals`](#t-rdm_core-views-Renewals) | `default` | The mesh's member renewals, when they stall (fabric-certs.md §Tracking). |
+
+<a id="t-rdm_core-views-NodeCertView"></a>
+
+### `NodeCertView`
+
+`crates/rdm-core/src/views.rs` · struct · 3 fields · rdm-core
+
+A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `issued_at` | `u64` |  | When the cert the row names was issued. |
+| 1 | `expires_at` | `u64` |  | When it expires. |
+| 2 | `issuer_expires_at` | `u64` |  | When its issuing cert expires. |
 
 <a id="t-rdm_core-connections-NodeConnection"></a>
 
@@ -2461,7 +2502,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rdm-core/src/views.rs` · struct · 28 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 29 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2495,10 +2536,11 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 25 | `types` | `std::collections::BTreeSet<String>` | `default` | This exact birth's immutable app declaration. |
 | 26 | `held` | `std::collections::BTreeSet<String>` | `default` | Types this birth joined, including members and peers on a node-admin. |
 | 27 | `held_hash` | `[u8; 32]` | `default` | Canonical held-set hash carried by this birth's digest. |
+| 28 | `cert` | `Option<NodeCertView>` → [`NodeCertView`](#t-rdm_core-views-NodeCertView) | `default` | The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None` |
 
-<a id="t-rdm_core-status-NotAuthority"></a>
+<a id="t-rdm_core-status-NotPrimary"></a>
 
-### `NotAuthority`
+### `NotPrimary`
 
 `crates/rdm-core/src/status.rs` · enum · 3 variants · rdm-core
 
@@ -2568,9 +2610,9 @@ The delivery identity an Owed request keeps on every leg: each carried attempt i
 
 ### `PathName`
 
-`crates/rdm-core/src/path.rs` · struct · 6 fields · rdm-core
+`crates/rdm-core/src/path.rs` · struct · 5 fields · rdm-core
 
-A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names
+A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names the
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
@@ -2579,7 +2621,34 @@ A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.ol
 | 2 | `ordinal` | `u32` |  | The node's ordinal within its mesh and kind, from 1 (`0` when `label` carries a non-numeric free-text name). |
 | 3 | `label` | `String` |  | Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`. |
 | 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
-| 5 | `new` | `bool` |  | The path is the `.new` name of a successor that has not yet taken the name. |
+
+<a id="t-rdm_core-seat-Primary"></a>
+
+### `Primary`
+
+`crates/rdm-core/src/seat.rs` · struct · 4 fields · rdm-core
+
+A primary as it is recorded (`is_primary`, `is_fabric_primary` at its revision) and as the topology
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `mesh` | `String` |  | The mesh the primary belongs to. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The primary's node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The primary's exact birth. |
+| 3 | `revision` | `u64` |  | The record's revision: a later revision supersedes an earlier one. |
+
+<a id="t-rdm_core-topology-PrimaryKind"></a>
+
+### `PrimaryKind`
+
+`crates/rdm-core/src/topology.rs` · enum · 2 variants · rdm-core
+
+A primary as the topology answers it (node-rpc-envelope.md `PrimaryKind`): the election's result
+
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`MeshPrimary`** |  |  | `name() = "mesh-primary"` | A mesh's mesh-primary. |
+| 1 | **`FabricPrimary`** |  |  | `name() = "fabric-primary"` | The fabric-primary. |
 
 <a id="t-rdm_test-resolve_probe-ProbeTarget"></a>
 
@@ -2689,7 +2758,7 @@ The author of a versioned topology: its descriptive name and exact node/incarnat
 
 ### `RecipeStep`
 
-`crates/rdm-core/src/build.rs` · enum · 5 variants · rdm-core
+`crates/rdm-core/src/build.rs` · enum · 7 variants · rdm-core
 
 One step of a `BuildChange::Recipe`: one node primitive acting on the node a `path.name` names
 
@@ -2706,6 +2775,23 @@ One step of a `BuildChange::Recipe`: one node primitive acting on the node a `pa
 | 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 4 | **`Delete`** |  |  | node.delete of the node at `node`: its identity and name are released, its storage kept. |
 | 4.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 5 | **`DeleteConnections`** |  |  | node.connections.delete `{ scope: All }` of the live node at `node` |
+| 5.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 6 | **`LeaveMesh`** |  |  | node.mesh.leave of the live node at `node`, once its connections are deleted |
+| 6.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+
+<a id="t-rdm_core-views-Renewals"></a>
+
+### `Renewals`
+
+`crates/rdm-core/src/views.rs` · enum · 1 variants · rdm-core
+
+A mesh whose member renewals stall (fabric-certs.md §Tracking: a row past `renew_at` by more than
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`Stalled`** |  |  | At least one birth's renewal is past its point by more than a floor with no receipt. |
+| 0.0 | `nodes` | `Vec<PathName>` → [`PathName`](#t-rdm_core-path-PathName) |  | The births whose renewals stall. |
 
 <a id="t-rdm_core-outcome-ResolveFailure"></a>
 
@@ -2731,11 +2817,11 @@ The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Ou
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`AuthorityChanged`** |  |  | `name() = "authority-changed"` | The authority's birth changed or departed. |
+| 0 | **`PrimaryChanged`** |  |  | `name() = "primary-changed"` | The authority's birth changed or departed. |
 | 1 | **`TargetReachable`** |  |  | `name() = "target-reachable"` | The named node became reachable (heard after silence, or first heard). |
 | 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node waited for. |
-| 2 | **`AuthorityReady`** |  |  | `name() = "authority-ready"` | The authority published ReadyForTraffic. |
-| 3 | **`AuthorityAddressed`** |  |  | `name() = "authority-addressed"` | The authority addressed this node (it sent a down op). |
+| 2 | **`PrimaryReady`** |  |  | `name() = "primary-ready"` | The authority published ReadyForTraffic. |
+| 3 | **`PrimaryAddressed`** |  |  | `name() = "primary-addressed"` | The authority addressed this node (it sent a down op). |
 
 <a id="t-rdm_test-before_ready_probe-Row"></a>
 
@@ -2784,81 +2870,6 @@ serde: `rename_all = "kebab-case"`
 | 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
 | 5 | **`StateSync`** |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
 | 6 | **`StateCommit`** |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic rounds run. |
-
-<a id="t-rdm_core-seat-Seat"></a>
-
-### `Seat`
-
-`crates/rdm-core/src/seat.rs` · enum · 3 variants · rdm-core
-
-A primary seat. The discriminants are the wire positions.
-
-| # | variant · field | type | serde | labels | doc |
-|---|---|---|---|---|---|
-| 0 | **`MeshPrimary`** |  |  | `name() = "mesh-primary"` | The node-admin primary of one mesh (named by `SeatHolder::mesh`). |
-| 1 | **`FabricPrimary`** |  |  | `name() = "fabric-primary"` | The fabric primary: a mesh primary that also holds the fabric's control. |
-| 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of the holder's mesh's cohort of this node type, every type but `node_admin` |
-| 2.0 | `0` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  |  |
-
-<a id="t-rdm_core-seat-transfer-Seat"></a>
-
-### `Seat`
-
-`crates/rdm-core/src/seat.rs` · enum · 3 variants · rdm-core
-
-A seat as a transfer names it. The discriminants are the wire positions.
-
-| # | variant · field | type | serde | labels | doc |
-|---|---|---|---|---|---|
-| 0 | **`FabricPrimary`** |  |  | `name() = "fabric-primary"` | The fabric primary. |
-| 1 | **`MeshPrimary`** |  |  | `name() = "mesh-primary"` | The node-admin primary of `mesh`. |
-| 1.0 | `mesh` | `String` |  |  | The mesh whose primary seat it is. |
-| 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of `mesh`'s cohort of node type `kind` (every type but `node_admin`). |
-| 2.0 | `mesh` | `String` |  |  | The mesh whose cohort it is. |
-| 2.1 | `kind` | `crate::path::NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  | The cohort's node type. |
-
-<a id="t-rdm_core-seat-SeatHolder"></a>
-
-### `SeatHolder`
-
-`crates/rdm-core/src/seat.rs` · struct · 4 fields · rdm-core
-
-The holder of a seat: the exact birth, the mesh it belongs to, and the revision of the record.
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `mesh` | `String` |  | The mesh the holder belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The holder's node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The holder's exact birth. |
-| 3 | `revision` | `u64` |  | The record's revision: a later revision supersedes an earlier one. |
-
-<a id="t-rdm_core-handover-SeatRevision"></a>
-
-### `SeatRevision`
-
-`crates/rdm-core/src/handover.rs` · struct · 2 fields · rdm-core
-
-A seat the commander names in `NodePrimaryUpdateRequest::UpdatePrimary`, with the revision it holds
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat. |
-| 1 | `expected_revision` | `u64` |  | The seat's current revision as the caller holds it. |
-
-<a id="t-rdm_core-handover-SeatUpdate"></a>
-
-### `SeatUpdate`
-
-`crates/rdm-core/src/handover.rs` · struct · 4 fields · rdm-core
-
-One seat the committed row moves, as `NodePrimaryUpdateRequest::PrimaryUpdate` carries it.
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat's cohort: the mesh-primary seat of a mesh, or the fabric seat. |
-| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The exact birth that held the seat and wrote the row. |
-| 2 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The exact birth the row commits the seat to. |
-| 3 | `revision` | `u64` |  | The revision the row commits. |
 
 <a id="t-rdm_core-topology-SourceVersion"></a>
 
@@ -2965,7 +2976,7 @@ Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
 
 ### `WireDigest`
 
-`crates/rdm-core/src/wire.rs` · struct · 13 fields · rdm-core
+`crates/rdm-core/src/wire.rs` · struct · 15 fields · rdm-core
 
 A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published liveness
 
@@ -2984,6 +2995,8 @@ A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published
 | 10 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) |  |  |
 | 11 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) |  |  |
 | 12 | `held_hash` | `[u8; 32]` |  |  |
+| 13 | `is_primary` | `Option<u64>` |  |  |
+| 14 | `is_fabric_primary` | `Option<u64>` |  |  |
 
 <a id="t-rdm_core-wire-WireLocator"></a>
 

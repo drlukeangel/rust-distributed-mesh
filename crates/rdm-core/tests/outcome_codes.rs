@@ -37,7 +37,7 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
         0x1E => &[0,0,0,14,5,5,14,14,15,7,0,0,0,0],
         0x1F => &[0,0,14,5,5,14,14,15,7,0,5],
         0x20 => &[0,0,0,0,0,9,0,0,0,9,9,10,5,9,14,10,9,9,5,14,14,14,15,7,0,9],
-        0x21 => &[0,10,9,9,9,10,9,9,5,9,14,15,5,14,14,7,9,6],
+        0x21 => &[0,10,9,9,10,14,15,5,14,14,7,9,6],
         0x22 => &[0,0,0,3,10,14,5,14,14,15,7,0,0,0,0,13,9],
         op => panic!("no expected-code fixture for {op:#x}"),
     };
@@ -46,8 +46,8 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
     let n = if wire[0] == malformed { match wire[1] { 0 | 3 => 8, 1 => 3, 2 => 15, other => panic!("unknown malformed kind {other}") } } else { expected[wire[0] as usize] };
     let n = match P::OP {
         0x1B => match rdm_core::status::Status::decode_reply(&wire).unwrap() {
-            StatusReply::RejectedNotAuthority { why: rdm_core::status::NotAuthority::SubjectUnknown { .. } } => 5,
-            StatusReply::RejectedNotAuthority { why: rdm_core::status::NotAuthority::SenderNotSubject { .. } } => 7,
+            StatusReply::RejectedNotPrimary { why: rdm_core::status::NotPrimary::SubjectUnknown { .. } } => 5,
+            StatusReply::RejectedNotPrimary { why: rdm_core::status::NotPrimary::SenderNotSubject { .. } } => 7,
             StatusReply::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Deadline { .. } }
             | StatusReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Deadline { .. }), .. } => 4,
             _ => n,
@@ -105,7 +105,7 @@ fn every_reply_variant_of_join_classifies_to_one_code() {
     let fixtures = [
             JoinReply::Joined { answer: vec![1, 2, 3] },
             JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() },
-            JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) },
+            JoinReply::NotPrimary { primary: Some("mesh1.admin.1".into()) },
             JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() },
             JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() },
             Join::peer_unresolved("p".into()),

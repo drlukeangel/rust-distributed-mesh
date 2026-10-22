@@ -11,11 +11,11 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     lost.extend(book.departed().into_iter().map(|op| op.incarnation));
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
-    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost, vacant: book.seats.vacant_meshes() }
+    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost }
 }
 
-/// Where this birth's Build log reads its authority: the committed fabric seat record held in
-/// `book`, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
+/// What this birth's Build log reads its fence from: the fabric-primary record `book` holds, the
+/// election's result this admin installed, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
 pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName) -> crate::fabric_builds::SeatSource {
     let changed = Some(book.seats.subscribe());
@@ -28,8 +28,8 @@ pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: 
     crate::fabric_builds::SeatSource { read, changed }
 }
 
-/// Where this birth's drift-lane opens and claims read their seat (R-BI7): the committed record
-/// of its own mesh's primary seat held in `book`, judged as [`fabric_seat_record`] judges the fabric
+/// Where this birth's drift-lane opens and claims read their fence (R-BI7): the mesh-primary record
+/// of its own mesh `book` holds, judged as [`fabric_seat_record`] judges the fabric
 /// seat's.
 pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, mesh: &str) -> crate::fabric_builds::SeatSource {
     let changed = Some(book.seats.subscribe());
@@ -49,7 +49,7 @@ pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (N
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
-pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::SeatHolder)> {
+pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::Primary)> {
     let mesh_primary = t.holds_mesh_seat(mesh, me.0);
     let fabric_primary = t.holds_fabric_seat(me.0);
     let mut said = Vec::new();
@@ -61,9 +61,7 @@ pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
         if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
             continue;
         }
-        // A seat a committed move left vacant is filled at the revision after the vacancy (i144 Q51).
-        let vacant = (seat == rdm_core::Seat::MeshPrimary).then(|| decided.vacant.get(mesh).copied()).flatten();
-        said.push((seat, rdm_core::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).or(vacant.map(|v| v + 1)).unwrap_or(1) }));
+        said.push((seat, rdm_core::Primary { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
     }
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
     // says each other cohort's seat the election filled with a birth the record does not name.
@@ -74,7 +72,7 @@ pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
             }
-            said.push((rdm_core::Seat::Cohort(kind), rdm_core::SeatHolder { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+            said.push((rdm_core::Seat::Cohort(kind), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
         }
     }
     said

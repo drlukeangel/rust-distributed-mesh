@@ -327,6 +327,15 @@ pub struct NodeRecord {
     /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
+    /// The revision at which this birth is its node type's primary in its mesh, when it is: the
+    /// election's result, recorded by the mesh-primary (node-identity-and-state.md §2.7); the write
+    /// records the role and does not grant it. A row written before primaries were recorded carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<u64>,
+    /// The revision at which this birth is the fabric-primary, when it is, recorded by the node-admin
+    /// on its own row (node-identity-and-state.md §2.8), as [`Self::is_primary`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_fabric_primary: Option<u64>,
 }
 
 impl NodeRecord {
@@ -994,6 +1003,8 @@ mod tests {
             endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             listeners: vec![],
+            is_primary: None,
+            is_fabric_primary: None,
         }
     }
 

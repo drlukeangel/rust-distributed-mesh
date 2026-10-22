@@ -1042,7 +1042,7 @@ impl NodeSelf {
         // reaching the birth whose own record holds the fabric seat is refused by name, whoever sent it
         // (a superseded holder commands on a stale book).
         if self.membership.seats().fabric().is_some_and(|h| h.node_id == self.node_id && h.incarnation == self.incarnation) {
-            return rdm_core::reply::status::rejected_not_authority(rdm_core::status::NotAuthority::ReceiverNotPrimary { needed: format!("a birth with an authority above it: {} holds the fabric seat, which nothing above commands to join", self.held_name()) });
+            return rdm_core::reply::status::rejected_not_primary(rdm_core::status::NotPrimary::ReceiverNotPrimary { needed: format!("a birth with an authority above it: {} holds the fabric seat, which nothing above commands to join", self.held_name()) });
         }
         let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
         let (commander_tx, commander_rx) = tokio::sync::watch::channel(key);

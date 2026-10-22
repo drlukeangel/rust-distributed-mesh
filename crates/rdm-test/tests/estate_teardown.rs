@@ -49,7 +49,7 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     estate.enter(&Estate::path("mesh1.admin.2")).await;
     let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin.1")).await.expect("node.stop of mesh1.admin.1");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();

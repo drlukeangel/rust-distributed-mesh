@@ -79,7 +79,7 @@ fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_st
 
 /// CONTRACT: an admin launched by another admin runs the same hook against its accepting authority.
 /// The Day-0 admin's own hook is held, so its pull gate is closed: the joining admin's pull is
-/// answered typed `NotReady`, its hook is `Blocked { AuthorityReady }`, the Ready check names that
+/// answered typed `NotReady`, its hook is `Blocked { PrimaryReady }`, the Ready check names that
 /// blocker (`rdm.node_admin.runtime.reject.via-not-authority-capable`) and it publishes Pending.
 /// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered Status
 /// `Blocked` carrying that blocker, named with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
@@ -178,7 +178,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         })
         .await
         .expect("the pull was answered NotReady and the hook blocked");
-        assert!(matches!(blocked, BeforeReadyState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{blocked:?}");
+        assert!(matches!(blocked, BeforeReadyState::Blocked { retry_on: RetryOn::PrimaryReady, .. }), "{blocked:?}");
         assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a blocked admin is Pending");
         assert_eq!(pull.answered(), 0, "the Day-0 admin answered no rows before its own hook passed");
         // node-start.md step 3: while Blocked, the node answers its executor's ProbeNodeState with
@@ -206,7 +206,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         })
         .await
         .expect("the executor's ready_blocker names the blocked admin's blocker");
-        assert!(named.contains("mesh1.admin.2") && named.contains(&hook_reason) && named.contains("authority-ready"), "the blocker names the birth, the hook's reason and its retry event: {named}");
+        assert!(named.contains("mesh1.admin.2") && named.contains(&hook_reason) && named.contains("primary-ready"), "the blocker names the birth, the hook's reason and its retry event: {named}");
         assert!(!named.contains("(attempt "), "no attempt counter: {named}");
         // The Ready check reports a changed blocker list on its own cadence.
         let ready_blockers = tokio::time::timeout(WRONG, async {
@@ -227,7 +227,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         })
         .await
         .expect("the Ready check names the hook's blocker");
-        assert!(ready_blockers.iter().any(|d| d.contains("it runs again on authority-ready")), "the blocker names its retry event: {ready_blockers:?}");
+        assert!(ready_blockers.iter().any(|d| d.contains("it runs again on primary-ready")), "the blocker names its retry event: {ready_blockers:?}");
 
         // The Day-0 admin's hook returns: its gate opens, it is Ready, and the joiner's retry follows.
         resume.notify_one();

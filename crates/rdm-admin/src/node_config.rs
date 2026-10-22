@@ -15,7 +15,7 @@ use crate::storage::NodeRow;
 use crate::topology::Topology;
 use rdm_client::{CallEnd, ExactBirth, NodeRpc};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
-use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
+use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
 use std::sync::Arc;
 
 /// A mesh-primary's config door: the client it tells a birth of its mesh through, what holds this
@@ -98,7 +98,7 @@ impl NodeConfigs {
         // never a peer that did not resolve.
         let Some(subject) = view.own(node_id) else {
             span.record("detail", format!("{me}: node {node_id} holds no birth in this admin's view; its config cannot be put").as_str());
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         };
         span.record("subject", subject.name.to_string().as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
@@ -108,13 +108,13 @@ impl NodeConfigs {
             let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
             let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
             span.record("detail", needed.as_str());
-            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
         }
         match subject.incarnation_id.as_ref() {
             Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
             None => {
                 span.record("detail", format!("{me}: {} has no known birth; its config cannot be put", subject.name).as_str());
-                return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
+                return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
             }
             Some(_) => {}
         }

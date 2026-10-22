@@ -91,7 +91,7 @@ impl Peers {
     }
 
     /// The Build carrier whose calls start at the fabric-primary `fabric_primary`, when the caller
-    /// is told where the seat is: a stream that ended `SeatMoved` names the admin that holds it now
+    /// is told where the seat is: a stream that ended `FabricPrimaryMoved` names the admin that holds it now
     /// (node-rpc-envelope.md TakeSeats: "the caller resubmits the same `build_id` to N"). Its birth
     /// is read from `entry`'s node list over Node RPC and made reachable here; a list that holds
     /// none is named.

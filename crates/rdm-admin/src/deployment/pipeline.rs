@@ -796,11 +796,6 @@ pub trait LifecycleEvents: Send + Sync {
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
     async fn stopped(&self, op: &LifecycleOp);
-    /// The exact birth's `stop-node` completed (its `stopped` reply is held, whichever workflow
-    /// stopped it: a stop, a restart, a replace, a delete): from its stop's transport cut it says
-    /// nothing more. A former seat holder's committed update is said by its mesh's primary, its next
-    /// writer, from here (R-NS2).
-    async fn stop_completed(&self, op: &LifecycleOp);
     /// The stopped birth answered `start-node` with `Started`: this executor took its `node.joined`
     /// (`op` is the start's operation on that exact birth). Its stop ends here and nowhere else
     /// (node-start.md step 2), the birth is held `Pending`, and this mesh's projection says so.
@@ -823,7 +818,6 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
     async fn stopped(&self, _op: &LifecycleOp) {}
-    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
@@ -2399,11 +2393,10 @@ impl DeploymentPipeline<'_> {
                         () = self.until_exited(handle) => Completion::RuntimeExited {},
                     },
                 };
-                // The stop's completion: a former seat holder's update is said first (R-NS2), then the
-                // mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
+                // The stop's completion: the mesh primary publishes the departure from the matching
+                // `stopped`; the node gossips nothing.
                 if matches!(c, Completion::Received {}) {
                     let op = self.command_op(&ctx, node)?;
-                    self.lifecycle.stop_completed(&op).await;
                     if publish_stopped {
                         self.lifecycle.stopped(&op).await;
                     }
@@ -3192,6 +3185,8 @@ mod tests {
                 config: Default::default(),
                 load: None,
                 gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
             };
             let joins = self.joins.clone();
             tokio::spawn(async move {

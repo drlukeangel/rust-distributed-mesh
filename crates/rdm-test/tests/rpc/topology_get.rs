@@ -74,7 +74,7 @@ fn kinds(frames: &[Value]) -> Vec<String> {
 }
 
 /// The frames of a read without the seat records and the rafka-time it also streams before `End`
-/// (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply::Seats`, `TopologyReply::RafkaTime`).
+/// (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply::Primaries`, `TopologyReply::RafkaTime`).
 fn topology_frames(frames: &[Value]) -> Vec<Value> {
     frames.iter().filter(|f| f["frame"] != "seats" && f["frame"] != "rafka-time").cloned().collect()
 }

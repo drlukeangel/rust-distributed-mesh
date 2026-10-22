@@ -1415,7 +1415,7 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
 /// R-FM1, node-recovery.md step 4): `mesh1.admin.1`, the fabric-primary and mesh1's primary, is hung (every
 /// task but the leader held by a tracer: the operating system shows it running) with
 /// `RDM_HUNG_HOLD_FLOORS=2`. Unheard past the staleness floor it is superseded: within a floor of the mark
-/// `mesh1.admin.2`, the standby of its own mesh, holds both seats by one row and is the authority above it.
+/// `mesh1.admin.2`, the standby of its own mesh, is mesh-primary and fabric-primary by the election.
 /// The provider reporting the hung birth running, it is `held-running` on `node.get` and nothing terminates
 /// or recovers it inside the hung hold. When the hold expires the standby submits the recovery Build whose
 /// first step is `TerminateRuntime`, records exit proof, and re-creates `mesh1.admin.1` as a new birth at
@@ -1444,13 +1444,13 @@ async fn a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_af
     assert!(!held.held.is_empty(), "every task of the fabric-primary but the leader is held: the provider sees it running");
     let floor = rdm_transport::membership::staleness_floor();
 
-    // Superseded at the floor: the standby holds both seats by one row.
+    // Superseded at the floor: the election names the standby mesh-primary and fabric-primary.
     let taken = wait_for(&format!("{standby} holds both seats within a floor of the mark"), floor * 3 + Duration::from_secs(30), || async {
         let n = estate.node_value(&standby).await;
         (n["is_fabric_primary"] == true && n["is_primary"] == true).then_some(n)
     })
     .await;
-    // The hung birth, a member under the standby now: held-running, recorded by the authority above it.
+    // The hung birth, a member under the standby now: held-running, recorded by its mesh-primary.
     let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {standby}"), crate::node_recovery_due(), |n| {
         n["node_id"] == fp["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
     })
@@ -1486,9 +1486,11 @@ async fn a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_only_af
     let proof_span = named(&spans, "rdm.node_admin.node.delete.via-exit-proof").into_iter().find(|sp| sp["attributes"]["node"] == fp_name.as_str() && sp["attributes"]["node_id"] == fp["node_id"]).cloned().expect("exit proof span for the hung fabric-primary");
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == fp["node_id"]).collect();
     assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == standby), "the hung birth is recovered once, by {standby}: {recoveries:#?}");
-    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| sp["attributes"]["outcome"] == "committed").collect();
-    assert_eq!(takeovers.len(), 1, "one committed takeover row, the standby's: {takeovers:#?}");
-    assert_eq!(s(&takeovers[0]["attributes"]["node"]), standby, "{takeovers:#?}");
+    // A node-admin of mesh1 lives: the mesh-primary and the fabric-primary move together by the
+    // election, and the backbone rule's take-over never runs (lifecycles/node-primary-update.md: "They
+    // are separated in one case only, no node-admin of that mesh being available to the backbone").
+    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().collect();
+    assert!(takeovers.is_empty(), "no take-over ran with mesh1's standby alive: {takeovers:#?}");
     eprintln!(
         "Q89 hung fabric-primary cell: {fp_name} (birth {}) superseded by {standby} (seat {}), held_running={} then terminated and recovered at attempt {attempt}: trace {} | TerminateRuntime {:?} | exit_proof {} | new birth {} | seats home {}",
         s(&fp["node_id"]),
@@ -1819,8 +1821,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
     assert_eq!(refused.len(), 4, "one refusal per call: {refused:?}");
     assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]) == q7), "every refusal span carries Q7's exact text: {refused:?}");
-    assert!(named(&spans, "rdm.node_admin.seat.update.via-primary-updating").is_empty(), "no node.primary.update ran");
-    assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no row was written");
+    assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no node.primary.update ran");
     assert!(
         named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().all(|sp| s(&sp["attributes"]["attempt"]).is_empty()),
         "no attempt number was recorded by any refused request"
@@ -1870,8 +1871,7 @@ async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refuse
     assert_eq!(refused.len(), 1, "one refusal: {refused:?}");
     assert_eq!(s(&refused[0]["attributes"]["detail"]), q7, "the refusal span carries Q7's exact text: {refused:?}");
     assert!(named(&spans, "rdm.node_admin.node.connections.delete.via-mesh-primary").is_empty(), "no connection was deleted");
-    assert!(named(&spans, "rdm.node_admin.seat.update.via-primary-updating").is_empty(), "no node.primary.update ran");
-    assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no seat row was written");
+    assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no node.primary.update ran");
     estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
     for n in &before {
         let now = estate.node_value(&s(&n["name"])).await;
@@ -2011,7 +2011,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
     let accepted = stop.accepted().clone();
     let frames = Estate::frames_of(&mut stop).await;
     match frames.last() {
-        Some(rdm_client::Frame::SeatMoved { fabric_primary }) => assert_eq!(fabric_primary.as_deref(), Some(successor_name.as_str()), "the seat moved to mesh1's other node-admin: {frames:?}"),
+        Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary }) => assert_eq!(fabric_primary.as_deref(), Some(successor_name.as_str()), "the seat moved to mesh1's other node-admin: {frames:?}"),
         other => panic!("the stop of the fabric-primary moves its seat first: {other:?} of {frames:?}"),
     }
     estate.enter(&Estate::path(&successor_name)).await;

@@ -664,13 +664,13 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
             }
             Step::Probe { .. } | Step::Stop { .. } => {}
             Step::Decide { recover, latest, unheard_ms } => {
-                // The fabric seat's mesh, decided at a mesh-primary that does not hold the fabric seat:
-                // no node-admin of that mesh answered either probe, so the backbone rule writes the row
-                // (fabric-recovery.md "Outside its mesh"; elections §4.3). The re-creation of the lost
-                // mesh's node-admin follows the committed row, as today.
+                // The fabric-primary's mesh, decided at a mesh-primary that is not the fabric-primary: no
+                // node-admin of that mesh answered either probe, so the backbone rule applies and the
+                // lowest ReadyForTraffic mesh-primary is fabric-primary (fabric-recovery.md "Outside its
+                // mesh"; elections §4.3). The re-creation of the lost mesh's node-admin follows it.
                 let record = w.membership.seats().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
                 if let (Some(_), false) = (record, view.holds_fabric_seat(&w.me_id)) {
-                    verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule writes the seat row");
+                    verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule applies");
                     continue;
                 }
                 verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
@@ -725,7 +725,7 @@ pub(crate) struct Found {
 /// exact mesh-primary the held seat record `seat` names first (its birth, the record's, R-EL1a),
 /// then the mesh's other node-admins in path order (mesh-investigation.md step 1). With no record
 /// held, path order. Only exact births are asked: a probe names `(node.id, incarnation)`.
-pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rdm_core::seat::SeatHolder>) -> Vec<Node> {
+pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rdm_core::seat::Primary>) -> Vec<Node> {
     let mut admins: Vec<Node> = view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
     admins.sort_by_key(|a| a.name.to_string());
     if let Some(record) = seat.filter(|r| r.mesh == mesh) {
@@ -836,7 +836,7 @@ pub(crate) fn investigation_carriers(view: &Topology, mesh: &str, connected: imp
 /// fails, carried by up to two members of the mesh at once ([`investigation_carriers`]). The first
 /// node-admin that answers ends the probe. `carriers` holds the carrier each mesh's latest probe went
 /// through; probe 2 prefers other members.
-pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rdm_core::seat::SeatHolder>, mesh: &str, _n: u8) -> Found {
+pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rdm_core::seat::Primary>, mesh: &str, _n: u8) -> Found {
     let seat_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
@@ -1082,7 +1082,7 @@ mod tests {
             config: Default::default(),
             load: None,
             gossip: None,
-            data_dir: None,
+            data_dir: None, is_primary: None, is_fabric_primary: None
         };
         let floor = Duration::from_secs(30);
         for every in [Duration::from_millis(500), Duration::from_secs(2)] {
@@ -1126,23 +1126,22 @@ mod tests {
     }
 
     /// CONTRACT (mesh-investigation.md step 1: "probe 1 contacts mesh-x's current exact
-    /// mesh-primary first, then mesh-x's other node-admins"; R-EL1a: the written seat record is
-    /// the authority on who holds a seat): a probe carries `ProbeNodeState` first to the exact birth
-    /// the held mesh-primary seat record names, then to each other node-admin in path order. The
+    /// mesh-primary first, then mesh-x's other node-admins"): a probe carries `ProbeNodeState` first
+    /// to the exact birth the mesh-primary record this admin holds names, then to each other node-admin in path order. The
     /// record leads even where the view marks another admin primary or another path sorts first, and
     /// it is the record's birth that is asked when the view holds an older one of that node. With no
     /// record held, the node-admins are asked in path order. Must NOT happen: the view's `is_primary`
     /// choosing the first target, a probe that asks only one node-admin, or another mesh's admin.
     #[test]
     fn a_probe_asks_the_seat_records_exact_mesh_primary_first_then_the_other_admins() {
-        use rdm_core::seat::SeatHolder;
+        use rdm_core::seat::Primary;
         let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
         let a3 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.3").unwrap().clone();
         let names = |order: Vec<Node>| order.iter().map(|a| a.name.to_string()).collect::<Vec<_>>();
-        let record = SeatHolder { mesh: "mesh2".into(), node_id: a3.node_id.clone(), incarnation: a3.incarnation_id.clone().unwrap(), revision: 4 };
+        let record = Primary { mesh: "mesh2".into(), node_id: a3.node_id.clone(), incarnation: a3.incarnation_id.clone().unwrap(), revision: 4 };
         assert_eq!(names(admins_in_probe_order(&v, "mesh2", Some(&record))), vec!["mesh2.admin.3", "mesh2.admin.1", "mesh2.admin.2"], "the seat record's holder first, then the others in path order, and nothing of another mesh; never the view's is_primary");
         assert_eq!(names(admins_in_probe_order(&v, "mesh2", None)), vec!["mesh2.admin.1", "mesh2.admin.2", "mesh2.admin.3"], "no record held: path order, the view's is_primary choosing nothing");
-        let newer = SeatHolder { incarnation: crate::model::IncarnationId::mint(), revision: 5, ..record };
+        let newer = Primary { incarnation: crate::model::IncarnationId::mint(), revision: 5, ..record };
         let order = admins_in_probe_order(&v, "mesh2", Some(&newer));
         assert_eq!((order[0].name.to_string(), order[0].incarnation_id.clone()), ("mesh2.admin.3".to_string(), Some(newer.incarnation.clone())), "the record's exact birth is asked, not the older birth the view holds");
     }
@@ -1465,10 +1464,10 @@ mod tests {
     /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary seat record
     /// naming node-admin 2 (so the exact mesh-primary is not the first in path order), rpc members 1
     /// to 3, and this admin's own mesh1, never asked.
-    fn mesh2() -> (Arc<Topology>, rdm_core::seat::SeatHolder) {
+    fn mesh2() -> (Arc<Topology>, rdm_core::seat::Primary) {
         let v = view_of(vec![admin("mesh1.admin.1", true), member("mesh1.rpc.1"), admin("mesh2.admin.1", true), admin("mesh2.admin.2", false), member("mesh2.rpc.1"), member("mesh2.rpc.2"), member("mesh2.rpc.3")]);
         let a2 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.2").unwrap().clone();
-        let record = rdm_core::seat::SeatHolder { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
+        let record = rdm_core::seat::Primary { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
         (Arc::new(v), record)
     }
 

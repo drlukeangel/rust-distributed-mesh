@@ -5,7 +5,7 @@
 //! by the one method gossip's `Members` snapshots use:
 //!
 //! ```text
-//! Started  (Snapshot* | Unchanged* | Stored*) Seats* RafkaTime  End { meshes }   a stream
+//! Started  (Snapshot* | Unchanged* | Stored*) Primaries* RafkaTime  End { meshes }   a stream
 //! NotReady | UnknownMesh                                  one refusal, nothing started
 //! ```
 //!
@@ -21,8 +21,28 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::wire::ProjectionEntry;
-use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Seat, SeatHolder};
+use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Primary};
 use serde::{Deserialize, Serialize};
+
+/// A primary as the topology answers it (node-rpc-envelope.md `PrimaryKind`): the election's result
+/// the mesh-primary recorded as `is_primary` (a mesh-primary) or `is_fabric_primary`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PrimaryKind {
+    /// A mesh's mesh-primary.
+    MeshPrimary,
+    /// The fabric-primary.
+    FabricPrimary,
+}
+
+impl PrimaryKind {
+    /// The kind's name as spans name it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MeshPrimary => "mesh-primary",
+            Self::FabricPrimary => "fabric-primary",
+        }
+    }
+}
 
 /// The topology read protocol: a stream of one mesh's snapshot chunks, or of every mesh a node
 /// holds.
@@ -163,30 +183,30 @@ pub enum TopologyReply {
         /// The births the target stored for the mesh.
         nodes: Vec<StoredNode>,
     },
-    /// The record the target holds for one seat: a node entering the fabric learns who holds the
-    /// seats before it computes any (ruling R-A2). One frame per record, sent before `End`; it is
-    /// not a mesh and `End.meshes` does not count it. `gone` says the target holds the holder's
-    /// exact birth as proven gone (its runtime found exited, its departure heard, or a later birth
-    /// replaced it): the seat is vacant, and the reader holds the same proof.
-    Seats {
-        /// The seat the record is for.
-        seat: Seat,
-        /// The seat's holder as the target records it.
-        holder: SeatHolder,
-        /// Whether the target holds the holder's exact birth as proven gone.
+    /// A primary the target holds as the election's result the mesh-primary recorded (`is_primary`,
+    /// `is_fabric_primary`): a node entering the fabric learns the recorded primaries, an election
+    /// input, before it computes any (elections §3). One frame per record, sent before `End`; it is
+    /// not a mesh and `End.meshes` does not count it. `gone` says the target holds the primary's
+    /// exact birth as gone (a later birth replaced it, or its departure was heard).
+    Primaries {
+        /// Which primary the record is.
+        kind: PrimaryKind,
+        /// The primary as the target records it.
+        primary: Primary,
+        /// Whether the target holds the primary's exact birth as gone.
         gone: bool,
     },
-    /// The rafka-time the target holds, and the seat it holds: one frame, sent after the `Seats`
-    /// records and before `End`. A puller adopts the time by its own seat's rule (a member adopts
-    /// from whoever answers; a mesh primary only from a fabric-primary seat). The target answers
-    /// the rafka-time it adopted and never its own clock; a target that holds none answers
-    /// `NotReady` and starts no stream.
+    /// The rafka-time the target holds, and which primary it is: one frame, sent after the
+    /// `Primaries` records and before `End`. A puller adopts the time by its own role's rule (a member
+    /// adopts from whoever answers; a mesh-primary only from the fabric-primary). The target answers
+    /// the rafka-time it adopted and never its own clock; a target that holds none answers `NotReady`
+    /// and starts no stream.
     RafkaTime {
         /// The target's rafka-time now, in milliseconds.
         ms: u64,
-        /// The seat the target holds, from its own seat records: the fabric seat when it holds it,
-        /// else its mesh's, else none (a replica).
-        seat: Option<Seat>,
+        /// Which primary the target is, from the primaries it holds: the fabric-primary when it is,
+        /// else its mesh's mesh-primary, else none.
+        kind: Option<PrimaryKind>,
     },
 }
 
@@ -206,7 +226,7 @@ impl TopologyReply {
             Self::Unauthorized { .. } => "unauthorized",
             Self::Started => "started",
             Self::Stored { .. } => "stored",
-            Self::Seats { .. } => "seats",
+            Self::Primaries { .. } => "primaries",
             Self::RafkaTime { .. } => "rafka-time",
         }
     }
@@ -240,7 +260,7 @@ impl NodeProtocol for Topology {
             TopologyReply::Unauthorized { .. } => "unauthorized",
             TopologyReply::Started => "started",
             TopologyReply::Stored { .. } => "stored",
-            TopologyReply::Seats { .. } => "seats",
+            TopologyReply::Primaries { .. } => "primaries",
             TopologyReply::RafkaTime { .. } => "rafka-time",
         }
     }
@@ -259,7 +279,7 @@ impl NodeProtocol for Topology {
             TopologyReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             TopologyReply::Started  => ReplyKind::Success,
             TopologyReply::Stored { .. } => ReplyKind::Success,
-            TopologyReply::Seats { .. } => ReplyKind::Success,
+            TopologyReply::Primaries { .. } => ReplyKind::Success,
             TopologyReply::RafkaTime { .. } => ReplyKind::Success,
         }
     }
@@ -288,7 +308,7 @@ impl StreamingProtocol for Topology {
     fn frame_kind(frame: &TopologyReply) -> FrameKind {
         match frame {
             TopologyReply::Started => FrameKind::Started,
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } => FrameKind::Data,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } => FrameKind::Data,
             TopologyReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Topology::classify_reply(other)),
         }

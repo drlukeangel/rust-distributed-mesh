@@ -514,7 +514,8 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
 
 /// CONTRACT (states.md "Who sets each state": node stopping is set by the node's mesh-primary on the
 /// stop call's admission; gossip.md frame catalog: `NodeLeaving` is a reserved position, never
-/// published): `mesh1.rpc.1`'s process is held by the operating system (SIGSTOP) and `node.stop` of it
+/// published): the process of an rpc node of mesh1 that is not the rpc-node primary is held by the
+/// operating system (SIGSTOP) and `node.stop` of it
 /// is submitted. Its attempt is dispatched only once the mesh-primary marks the birth silent (its
 /// connection to the birth has outlived the idle timeout, the staleness floor), so the stop-node call
 /// never reaches the birth and the stop ends `Failed`
@@ -536,10 +537,14 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(SETTLE).await;
     let fp = views.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
+    // A member of mesh1 that is not its type's primary: a primary's stop runs node.primary.update first
+    // (lifecycles/node-primary-update.md), which a held process cannot answer.
+    let node = views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node of mesh1 that is not the rpc-node primary");
+    let node = node.as_str();
     let nodes = estate.nodes_obj().await;
-    let path: PathName = NODE.parse().unwrap();
+    let path: PathName = node.parse().unwrap();
     let before = view_of(&nodes, &path).await;
-    let pid = estate.pid_of(NODE).await;
+    let pid = estate.pid_of(node).await;
 
     // The hold: the stop's attempt is held after its claim; the operating system suspends the exact
     // runtime; the attempt is dispatched once the mesh-primary's ladder records the birth os-stopped,
@@ -596,26 +601,26 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let parked = view_of(&nodes, &path).await;
-    assert!(parked.parked && parked.status == NodeStatus::Leaving, "node.get lists {NODE} parked: {parked:?}");
+    assert!(parked.parked && parked.status == NodeStatus::Leaving, "node.get lists {node} parked: {parked:?}");
     assert_eq!((&parked.node_id, &parked.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
 
     estate.stop().await;
     let spans = estate.spans();
     let build = build_id.to_string();
-    let of = |name: &str, attempt: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "attempt") == attempt && attr(sp, "operation") == format!("node.stop:{NODE}")).collect() };
+    let of = |name: &str, attempt: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "attempt") == attempt && attr(sp, "operation") == format!("node.stop:{node}")).collect() };
     // The two stop-node calls of the Build, in order: the one the held birth never received, then the admitted one.
-    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "operation") == format!("node.stop:{NODE}")).collect();
+    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "operation") == format!("node.stop:{node}")).collect();
     assert_eq!(sent.iter().map(|sp| attr(sp, "admission")).collect::<Vec<_>>(), vec!["not-sent".to_string(), "stopped".to_string()], "the first stop-node never reached the held birth and the second was admitted: {sent:#?}");
     let (first, second) = (attr(sent[0], "attempt"), attr(sent[1], "attempt"));
-    let stopping = |attempt: &str| -> Vec<&Value> { of("rdm.mesh.membership.update.from-command-admitted", attempt).into_iter().filter(|sp| attr(sp, "member") == NODE && attr(sp, "status") == "Leaving").collect() };
+    let stopping = |attempt: &str| -> Vec<&Value> { of("rdm.mesh.membership.update.from-command-admitted", attempt).into_iter().filter(|sp| attr(sp, "member") == node && attr(sp, "status") == "Leaving").collect() };
     assert!(stopping(&first).is_empty(), "nothing set the unadmitted birth stopping: {:#?}", stopping(&first));
     let admitted_sent = vec![sent[1]];
-    let node_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "attempt") == second).expect("NodeStopped is published for the admitted stop");
+    let node_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| attr(sp, "node") == node && attr(sp, "attempt") == second).expect("NodeStopped is published for the admitted stop");
     // i146 Q36 (node-stop.md steps 4-5): the parked birth owes its Stopped declaration naming its stop
     // and replies `stopped` on the stream; whichever reaches the mesh-primary first publishes NodeStopped,
     // once, by the time the admission is taken, and the other answers AlreadyApplied (Q49). The admission
     // then sets nothing, since the birth is already stopped and states move only forward.
-    assert_eq!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).count(), 1, "NodeStopped is published once for the birth");
+    assert_eq!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == node).count(), 1, "NodeStopped is published once for the birth");
     assert!(start_ns(node_stopped) <= end_ns(admitted_sent[0]), "NodeStopped, from the stream's stopped or the birth's declaration, is published by the time the admission is taken");
     let set = stopping(&second);
     assert!(set.iter().all(|sp| start_ns(sp) < start_ns(node_stopped)), "CommandAccepted may set stopping only before NodeStopped, never after it: {set:#?}");
@@ -624,16 +629,16 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let primary = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh1's primary");
     let leaving: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Stopped" && attr(sp, "operation") == format!("node.stop:{NODE}"))
+        .filter(|sp| attr(sp, "node") == node && attr(sp, "state") == "Stopped" && attr(sp, "operation") == format!("node.stop:{node}"))
         .collect();
     assert!(leaving.iter().all(|sp| attr(sp, "to") == primary), "the stop's declaration is addressed to mesh1's primary only: {leaving:#?}");
     assert!(leaving.iter().any(|sp| matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied")), "and taken by it, direct or carried: applied, or already applied when the stream's stopped reached it first (Q36, Q49): {leaving:#?}");
     for kind in ["node-leaving", "node-left"] {
-        let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == node).collect();
         assert!(heard.is_empty(), "no {kind} frame is published or heard: {heard:#?}");
     }
     assert!(named(&spans, "rdm.mesh.membership.reject.via-node-leaving").is_empty(), "no node-leaving frame reached any receiver");
-    assert!(named(&spans, "rdm.node_admin.node.reject.via-not-live").into_iter().all(|sp| attr(sp, "node") != NODE), "the resubmitted stop was not refused node-not-live");
+    assert!(named(&spans, "rdm.node_admin.node.reject.via-not-live").into_iter().all(|sp| attr(sp, "node") != node), "the resubmitted stop was not refused node-not-live");
     let trace = sent[0]["trace_id"].as_str().unwrap_or("").to_string();
     println!("unadmitted stop: http://192.168.68.99:16687/trace/{trace}");
     println!("admitted stop:   http://192.168.68.99:16687/trace/{}", admitted_sent[0]["trace_id"].as_str().unwrap_or(""));
@@ -812,15 +817,6 @@ async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
     settled_two_meshes(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, admins).await
 }
 
-/// [`two_meshes`] with every node-admin the testkit's faulted node-admin (`faults::binding_set`): its
-/// fault door (testkit Node RPC op 0x75) withholds an announcement the cell arms, and nothing else of
-/// it differs.
-async fn faulted_two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
-    let sha = candidate_sha();
-    let estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    settled_two_meshes(estate, admins).await
-}
-
 async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeView>) {
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
@@ -829,48 +825,32 @@ async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeVie
     (estate, views)
 }
 
-/// CONTRACT (the approved proposal docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md
-/// Part C1, Luke yes 2026-10-12: "One writer, one row, one point of no return ... written by the mesh's
-/// one row writer (R-OW1, R14), never by the successor"): `node.stop` of mesh2's primary P moves P's
-/// seat before the stop runs, and every node names the successor NA2.
-/// 1. The fabric-primary commands P (`seat.update.via-primary-update` at the fabric-primary, outcome
-///    `updated`, successor NA2).
-/// 2. P pre-checks its successor NA2 (mesh2's other node-admin), publishes "primary updating"
-///    (`via-announce-primary-updating` at P, sent on the backbone and its mesh channel), finishes the
-///    writes it has issued (`primary.update.via-issued-writes-finished`), and writes the ONE
-///    row itself (`seat.update.via-seat-row-written` at P, holder P, successor NA2, the mesh seat's
-///    next epoch).
-/// 3. P calls node.primary.update on NA2 carrying the row; NA2 installs from the row and answers
-///    node.primary.updated (`seat.update.via-primary-updated` at NA2, under P's update); P then
-///    publishes "primary updated" (`via-announce-primary-updated` at P; R-MT1: "NA1 gossips that the
-///    primary updated to NA2"), which every other node of both meshes hears naming NA2
-///    (`rdm.mesh.seat.update.via-primary-updated`).
-/// 4. The fabric-primary installs the written seat from P's answer (`via-seats-installed`) before
-///    it dispatches the stop, which NA2 executes as mesh2's primary; every admin's `node.get` names
-///    NA2 mesh2's primary.
-/// Must NOT happen: NA2 writing a seat row (`via-seat-row-written` at NA2) or publishing "primary
-/// updated", a 0x21 call to P the
-/// fabric-primary did not make or one to NA2 P did not make, a stop step before the row, or a view
-/// still naming P.
-///
-/// Adversarial (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination.
-/// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
-/// sender cuts gossip"): P's "primary updated" is withheld on both channels (the fault door's
-/// `announcement` cut), and P's stop cuts its transport right behind it. Every other node still
-/// holds the written seat naming NA2: the fabric-primary from P's answer, every other node through
-/// the replay or the surviving publisher, never from P's frame.
+/// CONTRACT (lifecycles/node-primary-update.md, "Numbered end-to-end sequence", the `node-admin` type):
+/// `node.stop` of mesh2's primary P runs node.primary.update first, and the stop continues on the
+/// successor NA2's direct answer.
+/// 1. The fabric-primary commands P (`primary.update.via-command` at the fabric-primary, primary P,
+///    outcome `updated`).
+/// 2.-3. P's election over its own view with itself excluded names NA2 (`primary.update.via-update-primary`
+///    at P, successor NA2, outcome `updated`, under the command), and P finishes the writes it has
+///    issued (`primary.update.via-issued-writes-finished`) before it calls NA2.
+/// 4. P calls node.primary.update on NA2's exact birth; NA2 installs the election's result the call
+///    carries and answers node.primary.updated (`seat.update.via-primary-updated` at NA2, outcome
+///    `held`, the mesh-primary entry P -> NA2, under P's update).
+/// 5. NA2, the mesh's writer from that moment, records `is_primary` on its own row ("The write records
+///    the role; it does not grant it").
+/// 6. The fabric-primary installs NA2's answer and dispatches the stop, which NA2 executes as mesh2's
+///    primary; every admin still answering names NA2 mesh2's primary (`node.get`).
+/// Must NOT happen: a refusal of node.primary.update, a 0x21 call to P the fabric-primary did not make
+/// or one to NA2 P did not make, a stop step before NA2 answered, or a view still naming P.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_it_stops() {
     let test = "a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_it_stops";
-    let (mut estate, before) = faulted_two_meshes(test, 2).await;
+    let (mut estate, before) = two_meshes(test, 2).await;
     let fp = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
     let p = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2's primary");
     let na2 = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).cloned().expect("mesh2's other node-admin");
     let (p_name, p_id, na2_name, na2_id) = (p.name.to_string(), p.node_id.to_string(), na2.name.to_string(), na2.node_id.to_string());
     assert_ne!(fp, p_name, "mesh2's primary is not the fabric-primary");
-    // P's "primary updated" never leaves it, on either channel.
-    let door = Door::at(&estate, &p_name).await;
-    door.arm("primary-updated", serde_json::json!({"kind": "announcement", "announcement": "primary-updated", "channel": "any"})).await;
 
     let nodes = estate.nodes_obj().await;
     let stopped = frames(nodes.stop(&p.name).await.expect("the stop was accepted")).await;
@@ -881,30 +861,12 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
         let primary: Vec<String> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{} names {na2_name} mesh2's primary once the stop is complete", admin.name);
     }
-    // R-NS2: nodes.stop returns once P is stopped; NA2's surviving PrimaryUpdated crosses two gossip
-    // hops (backbone -> mesh1.admin.1 -> mesh:mesh1 -> mesh1.rpc.1) asynchronously, so wait up to
-    // seat_bound before estate.stop() tears down the forwarding node-admin.
-    let seat_bound = Duration::from_secs(5);
-    let wait_started = std::time::Instant::now();
-    loop {
-        let live_spans = estate.spans();
-        let pending: Vec<String> = before
-            .iter()
-            .filter(|n| n.name != p.name && n.name != na2.name && n.name.to_string() != fp)
-            .filter(|n| {
-                let heard = named(&live_spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().any(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "successor").contains(&na2_id) && matches!(attr(sp, "outcome").as_str(), "held" | "same"));
-                let seated = named(&live_spans, "rdm.mesh.seat.update.via-announcement").into_iter().any(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "seat") == "mesh-primary" && attr(sp, "holder").contains(&na2_id) && matches!(attr(sp, "outcome").as_str(), "held" | "same"));
-                !(heard || seated)
-            })
-            .map(|n| n.name.to_string())
-            .collect();
-        if pending.is_empty() {
-            break;
-        }
-        assert!(
-            wait_started.elapsed() < seat_bound,
-            "timed out after {seat_bound:?} waiting for peers {pending:?} to hear the written seat naming {na2_name} ({na2_id}) before estate.stop()"
-        );
+    // Step 5: NA2 records `is_primary` on its own row, a local write of the mesh's writer.
+    let contact = estate.fabric_store_root().join("nodes").join("mesh2").join("contacts").join(format!("{na2_id}.json"));
+    let recorded = |at: &std::path::Path| -> Option<u64> { std::fs::read(at).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|r| r["record"]["is_primary"].as_u64()) };
+    let deadline = std::time::Instant::now() + SETTLE;
+    while recorded(&contact).is_none() {
+        assert!(std::time::Instant::now() < deadline, "NA2 recorded is_primary on its own row at {} within {SETTLE:?}", contact.display());
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
@@ -915,61 +877,27 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
         assert_eq!(found.len(), 1, "one {name}: {found:#?}");
         found[0].clone()
     };
-    let cmd = one("rdm.node_admin.seat.update.via-primary-update", &|sp| attr(sp, "holder") == p_name);
-    assert_eq!((attr(&cmd, "node"), attr(&cmd, "seat"), attr(&cmd, "outcome"), attr(&cmd, "successor")), (fp.clone(), "mesh-primary".to_string(), "updated".to_string(), na2_name.clone()), "{cmd:#?}");
-    let upd = one("rdm.node_admin.seat.update.via-primary-updating", &|sp| attr(sp, "node") == p_name);
-    assert_eq!((attr(&upd, "successor"), attr(&upd, "outcome")), (na2_name.clone(), "updated".to_string()), "{upd:#?}");
+    let cmd = one("rdm.node_admin.primary.update.via-command", &|sp| attr(sp, "primary") == p_name);
+    assert_eq!((attr(&cmd, "node"), attr(&cmd, "node_type"), attr(&cmd, "to"), attr(&cmd, "outcome")), (fp.clone(), "node-admin".to_string(), p_name.clone(), "updated".to_string()), "{cmd:#?}");
+    let upd = one("rdm.node_admin.primary.update.via-update-primary", &|sp| attr(sp, "node") == p_name);
+    assert_eq!((attr(&upd, "moving"), attr(&upd, "successor"), attr(&upd, "outcome")), ("mesh-primary".to_string(), na2_name.clone(), "updated".to_string()), "{upd:#?}");
     assert!(descends_from(&spans, &upd, &cmd), "P's update runs under the fabric-primary's command: {upd:#?}");
-    // The one committed row is the holder's: the successor never writes a seat row.
-    let by_successor: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "node") == na2_name).collect();
-    assert!(by_successor.is_empty(), "the successor wrote a seat row: {by_successor:#?}");
-    let row = one("rdm.node_admin.seat.update.via-seat-row-written", &|sp| attr(sp, "node") == p_name);
-    assert!(attr(&row, "holder").contains(&p_id) && attr(&row, "successor").contains(&na2_id) && !attr(&row, "mesh_revision").is_empty() && attr(&row, "fabric_revision").is_empty(), "P, mesh2's writer, wrote the one committed row moving its mesh seat to NA2: {row:#?}");
-    let updating = one("rdm.mesh.seat.update.via-announce-primary-updating", &|sp| attr(sp, "node") == p_name);
-    assert_eq!((attr(&updating, "seats").contains(&na2_id), attr(&updating, "backbone"), attr(&updating, "mesh_channel")), (true, "sent".to_string(), "sent".to_string()), "{updating:#?}");
     let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| attr(sp, "node") == p_name);
-    let installed_at_na2 = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == na2_name);
-    assert_eq!((attr(&installed_at_na2, "replay"), attr(&installed_at_na2, "holder").contains(&p_id), attr(&installed_at_na2, "successor").contains(&na2_id)), ("false".to_string(), true, true), "NA2 installed from P's row and answered node.primary.updated: {installed_at_na2:#?}");
+    let installed_at_na2 = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == na2_name && attr(sp, "outcome") == "held");
+    let entry = attr(&installed_at_na2, "primaries");
+    assert!(entry.starts_with("node-admin ") && entry.contains(&p_id) && entry.contains(&format!("-> {na2_id}/")), "NA2 installed the mesh-primary entry P -> NA2 and answered node.primary.updated: {installed_at_na2:#?}");
     assert!(descends_from(&spans, &installed_at_na2, &upd), "NA2 installs under P's node.primary.update call: {installed_at_na2:#?}");
-    let announced = one("rdm.mesh.seat.update.via-announce-primary-updated", &|sp| attr(sp, "node") == p_name);
-    assert!(attr(&announced, "seats").contains(&na2_id), "{announced:#?}");
-    assert_eq!((attr(&announced, "backbone"), attr(&announced, "mesh_channel")), ("withheld".to_string(), "withheld".to_string()), "P's primary updated was withheld on both channels: {announced:#?}");
-    // NA2, P's next writer, says primary updated only once P's stop completed and P can say nothing
-    // more (R-NS2; C1 failure contract: "the next writer to read the row publishes 'updated'"), under
-    // the span naming the stopped holder, never before P's stop cut its transport.
-    let by_na2: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-primary-updated").into_iter().filter(|sp| attr(sp, "node") == na2_name).collect();
-    let p_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| attr(sp, "node") == p_name).map(end_ns).min();
-    for said in &by_na2 {
-        let after_stop = named(&spans, "rdm.mesh.seat.update.via-holder-stopped").into_iter().find(|h| attr(h, "node") == na2_name && attr(h, "holder") == p_name && descends_from(&spans, said, h)).cloned();
-        let after_stop = after_stop.unwrap_or_else(|| panic!("the successor published primary updated other than after the holder's stop: {said:#?}"));
-        assert!(p_cut.is_some_and(|cut| cut <= start_ns(&after_stop)), "the successor said primary updated only after P's stop cut its transport ({p_cut:?}): {after_stop:#?}");
-        eprintln!("NA2 said primary updated after P's stop: trace {}", s(&after_stop["trace_id"]));
-    }
-    let installed = one("rdm.node_admin.seat.update.via-seats-installed", &|sp| attr(sp, "node") == fp);
-    assert!(attr(&installed, "successor").contains(&na2_id), "{installed:#?}");
-    // The order of the sequence (C1 steps 3-7).
-    assert!(start_ns(&updating) <= start_ns(&finished), "P said the primary is updating before it finished its issued writes");
-    assert!(end_ns(&finished) <= start_ns(&row), "P finished its issued writes before it wrote the row");
-    assert!(end_ns(&row) <= start_ns(&installed_at_na2), "NA2 installed only after P's row");
-    assert!(end_ns(&installed_at_na2) <= start_ns(&announced), "P said the primary updated only after NA2 installed and answered");
-    // Every other node of both meshes holds the written seat naming NA2, though P's frame never
-    // left it: the fabric-primary from P's answer (`via-seats-installed` above), every node through
-    // the replay or the surviving publisher.
-    for n in before.iter().filter(|n| n.name != p.name && n.name != na2.name) {
-        let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "successor").contains(&na2_id)).collect();
-        let seated: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announcement").into_iter().filter(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "seat") == "mesh-primary" && attr(sp, "holder").contains(&na2_id)).collect();
-        let held = heard.iter().chain(seated.iter()).any(|sp| matches!(attr(sp, "outcome").as_str(), "held" | "same")) || n.name.to_string() == fp;
-        assert!(held, "{} holds the written seat naming NA2 with P's frame withheld: primary updated {heard:#?}, seated {seated:#?}", n.name);
-        eprintln!("seat at {}: {:?}", n.name, heard.iter().chain(seated.iter()).map(|sp| format!("{} via {} {} trace {}", s(&sp["name"]), attr(sp, "via"), attr(sp, "outcome"), s(&sp["trace_id"]))).collect::<Vec<_>>());
-    }
-    // The stop ran after the seat moved, executed by NA2 as mesh2's primary.
+    assert!(named(&spans, "rdm.node_admin.primary.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
+    // The order of the sequence (steps 3, 4, 6).
+    assert!(end_ns(&finished) <= start_ns(&installed_at_na2), "P finished its issued writes before NA2 installed");
+    // The stop ran after NA2 answered, executed by NA2 as mesh2's primary.
     let stop_run = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| attr(sp, "executor") == na2_name).unwrap_or_else(|| panic!("NA2 executed the stop"));
-    assert!(end_ns(&installed) <= start_ns(stop_run), "the fabric-primary installed the written seat before it dispatched the stop");
+    assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before it dispatched the stop");
     // The stop is an attempt of the Build that birthed P: its steps are that attempt's, never P's birth's.
-    assert!(attr(&cmd, "attempt") != "1" && attr(stop_run, "attempt") != "1", "neither the seat command nor the stop dispatch is P's birth attempt");
+    assert!(attr(&cmd, "attempt") != "1" && attr(stop_run, "attempt") != "1", "neither the command nor the stop dispatch is P's birth attempt");
     let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "node") == p_name && attr(sp, "build_id") == attr(&cmd, "build_id") && attr(sp, "attempt") == attr(stop_run, "attempt")).collect();
     assert!(steps.iter().any(|sp| attr(sp, "step") == "StopNode"), "the stop's steps are read: {steps:#?}");
-    assert!(steps.iter().all(|sp| start_ns(sp) >= end_ns(&row)), "no stop step ran before the row: {steps:#?}");
+    assert!(steps.iter().all(|sp| start_ns(sp) >= end_ns(&installed_at_na2)), "no stop step ran before NA2 answered: {steps:#?}");
     // Commands only go down: every 0x21 call to P is the fabric-primary's command, every one to NA2 P's.
     for call in named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr(sp, "op") == "33") {
         let target = attr(call, "target");
@@ -988,8 +916,8 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
 /// by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`"): mesh2 has one
 /// node-admin and an rpc node. `node.stop` of mesh2.admin.1 is refused `last-admin` with exactly
 /// `cannot transfer: no secondary of type node-admin in mesh mesh2`, under
-/// `rdm.node_admin.build.reject.via-last-admin`. No seat move is commanded, no row is written and
-/// every node keeps its birth and its seat.
+/// `rdm.node_admin.build.reject.via-last-admin`. No node.primary.update is commanded or run, and every
+/// node keeps its birth and its primaries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name() {
     let test = "a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name";
@@ -1010,25 +938,9 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == "cannot transfer: no secondary of type node-admin in mesh mesh2").collect();
     assert_eq!(rejected.len(), 1, "{rejected:#?}");
-    assert!(named(&spans, "rdm.node_admin.seat.update.via-primary-update").is_empty(), "no seat move was commanded");
-    assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no row was written");
+    assert!(named(&spans, "rdm.node_admin.primary.update.via-command").is_empty(), "no node.primary.update was commanded");
+    assert!(named(&spans, "rdm.node_admin.primary.update.via-update-primary").is_empty(), "no primary ran node.primary.update");
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
-}
-
-/// The fabric's seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>`, each as its file
-/// name and bytes: what
-/// a seat move commits, compared whole.
-fn seat_transfer_rows(estate: &Estate) -> Vec<(String, Vec<u8>)> {
-    let moves = estate.fabric_store_root().join("seat-moves");
-    let mut rows: Vec<(String, Vec<u8>)> = std::fs::read_dir(&moves)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|r| r.path().extension().is_some_and(|x| x == "json"))
-        .map(|r| (r.path().display().to_string(), std::fs::read(r.path()).unwrap_or_default()))
-        .collect();
-    rows.sort();
-    rows
 }
 
 /// CONTRACT (R-SB1, Luke 2026-10-13: "a node.stop or node.restart of a mesh's only admin is refused
@@ -1040,14 +952,13 @@ fn seat_transfer_rows(estate: &Estate) -> Vec<(String, Vec<u8>)> {
 /// single-mesh fabric's primary ... cannot be stopped or restarted until a secondary is ReadyForTraffic";
 /// Part C2 step 3's text): mesh1.admin.1 is the fabric's only node-admin, holding mesh1's seat and the
 /// fabric seat, beside one rpc node. Its `node.stop` and its `node.restart` are each refused
-/// `last-admin` with exactly `cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh
+/// `last-admin` with exactly `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh
 /// mesh1, no other mesh-primary ReadyForTraffic`, one `rdm.node_admin.build.reject.via-last-admin` per
-/// call. Leadership is intact: every node keeps its
-/// birth and its seats (node.get), and the store root's seat moves are byte for byte what they
-/// were. The stop is not run: no stop-node served, no node.connections.delete, no seat move commanded,
-/// no row written. Through the whole run, the estate's teardown included, no admin hands its seat to
-/// nobody (`rdm.node_admin.build.update.via-seat-hand-over` with `to = none`).
-/// Must NOT happen: a stop or restart step of the only admin, a seat row written, a hand-over to none.
+/// call. Every node keeps its birth and its primaries (node.get). The stop is not run: no stop-node
+/// served, no node.connections.delete, no node.primary.update commanded or run. Through the whole run,
+/// the estate's teardown included, no admin hands its primaries to nobody
+/// (`rdm.node_admin.build.update.via-seat-hand-over` with `to = none`).
+/// Must NOT happen: a stop or restart step of the only admin, a node.primary.update, a hand-over to none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves() {
     let test = "a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves";
@@ -1056,12 +967,11 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
     let before = estate.settled_views(&[("mesh1", 1, 1)]).await;
     // A seat move is refused until the initial fabric has first reached ready-for-traffic (R-PB1).
     estate.until_fabric_ready(SETTLE).await;
-    let rows = seat_transfer_rows(&estate);
     let nodes = estate.nodes_obj().await;
     let target: PathName = "mesh1.admin.1".parse().unwrap();
     let held = before.iter().find(|n| n.name == target).expect("node.get lists the only admin");
     assert!(held.is_primary && held.is_fabric_primary, "mesh1.admin.1 holds both seats: {held:?}");
-    let q7 = "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
+    let q7 = "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
     for (action, refused) in [("stop", nodes.stop(&target).await.err()), ("restart", nodes.restart(&target).await.err())] {
         let refused = refused.unwrap_or_else(|| panic!("the {action} of the fabric's only node-admin was accepted"));
         let rdm_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the {action} ends Rejected: {refused:?}") };
@@ -1071,12 +981,11 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
         let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{} was there before", now.name));
         assert_eq!((&now.incarnation_id, now.is_primary, now.is_fabric_primary), (&was.incarnation_id, was.is_primary, was.is_fabric_primary), "{} is untouched", now.name);
     }
-    assert_eq!(seat_transfer_rows(&estate), rows, "the seat moves are unchanged");
     estate.stop().await;
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == q7).collect();
     assert_eq!(rejected.len(), 2, "one refusal per call: {rejected:#?}");
-    for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.node.connections.delete.via-stop", "rdm.node_admin.seat.update.via-primary-update", "rdm.node_admin.seat.update.via-seat-row-written"] {
+    for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.node.connections.delete.via-stop", "rdm.node_admin.primary.update.via-command", "rdm.node_admin.primary.update.via-update-primary"] {
         // The estate's teardown runs the stop workflow on its signal (`signal`): not the refused stop.
         let ran: Vec<&Value> = named(&spans, name).into_iter().filter(|sp| attr(sp, "operation") != "signal").collect();
         assert!(ran.is_empty(), "the refused stop ran {name}: {ran:#?}");

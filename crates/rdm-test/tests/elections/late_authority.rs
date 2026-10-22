@@ -108,7 +108,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.enter(&late_name).await;
     let mut stop = estate.nodes_obj().await.stop(&incumbent_admin).await.expect("node.stop of incumbent_admin");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();

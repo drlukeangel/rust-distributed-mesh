@@ -183,7 +183,7 @@ async fn command_mesh_join(
     // A command the birth refused by name (its own record still names it the fabric-primary a moment
     // after the row moved, or it is not ready for one yet) is looked at again on the next pass, not
     // held for a floor: the refusal is the birth's knowledge at that instant, not a new silence.
-    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-authority") || outcome.starts_with("not-ready") {
+    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-primary") || outcome.starts_with("not-ready") {
         commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());

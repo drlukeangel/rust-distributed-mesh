@@ -1,130 +1,74 @@
-//! node.primary.update and node.fabric-primary.update on op `0x21` (the approved proposal
-//! docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 5 and
-//! Part D: "0x21 carries the primitive's `PrimaryUpdate` / `PrimaryUpdated` for both seats; the
-//! incumbent writes the row").
+//! node.primary.update and node.fabric-primary.update on op `0x21` (node-rpc-envelope.md
+//! "PrimaryUpdate, op `0x21`, rdm"; lifecycles/node-primary-update.md).
 //!
-//! Commands only go down. The commander calls [`NodePrimaryUpdateRequest::UpdatePrimary`] on the
-//! holder of a seat (the fabric-primary on a mesh-primary), and on the mesh-primary of a cohort that is
-//! not node-admin (the fabric-primary's command for a mesh's node goes through its mesh-primary). For
-//! such a cohort the mesh-primary is commander and row writer: it writes the one row, then calls
-//! [`NodePrimaryUpdateRequest::UpdatePrimaryFromRow`] on the holder carrying the row's content, and the
-//! holder makes the call on the successor below. The holder, its cohort's row writer,
-//! pre-checks its successor, writes the ONE committed row for one or both seats, then calls
-//! [`NodePrimaryUpdateRequest::PrimaryUpdate`] on the successor carrying the row's content: every seat
-//! with its cohort, both exact births (never a name) and the committed revision. The successor installs
-//! from the row and answers [`NodePrimaryUpdateReply::PrimaryUpdated`] (node.primary.updated), which the
-//! holder hands back up as its own answer. The fabric seat is a second entry in `seats`, cohort
-//! `fabric`. An identical repeat replays the committed result; a call naming the operation with
-//! another payload is [`NodePrimaryUpdateReply::RejectedConflict`]; before the initial fabric first
-//! reaches ready-for-traffic a call is [`NodePrimaryUpdateReply::RejectedFabricNotReady`]. No receiver
-//! refuses a call for the birth it names (R-UC1a, R-RX5): there is no wrong-birth refusal, and
-//! eligibility is the holder's pre-check before the row.
-//!
-//! [`Seat`], [`CommittedSeat`] and [`HandoverBirth`] are the doc's shapes
-//! (`crate::seat::transfer`, which the "primary updating" and "primary updated" gossip
-//! frames carry too). The family's outcomes sit on the framework's six: `NotReady`, `Malformed`,
-//! `PeerUnresolved`, `Busy`, `ConnectionsDeleting` and `Unauthorized` follow the family's own replies.
+//! Who is primary is the election's result. The primary, commanded from above with
+//! [`NodePrimaryUpdateRequest::UpdatePrimary`], computes its successor by the election over its own view
+//! with itself excluded and calls [`NodePrimaryUpdateRequest::PrimaryUpdate`] on the successor's exact
+//! birth, carrying the election's result: one entry per primary that moves, `(node_type, primary,
+//! successor, revision)`, the fabric-primary a second entry of node type `fabric`. The successor
+//! installs it in its own view and answers [`NodePrimaryUpdateReply::PrimaryUpdated`]
+//! (node.primary.updated); the primary hands that answer up to its commander. The receiver refuses
+//! only a conflicting payload for the same operation and a fabric not first ready-for-traffic; it never
+//! refuses a call for the birth it names (R-UC1a, R-RX5). The takeover rides the same op
+//! ([`NodePrimaryUpdateRequest::TakeOverFabricPrimary`]). No row and no frame of its own record the
+//! change: the successor's digest carries it and the mesh-primary records it on the node's row. The
+//! family's outcomes sit on the framework's six: `NotReady`, `Malformed`, `PeerUnresolved`, `Busy`,
+//! `ConnectionsDeleting` and `Unauthorized`.
 
+use crate::framing::Birth;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-pub use crate::seat::transfer::{CommittedSeat, HandoverBirth, Seat};
+pub use crate::seat::transfer::{HandoverBirth, Seat};
 use serde::{Deserialize, Serialize};
 
 /// The node-primary-update protocol: node.primary.update and node.fabric-primary.update.
 pub struct NodePrimaryUpdate;
 
-/// A seat the commander names in [`NodePrimaryUpdateRequest::UpdatePrimary`], with the revision it holds
-/// the seat at.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SeatRevision {
-    /// The seat.
-    pub seat: Seat,
-    /// The seat's current revision as the caller holds it.
-    pub expected_revision: u64,
-}
-
-/// One seat the committed row moves, as [`NodePrimaryUpdateRequest::PrimaryUpdate`] carries it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SeatUpdate {
-    /// The seat's cohort: the mesh-primary seat of a mesh, or the fabric seat.
-    pub seat: Seat,
-    /// The exact birth that held the seat and wrote the row.
-    pub holder: HandoverBirth,
-    /// The exact birth the row commits the seat to.
-    pub successor: HandoverBirth,
-    /// The revision the row commits.
-    pub revision: u64,
-}
-
-impl SeatUpdate {
-    /// The written seat it names.
-    pub fn committed(&self) -> CommittedSeat {
-        CommittedSeat { seat: self.seat.clone(), holder: self.successor.clone(), revision: self.revision }
-    }
-}
+/// The node type of the fabric-primary's entry in [`NodePrimaryUpdateRequest::PrimaryUpdate`]'s
+/// `primaries` (node-rpc-envelope.md: "the fabric-primary is a second entry, node type `fabric`").
+pub const FABRIC: &str = "fabric";
 
 /// The directed calls of node.primary.update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePrimaryUpdateRequest {
-    /// node.primary.update, the holder to the successor its pre-check named, after its one committed
-    /// row: install the seats the row commits and answer node.primary.updated.
+    /// node.primary.update, the primary to its successor's exact birth: the election's result the
+    /// successor installs, one entry or two, each `(node_type, primary, successor, revision)`, the
+    /// revision the next one.
     PrimaryUpdate {
-        /// Every seat the row moves (one, or both when the holder held both, Q1).
-        seats: Vec<SeatUpdate>,
+        /// Every primary that moves: its node type (`fabric` for the fabric-primary), the primary's
+        /// exact birth, the successor's exact birth and the revision the successor takes.
+        primaries: Vec<(String, Birth, Birth, u64)>,
         /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
         build_id: String,
-        /// That Build's attempt.
-        attempt: u32,
-        /// The update's operation identity: the row's key.
+        /// The run of that Build: the first attempt of the series a submission opened.
+        run: u32,
+        /// The update's operation identity, `node.primary.update:<build_id>:<run>:<op>`.
         operation: String,
     },
-    /// node.primary.update commanded from above: the commander to the holder of the seats named.
-    /// The holder judges it by the seats it holds and their revisions, never by the birth it names.
+    /// node.primary.update commanded from above, on the primary of `node_type` in the receiver's mesh,
+    /// or on the mesh-primary for another type's primary of its mesh: the primary runs the sequence.
     UpdatePrimary {
-        /// The fabric.
-        fabric: String,
-        /// The exact birth the commander holds as the seats' holder.
-        holder: HandoverBirth,
-        /// Every seat that moves, each with the revision the commander holds it at.
-        seats: Vec<SeatRevision>,
-        /// The Build whose stop, delete, restart, replace or node.connections.delete moves the seats.
+        /// The node type whose primary moves.
+        node_type: String,
+        /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
         build_id: String,
-        /// That Build's attempt.
-        attempt: u32,
+        /// The run of that Build.
+        run: u32,
         /// The update's operation identity.
         operation: String,
     },
-    /// node.primary.update of a cohort that is not node-admin, commanded by its mesh-primary, the
-    /// cohort's commander and row writer, after its one committed row and carrying the row's content
-    /// (the approved proposal Part C1: "its command to the holder B1 comes after the row and carries
-    /// it; B1 then makes the call of step 6"): the holder calls [`Self::PrimaryUpdate`] with these
-    /// seats on the successor they name and answers with the successor's node.primary.updated.
-    UpdatePrimaryFromRow {
+    /// node.fabric-primary.update of a take-over (fabric-recovery.md step 2): an admin that holds the
+    /// fabric-primary unheard past the staleness floor calls the winner the election names.
+    TakeOverFabricPrimary {
         /// The fabric.
         fabric: String,
-        /// The seat the row moves, its holder and successor births and its committed revision.
-        seats: Vec<SeatUpdate>,
-        /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
-        build_id: String,
-        /// That Build's attempt.
-        attempt: u32,
-        /// The update's operation identity: the row's key.
-        operation: String,
-    },
-    /// node.fabric-primary.update of a takeover (fabric-node-lifecycle-elections.md §5, Q24): a
-    /// mesh-primary that found the fabric-primary unreached and its exact runtime uninspectable past
-    /// the hold tells the winner the backbone rule names. The winner writes the takeover's seat move
-    /// once; a repeat for the same takeover and successor answers `AlreadyApplied`.
-    TakeOverFabricSeat {
-        /// The fabric.
-        fabric: String,
-        /// The fabric-primary's exact birth the proposer holds as lost.
+        /// The fabric-primary's exact birth the proposer holds as unheard.
         lost: HandoverBirth,
-        /// The fabric seat's revision the proposer holds the lost birth at.
+        /// The fabric-primary's revision the proposer holds the lost birth at.
         expected_revision: u64,
-        /// The winner the backbone rule names in the proposer's view: the receiver.
+        /// The winner the election names in the proposer's view: the receiver.
         successor: HandoverBirth,
-        /// The mesh-primary that found the hold expired.
+        /// The admin that proposes it.
         proposer: HandoverBirth,
     },
 }
@@ -135,8 +79,7 @@ impl NodePrimaryUpdateRequest {
         match self {
             Self::PrimaryUpdate { .. } => "primary-update",
             Self::UpdatePrimary { .. } => "update-primary",
-            Self::UpdatePrimaryFromRow { .. } => "update-primary-from-row",
-            Self::TakeOverFabricSeat { .. } => "take-over-fabric-seat",
+            Self::TakeOverFabricPrimary { .. } => "take-over-fabric-primary",
         }
     }
 }
@@ -144,77 +87,35 @@ impl NodePrimaryUpdateRequest {
 /// The answer to a node.primary.update call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePrimaryUpdateReply {
-    /// node.primary.updated: the successor installed the committed row, every seat at its revision.
+    /// node.primary.updated: the successor installed the election's result, every entry at its revision.
     PrimaryUpdated {
-        /// The written seats: each seat, its committed holder's exact birth and its revision.
-        revisions: Vec<CommittedSeat>,
+        /// The entries installed, as [`NodePrimaryUpdateRequest::PrimaryUpdate`] carries them.
+        revisions: Vec<(String, Birth, Birth, u64)>,
     },
-    /// The operation's committed row names another payload: the row decides.
-    RejectedConflict {
+    /// The operation was answered for another payload.
+    RejectedConflictingPayload {
         /// The operation in conflict.
         operation: String,
     },
-    /// The initial fabric has not first reached ready-for-traffic (R-PB1): no seat moves.
+    /// The initial fabric has not first reached ready-for-traffic (R-PB1): no primary moves.
     RejectedFabricNotReady {
         /// The workflow refused and the fabric's state.
         reason: String,
     },
-    /// No successor (proposal Q7): `cannot transfer: no secondary of type <node_type> in mesh <mesh>`,
-    /// or the fabric seat's `cannot transfer fabric seat: ...` naming both searches. Nothing changed.
-    RejectedNoSuccessor {
-        /// The refusal's exact text.
-        reason: String,
-    },
-    /// The receiver holds no seat the command names.
-    RejectedNotAuthority {
+    /// The receiver is not the primary the call needs: a command on a node that is not the primary of
+    /// the node type it names, a take-over proposal naming another winner.
+    RejectedNotPrimary {
         /// What the receiver holds instead.
         reason: String,
     },
-    /// A seat's revision is not the one the command named: the holder's pre-check of the call's revision.
-    RejectedStaleSeat {
-        /// The seat.
-        seat: Seat,
+    /// A take-over at a revision the recorded primary no longer holds.
+    RejectedStaleRevision {
+        /// The node type whose revision moved (`fabric`).
+        node_type: String,
         /// The revision the call named.
         expected: u64,
-        /// The revision the holder holds.
+        /// The revision the receiver holds.
         current: u64,
-    },
-    /// A seat's revision cannot advance: it is at `u64::MAX`, so no row can commit at its next revision
-    /// (node-rpc-envelope.md: "Revision overflow cannot commit and is refused by name with a typed
-    /// refusal"). Nothing is written.
-    RejectedRevisionOverflow {
-        /// The seat whose revision cannot advance.
-        seat: Seat,
-        /// The revision it is at.
-        revision: u64,
-    },
-    /// What the receiver had to read or write to decide or commit the call failed: its `fabric.storage`
-    /// refused a put or could not be read. A runtime fact of the receiver, never a readiness answer.
-    /// The fields are the Status arm's, within the same budgets ([`crate::status::source_failed_fields`]).
-    RejectedSourceFailed {
-        /// What failed, named with its owner and row.
-        source: String,
-        /// The operation on it that failed, with its subject.
-        op: String,
-        /// Why it failed: the store's or the peer's own error.
-        cause: String,
-    },
-    /// A record the receiver needed was never written where it looked (CLAUDE.md error rule: "'Never
-    /// written' and 'could not be read' are different errors"): a call whose committed row the store
-    /// root does not hold. Within budgets ([`NodePrimaryUpdateReply::record_absent`]).
-    RejectedRecordAbsent {
-        /// The record never written, named with its subject. Within [`MAX_RECORD_ABSENT_RECORD_BYTES`].
-        record: String,
-        /// The admin whose store holds no such record (its path.name). Within
-        /// [`MAX_RECORD_ABSENT_HOLDER_BYTES`].
-        holder: String,
-    },
-    /// The holder wrote its row, and its call on the successor did not answer node.primary.updated:
-    /// the seat is the successor's from the row, and the update is incomplete until a later attempt
-    /// obtains the successor's answer (proposal Part C1 failure contract).
-    Incomplete {
-        /// The call, the successor and how it ended.
-        reason: String,
     },
     /// The receiver cannot decide yet.
     NotReady {
@@ -246,10 +147,8 @@ pub enum NodePrimaryUpdateReply {
         /// Why.
         reason: String,
     },
-    /// The commanded `node.primary.update` ended failed after the committed row (Q10, R-PU2, R-BI4):
-    /// the Build carrier's own terminal (`Failed { step, reason }`), recording the step, the new
-    /// holder's node id and incarnation, the seats the row moved with their revisions, who the
-    /// ordinary rule seated, and the provider's proof that the new holder's process is gone.
+    /// The commanded update ended failed (R-BI4): the Build carrier's own terminal, recording the step
+    /// and why (no successor; the successor unheard after the update, with the investigation's verdict).
     Failed {
         /// The step that failed (`primary-update`). Within [`MAX_FAILED_STEP_BYTES`].
         step: String,
@@ -258,22 +157,12 @@ pub enum NodePrimaryUpdateReply {
         /// The standard code captured where the failure occurred.
         code: crate::outcome::Code,
     },
-    /// The takeover a `TakeOverFabricSeat` names is committed already, to the successor it names:
-    /// nothing is written again (elections §5: "repeated calls for the same takeover and committed
-    /// successor answer `AlreadyApplied`").
+    /// The take-over is applied already, to the successor it names.
     AlreadyApplied {
-        /// The written seat: the fabric seat, its committed holder's exact birth and its revision.
-        revisions: Vec<CommittedSeat>,
+        /// The fabric-primary's entry, at its revision.
+        revisions: Vec<(String, Birth, Birth, u64)>,
     },
 }
-
-/// The most bytes of the `holder` a `RejectedRecordAbsent` names: a path.name, as a refusal names a
-/// node ([`crate::status::MAX_REFUSAL_NODE_BYTES`]).
-pub const MAX_RECORD_ABSENT_HOLDER_BYTES: usize = crate::status::MAX_REFUSAL_NODE_BYTES;
-/// The most bytes of the `record` a `RejectedRecordAbsent` names: what is left of the 1024-byte reply
-/// bound after the variant (one byte), the holder at its budget and a two-byte length prefix on each
-/// string.
-pub const MAX_RECORD_ABSENT_RECORD_BYTES: usize = 1024 - 1 - (2 + MAX_RECORD_ABSENT_HOLDER_BYTES) - 2;
 
 /// The most bytes of the `step` a `Failed` reply names.
 pub const MAX_FAILED_STEP_BYTES: usize = 128;
@@ -286,25 +175,15 @@ pub const MAX_FAILED_REASON_BYTES: usize = 1024 - 1 - 1 - (2 + MAX_FAILED_STEP_B
 pub const MAX_REASON_BYTES: usize = 1024 - 1 - 2;
 
 impl NodePrimaryUpdateReply {
-    /// `RejectedNoSuccessor` with `reason` within its budget.
-    pub fn no_successor(reason: &str) -> Self {
-        Self::RejectedNoSuccessor { reason: crate::status::within(reason, MAX_REASON_BYTES) }
-    }
-
-    /// `Incomplete` with `reason` within its budget.
-    pub fn incomplete(reason: &str) -> Self {
-        Self::Incomplete { reason: crate::status::within(reason, MAX_REASON_BYTES) }
-    }
-
     /// `Failed` with `step` and `reason` within their budgets so the reply always fits
     /// [`NodePrimaryUpdate`]'s reply bound.
     pub fn failed(step: &str, reason: &str, code: crate::outcome::Code) -> Self {
         Self::Failed { step: crate::status::within(step, MAX_FAILED_STEP_BYTES), reason: crate::status::within(reason, MAX_FAILED_REASON_BYTES), code }
     }
 
-    /// `RejectedNotAuthority` with `reason` within its budget.
-    pub fn not_authority(reason: &str) -> Self {
-        Self::RejectedNotAuthority { reason: crate::status::within(reason, MAX_REASON_BYTES) }
+    /// `RejectedNotPrimary` with `reason` within its budget.
+    pub fn not_primary(reason: &str) -> Self {
+        Self::RejectedNotPrimary { reason: crate::status::within(reason, MAX_REASON_BYTES) }
     }
 
     /// `RejectedFabricNotReady` with `reason` within its budget.
@@ -312,34 +191,14 @@ impl NodePrimaryUpdateReply {
         Self::RejectedFabricNotReady { reason: crate::status::within(reason, MAX_REASON_BYTES) }
     }
 
-    /// `RejectedSourceFailed` naming what failed (`source`), the operation on it (`op`) and why
-    /// (`cause`), each within its budget so the reply always fits [`NodePrimaryUpdate`]'s reply
-    /// bound.
-    pub fn source_failed(source: &str, op: &str, cause: &str) -> Self {
-        let (source, op, cause) = crate::status::source_failed_fields(source, op, cause);
-        Self::RejectedSourceFailed { source, op, cause }
-    }
-
-    /// `RejectedRecordAbsent` naming the record never written (`record`) and the admin whose records
-    /// hold no such record (`holder`), each within its budget so the reply always fits
-    /// [`NodePrimaryUpdate`]'s reply bound.
-    pub fn record_absent(record: &str, holder: &str) -> Self {
-        Self::RejectedRecordAbsent { record: crate::status::within(record, MAX_RECORD_ABSENT_RECORD_BYTES), holder: crate::status::within(holder, MAX_RECORD_ABSENT_HOLDER_BYTES) }
-    }
-
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::PrimaryUpdated { .. } => "primary-updated",
-            Self::RejectedConflict { .. } => "rejected-conflict",
+            Self::RejectedConflictingPayload { .. } => "rejected-conflicting-payload",
             Self::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
-            Self::RejectedNoSuccessor { .. } => "rejected-no-successor",
-            Self::RejectedNotAuthority { .. } => "rejected-not-authority",
-            Self::RejectedStaleSeat { .. } => "rejected-stale-seat",
-            Self::RejectedRevisionOverflow { .. } => "rejected-revision-overflow",
-            Self::RejectedSourceFailed { .. } => "rejected-source-failed",
-            Self::RejectedRecordAbsent { .. } => "rejected-record-absent",
-            Self::Incomplete { .. } => "incomplete",
+            Self::RejectedNotPrimary { .. } => "rejected-not-primary",
+            Self::RejectedStaleRevision { .. } => "rejected-stale-revision",
             Self::NotReady { .. } => "not-ready",
             Self::Malformed { .. } => "malformed",
             Self::PeerUnresolved { .. } => "peer-unresolved",
@@ -355,22 +214,18 @@ impl NodePrimaryUpdateReply {
 impl NodeProtocol for NodePrimaryUpdate {
     const OP: u8 = 0x21;
     const NAME: &'static str = "node-primary-update";
-    /// Two seats, each with two exact births and a revision, a fabric name, a Build id and an operation
-    /// identity.
+    /// Two entries, each a node type, two exact births and a revision, a Build id, its run and an
+    /// operation identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
-    /// One reply: an enum tag and at most one reason string, two written seats (a seat, an exact
-    /// birth and a revision each), a source failure's three fields or an absent record's two, within
-    /// their budgets.
+    /// One reply: an enum tag and at most one reason string, or two entries, within their budgets.
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
-    /// An update is decided by the receiver's own seats and the committed row; a carried call is
-    /// decided by no one.
+    /// An update is decided by the receiver's own view; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
-    /// A successor keeps serving PrimaryUpdate after the row, and a former holder UpdatePrimary or
-    /// UpdatePrimaryFromRow, while it refuses new calls (node.connections.delete): a lost reply's
-    /// identical retry is answered from the row.
+    /// A successor keeps serving PrimaryUpdate, and a primary UpdatePrimary, while it refuses new
+    /// calls (node.connections.delete): a lost reply's identical retry is answered as the first was.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 18;
+    const REQUEST_VARIANTS: u32 = 3;
+    const REPLY_VARIANTS: u32 = 13;
 
     type Request = NodePrimaryUpdateRequest;
     type Reply = NodePrimaryUpdateReply;
@@ -378,15 +233,10 @@ impl NodeProtocol for NodePrimaryUpdate {
     fn reply_detail(reply: &Self::Reply) -> &'static str {
         match reply {
             NodePrimaryUpdateReply::PrimaryUpdated { .. } => "primary-updated",
-            NodePrimaryUpdateReply::RejectedConflict { .. } => "rejected-conflict",
+            NodePrimaryUpdateReply::RejectedConflictingPayload { .. } => "rejected-conflicting-payload",
             NodePrimaryUpdateReply::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
-            NodePrimaryUpdateReply::RejectedNoSuccessor { .. } => "rejected-no-successor",
-            NodePrimaryUpdateReply::RejectedNotAuthority { .. } => "rejected-not-authority",
-            NodePrimaryUpdateReply::RejectedStaleSeat { .. } => "rejected-stale-seat",
-            NodePrimaryUpdateReply::RejectedRevisionOverflow { .. } => "rejected-revision-overflow",
-            NodePrimaryUpdateReply::RejectedSourceFailed { .. } => "rejected-source-failed",
-            NodePrimaryUpdateReply::RejectedRecordAbsent { .. } => "rejected-record-absent",
-            NodePrimaryUpdateReply::Incomplete { .. } => "incomplete",
+            NodePrimaryUpdateReply::RejectedNotPrimary { .. } => "rejected-not-primary",
+            NodePrimaryUpdateReply::RejectedStaleRevision { .. } => "rejected-stale-revision",
             NodePrimaryUpdateReply::NotReady { .. } => "not-ready",
             NodePrimaryUpdateReply::Malformed { .. } => "malformed",
             NodePrimaryUpdateReply::PeerUnresolved { .. } => "peer-unresolved",
@@ -401,15 +251,10 @@ impl NodeProtocol for NodePrimaryUpdate {
     fn classify_reply(reply: &NodePrimaryUpdateReply) -> ReplyKind {
         match reply {
             NodePrimaryUpdateReply::PrimaryUpdated { .. } => ReplyKind::Success,
-            NodePrimaryUpdateReply::RejectedConflict { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            NodePrimaryUpdateReply::RejectedConflictingPayload { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodePrimaryUpdateReply::RejectedFabricNotReady { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            NodePrimaryUpdateReply::RejectedNoSuccessor { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            NodePrimaryUpdateReply::RejectedNotAuthority { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            NodePrimaryUpdateReply::RejectedStaleSeat { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
-            NodePrimaryUpdateReply::RejectedRevisionOverflow { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            NodePrimaryUpdateReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            NodePrimaryUpdateReply::RejectedRecordAbsent { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
-            NodePrimaryUpdateReply::Incomplete { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedNotPrimary { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedStaleRevision { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodePrimaryUpdateReply::NotReady { .. } => ReplyKind::NotReady,
             NodePrimaryUpdateReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             NodePrimaryUpdateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,

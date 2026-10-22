@@ -121,7 +121,6 @@ impl LifecycleEvents for Events {
     async fn stopped(&self, op: &LifecycleOp) {
         self.note("stopped", op);
     }
-    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, op: &LifecycleOp) {
         self.note("joined", op);
     }
@@ -573,7 +572,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         in_flight: None,
         config: Default::default(),
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     };
     let (provider, events, joins) = (Running::default(), Events::default(), rdm_admin::join::Joins::default());
     let observer = StartsWhole { joins: &joins, events: &events, digest };

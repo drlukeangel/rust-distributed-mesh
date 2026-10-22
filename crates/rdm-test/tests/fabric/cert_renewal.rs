@@ -556,7 +556,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     estate.enter(&Estate::path("mesh1.admin.2")).await;
     let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin.1")).await.expect("node.stop of mesh1.admin.1 is accepted");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds both seats", Duration::from_secs(90), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;

@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// The gates of the fabric-primary's drive: the membership's cut-off rule and the Build log's
-/// authority, read from the committed fabric seat record.
+/// The gates of the fabric-primary's drive: the Build log's fence, read from the fabric-primary
+/// record this admin holds.
 pub(crate) struct SeatGate {
     pub(crate) membership: Membership,
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
@@ -29,20 +29,19 @@ impl crate::build_drive::Gate for SeatGate {
     fn peer_mesh(&self, mesh: &str) -> Option<crate::investigate::PeerMesh> {
         self.control.peer_mesh.get().and_then(|f| f(mesh))
     }
-    /// node.primary.update before an operation on a seat holder (the approved proposal
-    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1: "The holder is commanded from
-    /// above"): a mesh-primary's seat is commanded from here (the fabric-primary commands a
-    /// mesh-primary); any other cohort's seat through its mesh-primary, its commander and writer (Q3); the fabric-primary's own seats it moves itself, having nothing above it, both in
-    /// ONE row when it holds both (Q1: "the one row of C1 commits both seats to NA2 at their next
-    /// epochs").
+    /// node.primary.update before an operation on a primary (lifecycles/node-primary-update.md step 1:
+    /// "The primary is commanded from above"): a mesh-primary is commanded from here (the
+    /// fabric-primary commands a mesh-primary); any other type's primary through its mesh-primary, its
+    /// commander; the fabric-primary's own primaries it moves itself, having nothing above it, both in
+    /// one call when it is both ("Both primaries": the successor becomes both).
     async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
         use rdm_core::Seat;
         let door = &self.handover;
         if m.holder.node_id != door.node_id {
-            // A mesh-primary's seat, commanded on its holder; any other cohort's seat, commanded through
-            // its mesh-primary, which writes the row (this admin itself when it is that mesh-primary).
+            // A mesh-primary, commanded directly; any other type's primary, commanded through its
+            // mesh-primary (this admin itself when it is that mesh-primary).
             if m.mesh_seat || m.cohort_seat {
                 let seat = if m.cohort_seat { Seat::Cohort(m.holder.kind) } else { Seat::MeshPrimary };
                 let update = update_operation(seat, build_id.as_str(), run, operation);
@@ -105,8 +104,8 @@ pub(crate) struct ProviderDeparture {
     pub(crate) provider: Arc<dyn DeploymentProvider>,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     pub(crate) records: Arc<Records>,
-    /// The fabric's seat moves, read for the takeover that moved the fabric seat.
-    pub(crate) fabric: Arc<dyn crate::fabric_storage::FabricStorage>,
+    /// The take-over of the fabric-primary this admin made, while its hand-back is owed.
+    pub(crate) taken_over: crate::fabric_handover::TakenOver,
     /// This admin's status authority, whose command book holds the commands it has open.
     pub(crate) authority: crate::status_rpc::AuthoritySlot,
 }
@@ -168,8 +167,6 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         give_mesh_node_admin(&self.records, &self.held_name(), &self.topology, mesh, from).await;
     }
 
-    /// The fabric seat's latest move read from the fabric's seat moves, when it is a takeover. Moves
-    /// that cannot be read are named and answer none: nothing is re-created without the takeover read.
     fn commanded(&self, node: &crate::model::Node) -> bool {
         self.authority.get().is_some_and(|a| node.incarnation_id.as_ref().is_some_and(|inc| a.commands.open_for(&node.node_id, inc)))
     }
@@ -179,14 +176,9 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     }
 
     async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
-        match crate::fabric_storage::folded_moves(&*self.fabric).await {
-            Ok(moves) => crate::fabric_storage::fabric_seat_taken_from(&moves),
-            Err(e) => {
-                tracing::info_span!("rdm.node_admin.seat.reject.via-seat-moves-unreadable", node = %self.held_name(), store = "fabric.storage", error = %e)
-                    .in_scope(|| tracing::info!("the fabric's seat moves could not be read: no lost mesh's node-admin is re-created from the fabric lane this pass"));
-                None
-            }
-        }
+        // The take-over this admin made, while the fabric-primary's record names it still.
+        let taken = self.taken_over.lock().unwrap().clone()?;
+        self.book.seats.fabric().is_some_and(|h| h.is_birth(&taken.2.node_id, &taken.2.incarnation)).then_some(taken)
     }
 
     /// Whether the exit of the exact birth the view names for `executor` is recorded: a point read
@@ -611,11 +603,11 @@ pub async fn reconcile_drift(
         .map(|n| n.name.to_string())
         .collect();
     surplus.sort();
-    // The handback (elections §4.3, §4.4): the fabric seat a takeover moved is owed back to the lost
-    // mesh's re-created node-admin once it is Ready and seated there. Its attempt carries no action: the
-    // plan holds the handback, and the drive moves the seat, naming that admin, as its preceding update.
-    // Only the holder the written seat move names owes it (Q104): an admin whose view still names it
-    // the fabric-primary after a takeover (the lost birth heard again) plans none.
+    // The hand-back (fabric-recovery.md step 4): the fabric-primary a take-over moved is owed back to
+    // the node at the lost birth's path.name once it is Ready and its mesh's primary. Its attempt carries
+    // no action: the plan holds the hand-back, and the drive runs node.fabric-primary.update naming that
+    // admin as its preceding update. Only the admin that made the take-over owes it: one whose view
+    // still names it the fabric-primary after a take-over (the lost birth heard again) plans none.
     let handback = taken.filter(|(_, _, holder)| holder.node_id == *me_id).and_then(|_| crate::accepted::handback_due_after_dwell(t, taken, lost_name, rdm_transport::membership::staleness_floor(), commanded));
     if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() && handback.is_none() {
         return None;

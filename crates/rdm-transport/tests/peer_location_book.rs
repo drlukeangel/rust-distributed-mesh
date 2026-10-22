@@ -103,7 +103,7 @@ fn birth(node_id: &NodeId, key: iroh::PublicKey, socket: SocketAddr, incarnation
         in_flight: None,
         load: None,
         gossip: None,
-        config: Default::default(),
+        config: Default::default(), is_primary: None, is_fabric_primary: None
     }
 }
 

@@ -48,50 +48,32 @@
 use crate::model::{Node, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::ids::{IncarnationId, NodeId};
-use rdm_core::SeatHolder;
+use rdm_core::Primary;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 
 /// The election key every span names.
 pub const ELECTION_KEY: &str = "node_id_crockford";
 
-/// One candidate as the election sees it: its identity, and whether it is
-/// eligible (committed `ReadyForTraffic`).
-#[derive(Debug, Clone, Copy)]
-pub struct Candidate<'a> {
-    /// The candidate's node id.
-    pub node_id: &'a NodeId,
-    /// Whether the candidate is eligible.
-    pub ready: bool,
-}
-
-/// The index of the winner among `candidates`: the eligible candidate with
-/// the lowest NodeId; `None` when none is eligible.
-pub fn elect(candidates: &[Candidate<'_>]) -> Option<usize> {
-    (0..candidates.len()).filter(|&i| candidates[i].ready).min_by_key(|&i| candidates[i].node_id)
-}
+pub use rdm_core::election::{elect, no_secondary, Candidate};
 
 /// What an election takes beside the nodes: the seat holders this observer holds, and the births
 /// proven gone.
 #[derive(Debug, Clone, Default)]
 pub struct Incumbency {
     /// The fabric primary's holder record.
-    pub fabric: Option<SeatHolder>,
+    pub fabric: Option<Primary>,
     /// Each mesh's node-admin primary holder record, by mesh name.
-    pub meshes: BTreeMap<String, SeatHolder>,
+    pub meshes: BTreeMap<String, Primary>,
     /// The holder record of every other (mesh, node type) cohort's primary seat, by (mesh, kind)
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1: "Every (mesh,
     /// node_type) cohort elects its primary by the one rule of elections §4.1 and §5: a living holder
     /// keeps its seat"). Written by the mesh's primary, the cohort's one row writer (R-MT1 Q3).
-    pub cohorts: BTreeMap<(String, NodeKind), SeatHolder>,
+    pub cohorts: BTreeMap<(String, NodeKind), Primary>,
     /// Exact births proven gone, by incarnation (an incarnation names one birth of one node): the
     /// provider found their runtime exited, a departure was heard, or a later birth announced it
     /// replaced them. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
     pub lost: HashSet<IncarnationId>,
-    /// Each mesh primary seat a written seat move left vacant, by mesh name, with the revision it
-    /// was left at (i144 Q51: a takeover vacates the lost mesh's primary seat): the ordinary rule
-    /// fills it at the next revision.
-    pub vacant: BTreeMap<String, u64>,
 }
 
 impl Incumbency {
@@ -111,7 +93,7 @@ enum Holding {
     Unseen,
 }
 
-fn holding(nodes: &[Node], h: &SeatHolder, inc: &Incumbency) -> Holding {
+fn holding(nodes: &[Node], h: &Primary, inc: &Incumbency) -> Holding {
     if inc.lost.contains(&h.incarnation) {
         return Holding::Yielded;
     }
@@ -205,7 +187,7 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
 /// mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh primary.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != mesh).cloned().collect();
-    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone(), vacant: inc.vacant.clone() };
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
     hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
@@ -231,7 +213,7 @@ pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, n
     // The named successor may be in the holder's own mesh (Q89: the hand-back to the node at the lost
     // fabric-primary's path.name): a ReadyForTraffic node-admin there is the one the row makes primary.
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| named.mesh == holder.mesh || n.mesh != holder.mesh).cloned().collect();
-    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone(), vacant: inc.vacant.clone() };
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
     match hypothetical.into_iter().find(|n| n.name == *named) {
         Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic => Ok(n),
@@ -309,16 +291,11 @@ impl Moving {
     }
 }
 
-/// Q7's refusal of a cohort with no other node of its type (Luke 2026-10-12): `cannot transfer: no
-/// secondary of type <node_type> in mesh <mesh>`.
-pub fn no_secondary(node_type: &str, mesh: &str) -> String {
-    format!("cannot transfer: no secondary of type {node_type} in mesh {mesh}")
-}
-
-/// C2 search step 3's refusal of the fabric seat, naming both searches: `cannot transfer fabric seat:
-/// no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`.
+/// The fabric-primary's refusal, naming both searches (lifecycles/node-primary-update.md "The
+/// fabric-primary", search step 3): `cannot transfer fabric-primary: no other node-admin ReadyForTraffic
+/// in mesh <mesh>, no other mesh-primary ReadyForTraffic`.
 pub fn no_fabric_successor(mesh: &str) -> String {
-    format!("cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh {mesh}, no other mesh-primary ReadyForTraffic")
+    format!("cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh {mesh}, no other mesh-primary ReadyForTraffic")
 }
 
 /// The successor the writer's pre-check names for a commanded transfer of `holder`'s seats (proposal
@@ -666,12 +643,12 @@ mod tests {
         n
     }
 
-    fn holder(mesh: &str, node_id: &str, inc: &str, revision: u64) -> SeatHolder {
-        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap(), revision }
+    fn holder(mesh: &str, node_id: &str, inc: &str, revision: u64) -> Primary {
+        Primary { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap(), revision }
     }
 
-    fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {
-        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), cohorts: BTreeMap::new(), lost: HashSet::new(), vacant: BTreeMap::new() }
+    fn incumbency(fabric: Primary, meshes: &[Primary]) -> Incumbency {
+        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), cohorts: BTreeMap::new(), lost: HashSet::new() }
     }
 
     fn lose(inc: &mut Incumbency, _node_id: &str, incarnation: &str) {
@@ -919,7 +896,7 @@ mod tests {
         nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::RpcNode).map(|n| n.name.to_string())
     }
 
-    fn with_rpc_seat(seat: SeatHolder) -> Incumbency {
+    fn with_rpc_seat(seat: Primary) -> Incumbency {
         let mut inc = incumbency(holder("mesh1", "900000000000", "a1", 1), &[holder("mesh1", "900000000000", "a1", 1)]);
         inc.cohorts.insert((seat.mesh.clone(), NodeKind::RpcNode), seat);
         inc

@@ -776,19 +776,19 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
         .collect()
 }
 
-/// The node-admins, held off ready-for-traffic, of every mesh other than `me_mesh` whose primary seat
-/// this admin's takeover left vacant (`vacant`, the seat book's vacant meshes) and that has no
+/// The node-admins, held off ready-for-traffic, of `taken_from`, the mesh other than `me_mesh` whose
+/// fabric-primary this admin took over (`crate::fabric_handover::TakenOver`), while it has no
 /// ReadyForTraffic node-admin: nobody in that mesh can tickle them or command them back, so the
-/// fabric-primary, the authority above the lost birth, does (fabric-recovery.md "The loss of the
-/// fabric-primary while a node-admin lives" step 3; Q89). A peer mesh whose primary seat is held, its
-/// members silent, is mesh investigation's alone: no other mesh tickles its node-admins beside it
-/// (node-identity-and-state.md §7.3, R-CK1).
-pub fn admins_of_meshes_without_a_ready_admin<'a>(view: &'a Topology, me_mesh: &str, vacant: &'a std::collections::BTreeMap<String, u64>) -> impl Iterator<Item = &'a Node> + 'a {
+/// fabric-primary above the lost birth does (fabric-recovery.md step 3: "The successor is
+/// fabric-primary above the lost one, and the standing playbook runs downward from it"; Q89). A peer
+/// mesh whose fabric-primary this admin did not take over, its members silent, is mesh investigation's
+/// alone: no other mesh tickles its node-admins beside it (node-identity-and-state.md §7.3, R-CK1).
+pub fn admins_of_meshes_without_a_ready_admin<'a>(view: &'a Topology, me_mesh: &str, taken_from: Option<String>) -> impl Iterator<Item = &'a Node> + 'a {
     let me_mesh = me_mesh.to_string();
     view.members().filter(move |n| {
         n.kind == NodeKind::NodeAdmin
             && n.mesh != me_mesh
-            && vacant.contains_key(&n.mesh)
+            && taken_from.as_deref() == Some(n.mesh.as_str())
             && !view.meshes.iter().any(|m| m.name == n.mesh && matches!(m.status, crate::model::ScopeStatus::Leaving | crate::model::ScopeStatus::Dead))
             && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)
             && !view.members().any(|o| o.mesh == n.mesh && o.kind == NodeKind::NodeAdmin && o.status == NodeStatus::ReadyForTraffic)

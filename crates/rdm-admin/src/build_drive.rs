@@ -14,10 +14,10 @@
 //! projection: a successor fabric-primary resumes from it, and the attempt it finds claimed it
 //! dispatches again (start-or-reattach), so no completed step runs twice.
 //!
-//! Before every claim and every dispatch the drive passes two gates: the Build log's sticky seat
-//! fence is not set (a fabric-primary whose written seat record names another live birth
-//! dispatches nothing), and this admin holds the seat in its view. A seat loss names the holder the
-//! written seat record names, never the view's.
+//! Before every claim and every dispatch the drive passes two gates: the Build log's fence is not set
+//! (a fabric-primary whose view, by the election's result it installed, names another live birth
+//! fabric-primary dispatches nothing), and this admin is the fabric-primary in its view. A loss names
+//! the fabric-primary the installed result names.
 //! An executor that cannot be reached is replaced only on proof of its departure, never on
 //! silence.
 //!
@@ -45,13 +45,13 @@ use tracing::Instrument as _;
 /// The gates every claim and dispatch passes.
 #[async_trait::async_trait]
 pub trait Gate: Send + Sync {
-    /// The seat fence of the Build log, read from the committed fabric seat record: refused by name
-    /// once the record names another live birth; otherwise the path.name of the birth it names when
-    /// that is this birth, `None` when it names none or a birth proven gone.
+    /// The fence of the Build log, read from the fabric-primary this admin's view holds (the election's
+    /// result it installed): refused by name once it names another live birth; otherwise the path.name
+    /// of the birth it names when that is this birth, `None` when it names none or a birth proven gone.
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         Ok(None)
     }
-    /// Resolves once the seat record ends this admin's authority (never, for a gate with no seat):
+    /// Resolves once the view names another live birth fabric-primary (never, for a gate with none):
     /// a drive waiting on an executor's run ends there, not when that run's stream does.
     async fn fence_set(&self) {
         std::future::pending::<()>().await
@@ -69,21 +69,19 @@ pub trait Gate: Send + Sync {
     /// `operation` names the Build operation the update precedes; `run` is the first attempt of the
     /// run `attempt` belongs to, the update's transfer key with the Build id (ruling R-PU2,
     /// [`crate::fabric_handover::update_operation`]). `Err` names why the seat did not move, and
-    /// whether the update was refused before its row or left incomplete after it ([`SeatMoveEnd`]). A
-    /// gate with no seats moves nothing.
+    /// whether the update was refused before the call or left incomplete after it ([`SeatMoveEnd`]). A
+    /// gate with no primaries moves nothing.
     async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _run: u32, _operation: &str) -> Result<(), SeatMoveEnd> {
         Ok(())
     }
-    /// node.primary.updated for every seat update a committed row records before an operation the
-    /// drive is about to dispatch acts on that update's holder (the approved proposal
-    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure contract: "The workflow
-    /// continues only after the result is installed and acknowledged: node.primary.updated answered
-    /// to the resuming executor's call, never a read alone"; "the next writer to read the row
-    /// publishes 'updated'"). `updates` names each update's row; a row not written is no update. A
-    /// row naming this birth the successor is installed from the row and this admin says "primary
-    /// updated"; a row naming another successor is that successor's node.primary.updated, obtained
-    /// on a call and installed. `Err` names why an update was not acknowledged. A gate with no seats
-    /// has none to acknowledge.
+    /// node.primary.updated for every update that precedes an operation the drive is about to dispatch
+    /// on that update's primary (lifecycles/node-primary-update.md failure contract: "The workflow
+    /// continues only after the result is installed and acknowledged: `node.primary.updated` answered
+    /// to the resuming executor's call, never a read alone"). An update this admin holds acknowledged
+    /// is acknowledged again; otherwise what it came to is discovered from this admin's view and the
+    /// successor's node.primary.updated obtained on a call and installed
+    /// ([`crate::fabric_handover::HandoverDoor::row_acknowledged`]). `Err` names why an update was not
+    /// acknowledged. A gate with no primaries has none to acknowledge.
     async fn seats_acknowledged(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
         Ok(())
     }
@@ -92,24 +90,23 @@ pub trait Gate: Send + Sync {
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
 }
 
-/// The seat update that precedes an operation on a seat holder (R-MT1), named as its committed row
-/// is on the fabric's store root: `meshes/<mesh>/seat-transfers/<operation>`
+/// The node.primary.update that precedes an operation on a primary (R-MT1), named by its operation
 /// (`crate::fabric_handover::update_operation`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PrecedingUpdate {
-    /// The holder's mesh, under which its row is written.
+    /// The primary's mesh.
     pub mesh: String,
     /// The update's own operation.
     pub operation: String,
-    /// The node the operation acts on, when it names one: the update's holder.
+    /// The node the operation acts on, when it names one: the update's primary.
     pub holder: Option<PathName>,
 }
 
-/// The seat updates a committed row may record before `op` of Build `build_id` in the run whose first
-/// attempt is `run` (R-MT1, ruling R-PU2, [`crate::executor::seat_move`]): for a stop, delete, restart,
-/// replace or node.connections.delete of a node-admin, the mesh-primary seat's update and the fabric
-/// seat's alone; of a node of any other type, its cohort seat's update; for a mesh retire, the fabric
-/// seat's under that mesh. None for any other operation.
+/// The node.primary.updates that may precede `op` of Build `build_id` in the run whose first attempt
+/// is `run` (R-MT1, ruling R-PU2, [`crate::executor::seat_move`]): for a stop, delete, restart, replace
+/// or node.connections.delete of a node-admin, the mesh-primary's update and the fabric-primary's
+/// alone; of a node of any other type, its type's primary's update; for a mesh retire, the
+/// fabric-primary's under that mesh. None for any other operation.
 pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {
     use rdm_core::build::RecipeStep;
     use crate::fabric_handover::update_operation;
@@ -126,7 +123,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         {
             [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), run, &key), holder: Some(node.clone()) }).collect()
         }
-        // Any other cohort's seat: its mesh-primary's row under the holder's mesh (proposal Part C1, Q3).
+        // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
         BuildOperation::RetireNode { node, exited: None }
         | BuildOperation::RestartNode { node }
         | BuildOperation::DeleteConnections { node, .. }
@@ -189,10 +186,10 @@ pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, nodes: us
     .in_scope(|| tracing::info!("the provider's exit proof of every node of a mesh the investigation found unreachable was read"));
 }
 
-/// The admission of the create of `mesh`'s first node-admin with no exit proof, the fabric seat having
-/// been taken from `lost` of that mesh at seat move `t` (elections §4.3, node-recovery.md `R-FM2`),
-/// named on its own span. The one emitter of the span: the fabric authority's pass and the drive each
-/// name it once per takeover.
+/// The admission of the create of `mesh`'s first node-admin with no exit proof, the fabric-primary
+/// having been taken over from `lost` of that mesh at revision `t` (elections §4.3, node-recovery.md
+/// `R-FM2`), named on its own span. The one emitter of the span: the fabric-primary's pass and the drive
+/// each name it once per take-over.
 pub fn takeover_recreate_span(me: &PathName, build_id: &BuildId, mesh: &str, t: u64, lost: &rdm_core::handover::HandoverBirth) {
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-takeover-recreate",
@@ -232,11 +229,10 @@ pub trait DepartureProof: Send + Sync {
     /// mesh a new node-admin and authors the fabric `degraded` (step 6, R-DG1), until the mesh's new
     /// primary reports (step 7). A proof that holds no health records nothing.
     async fn mesh_given_node_admin(&self, _mesh: &str, _build_id: &BuildId, _attempt: u32, _from: std::time::Instant) {}
-    /// The birth the fabric seat was taken from and the seat move's `t`, when its latest move is a
-    /// takeover ([`crate::fabric_storage::fabric_seat_taken_from`]): an expired hold with no inspection
-    /// possible moved the seat, so the lost mesh's first node-admin is re-created from the fabric lane
-    /// with no exit proof (elections §4.3, node-recovery.md `R-FM2`). A proof that holds no seat moves
-    /// reads none.
+    /// The take-over this admin made while its hand-back is owed: the revision `t`, the lost birth and
+    /// the fabric-primary it made ([`crate::fabric_handover::TakenOver`]). The lost mesh's first
+    /// node-admin is re-created with no exit proof (elections §4.3, node-recovery.md `R-FM2`). A proof
+    /// that holds no take-over reads none.
     async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
         None
     }
@@ -311,8 +307,8 @@ pub trait Dispatcher: Send + Sync {
 pub struct SeatLoss {
     /// Why this admin may not act as the fabric-primary.
     pub why: String,
-    /// The admin (path.name) the committed fabric seat record names as the holder, when it names a
-    /// live birth whose path.name is known here.
+    /// The admin (path.name) the fabric-primary record this admin holds names, when it
+    /// names a live birth whose path.name is known here.
     pub to: Option<String>,
 }
 
@@ -346,8 +342,8 @@ pub struct Drive {
     state: Mutex<DriveState>,
     wake: Notify,
     running: AtomicBool,
-    /// The takeover that moved the fabric seat, as this pass read the seat moves: what the handback
-    /// is planned from ([`crate::accepted::handback_due`]).
+    /// The take-over this admin made, as this pass read it: what the hand-back is planned from
+    /// ([`crate::accepted::handback_due`]).
     taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>>,
     /// The path.name the lost birth's exit-proof row names, read beside `taken`.
     taken_name: Mutex<Option<PathName>>,
@@ -425,7 +421,8 @@ impl Drive {
         self.wake.notify_waiters();
     }
 
-    /// The seat moved: the callers' streams end, and a caller re-submits by build id at the new seat.
+    /// The fabric-primary moved: the callers' streams end, and a caller re-submits by build id at the
+    /// new fabric-primary.
     pub fn lose_seat(&self, loss: SeatLoss) {
         let mut s = self.state.lock().unwrap();
         if s.lost.is_none() && s.terminal.is_none() {
@@ -529,7 +526,7 @@ pub enum Read {
     Frame(BuildReply),
     /// The terminal frame.
     Terminal(BuildReply),
-    /// The seat moved; the stream ends with the typed new-seat frame, and the caller re-submits.
+    /// The fabric-primary moved; the stream ends `FabricPrimaryMoved`, and the caller re-submits.
     SeatLost(SeatLoss),
 }
 
@@ -578,18 +575,18 @@ impl DriveReader {
     }
 }
 
-/// How a seat move that did not complete ended ([`Gate::move_seats`]), as the approved proposal
-/// node-primary-update-fabric-mesh-and-node-type.md Part C1 failure contract tells its branches apart.
+/// How a node.primary.update that did not complete ended ([`Gate::move_seats`]), as
+/// lifecycles/node-primary-update.md's failure contract tells its branches apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatMoveEnd {
-    /// Refused before the row: "refused by name, nothing changed, the Build's step fails by name".
+    /// Refused before the call: "refused by name, nothing changed, the Build's step fails by name".
     Refused(String),
-    /// Not answered by node.primary.updated: after the row the seats are the successor's whatever the
-    /// call returned, or the end is uncertain; the row, where one was written, stands.
+    /// Not answered by node.primary.updated: the end is uncertain, and the next attempt discovers what
+    /// the update came to from its view.
     Incomplete(String),
-    /// After the row the new holder's process is gone, provider-confirmed (ruling R-PU2, Q10): the
-    /// step ends `Failed { step, reason }`, the Build is Failed (R-BI4), the ordinary rule seats
-    /// whoever it seats, and the workflow never goes on to the holder's operation.
+    /// The successor is unheard after the update, node investigation's verdict (ruling R-PU2, Q10): the
+    /// step ends `Failed { step, reason }`, the Build is Failed (R-BI4), the election names whom it
+    /// names, and the workflow never goes on to the primary's operation.
     Failed {
         /// The step that failed (`primary-update`).
         step: String,
@@ -798,9 +795,9 @@ enum Inner {
     Refused(BuildReply),
     Unreached(String),
     Broke(String),
-    /// The Build log's seat fence was set while the executor's run was open: this admin's authority
-    /// ended at the fence. The drive ends there without waiting for the run's stream, except for
-    /// the executor the row seated, whose stream ends with its new-seat frame once it holds the seat.
+    /// The Build log's fence was set while the executor's run was open: this admin is no longer the
+    /// fabric-primary. The drive ends there without waiting for the run's stream, except for the
+    /// executor the fence names, whose stream ends `FabricPrimaryMoved` once it is fabric-primary.
     SeatYielded,
 }
 
@@ -833,11 +830,10 @@ impl DriveEnv {
         end
     }
 
-    /// The seat, the cut-off rule and the target: `Some` when this admin may not claim or dispatch now.
-    /// The committed fabric seat record is read first: it is the target every decision is judged
-    /// against (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 5:
-    /// "From this write the holder is no longer primary"), and it names the holder this admin's
-    /// authority ended at, while the view follows it.
+    /// The fabric-primary and the target: `Some` when this admin may not claim or dispatch now. The
+    /// fence is read first: the election's result this admin installed names the fabric-primary every
+    /// decision is judged against (lifecycles/node-primary-update.md step 4: the successor "becomes
+    /// primary" when it installs it).
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         let me = self.held_name().await;
         let record_holder = match self.gate.fence().await {
@@ -862,11 +858,11 @@ impl DriveEnv {
             (t.holds_fabric_seat(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
         };
         if !held {
-            // Where the seat is comes from the written seat record, never the view: past the
-            // fence it names this birth, none, or a birth proven gone (no holder).
+            // Past the fence the installed result names this birth, none, or a birth proven gone
+            // (no fabric-primary).
             let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
             let names = record_holder.as_deref().unwrap_or("none");
-            let why = format!("{me} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the committed fabric seat record names {names}", self.door.node_id);
+            let why = format!("{me} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the fabric-primary record it holds names {names}", self.door.node_id);
             tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id.log(), node = %me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
             drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
@@ -1157,10 +1153,10 @@ impl DriveEnv {
                     Err((op, f)) => return self.stop_at_fence(&me, drive, attempt, &op, f, &crashed),
                 }
             };
-            // A seat update a committed row records before an operation of this run is acknowledged
-            // first, whether this admin moved the seat, resumes after another admin's row, or holds the
-            // seat from that row already: node.primary.updated answered to this executor, never the
-            // view alone (proposal Part C1 failure contract), in the claim's attempt and in a re-dispatch.
+            // A node.primary.update that precedes an operation of this run is acknowledged first,
+            // whether this admin ran it, resumes after another admin's, or is its successor:
+            // node.primary.updated answered to this executor, never the view alone
+            // (node-primary-update.md failure contract), in the claim's attempt and in a re-dispatch.
             if let Some(end) = self.updates_acknowledged(&me, drive, &plan, attempt, p.run_of(attempt)).await {
                 return end;
             }
@@ -1267,9 +1263,9 @@ impl DriveEnv {
         }
     }
 
-    /// Every seat update a committed row records before an operation of `plan`, acknowledged through
-    /// the gate ([`Gate::seats_acknowledged`]); `Some` ends the drive stalled, the attempt blocked
-    /// naming the updates and why, when one was not.
+    /// Every node.primary.update that precedes an operation of `plan`, acknowledged through the gate
+    /// ([`Gate::seats_acknowledged`]); `Some` ends the drive stalled, the attempt blocked naming the
+    /// updates and why, when one was not.
     async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
         let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id, run).into_iter().map(move |u| (op.key(), u))).collect();
         updates.dedup();
@@ -1277,7 +1273,7 @@ impl DriveEnv {
         let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
         let why = self.gate.seats_acknowledged(&asked, &drive.build_id, attempt).await.err()?;
         let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
-        let why = format!("{me}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the seat update a committed row records before it (one of {names}): {why}", drive.build_id);
+        let why = format!("{me}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id);
         self.blocked(drive, attempt, &first, "primary-update", &why);
         Some(self.stalled(me, drive, why))
     }
@@ -1286,11 +1282,11 @@ impl DriveEnv {
     /// proposal Part C1 step 1: "The holder is commanded from above, as a step of the Build", Q10:
     /// "The FP claims the attempt at the claim door BEFORE it commands"): attempt `attempt` is claimed
     /// for this fabric-primary first and its run is held here while node.primary.update runs (whether
-    /// this admin moves its own seats or commands another mesh-primary's), so a successor that holds the
-    /// seats from the row reattaches to this attempt and goes on only once it ends, after the holder
-    /// said "primary updated" (step 8: "Only then does the commanding Build continue"; build.md: "A live
-    /// run is reattached, never re-claimed"). Refused before the row or ended `Failed { step, reason }`
-    /// after the row (ruling R-PU2, Q10): the attempt ends `Failed` and the Build is Failed (R-BI4).
+    /// this admin moves its own primaries or commands another mesh-primary's), so a successor that is
+    /// fabric-primary from its answer reattaches to this attempt and goes on only once it ends (step 6:
+    /// "The commanding Build continues on the successor's direct acknowledgement"; build.md: "A live run
+    /// is reattached, never re-claimed"). Refused before the call or ended `Failed { step, reason }`
+    /// after it (ruling R-PU2, Q10): the attempt ends `Failed` and the Build is Failed (R-BI4).
     /// Every other end hands the attempt to the view's fabric-primary, and when the seat moved
     /// (`Ok(true)`) the loop passes the gates again.
     async fn seats_first(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
@@ -1356,9 +1352,9 @@ impl DriveEnv {
         match (moved, still) {
             (Ok(()), false) => Ok(true),
             (Err(why), false) => {
-                // After the row the seats are the successor's whatever the call returned (C1 failure
-                // contract): the drive goes on to the gates, which end it at the moved seat.
-                let why = format!("{me}: its seats moved to {to} by the committed row before {}, and node.primary.update did not complete: {why}", op.key());
+                // The update ended after its call: the drive goes on to the gates, which end it where
+                // the election's installed result names another fabric-primary.
+                let why = format!("{me}: node.primary.update to {to} before {} did not complete: {why}", op.key());
                 dspan.record("reason", why.as_str());
                 self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 Ok(true)
@@ -1559,17 +1555,16 @@ impl DriveEnv {
             Dispatched::Refused(r) => return Inner::Refused(r),
             Dispatched::Unreached(why) => return Inner::Unreached(why),
         };
-        // Set once the seat row that fenced this admin names this run's executor: the run's own
-        // SeatTransfer step moved the seats to it (node-rpc-envelope.md TakeSeats).
+        // Set once the fence names this run's executor: the run's own node.primary.update made it
+        // fabric-primary.
         let mut seated_executor = false;
         loop {
             // Only the wait for the next item races the fence: a frame in hand is handled whole.
             let item = tokio::select! {
                 biased;
                 _ = self.gate.fence_set(), if !seated_executor => {
-                    // The row seated this run's executor: it is the fabric-primary once it has installed
-                    // the written seats ("the reply opens N's execution gate"), and it says so on this
-                    // stream by ending it with SeatMoved naming itself. The callers are sent to it only
+                    // This run's executor is fabric-primary once it has installed the election's result,
+                    // and it says so on this stream by ending it with FabricPrimaryMoved naming itself. The callers are sent to it only
                     // then: before, its door would answer them as an admin that is not the
                     // fabric-primary. Any other holder ends the drive at the fence at once.
                     match self.gate.fence().await {
@@ -1592,12 +1587,12 @@ impl DriveEnv {
                     // fabric-primary, reports its end to its own callers.
                     _ if seated_executor => return Inner::SeatYielded,
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
-                    // The executor took the fabric-primary seat during the run: this admin's seat row
-                    // fenced it, and the drive ends at that fence.
-                    BuildReply::SeatMoved { .. } => return Inner::SeatYielded,
+                    // The executor became fabric-primary during the run: the fence names it, and the
+                    // drive ends there.
+                    BuildReply::FabricPrimaryMoved { .. } => return Inner::SeatYielded,
                     other => return Inner::Refused(other),
                 },
-                // The row is the answer whatever became of the stream.
+                // The fence is the answer whatever became of the stream.
                 InnerItem::Ended | InnerItem::Broke(_) if seated_executor => return Inner::SeatYielded,
                 InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),
                 InnerItem::Broke(why) => return Inner::Broke(why),

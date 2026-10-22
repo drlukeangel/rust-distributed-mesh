@@ -88,8 +88,8 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         (ConnectionsDeleting { reason: s("d") }, "15 01 64"),
         (Malformed { kind: MalformedKind::Corrupt }, "16 02"),
         (Unauthorized { reason: s("u") }, "17 01 75"),
-        (SeatMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
-        (SeatMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
+        (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
+        (FabricPrimaryMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
         (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(s("p")), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
     ];
     for (r, hex) in fixtures {
@@ -121,7 +121,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         Complete { build_id: "b".into(), attempt: 1 },
         Failed { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition },
         HandedOff { build_id: "b".into(), attempt: 1, to: "t".into() },
-        SeatMoved { build_id: "b".into(), fabric_primary: Some("p".into()) },
+        FabricPrimaryMoved { build_id: "b".into(), fabric_primary: Some("p".into()) },
         Got { build_id: "b".into(), phase: BuildPhase::Pending, attempt: 0, executor: None, reason: "requested".into(), last_failure: None, steps: 0, chunks: 0 },
         Deleted { build_id: "b".into() },
     ] {

@@ -20,8 +20,8 @@ pub fn rejected_stale_incarnation(held: IncarnationId) -> StatusReply { StatusRe
 pub fn rejected_stale_mesh(held: MeshId) -> StatusReply { StatusReply::RejectedStaleMesh { held } }
 /// Construct the typed rejected-stale-fabric outcome.
 pub fn rejected_stale_fabric(held: FabricId) -> StatusReply { StatusReply::RejectedStaleFabric { held } }
-/// Construct the typed rejected-not-authority outcome.
-pub fn rejected_not_authority(why: NotAuthority) -> StatusReply { StatusReply::RejectedNotAuthority { why } }
+/// Construct the typed rejected-not-primary outcome.
+pub fn rejected_not_primary(why: NotPrimary) -> StatusReply { StatusReply::RejectedNotPrimary { why } }
 /// Construct the typed rejected-invalid-node-transition outcome.
 pub fn rejected_invalid_node_transition(current: NodeState) -> StatusReply { StatusReply::RejectedInvalidNodeTransition { current } }
 /// Construct the typed rejected-cert outcome: a renewed member cert or an issuer update refused by
@@ -248,7 +248,7 @@ use serde::{Deserialize, Serialize};
 /// Construct the typed join-mismatch outcome.
 pub fn join_mismatch(field: String, deployed: String, reported: String) -> JoinReply { JoinReply::JoinMismatch { field, deployed, reported } }
 /// Construct the typed not-authority outcome.
-pub fn not_authority(primary: Option<String>) -> JoinReply { JoinReply::NotAuthority { primary } }
+pub fn not_primary(primary: Option<String>) -> JoinReply { JoinReply::NotPrimary { primary } }
 /// Construct the typed peer-unresolved outcome.
 pub fn peer_unresolved(reason: String) -> JoinReply { JoinReply::PeerUnresolved { reason } }
 /// Construct the typed not-ready outcome.
@@ -272,24 +272,16 @@ use crate::handover::*;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
-/// Construct the typed rejected-conflict outcome.
-pub fn rejected_conflict(operation: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedConflict { operation } }
-/// Construct the typed already-applied outcome of a takeover committed already.
-pub fn already_applied(revisions: Vec<CommittedSeat>) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::AlreadyApplied { revisions } }
+/// Construct the typed rejected-conflicting-payload outcome.
+pub fn rejected_conflicting_payload(operation: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedConflictingPayload { operation } }
+/// Construct the typed already-applied outcome of a take-over applied already.
+pub fn already_applied(revisions: Vec<(String, crate::framing::Birth, crate::framing::Birth, u64)>) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::AlreadyApplied { revisions } }
 /// Construct the typed rejected-fabric-not-ready outcome.
 pub fn rejected_fabric_not_ready(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedFabricNotReady { reason } }
-/// Construct the typed rejected-no-successor outcome.
-pub fn rejected_no_successor(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedNoSuccessor { reason } }
-/// Construct the typed rejected-not-authority outcome.
-pub fn rejected_not_authority(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedNotAuthority { reason } }
-/// Construct the typed rejected-stale-seat outcome.
-pub fn rejected_stale_seat(seat: Seat, expected: u64, current: u64) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedStaleSeat { seat, expected, current } }
-/// Construct the typed rejected-revision-overflow outcome.
-pub fn rejected_revision_overflow(seat: Seat, revision: u64) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedRevisionOverflow { seat, revision } }
-/// Construct the typed rejected-source-failed outcome.
-pub fn rejected_source_failed(source: String, op: String, cause: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedSourceFailed { source, op, cause } }
-/// Construct the typed rejected-record-absent outcome.
-pub fn rejected_record_absent(record: String, holder: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedRecordAbsent { record, holder } }
+/// Construct the typed rejected-not-primary outcome.
+pub fn rejected_not_primary(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedNotPrimary { reason } }
+/// Construct the typed rejected-stale-revision outcome.
+pub fn rejected_stale_revision(node_type: String, expected: u64, current: u64) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedStaleRevision { node_type, expected, current } }
 /// Construct the typed not-ready outcome.
 pub fn not_ready(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::NotReady { reason } }
 /// Construct the typed malformed outcome.
@@ -302,20 +294,12 @@ pub fn busy(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::
 pub fn connections_deleting(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::ConnectionsDeleting { reason } }
 /// Construct the typed failed outcome.
 pub fn failed(step: String, reason: String, code: crate::outcome::Code) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::failed(&step, &reason, code) }
-/// Construct the bounded no-successor outcome.
-pub fn bounded_no_successor(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::no_successor(reason) }
-/// Construct the bounded incomplete outcome.
-pub fn bounded_incomplete(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::incomplete(reason) }
 /// Construct the bounded failed outcome.
 pub fn bounded_failed(step: &str, reason: &str, code: crate::outcome::Code) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::failed(step, reason, code) }
-/// Construct the bounded not-authority outcome.
-pub fn bounded_not_authority(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::not_authority(reason) }
+/// Construct the bounded not-primary outcome.
+pub fn bounded_not_primary(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::not_primary(reason) }
 /// Construct the bounded fabric-not-ready outcome.
 pub fn bounded_fabric_not_ready(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::fabric_not_ready(reason) }
-/// Construct the bounded source-failed outcome.
-pub fn bounded_source_failed(source: &str, op: &str, cause: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::source_failed(source, op, cause) }
-/// Construct the bounded record-absent outcome.
-pub fn bounded_record_absent(record: &str, holder: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::record_absent(record, holder) }
 }
 
 /// Constructors for the TopologyReply family.
@@ -326,7 +310,7 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::wire::ProjectionEntry;
-use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Seat, SeatHolder};
+use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Seat, Primary};
 use serde::{Deserialize, Serialize};
 /// Construct the typed not-ready outcome.
 pub fn not_ready(reason: String) -> TopologyReply { TopologyReply::NotReady { reason } }

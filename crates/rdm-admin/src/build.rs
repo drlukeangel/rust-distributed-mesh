@@ -383,7 +383,7 @@ pub enum BuildReject {
         /// What the Build would do to it (`restart`, `node.connections.delete`, `stop`, `retire`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
-        /// fabric seat's `cannot transfer fabric seat: ...` naming both searches.
+        /// fabric seat's `cannot transfer fabric-primary: ...` naming both searches.
         refusal: String,
     },
     /// The Build would stop, restart, delete the connections of or retire the holder of its

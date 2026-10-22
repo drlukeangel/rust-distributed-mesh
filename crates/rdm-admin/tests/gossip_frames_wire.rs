@@ -62,7 +62,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
         in_flight: full.then_some(4),
         config: if full { [("role".to_string(), "proof".to_string())].into() } else { Default::default() },
         load: None,
-        gossip: None,
+        gossip: None, is_primary: None, is_fabric_primary: None
     }
 }
 
@@ -147,14 +147,8 @@ fn frames() -> Vec<Frame> {
         Frame::NodeConnectionsDeleted { op: op("node.connections.delete:mesh2.rpc.2"), forwarded_by: None },
         Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
-        Frame::Seated { seat: rdm_core::Seat::FabricPrimary, holder: rdm_core::SeatHolder { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 } },
-        Frame::Seated { seat: rdm_core::Seat::MeshPrimary, holder: rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 } },
         Frame::Concern { seat: rdm_core::Seat::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
-        Frame::NewFabricPrimary { holder: rdm_core::SeatHolder { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
-        Frame::PrimaryUpdated {
-            op: op("node.stop:mesh2.admin.1"),
-            seats: [rdm_core::Seat::MeshPrimary, rdm_core::Seat::FabricPrimary].into_iter().map(|seat| rdm_core::seat::transfer::CommittedSeat::of(seat, &rdm_core::SeatHolder { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 5 })).collect(),
-        },
+        Frame::NewFabricPrimary { holder: rdm_core::Primary { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
         Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
         Frame::StateCommitted { hook: round_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },
         Frame::TrafficOpening { hook: round_hook("open-traffic"), forwarded_by: None },
@@ -441,13 +435,11 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&Value::Object(result)).unwrap()).unwrap();
 }
 
-/// All 22 kinds declare their literal standard type; reserved kinds remain named refusals.
+/// All 19 kinds declare their literal standard type; reserved kinds remain named refusals.
 #[test]
 fn every_kind_declares_its_ruled_type_string() {
-    let mut cases = frames();
-    let (op, seats) = cases.iter().find_map(|f| match f { Frame::PrimaryUpdated { op, seats } => Some((op.clone(), seats.clone())), _ => None }).unwrap();
-    cases.push(Frame::PrimaryUpdating { op, seats });
-    let expected = ["rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.node.stopped", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.mesh.status", "rdm.fabric.status", "rdm.seat.seated", "rdm.seat.seated", "rdm.mesh.concern", "rdm.fabric.primary.new", "rdm.node.primary.updated", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened", "rdm.node.primary.updating"];
+    let cases = frames();
+    let expected = ["rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.node.stopped", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.mesh.status", "rdm.fabric.status", "rdm.mesh.concern", "rdm.fabric.primary.new", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened"];
     assert_eq!(cases.len(), expected.len());
     for (frame, kind) in cases.iter().zip(expected) {
         let bytes = crate::gossip_wire::authored(frame).encode();
@@ -456,5 +448,5 @@ fn every_kind_declares_its_ruled_type_string() {
         crate::gossip_wire::assert_roundtrip(frame, &bytes);
         assert!(bytes.len() <= 4032);
     }
-    assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 22);
+    assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 19);
 }

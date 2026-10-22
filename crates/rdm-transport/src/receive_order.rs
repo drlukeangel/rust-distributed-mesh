@@ -13,13 +13,6 @@
 //! The primary's separately held membership status is not heartbeat content. A refused or
 //! repeated digest supplies no address and no clock observation to its caller.
 //!
-//! Seated replacement data and PrimaryUpdating/PrimaryUpdated operation data use [`SeatReceipts`] under the seat installation
-//! lock, against the actual installed records and retained primary publication content. A read or
-//! local seat install supplies the settled floor; updating moves no holder. Every named cohort is
-//! checked before any receipt or record moves. Lower revision/stage is `via-stale`, equal identical
-//! content is `via-duplicate`, and equal conflicting content is `via-inconsistent`. Local election
-//! candidate selection remains SeatHolder::supersedes; receipt never uses its equal-revision tie.
-//!
 //! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
 //! and topology-read installs:
 //! - Members and MembersDelta: the actual installed publisher/version floor orders that source,
@@ -176,124 +169,6 @@ pub(crate) fn admit_digest(held: &rdm_core::MeshDigest, offered: &rdm_core::Mesh
         return false;
     }
     true
-}
-
-/// One seat publication's retained receive content. Installed records themselves remain the
-/// authority for settled revisions, including local elections and topology reads. Only a primary
-/// publication needs extra evidence: its updating stage and the operation/body at that revision.
-#[derive(Debug, Default)]
-pub(crate) struct SeatReceipts {
-    publications: HashMap<rdm_core::seat::transfer::Seat, SeatPublication>,
-}
-
-#[derive(Debug)]
-struct SeatPublication {
-    revision: u64,
-    settled: bool,
-    record: rdm_core::SeatHolder,
-    frame: &'static str,
-    content: Vec<u8>,
-}
-
-impl SeatReceipts {
-    /// Local execution committed this exact primary publication. Retain its content too: gossip
-    /// cannot rewrite an operation at the same revision just because its row was installed locally.
-    pub(crate) fn installed_primary(&mut self, op: &rdm_core::LifecycleOp, seats: &[rdm_core::seat::transfer::CommittedSeat]) {
-        let content = Frame::PrimaryUpdated { op: op.clone(), seats: seats.to_vec() }.content_bytes();
-        for c in seats {
-            let subject = receipt_seat(c);
-            if self.publications.get(&subject).is_none_or(|h| (c.revision, true) >= (h.revision, h.settled)) {
-                self.publications.insert(subject, SeatPublication { revision: c.revision, settled: true, record: c.record(), frame: "primary-updated", content: content.clone() });
-            }
-        }
-    }
-
-    /// A local election installed a holder. Any older receive content no longer describes that
-    /// installed record; a genuinely newer updating publication still retains its own stage.
-    pub(crate) fn installed_seat(&mut self, seat: rdm_core::Seat, holder: &rdm_core::SeatHolder) {
-        let subject = rdm_core::seat::transfer::Seat::of(seat, &holder.mesh);
-        if self.publications.get(&subject).is_some_and(|h| (holder.revision, true) >= (h.revision, h.settled)) {
-            self.publications.remove(&subject);
-        }
-    }
-
-    /// Called under the seat installation lock. Judge every named cohort against both its actual
-    /// installed record and the retained primary stage before changing any receipt or projection.
-    /// No refused frame can advance another cohort's floor. The caller installs accepted settled
-    /// records under this same lock; updating never installs a holder.
-    pub(crate) fn admit(&mut self, f: &Frame, current: &[(rdm_core::seat::transfer::CommittedSeat, Option<rdm_core::SeatHolder>)]) -> bool {
-        let (frame, settled) = match f.data() {
-            Frame::Seated { .. } => ("seated", true),
-            Frame::PrimaryUpdating { .. } => ("primary-updating", false),
-            Frame::PrimaryUpdated { .. } => ("primary-updated", true),
-            _ => unreachable!("only seat publications use the seat classifier"),
-        };
-        let content = f.content_bytes();
-        let mut advances = false;
-        // Staleness wins across the complete row. A settled record at the same revision is later
-        // than updating, whether that record arrived in gossip, a read, or local execution.
-        for (offered, installed) in current {
-            let previous = self.publications.get(&receipt_seat(offered));
-            let held = installed.as_ref().map(|h| (h.revision, true)).into_iter()
-                .chain(previous.map(|h| (h.revision, h.settled))).max();
-            let key = (offered.revision, settled);
-            if let Some(held) = held {
-                if key < held {
-                    let subject = seat_subject(&offered.seat);
-                    tracing::info_span!(
-                        "rdm.mesh.membership.reject.via-stale", frame, subject = %subject,
-                        held_key = %seat_order(held), frame_key = %seat_order(key),
-                    ).in_scope(|| tracing::info!("a seat publication below the held cohort revision and stage is refused"));
-                    return false;
-                }
-                advances |= key > held;
-            } else { advances = true; }
-        }
-        for (offered, installed) in current {
-            let key = (offered.revision, settled);
-            let previous = self.publications.get(&receipt_seat(offered)).filter(|h| (h.revision, h.settled) == key);
-            let installed = installed.as_ref().filter(|h| (h.revision, true) == key);
-            let inconsistent = installed.is_some_and(|h| *h != offered.record()) || previous.is_some_and(|h|
-                h.record != offered.record() || (h.frame == frame && h.content != content));
-            if inconsistent {
-                let subject = seat_subject(&offered.seat);
-                tracing::info_span!(
-                    "rdm.mesh.membership.reject.via-inconsistent", frame, subject = %subject, revision = offered.revision,
-                ).in_scope(|| tracing::info!("equal seat revision and stage with different content: no cohort installed"));
-                return false;
-            }
-        }
-        if !advances {
-            let identity = current.iter().map(|(c, _)| format!("{} {}", seat_subject(&c.seat), seat_order((c.revision, settled)))).collect::<Vec<_>>().join(", ");
-            tracing::info_span!(
-                "rdm.mesh.membership.update.via-duplicate", frame, identity = %identity, outcome = "ignored",
-            ).in_scope(|| tracing::info!("the identical seat publication is ignored"));
-            return false;
-        }
-        for (c, _) in current {
-            if frame == "seated" {
-                self.publications.remove(&receipt_seat(c));
-            } else {
-                self.publications.insert(receipt_seat(c), SeatPublication { revision: c.revision, settled, record: c.record(), frame, content: content.clone() });
-            }
-        }
-        true
-    }
-}
-
-fn receipt_seat(c: &rdm_core::seat::transfer::CommittedSeat) -> rdm_core::seat::transfer::Seat {
-    rdm_core::seat::transfer::Seat::of(c.seat.kind(), c.mesh_key().unwrap_or_default())
-}
-
-fn seat_subject(seat: &rdm_core::seat::transfer::Seat) -> String {
-    match seat {
-        rdm_core::seat::transfer::Seat::FabricPrimary => seat.name().to_string(),
-        rdm_core::seat::transfer::Seat::MeshPrimary { mesh } | rdm_core::seat::transfer::Seat::Cohort { mesh, .. } => format!("{} {mesh}", seat.name()),
-    }
-}
-
-fn seat_order((revision, settled): (u64, bool)) -> String {
-    format!("revision={revision} {}", if settled { "updated" } else { "updating" })
 }
 
 /// Name a publication's classification at the installation door. The caller holds the actual
@@ -751,7 +626,7 @@ mod tests {
             in_flight: None,
             load: None,
             gossip: None,
-            config: Default::default(),
+            config: Default::default(), is_primary: None, is_fabric_primary: None
         }
     }
 
@@ -866,50 +741,6 @@ mod tests {
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "stop-node"), successor, 1)), Ok(()), "another publisher counts its own versions");
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&c, "stop-node"), acting.clone(), 9)), Ok(()));
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&a, "node.stop"), acting, 2)), Ok(()), "the same publisher's fact of another mesh is another source");
-    }
-
-    /// CONTRACT: updated is after updating at one revision, and every named cohort is checked
-    /// atomically against the installed seat and retained publication. Duplicates run no handler.
-    #[test]
-    fn a_primary_updating_received_after_its_primary_updated_is_ignored() {
-        use rdm_core::{Seat, SeatHolder};
-        use rdm_core::seat::transfer::CommittedSeat;
-        let book = crate::membership::SeatBook::default();
-        let d = birth("mesh1.admin.1");
-        let holder = SeatHolder { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision: 4 };
-        let row = |seat, revision| CommittedSeat::of(seat, &SeatHolder { revision, ..holder.clone() });
-        let updating = |seats| Frame::PrimaryUpdating { op: op(&d, "node.stop"), seats };
-        let updated = |seats| Frame::PrimaryUpdated { op: op(&d, "node.stop"), seats };
-        assert!(book.receive(&updating(vec![row(Seat::MeshPrimary, 4)])));
-        assert!(book.mesh("mesh1").is_none(), "updating moves no holder");
-        assert!(book.receive(&updated(vec![row(Seat::MeshPrimary, 4)])));
-        assert!(!book.receive(&updating(vec![row(Seat::MeshPrimary, 4)])));
-        assert!(!book.receive(&updated(vec![row(Seat::MeshPrimary, 4)])));
-        assert!(book.receive(&updating(vec![row(Seat::MeshPrimary, 5)])));
-        assert!(!book.receive(&updated(vec![row(Seat::MeshPrimary, 3)])));
-        assert!(!book.receive(&updated(vec![row(Seat::FabricPrimary, 7), row(Seat::MeshPrimary, 3)])), "one stale cohort refuses all");
-        assert!(book.fabric().is_none());
-        assert!(book.receive(&updated(vec![row(Seat::FabricPrimary, 1)])), "the refused row did not move this floor");
-        assert!(book.receive(&updated(vec![CommittedSeat::of(Seat::MeshPrimary, &SeatHolder { mesh: "mesh2".into(), revision: 1, ..holder })])));
-    }
-
-    /// CONTRACT: each (mesh, node_type) cohort is independent, while the fabric seat has one floor
-    /// across holder meshes. Equal content is ignored; a higher revision installs.
-    #[test]
-    fn a_seated_record_orders_within_its_complete_seat_key() {
-        use rdm_core::{Seat, SeatHolder, NodeKind};
-        let book = crate::membership::SeatBook::default();
-        let d = birth("mesh1.rpc.1");
-        let frame = |seat, mesh: &str, revision| Frame::Seated { seat, holder: SeatHolder { mesh: mesh.into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision } };
-        assert!(book.receive(&frame(Seat::MeshPrimary, "mesh1", 5)));
-        assert!(book.receive(&frame(Seat::Cohort(NodeKind::RpcNode), "mesh1", 2)));
-        assert!(book.receive(&frame(Seat::Cohort(NodeKind::Broker), "mesh1", 1)));
-        assert!(book.receive(&frame(Seat::Cohort(NodeKind::RpcNode), "mesh2", 1)));
-        assert!(book.receive(&frame(Seat::FabricPrimary, "mesh1", 3)));
-        assert!(!book.receive(&frame(Seat::Cohort(NodeKind::RpcNode), "mesh1", 2)));
-        assert!(!book.receive(&frame(Seat::Cohort(NodeKind::RpcNode), "mesh1", 1)));
-        assert!(!book.receive(&frame(Seat::FabricPrimary, "mesh2", 2)));
-        assert!(book.receive(&frame(Seat::Cohort(NodeKind::RpcNode), "mesh1", 3)));
     }
 
     /// CONTRACT (R-RX3): a frame with no order key (a status, a NodeDeleted) is taken however often

@@ -78,36 +78,20 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
     pids
 }
 
-/// The fabric seat's revision in the last seat move that moved it.
-fn fabric_revision(estate: &Estate) -> u64 {
-    seat_moves(estate).iter().rev().find_map(|m| m["seats"].as_array()?.iter().find(|x| x["seat"] == "FabricPrimary").map(|x| x["revision"].as_u64().unwrap_or(0))).expect("the fabric seat has a row")
-}
-
-/// The fabric's seat moves on its store root, `seat-moves/<T>--<node.id>--<incarnation>`, in key order: each
-/// row's record.
-fn seat_moves(estate: &Estate) -> Vec<Value> {
-    let dir = estate.fabric_store_root().join("seat-moves");
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-    files.sort();
-    files.iter().filter_map(|f| serde_json::from_slice::<Value>(&std::fs::read(f).ok()?).ok()).map(|v| v["record"].clone()).collect()
-}
-
 /// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
 /// "Outside its mesh": a mesh-primary runs mesh investigation's ladder on the fabric-primary's mesh; "No
 /// answer from any of them by the decision step is the backbone rule, and the lowest ReadyForTraffic
-/// mesh-primary writes the row"; elections §5: "The winner begins recovery only after its seat row is
-/// written ... Every mesh-primary that notices tells the winner (`node.fabric-primary.update`)"; Q48: every
-/// seat change is one row of kind `election | takeover | handover`): mesh1 holds the fabric seat. mesh2's
-/// admins cannot inspect mesh1's runtimes (provider-domain cut), and every process of mesh1 is killed.
-/// mesh2's primary probes mesh1's admins, each `unreachable`; nothing records their exit. The seat does
-/// not move before the decision step (twice the floor). At it, mesh2's primary, the backbone rule's winner,
-/// commits ONE `takeover` seat move: the fabric seat from mesh1's holder at its revision `N` to itself at
-/// `N+1`. node.get names it the fabric-primary. Must NOT happen: the seat
-/// moving before the decision step, an exit proof recorded for mesh1's admins, two takeover rows, or the
-/// seat moving with no row.
+/// mesh-primary is fabric-primary and records it on its own row"; node-rpc-envelope.md 0x21: the winner
+/// "is fabric-primary ... and answers `PrimaryUpdated { revisions }`"): mesh1 is the fabric-primary's mesh.
+/// mesh2's admins cannot inspect mesh1's runtimes (provider-domain cut), and every process of mesh1 is
+/// killed. mesh2's primary probes mesh1's admins, each `unreachable`; nothing records their exit. The
+/// fabric-primary does not move before the decision step (twice the floor). At it, mesh2's primary, the
+/// election's winner on the backbone, takes over once: the fabric-primary from mesh1's at its revision `N`
+/// to itself at `N+1`, and node.get names it the fabric-primary. Must NOT happen: the fabric-primary moving
+/// before the decision step, an exit recorded for mesh1's admins, or two take-overs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_at_the_decision_step_through_one_takeover_row() {
-    let test = "a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_at_the_decision_step_through_one_takeover_row";
+async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_once_at_the_decision_step() {
+    let test = "a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_once_at_the_decision_step";
     // The faulted-admin binding set: every admin serves the testkit's fault door.
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_HUNG_HOLD_FLOORS", "2")]).await.expect("the faulted-admin binding set is accepted");
@@ -117,8 +101,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_at_
 
     let nodes = estate.node_values().await;
     let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&holder["mesh"]), "mesh1", "the Day-0 admin's mesh holds the fabric seat: {nodes:#?}");
-    let lost_revision = seat_moves(&estate).iter().rev().find_map(|m| m["seats"].as_array()?.iter().find(|x| x["seat"] == "FabricPrimary").map(|x| x["revision"].as_u64().unwrap_or(0))).expect("the fabric seat has a row");
+    assert_eq!(s(&holder["mesh"]), "mesh1", "the Day-0 admin's mesh holds the fabric-primary: {nodes:#?}");
     let winner = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true && n["kind"] == "node_admin").cloned().expect("mesh2's primary");
     let winner_name = s(&winner["name"]);
 
@@ -141,153 +124,35 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_at_
     let decision = rdm_transport::membership::staleness_floor() * 2;
     let winner_path = Estate::path(&winner_name);
     estate.enter(&winner_path).await;
-    let took = wait_for(&format!("{winner_name} holds the fabric seat"), decision + rdm_transport::membership::staleness_floor() * 6 + Duration::from_secs(60), || async {
+    let took = wait_for(&format!("{winner_name} is the fabric-primary"), decision + rdm_transport::membership::staleness_floor() * 6 + Duration::from_secs(60), || async {
         let n = estate.node_value(&winner_name).await;
         (n["is_fabric_primary"] == true).then_some(n)
     })
     .await;
     let elapsed = killed.elapsed();
-    assert!(elapsed >= decision, "the seat moved before the decision step: {elapsed:?} < {decision:?}");
+    assert!(elapsed >= decision, "the fabric-primary moved before the decision step: {elapsed:?} < {decision:?}");
     assert_eq!(took["is_fabric_primary"], json!(true));
-
-    let takeovers: Vec<Value> = seat_moves(&estate).into_iter().filter(|m| m["cause"] == "takeover").collect();
-    assert_eq!(takeovers.len(), 1, "one takeover row: {takeovers:#?}");
-    let seat = &takeovers[0]["seats"][0];
-    assert_eq!((seat["seat"].clone(), seat["from_revision"].as_u64(), seat["revision"].as_u64(), s(&seat["holder"]["node_id"]), s(&seat["from"]["node_id"]), s(&takeovers[0]["by"]["node_id"])), (json!("FabricPrimary"), Some(lost_revision), Some(lost_revision + 1), s(&winner["node_id"]), s(&holder["node_id"]), s(&winner["node_id"])), "the fabric seat from mesh1's holder at {lost_revision} to {winner_name}: {takeovers:#?}");
-
-    // node.get names the winner once its book takes the seat; its takeover call goes on to release the
-    // lost birth's name and announce the seat, and only then records its outcome. The estate stops
-    // once that outcome is in the winner's evidence, so the stop never cuts the call short.
-    wait_for(&format!("{winner_name}'s takeover call ends committed"), Duration::from_secs(10), || async {
-        named(&estate.spans(), "rdm.node_admin.seat.update.via-takeover").iter().any(|sp| sp["attributes"]["outcome"] == "committed").then_some(())
+    // The take-over records its outcome after the release: the estate stops once it is in the winner's
+    // evidence, so the stop never cuts the call short.
+    wait_for(&format!("{winner_name}'s take-over ends"), Duration::from_secs(10), || async {
+        named(&estate.spans(), "rdm.node_admin.primary.update.via-take-over").iter().any(|sp| sp["attributes"]["outcome"] == "primary-updated").then_some(())
     })
     .await;
     // Every process's evidence is flushed as it exits: the spans are read after the stop.
     estate.stop().await;
     let spans = estate.spans();
-    let committed = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| sp["attributes"]["outcome"] == "committed").cloned().collect::<Vec<_>>();
-    assert_eq!(committed.len(), 1, "one committed takeover: {committed:#?}");
+    let took_over = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| sp["attributes"]["outcome"] == "primary-updated").cloned().collect::<Vec<_>>();
+    assert_eq!(took_over.len(), 1, "one take-over: {took_over:#?}");
+    assert_eq!(s(&took_over[0]["attributes"]["node"]), winner_name, "by the backbone's winner: {took_over:#?}");
+    assert!(s(&took_over[0]["attributes"]["lost"]).contains(&s(&holder["node_id"])), "of mesh1's fabric-primary: {took_over:#?}");
     let looks = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter().filter(|sp| s(&sp["attributes"]["suspect"]).starts_with("mesh1.admin.")).cloned().collect::<Vec<_>>();
     assert!(!looks.is_empty() && looks.iter().all(|sp| sp["attributes"]["finding"] != "exit-proven"), "mesh1's admins are looked at and never proven exited: {looks:#?}");
-    estate.record_trace_url(s(&committed[0]["trace_id"]).as_str());
+    estate.record_trace_url(s(&took_over[0]["trace_id"]).as_str());
     let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == winner_name && sp["attributes"]["mesh"] == "mesh1").collect();
     assert!(probes.len() >= 2 && probes.iter().all(|sp| sp["attributes"]["outcome"] != "admin-alive"), "mesh2's primary probed mesh1's admins twice, none answering, before the decision: {probes:#?}");
-    eprintln!("takeover: {winner_name} took the fabric seat at revision {} after {elapsed:?} (decision step {decision:?}), trace {}", lost_revision + 1, s(&committed[0]["trace_id"]));
+    eprintln!("take-over: {winner_name} is the fabric-primary after {elapsed:?} (decision step {decision:?}), trace {}", s(&took_over[0]["trace_id"]));
 }
 
-/// CONTRACT (elections §5: "Every mesh-primary that notices tells the winner
-/// (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer
-/// `AlreadyApplied`"): mesh1 holds the fabric seat and is lost, uninspectable, while mesh2 and mesh3
-/// both live. The store cannot commit a seat move until the other mesh-primary (the higher NodeId of
-/// the two) has told the winner: its proposal reaches the winner, which holds the takeover with the
-/// other as proposer (`fabric.get`). Once the store writes, the backbone rule's winner writes ONE
-/// `takeover` row, and every proposal of the other is answered `RejectedSourceFailed` while the store
-/// could not commit, then from that takeover (`PrimaryUpdated` or `AlreadyApplied`). Must NOT happen:
-/// two takeover rows, or the seat taken by the admin the rule does not seat. Holding the commit is what
-/// makes both notice: with the store writable, the winner commits the moment its own hold expires and
-/// the other learns the new record before its hold does, and correctly proposes nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_mesh_primaries_noticing_the_lost_fabric_primary_together_commit_one_takeover() {
-    use std::os::unix::fs::PermissionsExt;
-    let test = "two_mesh_primaries_noticing_the_lost_fabric_primary_together_commit_one_takeover";
-    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1), ("mesh3", 1, 1)];
-    let mut estate = estate_of(test, &shape).await;
-    let nodes = estate.node_values().await;
-    let primaries: Vec<Value> = nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().collect();
-    assert_eq!(primaries.len(), 2, "mesh2's and mesh3's primaries: {nodes:#?}");
-    let winner = primaries.iter().min_by_key(|n| s(&n["node_id"])).cloned().unwrap();
-    let other = primaries.iter().max_by_key(|n| s(&n["node_id"])).cloned().unwrap();
-    let moves = estate.fabric_store_root().join("seat-moves");
-    std::fs::set_permissions(&moves, std::fs::Permissions::from_mode(0o555)).unwrap();
-    lose_mesh1(&estate, &nodes, "-KILL").await;
-    let winner_path = Estate::path(&s(&winner["name"]));
-    estate.enter(&winner_path).await;
-    let floor = rdm_transport::membership::staleness_floor();
-    wait_for(&format!("{} holds the takeover the other proposed", s(&winner["name"])), floor * 8 + Duration::from_secs(60), || async {
-        let f = estate.fabric_view_at(&winner_path).await?;
-        f.takeover.filter(|t| t.proposer.node_id.to_string() == s(&other["node_id"])).map(|_| ())
-    })
-    .await;
-    assert_eq!(seat_moves(&estate).iter().filter(|m| m["cause"] == "takeover").count(), 0, "nothing committed while the store cannot be written");
-    std::fs::set_permissions(&moves, std::fs::Permissions::from_mode(0o755)).unwrap();
-    wait_for(&format!("{} holds the fabric seat", s(&winner["name"])), floor * 4 + Duration::from_secs(30), || async {
-        let n = estate.node_value(&s(&winner["name"])).await;
-        (n["is_fabric_primary"] == true).then_some(())
-    })
-    .await;
-    // The other mesh-primary holds the new record before the estate stops.
-    wait_for(&format!("{} holds the new record", s(&other["name"])), floor * 4 + Duration::from_secs(30), || async {
-        let f = estate.fabric_view_at(&Estate::path(&s(&other["name"]))).await?;
-        (f.fabric_primary.as_ref().map(|p| p.to_string()) == Some(s(&winner["name"]))).then_some(())
-    })
-    .await;
-    let takeovers: Vec<Value> = seat_moves(&estate).into_iter().filter(|m| m["cause"] == "takeover").collect();
-    assert_eq!(takeovers.len(), 1, "one takeover row: {takeovers:#?}");
-    assert_eq!(s(&takeovers[0]["by"]["node_id"]), s(&winner["node_id"]), "written by the rule's winner");
-    // The winner's takeover call records its outcome after the release and the announcement: the estate
-    // stops once that outcome is in its evidence, so the stop never cuts the call short.
-    wait_for(&format!("{}'s takeover call ends committed", s(&winner["name"])), Duration::from_secs(20), || async {
-        named(&estate.spans(), "rdm.node_admin.seat.update.via-takeover").iter().any(|sp| sp["attributes"]["outcome"] == "committed").then_some(())
-    })
-    .await;
-    estate.stop().await;
-    let spans = estate.spans();
-    let committed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| sp["attributes"]["outcome"] == "committed").collect();
-    assert_eq!(committed.len(), 1, "one committed takeover: {committed:#?}");
-    let proposed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover-proposed").into_iter().filter(|sp| sp["attributes"]["node"] == other["name"]).collect();
-    assert!(!proposed.is_empty(), "{} told the winner: {proposed:#?}", s(&other["name"]));
-    let outcomes: Vec<String> = proposed.iter().map(|sp| s(&sp["attributes"]["outcome"])).collect();
-    assert!(outcomes.iter().all(|o| ["rejected-source-failed", "primary-updated", "already-applied"].contains(&o.as_str())), "every proposal is held while the store cannot commit, then answered from the one takeover: {outcomes:?}");
-    estate.record_trace_url(s(&committed[0]["trace_id"]).as_str());
-}
-
-/// CONTRACT (elections §5: "a takeover whose row cannot be written stays held. A held
-/// takeover is surfaced on `fabric.get` as `takeover { lost, expected_revision, winner, proposer,
-/// since, reason }` until it commits"): mesh1 is lost, uninspectable, and the fabric's seat-move store
-/// cannot be written. Past the hold the winner cannot commit: the takeover stays held, and the
-/// winner's `fabric.get` names it (the lost birth, the revision, the winner, why). The store writable
-/// again, the next round commits the one takeover row and `fabric.get` no longer names a held takeover.
-/// Must NOT happen: the seat moving with no row, or a held takeover left on `fabric.get` once committed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_takeover_the_store_cannot_commit_is_held_on_fabric_get_until_it_commits() {
-    use std::os::unix::fs::PermissionsExt as _;
-    let test = "a_takeover_the_store_cannot_commit_is_held_on_fabric_get_until_it_commits";
-    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
-    let mut estate = estate_of(test, &shape).await;
-    let nodes = estate.node_values().await;
-    let revision = fabric_revision(&estate);
-    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().unwrap();
-    let winner = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
-    let moves = estate.fabric_store_root().join("seat-moves");
-    std::fs::set_permissions(&moves, std::fs::Permissions::from_mode(0o555)).unwrap();
-    lose_mesh1(&estate, &nodes, "-KILL").await;
-    let winner_path = Estate::path(&s(&winner["name"]));
-    estate.enter(&winner_path).await;
-    let floor = rdm_transport::membership::staleness_floor();
-    let held = wait_for(&format!("{}'s fabric.get names a held takeover", s(&winner["name"])), floor * 8 + Duration::from_secs(60), || async {
-        let f = estate.fabric_view_at(&winner_path).await?;
-        f.takeover.clone()
-    })
-    .await;
-    std::fs::set_permissions(&moves, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!((held.lost.node_id.to_string(), held.expected_revision, held.winner.node_id.to_string()), (s(&holder["node_id"]), revision, s(&winner["node_id"])), "{held:?}");
-    assert!(held.since > 0 && held.reason.contains("seat"), "{held:?}");
-    assert_eq!(seat_moves(&estate).iter().filter(|m| m["cause"] == "takeover").count(), 0, "nothing committed while the store cannot be written");
-    wait_for(&format!("{} holds the fabric seat and no held takeover", s(&winner["name"])), floor * 4 + Duration::from_secs(30), || async {
-        let f = estate.fabric_view_at(&winner_path).await?;
-        (f.takeover.is_none() && f.fabric_primary.as_ref().map(|p| p.to_string()) == Some(s(&winner["name"]))).then_some(())
-    })
-    .await;
-    assert_eq!(seat_moves(&estate).iter().filter(|m| m["cause"] == "takeover").count(), 1, "the one takeover row, once the store writes");
-    estate.stop().await;
-    let spans = estate.spans();
-    let held_spans: Vec<&Value> = named(&spans, "rdm.node_admin.seat.reject.via-takeover-held").into_iter().collect();
-    assert!(!held_spans.is_empty(), "the held takeover is spanned");
-    estate.record_trace_url(s(&held_spans[0]["trace_id"]).as_str());
-}
-
-/// The birth `node` holds in the entry admin's view once it is a birth other than `old` and ready
-/// for traffic, asked until `within` passes; `None` past it.
 async fn new_birth_within(estate: &Estate, node: &str, old: &str, within: Duration) -> Option<rdm_core::views::NodeView> {
     let until = std::time::Instant::now() + within;
     while std::time::Instant::now() < until {
@@ -318,17 +183,16 @@ fn spans_where(spans: &[Value], name: &str, key: &str, value: &str) -> Vec<Strin
 /// from the fabric lane ... with no inspection possible there is no exit proof and no gone-floors wait;
 /// the node-admin is created at its path.name over a newly allocated `data_dir` with a newly minted
 /// endpoint key, `inherited = false`, and the old birth's data dir is reused only once its exit is
-/// proven"; Q51 A, Luke 2026-10-17: one takeover row moves both seats the lost birth holds, the lost
-/// mesh's to no holder; the lost birth's row is written `Deleted` with exit proof `takeover { revision }`;
-/// the re-born admin takes the vacant seat by the ordinary rule): mesh1 holds the fabric seat and is lost,
-/// uninspectable from mesh2. mesh2's primary takes the seat over past the hold in ONE row that also moves
-/// mesh1's primary seat to no holder, releases the lost birth (its exit proof `takeover { revision: T }`,
-/// its row `Deleted`), then re-creates mesh1.admin.1 from the fabric lane: a new node.id at mesh1.admin.1,
-/// ready for traffic, over a data dir that is not the old birth's, with a newly minted endpoint key, told
-/// `RDM_INHERITED_DATA_DIR=0`, and seated as mesh1's primary by an `election` row from the vacated
-/// revision; the old birth's data dir is left as it was. Must NOT happen: the old birth's data dir or
-/// endpoint key reused, a provider exit proof recorded for mesh1's admins, the re-creation opened before
-/// the takeover committed, or mesh1's seat moved by a second takeover row.
+/// proven"; fabric-recovery.md step 4: once the node at the lost fabric-primary's path.name is
+/// ReadyForTraffic for one floor and its mesh's mesh-primary, the temporary fabric-primary hands back by
+/// `node.fabric-primary.update`): mesh1 is the fabric-primary's mesh and is lost, uninspectable from mesh2.
+/// mesh2's primary takes the fabric-primary over once, releases the lost birth (its row `Deleted`), then
+/// re-creates mesh1.admin.1 from the fabric lane: a new node.id at mesh1.admin.1, ready for traffic, over a
+/// data dir that is not the old birth's, with a newly minted endpoint key, told `RDM_INHERITED_DATA_DIR=0`,
+/// mesh1's mesh-primary by the election; the old birth's data dir is left as it was. The fabric-primary is
+/// handed back to it by the temporary fabric-primary's own update, whose successor installs it. Must NOT
+/// happen: the old birth's data dir or endpoint key reused, a provider exit proof recorded for mesh1's
+/// admins, or a second take-over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_dir_with_inherited_false() {
     let test = "a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_dir_with_inherited_false";
@@ -353,38 +217,16 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
         Some(_) => inherited_env(estate.pid_of("mesh1.admin.1").await),
         None => None,
     };
-    // Elections §4.3: once the re-created admin is Ready, the fabric-primary hands the seat back to it by
-    // the committed handover of §4.4, naming it as the successor.
+    // fabric-recovery.md step 4: once the re-created admin is Ready for one floor and mesh1's mesh-primary,
+    // the temporary fabric-primary hands back to it; the fabric's views then name it fabric-primary.
     let handed_back = match &recreated {
         Some(n) => {
             let id = n.node_id.to_string();
-            let until = std::time::Instant::now() + floor * 12 + Duration::from_secs(60);
-            let mut back = false;
-            // The handback row is read the moment it is durable, from the fabric's seat moves.
-            while !back && std::time::Instant::now() < until {
-                back = seat_moves(&estate).iter().any(|m| m["cause"]["handover"].is_object() && m["seats"].as_array().into_iter().flatten().any(|x| x["seat"] == "FabricPrimary" && s(&x["holder"]["node_id"]) == id));
-                if !back {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            }
-            back
+            wait_for(&format!("the fabric's views name {id} fabric-primary"), floor * 12 + Duration::from_secs(60), || async { estate.node_views().await.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary && v.is_primary).then_some(()) }).await;
+            true
         }
         None => false,
     };
-    // The handback's Build ends before the estate stops: its seat row commits inside its attempt, and that
-    // attempt's dispatch, asserted below, ends only once the run behind the row has (§4.4: the new holder
-    // continues the Build from the row). Then the fabric's views name the re-created admin fabric-primary.
-    if let (true, Some(n)) = (handed_back, &recreated) {
-        let id = n.node_id.to_string();
-        let handback = seat_moves(&estate).into_iter().find(|m| m["cause"]["handover"].is_object() && m["seats"].as_array().into_iter().flatten().any(|x| x["seat"] == "FabricPrimary" && s(&x["holder"]["node_id"]) == id));
-        if let Some(cause) = handback.map(|m| m["cause"]["handover"].clone()) {
-            let build_id = rdm_core::BuildId::parse(&s(&cause["build_id"])).unwrap_or_else(|e| panic!("the handback row names a Build id: {cause}: {e}"));
-            let builds = estate.builds_obj().await;
-            wait_for(&format!("the handback's Build {build_id} is complete"), floor * 12 + Duration::from_secs(60), || async { builds.get(&build_id).await.ok().filter(|b| b.phase == rdm_core::build::BuildPhase::Complete).map(|_| ()) }).await;
-        }
-        wait_for(&format!("the fabric's views name {id} fabric-primary"), floor * 4 + Duration::from_secs(30), || async { estate.node_views().await.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary).then_some(()) }).await;
-    }
-    let moves = seat_moves(&estate);
     estate.stop().await;
     let spans = estate.spans();
     let admitted = spans_where(&spans, "rdm.node_admin.mesh.update.via-takeover-recreate", "lost_node_id", &old_id);
@@ -401,33 +243,19 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
     assert_eq!(told.as_deref(), Some("0"), "the re-created admin was told inherited = false");
     let proofs: Vec<String> = named(&spans, "rdm.node_admin.mesh.update.via-crash-proof").into_iter().filter(|sp| s(&sp["attributes"]["mesh"]) == "mesh1" && s(&sp["attributes"]["outcome"]) == "proven").map(|sp| sp["attributes"].to_string()).collect();
     assert!(proofs.is_empty(), "no provider exit proof of mesh1 was read: {proofs:#?}");
-    // One takeover row moves both seats the lost birth held: the fabric seat to mesh2's admin, mesh1's
-    // primary seat to no holder.
-    let takeovers: Vec<&Value> = moves.iter().filter(|m| m["cause"] == "takeover").collect();
-    assert_eq!(takeovers.len(), 1, "one takeover row: {moves:#?}");
-    let mesh_seat = |m: &Value| m["seats"].as_array().into_iter().flatten().find(|x| x["seat"]["MeshPrimary"]["mesh"] == "mesh1").cloned();
-    let vacated = mesh_seat(takeovers[0]).unwrap_or_else(|| panic!("the takeover row moves mesh1's primary seat too: {:#}", takeovers[0]));
-    assert!(vacated["holder"].is_null() && s(&vacated["from"]["node_id"]) == old_id, "mesh1's seat moved from the lost birth to no holder: {vacated}");
-    let vacated_at = vacated["revision"].as_u64().unwrap_or(0);
-    // The lost birth holds nothing any more: its exit proof is the takeover's, its row Deleted.
-    let t = takeovers.len();
+    // One take-over, by mesh2's admin, of the lost birth.
+    let took_over: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| sp["attributes"]["outcome"] == "primary-updated").collect();
+    assert_eq!(took_over.len(), 1, "one take-over: {took_over:#?}");
+    assert!(s(&took_over[0]["attributes"]["node"]) == winner_name && s(&took_over[0]["attributes"]["lost"]).contains(&old_id), "{winner_name} took over from the lost birth: {took_over:#?}");
+    // The lost birth holds nothing any more: its row Deleted.
     let released = spans_where(&spans, "rdm.node_admin.node.delete.via-takeover-release", "subject", "mesh1.admin.1");
-    assert!(released.iter().any(|r| r.contains("\"exit_proof\":\"takeover { revision: ") && r.contains("\"row\":\"deleted\"") && r.contains("\"exit_proof_row\":\"put\"")), "the lost birth is released by the takeover ({t} row): {released:#?}");
-    // The re-born admin takes the vacant seat by the ordinary rule: an election row from the vacated revision.
-    let seated = moves.iter().filter(|m| m["cause"] == "election").filter_map(mesh_seat).find(|x| s(&x["holder"]["node_id"]) == new.node_id.to_string()).unwrap_or_else(|| panic!("mesh1's re-born admin is seated by an election row: {moves:#?}"));
-    assert_eq!((seated["from_revision"].as_u64(), seated["revision"].as_u64()), (Some(vacated_at), Some(vacated_at + 1)), "seated from the vacated revision: {seated}");
-    // The handback (§4.3, §4.4): one handover row moves the fabric seat from mesh2's admin to mesh1's
-    // re-created admin, from the takeover's revision to the next.
-    let fabric_seat = |m: &Value| m["seats"].as_array().into_iter().flatten().find(|x| x["seat"] == "FabricPrimary").cloned();
-    let taken_at = fabric_seat(takeovers[0]).and_then(|x| x["revision"].as_u64()).unwrap_or_else(|| panic!("the takeover row moves the fabric seat: {:#}", takeovers[0]));
-    let handbacks: Vec<&Value> = moves.iter().filter(|m| m["cause"]["handover"].is_object() && fabric_seat(m).is_some_and(|x| s(&x["holder"]["node_id"]) == new.node_id.to_string())).collect();
-    assert!(handed_back && handbacks.len() == 1, "the fabric-primary hands the seat back to mesh1's re-created admin {} by one handover row: {moves:#?}", new.node_id);
-    let back = fabric_seat(handbacks[0]).expect("the handover row moves the fabric seat");
-    assert_eq!((back["from_revision"].as_u64(), back["revision"].as_u64()), (Some(taken_at), Some(taken_at + 1)), "handed back from the takeover's revision: {back}");
-    // The fabric-primary runs the handback itself: its attempt is dispatched to no other node.
-    let cause = &handbacks[0]["cause"]["handover"];
-    let dispatched: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| s(&sp["attributes"]["attempt"]) == cause["attempt"].to_string() && s(&sp["attributes"]["build_id"]).replace('-', "").trim_start_matches("bid_") == s(&cause["build_id"])).map(|sp| s(&sp["attributes"]["executor"])).collect();
-    assert!(!dispatched.is_empty() && dispatched.iter().all(|e| *e == winner_name), "the handback attempt is the fabric-primary's own, dispatched to {winner_name} alone: {dispatched:?} for {cause}");
+    assert!(released.iter().any(|r| r.contains("\"row\":\"deleted\"")), "the lost birth is released by the take-over: {released:#?}");
+    // The hand-back: the temporary fabric-primary's own update moves the fabric-primary to mesh1's
+    // re-created admin, which installs it.
+    let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == winner_name && sp["attributes"]["moving"] == "fabric-primary" && sp["attributes"]["outcome"] == "updated" && sp["attributes"]["successor"] == "mesh1.admin.1").collect();
+    assert!(handed_back && back.len() == 1, "the fabric-primary is handed back to mesh1's re-created admin {} by one update: {back:#?}", new.node_id);
+    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && s(&sp["attributes"]["primaries"]).starts_with("fabric ") && sp["attributes"]["outcome"] == "held").collect();
+    assert_eq!(installed.len(), 1, "mesh1's re-created admin installed the fabric-primary once: {installed:#?}");
     estate.record_trace_url(admitted[0].split(' ').next().unwrap_or("").trim_matches('"'));
 }
 

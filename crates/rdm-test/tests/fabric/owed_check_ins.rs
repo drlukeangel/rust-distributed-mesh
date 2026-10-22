@@ -254,9 +254,9 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
         v.sort_by_key(start);
         v
     };
-    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-takeover").into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "committed" && (suspended_at..released_at).contains(&start(sp))).collect();
-    assert_eq!(takeovers.len(), 1, "one committed takeover row while the fabric-primary was held: {takeovers:#?}");
-    assert_eq!(s(&takeovers[0]["attributes"]["node"]), interim, "written by the interim the leadership rule names: {takeovers:#?}");
+    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "primary-updated" && (suspended_at..released_at).contains(&start(sp))).collect();
+    assert_eq!(takeovers.len(), 1, "one take-over while the fabric-primary was held: {takeovers:#?}");
+    assert_eq!(s(&takeovers[0]["attributes"]["node"]), interim, "by the interim the election names: {takeovers:#?}");
     // The interim re-sent the current round as its new primary (states.md "The round checklist").
     let re_sent: Vec<Value> = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &interim, round).into_iter().filter(|sp| start(sp) >= start(takeovers[0])).collect();
     assert!(!re_sent.is_empty(), "{interim} ran mesh1's {round} round as the new primary after the takeover: {re_sent:#?}");

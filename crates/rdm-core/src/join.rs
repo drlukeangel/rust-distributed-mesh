@@ -10,7 +10,7 @@
 //! ```text
 //! Joined { answer }     the digest matches the deployment; `answer` is the admin's entry answer
 //! JoinMismatch          the digest disagrees with the deployment in `field`
-//! NotAuthority          the receiver did not deploy this birth and holds no member of that name
+//! NotPrimary          the receiver did not deploy this birth and holds no member of that name
 //! DeploymentAbandoned   the receiver deployed this exact birth and ended its deployment before the
 //!                       join arrived
 //! CertRefused           the receiver's cert signer refused to issue the birth's member cert; the
@@ -73,7 +73,7 @@ pub enum JoinReply {
         reported: String,
     },
     /// The receiver did not deploy this birth; `primary` is the mesh primary it sees, if any.
-    NotAuthority {
+    NotPrimary {
         /// The mesh primary the receiver sees, when it sees one.
         primary: Option<String>,
     },
@@ -137,7 +137,7 @@ impl JoinReply {
         match self {
             Self::Joined { .. } => "joined",
             Self::JoinMismatch { .. } => "join-mismatch",
-            Self::NotAuthority { .. } => "not-authority",
+            Self::NotPrimary { .. } => "not-authority",
             Self::DeploymentAbandoned { .. } => "deployment-abandoned",
             Self::CertRefused { .. } => "cert-refused",
             Self::PeerUnresolved { .. } => "peer-unresolved",
@@ -168,7 +168,7 @@ impl NodeProtocol for Join {
         match reply {
             JoinReply::Joined { .. } => "joined",
             JoinReply::JoinMismatch { .. } => "join-mismatch",
-            JoinReply::NotAuthority { .. } => "not-authority",
+            JoinReply::NotPrimary { .. } => "not-authority",
             JoinReply::PeerUnresolved { .. } => "peer-unresolved",
             JoinReply::NotReady { .. } => "not-ready",
             JoinReply::Busy { .. } => "busy",
@@ -184,7 +184,7 @@ impl NodeProtocol for Join {
         match reply {
             JoinReply::Joined { .. } => ReplyKind::Success,
             JoinReply::JoinMismatch { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            JoinReply::NotAuthority { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            JoinReply::NotPrimary { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             JoinReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             JoinReply::NotReady { .. } => ReplyKind::NotReady,
             JoinReply::Busy { .. } => ReplyKind::Busy,
@@ -225,7 +225,7 @@ mod tests {
         let all = [
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (JoinReply::NotPrimary { primary: Some("mesh1.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&crate::fixture_crockford60("i")).unwrap() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
