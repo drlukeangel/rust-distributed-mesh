@@ -12,7 +12,8 @@ the order the rest comes out in. Nothing here starts until Luke has read it.
 None of these words is Luke's. His quoted words in `docs/plans` say mesh-primary, fabric-primary,
 "a secondary node-admin in its mesh", "taken over fabric-primary", "NA1 calls node.primary.update on
 NA2", "the ruling is storage is for persistence, never business rules". Not once: seat, authority,
-cohort, lane, cut-off, committed, leadership. Each word below entered through a docs commit an agent
+cohort, lane, cut-off, committed. ("Leadership election" is his, Q107, 2026-10-21: "this is leadership
+election primary ... it happens for every node type"; the word stays in that phrase.) Each word below entered through a docs commit an agent
 landed under his git user, or through a ruling an architect or the lead wrote, and every later page,
 ruling, identifier, wire frame and store key took it from there. The pages are the contract, so once a
 word was on a page, code was written to conform to it, and the word became "canon" by its own weight.
@@ -29,7 +30,7 @@ word was on a page, code was written to conform to it, and the word became "cano
 | "seat row", "moves a holder's seats" | R-EL1a | rafka-v2 `e18f9b6d32`, 2026-10-11 | agent docs commit under Luke's git user |
 | committed seat (row, record, revision) | the elections page and six others | moved into RDM with `9527d75b`, 2026-10-13; older than this repo's history | the spec move |
 | cohort | plain English in v1 | rafka-v2 `7b213d6eda` | v1 |
-| leadership, `LeadershipView`, "resolver" | the elections page | rafka-v2 `5ec878990f`, 2026-10-05, "bind elections to imported RDM leadership resolver" | agent docs commit under Luke's git user |
+| `LeadershipView`, "resolver" (not "leadership election", which is Luke's, Q107) | the elections page | rafka-v2 `5ec878990f`, 2026-10-05, "bind elections to imported RDM leadership resolver" | agent docs commit under Luke's git user |
 | lane (`build_lanes.rs`, "its mesh's lane") | e6.1 | RDM `8c090b74`, 2026-10-17, under Q24 and Q28 | the lead; the word is never inside Luke's quoted words in those rulings |
 | write cut-off (`SeatCutOff`, `WriteCutOff`) | R14 item 4 | RDM `f63a8ca2`, 2026-10-11; `9c0a9965`, 2026-10-18 | architect 2's ruling; ruled gone by Luke, Q109 B, 2026-10-21 |
 | cut-off view, `Membership::authorizes()` | PR 36 | RDM `acea859e`, 2026-10-05; widened by Q58, `72a7d753`, 2026-10-18 | an agent PR; Q58 ruled by the lead under delegation |
@@ -54,7 +55,7 @@ line that would need one is listed in §6 as his call.
 | seat revision | the primary's `revision` | `revision` is the vocabulary (CLAUDE.md: "revision, never epoch") |
 | `Seated` frame | the `primary updated` announcement | `gossip.md:157` already carries `primary updating` / `primary updated` for the same operation; one of the two goes (§6) |
 | seat watch, `seat_watch.rs` | the staleness-floor rule of the fabric-primary | `fabric-node-lifecycle-elections.md` §4.3; named by the operation it leads to, `node.fabric-primary.update` |
-| leadership, `LeadershipView`, resolver | the election | `fabric-node-lifecycle-elections.md` §1: "Election is a deterministic projection" |
+| `LeadershipView`, resolver | the leadership election and its result | Luke, Q107: "leadership election"; `fabric-node-lifecycle-elections.md` §1 |
 | lane, `LaneId`, `rev-<R>/<seq>` | the Build journal's records at their own keys | `build.md:413` "the Build journal"; Q109 items 12-13: one row at build_id, one at (build_id, mesh, attempt), one claim at (build_id, mesh, attempt) |
 | write cut-off, `StorageError::CutOff`, held rows, lift, restore | nothing: a writer finishes the writes it issued before it writes its row | Q109 B, Luke's sentence |
 | cut-off view, `authorizes()`, healing window | nothing: a node-admin acts on its view and answers a question by its direct operations | R-RX1 (Luke, 2026-10-12): no authorization in the framework |
@@ -161,7 +162,7 @@ matched, so every ordinary edit to the 3,741 `seat` uses still lands; only a new
 `cohort`, `lane` or `committed` name is refused.
 
 Landing 0, recommended first and alone: add `seat`, `seats`, `seated`, `authority`, `authorities`,
-`authoritative`, `cohort`, `cohorts`, `lane`, `lanes` and `leadership` to `RETIRED`, with their cases in
+`authoritative`, `cohort`, `cohorts`, `lane` and `lanes` to `RETIRED`, with their cases in
 `test_name_check.py`, and the same words to the vocabulary list in CLAUDE.md. Not added: "cut" (the cut
 jobs and cells are named by it with another meaning), "committed" (`StateCommitted`, the state-commit
 publication, 755 uses with no seat in them) and "holder" (`holder_of`, `record_holder`, 2,591 uses):
@@ -173,7 +174,7 @@ of the checked words to the code again, whatever page it reads it on.
 These have no life apart from seat. Recommendation: they go with it, in the same landings.
 
 - **holder** (133 page lines): "the primary".
-- **leadership, `LeadershipView`, resolver** (61 page lines, 35 code uses): "the election" and its result.
+- **`LeadershipView`, resolver** (35 code uses): "the leadership election" and its result, Luke's phrase.
 - **`Seated` or `primary updated`**: two announcements for one operation. Recommendation: `Seated` goes;
   `node.primary.updated` is the operation's own announcement and is already on the wire.
 - **sticky** (3 lines, "the sticky holder"): elections §3's sentence "a primary stays until it is proven
@@ -210,8 +211,11 @@ removed word's machinery go with it. Nothing removed gets a renamed equivalent.
 
 Q110 (Luke, 2026-10-21): "node is unreachable, you create a new node; you don't keep verifying forever;
 if it comes back it's denied because its cert doesn't match the node-id that is in the topology anymore,
-then you kill it." Its row still reads "the page text for Luke's yes, then the code": nothing of it has
-landed. What stands in the pages and the code instead is the older rule, that only the provider's proof
+then you kill it." Q111 (Luke, the same day): "anything that requires proof of termination is removed";
+"this whole 'you must prove this thing is dead': that's what the node investigation is for". Q111's row
+counts about 94 statements on 20 pages and says the lead lists them by line before the page text comes to
+Luke; this section is that list's start, by file, and the line list follows it. Both rows still read "the
+page text for Luke's yes, then the code": nothing of either has landed. What stands in the pages and the code instead is the older rule, that only the provider's proof
 of a runtime's exit lets a primary change or a recovery start, and everything built to produce, hold and
 wait for that proof. All of it goes; the kill stays.
 
