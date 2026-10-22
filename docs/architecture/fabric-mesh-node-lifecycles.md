@@ -17,11 +17,11 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | workflow pages under `lifecycles/` (including [fabric.create](lifecycles/fabric-create.md) and [node.name.update](lifecycles/node-name-update.md)) | one workflow each: its sequence, actors, completion proof, failure, diagram and observability table (tables below) |
 | [Fabric and node hooks](fabric-node-hooks.md) | where application work enters a lifecycle (`before_ready`, `after_ready`, `sync_state`, `traffic_opened`), BeforeReadyCtx, outcomes, the rafka-time handle |
 | [Fabric certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection; the cert workflows table |
-| [Elections](fabric-node-lifecycle-elections.md) | elections, seats, the sticky holder, seat watch, the committed seat row as resolver input |
+| [Elections](fabric-node-lifecycle-elections.md) | the leadership election: a heard primary stays, unheard past the staleness floor it is superseded; the Mesh row and the fabric row as its inputs |
 | [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka relaunch copy |
 | [Build](build.md) | the Build engine: accepted topology, the Build/attempt/claim model, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
-| [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime proof |
-| [Fabric authority](fabric-authority.md) | fabric authority: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
+| [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime handle |
+| [Fabric primary](fabric-authority.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
 | [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path.name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
 | [Connections](connections.md) | connections, routes, reach and reroute |
 
@@ -34,7 +34,7 @@ TOPOLOGY GOSSIP
 
 BUILD / ATTEMPT / CLAIM / STEP
     assigns durable work and records its outcome
-    survives authority movement; a successor continues the same Build
+    survives a primary change; a successor continues the same Build
     exactly one executor holds an attempt at a time
 
 NODE RPC
@@ -56,11 +56,11 @@ progress wait.
 | [State-sync](lifecycles/fabric-state-sync.md) | Choosing application day-0/seed actions and saved images |
 | [State-commit](lifecycles/fabric-state-commit.md) | Publishing scratchpad records |
 | [Ready-for-traffic](lifecycles/fabric-ready-for-traffic.md) | Completing the round and notifying Rafka |
-| [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of a (mesh, node_type) cohort to its successor, first in every stop, delete, restart, replace or `node.connections.delete { scope: All }` of a primary |
-| [node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) | Moving the fabric-primary seat, the first step of a mesh.delete of the seat's mesh |
+| [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, restart, replace or `node.connections.delete { scope: All }` of a primary |
+| [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor retired |
-| [Recovery](lifecycles/fabric-recovery.md) | Relaunching after loss of every node-admin; the loss of the fabric-primary while a node-admin lives, who holds its seats until it is back, the hand-back |
+| [Recovery](lifecycles/fabric-recovery.md) | Relaunching after loss of every node-admin; the loss of the fabric-primary while a node-admin lives, which node-admin is fabric-primary until it is back, the hand-back |
 | [fabric.delete](lifecycles/fabric-delete.md) | Deleting the fabric, mesh by mesh, the fabric-primary's own mesh last |
 
 ## Mesh workflows
@@ -80,10 +80,11 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 |---|---|
 | [node.create](lifecycles/node-create.md) | Bringing a new node into a mesh, through its first start |
 | [node.start](lifecycles/node-start.md) | Taking a node from a join to ready-for-traffic, first start or after a stop |
-| [node.mesh.join](lifecycles/node-mesh-join.md) (primitive) | A node's report to its authority and its channel join, `joining` then `node.mesh.joined`; run inside start and restart, standalone after a tickle that reached a node off its channel, and by a node-admin entering a mesh |
+| [node.mesh.join](lifecycles/node-mesh-join.md) (primitive) | A node's report to its primary and its channel join, `joining` then `node.mesh.joined`; run inside start and restart, standalone after a tickle that reached a node off its channel, and by a node-admin entering a mesh |
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) (primitive) | A node leaving its channels after its connections are deleted, `leaving` then `node.mesh.left`; the step stop and delete end with |
-| [node.tickle](lifecycles/node-tickle.md) (primitive) | The reach ladder on an exact birth: direct, then both via-peer kicks at once; `reached` or `unreached`, never dead; run by recovery, investigation, the seat watch and the primary-update successor ladder |
-| [node.runtime.inspect](lifecycles/node-runtime-inspect.md) (primitive) | The provider's answer about the exact runtime handle, the only exit proof; run by delete, recovery, investigation, mesh.delete and fabric.delete |
+| [node.tickle](lifecycles/node-tickle.md) (primitive) | The reach ladder on an exact birth: direct, then both via-peer kicks at once; `reached` or `unreached`, never dead; run by node investigation and the primary-update successor ladder |
+| [node.runtime.inspect](lifecycles/node-runtime-inspect.md) (primitive) | The provider's answer about the exact runtime handle; node investigation's last step, run by it, delete, mesh.delete and fabric.delete |
+| [node investigation](lifecycles/node-investigation.md) (primitive) | The one verdict on one exact birth: the by-destination connections index read, node.tickle direct and via those peers, node.runtime.inspect; reached is commanded back through node.mesh.join, any other verdict is re-created at the same path.name with a new node.id |
 | [node.stop](lifecycles/node-stop.md) | Taking a node out of traffic while its process stays alive |
 | [node.restart](lifecycles/node-restart.md) | Stopping and starting the same process |
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
@@ -97,7 +98,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.get](node-rpc-envelope.md#typed-object-contract) | Reading a node |
 | [node.connections.get](node-rpc-envelope.md#typed-object-contract) | Reading a node's held connections |
 | [node.config.get/update](lifecycles/node-config-update.md) | Reading or putting a node's application config |
-| [node.cert.renew](lifecycles/node-cert-renew.md) (primitive) | The issuing authority installing a fresh member cert on a running node before the old one expires; presented on new connections, terminates nothing |
+| [node.cert.renew](lifecycles/node-cert-renew.md) (primitive) | The mesh-primary, as issuer, installing a fresh member cert on a running node before the old one expires; presented on new connections, terminates nothing |
 | [node.issuer.update](lifecycles/node-issuer-update.md) (primitive) | The fabric-primary installing a mesh's re-minted issuing material on a running node-admin |
 | [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) (primitive) | The fabric-primary installing the fabric's root set on one node; one or two roots through a rotation |
 | [node.connections.admit](lifecycles/node-connections-admit.md) (primitive) | The acceptor's verification of a dialer's member cert on an inbound connection of a registered ALPN; admitted or refused, a connection fact |
@@ -119,7 +120,7 @@ are explicit.
 | 0x1E GetTopology (node.topology.get) | [Topology](node-rpc-envelope.md#topology-op-0x1e-rdm) | [Create](lifecycles/node-create.md), [restart](lifecycles/node-restart.md), [replace](lifecycles/node-replace.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md), [node.topology.get and running reconnect](lifecycles/node-topology-get.md), [node recovery](lifecycles/node-recovery.md) |
 | 0x1F FetchBuildFacts, FetchCurrentBuild | [Build facts](node-rpc-envelope.md#build-facts-op-0x1f-rdm) | [node.start](lifecycles/node-start.md#end-to-end-sequence) step 4: FetchCurrentBuild when the missing pointer names no Build, FetchBuildFacts of the Build a blocker names |
 | 0x20 build | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) | [Node create](lifecycles/node-create.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md), [restart](lifecycles/node-restart.md), [delete](lifecycles/node-delete.md); fabric-primary claim-and-dispatch of topology operations; mesh-primary claim-and-run of drift attempts; reattachment |
-| 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a seat holder's [node.connections.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), restart, replace or delete |
+| 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a primary's [node.connections.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), restart, replace or delete |
 
 ## Terminology firewall
 
