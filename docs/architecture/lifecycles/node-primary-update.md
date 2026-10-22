@@ -66,9 +66,10 @@ and recording it are separate for every type.
 7. The mesh-primary publishes "primary updated" with the same identifiers. A late "updating" never undoes
    an "updated": the row's revision, per node type, is these two frames' order key in the one gossip
    receive path (R-RX3); nothing orders inside a handler.
-8. Only then does the commanding Build continue, and only once the successor's installation is
-   acknowledged. The successor is now the old primary's primary (for the `node-admin` type, its
-   mesh-primary) and commands the old primary's connections delete, stop, restart or replace.
+8. The commanding Build continues on the successor's direct acknowledgement of step 5, never on
+   gossip: steps 6 and 7 are the recording and the announcement of a change that has already happened,
+   and the Build waits for neither. The successor is now the old primary's primary (for the `node-admin`
+   type, its mesh-primary) and commands the old primary's connections delete, stop, restart or replace.
 
 ## Failure contract
 

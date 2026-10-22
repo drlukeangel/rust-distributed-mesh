@@ -1523,8 +1523,8 @@ successor → primary   PrimaryUpdated { revisions }   (on that call's reply str
 
 `primaries` carries the election's result the successor installs, one entry or two: the fabric-primary
 is a second entry, node type `fabric`. For the `node-admin` type the successor records its own row on
-this call, after it answered; for every other type the mesh-primary records the successor's row on
-the acknowledgement, after its command. The receiver refuses only:
+this call, after it answered; for every other type the mesh-primary records the successor's row from
+the successor's digest, the way it records every member fact it hears. The receiver refuses only:
 
 - RejectedConflictingPayload: the same operation with different content; the row decides;
 - `fabric-not-ready`: before the initial fabric first reached ready-for-traffic.
