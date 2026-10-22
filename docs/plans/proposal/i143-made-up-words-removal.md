@@ -57,7 +57,7 @@ line that would need one is listed in §6 as his call.
 | seat watch, `seat_watch.rs` | the staleness-floor rule of every primary: a primary unheard past the floor is superseded by the lowest ReadyForTraffic node of its type in its mesh | Q107 (1); `fabric-node-lifecycle-elections.md` §4.3 for the fabric-primary; named by the operation it leads to, `node.primary.update` or `node.fabric-primary.update` |
 | `LeadershipView`, resolver | the leadership election and its result | Luke, Q107: "leadership election"; `fabric-node-lifecycle-elections.md` §1 |
 | lane, `LaneId`, `rev-<R>/<seq>` | the Build journal's records at their own keys | `build.md:413` "the Build journal"; Q109 items 12-13: one row at build_id, one at (build_id, mesh, attempt), one claim at (build_id, mesh, attempt) |
-| write cut-off, `StorageError::CutOff`, held rows, lift, restore | nothing: a writer finishes the writes it issued before it writes its row | Q109 B, Luke's sentence |
+| write cut-off, `StorageError::CutOff`, held rows, lift, restore | nothing: a primary finishes the writes it issued before it calls its successor | Q109 B, Luke's sentence |
 | cut-off view, `authorizes()`, healing window | nothing: a node-admin acts on its view and answers a question by its direct operations | R-RX1 (Luke, 2026-10-12): no authorization in the framework |
 | `NotSeatHolder` (the fabric store's refusal by seat record) | nothing: storage decides nothing | Q109 |
 
