@@ -161,10 +161,12 @@ matched, so every ordinary edit to the 3,741 `seat` uses still lands; only a new
 `cohort`, `lane` or `committed` name is refused.
 
 Landing 0, recommended first and alone: add `seat`, `seats`, `seated`, `authority`, `authorities`,
-`authoritative`, `cohort`, `cohorts`, `lane`, `lanes`, `committed`, `leadership` and `holder` to
-`RETIRED`, with their cases in `test_name_check.py`, and the same words to the vocabulary list in
-CLAUDE.md. "cut" is not added: the cut jobs and cells are named by it with another meaning. From that
-landing on, no agent can add one of these words to the code again, whatever page it reads it on.
+`authoritative`, `cohort`, `cohorts`, `lane`, `lanes` and `leadership` to `RETIRED`, with their cases in
+`test_name_check.py`, and the same words to the vocabulary list in CLAUDE.md. Not added: "cut" (the cut
+jobs and cells are named by it with another meaning), "committed" (`StateCommitted`, the state-commit
+publication, 755 uses with no seat in them) and "holder" (`holder_of`, `record_holder`, 2,591 uses):
+those three go by removal in landings 1 and 4, not by the check. From landing 0 on, no agent can add one
+of the checked words to the code again, whatever page it reads it on.
 
 ## 6. Family words, Luke's call, recommendation first
 
