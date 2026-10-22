@@ -18,7 +18,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Fabric and node hooks](fabric-node-hooks.md) | where application work enters a lifecycle (`before_ready`, `after_ready`, `sync_state`, `traffic_opened`), BeforeReadyCtx, outcomes, the rafka-time handle |
 | [Fabric certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection; the cert workflows table |
 | [Elections](fabric-node-lifecycle-elections.md) | the leadership election: a heard primary stays, unheard past the staleness floor it is superseded; the Mesh row and the fabric row as its inputs |
-| [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka relaunch copy |
+| [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka recovery copy |
 | [Build](build.md) | the Build engine: accepted topology, the Build/attempt/claim model, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
 | [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime handle |
 | [Fabric primary](fabric-primary.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
@@ -60,7 +60,7 @@ progress wait.
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor retired |
-| [Recovery](lifecycles/fabric-recovery.md) | Relaunching after loss of every node-admin; the loss of the fabric-primary while a node-admin lives, which node-admin is fabric-primary until it is back, the hand-back |
+| [Recovery](lifecycles/fabric-recovery.md) | Launching a node-admin again after the loss of every node-admin; the loss of the fabric-primary while a node-admin lives, which node-admin is fabric-primary until it is back, the hand-back |
 | [fabric.delete](lifecycles/fabric-delete.md) | Deleting the fabric, mesh by mesh, the fabric-primary's own mesh last |
 
 ## Mesh workflows

@@ -67,7 +67,7 @@ diagnostic spans that open no node.create.
    its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
    Probing itself sends no FabricStatus or MeshStatus.
 7. The joined node-admin, as mesh-x's successor primary, adopts the mesh's held state
-   ([fabric authority §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)) and
+   ([fabric primary §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)) and
    republishes its held MeshStatus, preserving changed_at, only after the
    fresh planned-birth round in [event-driven declarations](node-status.md#node-status-declaration).
    Only on that report, the fabric-primary clears the degraded health observation on both the mesh and the fabric.
@@ -199,7 +199,7 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    `rafka-node-admin-core`'s admin module and `enter_existing_mesh` in its reenter module).
    It then becomes ready-for-traffic and is mesh-primary under the election; as the
    mesh's successor primary it adopts the mesh's held state
-   ([fabric authority §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)).
+   ([fabric primary §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)).
    A mesh with no live node has no member to ping, so there is no sweep: the node-admin brings
    every member back through [node recovery](node-recovery.md), under the same MeshId.
 5. Every node the sweep did not reach goes to [node recovery](node-recovery.md): the new
