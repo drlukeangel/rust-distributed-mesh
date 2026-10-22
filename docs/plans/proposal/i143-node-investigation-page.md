@@ -60,7 +60,8 @@ Added to the primitives' table, beside node.tickle and node.runtime.inspect:
 
 ## Not in this text
 
-- The words `running` and `os-stopped` keep their node.runtime.inspect meaning; `unproven` is the
-  inspect's `unavailable { reason }`, the word the elections page already uses for it.
+- The words `running` and `os-stopped` keep their node.runtime.inspect meaning; `unproven` is an
+  `unreached` tickle whose inspect answered `unavailable { reason }`, as mesh-investigation.md's
+  sequence already writes it ("exit unproven").
 - Every page line that requires proof of termination (128 lines, the removal inventory `cbe7d824`
   §B) is (c)'s, in its own text for Luke's yes once this page stands.
