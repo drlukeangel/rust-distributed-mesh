@@ -497,7 +497,7 @@ pub trait NodeObserver: Send + Sync {
     /// Wait up to `within` for the commanded birth's completion at this admin: its
     /// `node.connections.deleted`, or node-left, which is the `Stopped` reply of its `stop-node` call.
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
-        Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
+        Completion::NotAwaited { admission: format!("this observer awaits no completion of a command to {}", node.name) }
     }
 }
 

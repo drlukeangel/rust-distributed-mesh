@@ -5,7 +5,7 @@
 //! `AlreadyApplied`"). A start's key is `(node_id, incarnation, Pending)`.
 //!
 //! One admin side commands the birth under several attempts of one Build: each attempt is its own
-//! open command in the admin's command book, matched by its attempt, so a completion carrying
+//! open command at the admin, matched by its attempt, so a completion carrying
 //! another attempt resolves nothing. A natural key holds no commander, so a second physical
 //! node-admin adds nothing the attempts do not already prove. A fabric round is scoped to the
 //! accepted Build and attempt (node-rpc-envelope.md, "Fabric status rounds") and its command comes
