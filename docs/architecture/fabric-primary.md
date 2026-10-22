@@ -1,6 +1,6 @@
-# Fabric authority
+# Fabric primary
 
-This page owns fabric authority: the Fabric's mesh roster comes from the accepted Build, a primary takeover is hydration and not a transition, the fabric-primary's complete-view gate, fabric identity hydration, and the table that tells takeover, restart, reset, join, removal, a node-admin joining a live mesh and Day 0 apart.
+This page owns the fabric-primary's rules: the Fabric's mesh roster comes from the accepted Build, a primary takeover is hydration and not a transition, the fabric-primary's complete-view gate, fabric identity hydration, and the table that tells takeover, restart, reset, join, removal, a node-admin joining a live mesh and Day 0 apart.
 
 Companion owners:
 - [`node-identity-and-state.md`](node-identity-and-state.md) for node identity and the node, mesh and fabric rows and their writers;
@@ -14,7 +14,7 @@ The central rules are:
 
 > **Fabric is the network root. A Fabric contains Meshes; a Mesh contains Nodes.**
 >
-> **Authority movement selects who may act. It does not itself change Fabric topology or Fabric/Mesh lifecycle state.**
+> **A primary change selects who may act. It does not itself change Fabric topology or Fabric/Mesh lifecycle state.**
 
 Exactly one fabric-primary changes Fabric topology, and each Mesh's mesh-primary node-admin realizes its own Mesh ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 
@@ -22,7 +22,7 @@ Exactly one fabric-primary changes Fabric topology, and each Mesh's mesh-primary
 
 ## 1. The product hierarchy is Fabric -> Mesh -> Node
 
-A Rafka deployment/control estate has one logical **Fabric** network root. A Mesh is not another independent network that later gets associated with a Fabric. It is a logical subdivision/control cohort inside the Fabric. A Node belongs to one Mesh and therefore belongs to the Fabric transitively.
+A Rafka deployment/control estate has one logical **Fabric** network root. A Mesh is not another independent network that later gets associated with a Fabric. It is a logical subdivision inside the Fabric. A Node belongs to one Mesh and therefore belongs to the Fabric transitively.
 
 ```text
 Fabric F
@@ -80,7 +80,7 @@ DURABLE LIFECYCLE TRUTH
     system.ops.meshes
     system.ops.fabrics
 
-CURRENT AUTHORITY
+CURRENT PRIMARIES
     mesh primary
     fabric primary
 
@@ -99,15 +99,15 @@ The Fabric's topology is the current Build's: the complete explicit topology the
 
 The `Mesh` row on `<system_org>.ops.meshes` and the `Fabric` row on `<system_org>.ops.fabrics` are the durable lifecycle records of entities that exist; their fields, writers and write times are [node-identity-and-state.md §2.7](node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it) and [§2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it). The rows are not the Fabric's mesh directory (§5), and gossip projects them without becoming a second source of truth ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)).
 
-### 2.3 Current authority
+### 2.3 Current primaries
 
-Election semantics live only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). This document consumes the resolved mesh-primary/fabric-primary authority and does not restate eligibility, ordering, or failover rules.
+Election semantics live only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). This document consumes the elected mesh-primary and fabric-primary and does not restate eligibility, ordering, or failover rules.
 
-A seat move changes the actor authorized to perform future lifecycle work. It does not imply a Mesh or Fabric state transition and does not change the accepted topology.
+A primary change changes the actor that performs future lifecycle work. It does not imply a Mesh or Fabric state transition and does not change the accepted topology.
 
-#### 2.3.1 Topology authority
+#### 2.3.1 The topology writer
 
-Only the current fabric-primary from the canonical LeadershipView changes Fabric topology; a non-primary, and a cut-off or healing node-admin holding a stale view, refuses ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
+Only the current fabric-primary, as the election names it, changes Fabric topology; a non-primary refuses ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 
 #### 2.3.2 Mesh execution boundary
 
@@ -132,7 +132,7 @@ The mesh-primary's `MeshStatus` and the fabric-primary's `FabricStatus`, their a
 
 ## 3. The state families
 
-Fabric, mesh and node states, transition events and declaring authorities are defined only
+Fabric, mesh and node states, transition events and who declares each are defined only
 in [States](lifecycles/states.md#states). This document composes those rules with topology, durable publication and
 accepted Build execution; it defines no additional state family.
 
@@ -144,7 +144,7 @@ The creation sequence (mint the fabric, create each mesh's first node-admin, the
 
 ## 5. The Fabric's mesh roster comes from the accepted Build
 
-The authoritative answer to **which meshes the Fabric is supposed to contain now** comes from the current Build's accepted topology, not by reconstructing membership from `system.ops.meshes`.
+The answer to **which meshes the Fabric is supposed to contain now** comes from the current Build's accepted topology, not by reconstructing membership from `system.ops.meshes`.
 
 This distinction matters during topology change:
 
@@ -184,17 +184,17 @@ The durable Mesh row is lifecycle truth. Its current mesh-primary republishes th
 A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.
 
 The successor adopts the held or durable Mesh state under [States](lifecycles/states.md#states); it does not demote,
-promote or rewrite that state solely because authority moves. It republishes the adopted
+promote or rewrite that state solely because the primary changed. It republishes the adopted
 projection, with no durable Mesh write, without manufacturing a lifecycle transition.
 
 `Pending` is not promoted by a takeover shortcut. The ordinary lifecycle transition machinery owns advancement out of `Pending`.
 
-A takeover should not emit a lifecycle status-change event merely because authority moved. A takeover-adoption event may name the durable/adopted status and the projection publication, but it is not a state transition.
+A takeover should not emit a lifecycle status-change event merely because the primary changed. A takeover-adoption event may name the durable/adopted status and the projection publication, but it is not a state transition.
 
 This boundary is intentional:
 
 ```text
-authority changed
+the primary changed
     -> hydrate/adopt existing lifecycle fact
 
 lifecycle fact changed
@@ -205,7 +205,7 @@ lifecycle fact changed
 
 ## 8. Fabric-primary takeover and complete-view recomputation
 
-A newly resolved fabric-primary must already be able to assume authority immediately; readiness prerequisites are lifecycle policy, and leadership semantics live only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). It hydrates the fabric's current round and completion evidence and the **complete** Mesh view. Mesh observations alone cannot declare fabric readiness ([States](lifecycles/states.md#states)).
+A newly elected fabric-primary must already be able to act immediately; readiness prerequisites are lifecycle policy, and the election lives only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). It hydrates the fabric's current round and completion evidence and the **complete** Mesh view. Mesh observations alone cannot declare fabric readiness ([States](lifecycles/states.md#states)).
 
 A successor reads the current Build from `builds.storage` ([build.md §4.2](build.md#42-hydration-of-the-accepted-topology)). Therefore it knows which meshes are required independently of which Mesh-status projections have arrived at that instant.
 
@@ -230,7 +230,7 @@ Those are lifecycle/observation artifacts, not the accepted topology.
 
 For each required Mesh:
 
-- a Mesh the successor itself currently owns uses its authoritative local/held Mesh state;
+- a Mesh the successor itself currently owns uses its own local/held Mesh state;
 - a peer Mesh uses the status published by that Mesh's current primary into the topology projection.
 
 A required Mesh with no current primary/status projection is unknown. A newly required Mesh that has not yet published its lifecycle state is likewise not silently omitted from the fold.
@@ -241,7 +241,7 @@ The fabric primary computes:
 
 ```text
 expected = required meshes of the accepted Build
-observed = current authoritative/projected status by Mesh
+observed = current own/projected status by Mesh
 missing  = expected - observed
 ```
 
@@ -269,7 +269,7 @@ The successor's one-shot recompute completion latch is set only after a complete
 
 A successor re-sends the current round and rebuilds its checklist from fresh check-ins under
 [the round checklist](lifecycles/states.md#the-round-checklist). A complete Mesh view is control
-evidence, not readiness authority.
+evidence, not readiness.
 
 ---
 
@@ -279,7 +279,7 @@ Fabric identity and Fabric status have different succession rules.
 
 The first Day-0 admin mints the Fabric identity **before** minting its Meshes. Each Mesh is minted with that `FabricId`; each Node is then minted with its `MeshId` (§1.1).
 
-Ordinary node-admins hydrate/hold the immutable Fabric identity and the current Build before committing authority-capable Ready. Fabric identity may be disseminated before the durable Fabric row exists; otherwise creation would deadlock on a row that cannot be written until the Fabric reaches its durable publication phase.
+Ordinary node-admins hydrate/hold the immutable Fabric identity and the current Build before they are Ready. Fabric identity may be disseminated before the durable Fabric row exists; otherwise creation would deadlock on a row that cannot be written until the Fabric reaches its durable publication phase.
 
 On fabric-primary succession:
 
@@ -291,7 +291,7 @@ held Fabric identity
     -> publish the held fabric lifecycle fact as current fabric-primary
 ```
 
-Gossiped Fabric status is never promoted into authoritative status.
+Gossiped Fabric status is never promoted into the fabric-primary's own status.
 
 The durable `system.ops.fabrics` row remains the Fabric lifecycle record once the durable write plane exists. A hydrating admin may validate immutable identity against it when available, but ordinary Ready must not depend on a row that does not yet exist during Fabric creation.
 
@@ -299,7 +299,7 @@ The durable `system.ops.fabrics` row remains the Fabric lifecycle record once th
 
 ## 10. Joining or removing a Mesh
 
-A Mesh topology change is accepted by the fabric-primary as a Build, not an authority-transfer side effect.
+A Mesh topology change is accepted by the fabric-primary as a Build, not a primary change's side effect.
 
 ### 10.1 Joining Mesh
 
@@ -320,19 +320,19 @@ A Mesh is removed by [mesh.delete](lifecycles/mesh-delete.md), which owns its st
 
 Do not collapse these operations into one generic "re-entry" rule.
 
-| event | accepted topology changes? | authority changed? | lifecycle may change? | owner |
+| event | accepted topology changes? | primary changed? | lifecycle may change? | owner |
 |---|---:|---:|---:|---|
-| mesh-primary takeover | no | yes | **not by takeover itself** | canonical LeadershipView + hydration |
-| fabric-primary takeover | no (the same active Build continues) | yes | hydrate current-round evidence and the accepted Build's complete Mesh set | canonical LeadershipView + current-round completion evidence |
+| mesh-primary takeover | no | yes | **not by takeover itself** | the election + hydration |
+| fabric-primary takeover | no (the same active Build continues) | yes | hydrate current-round evidence and the accepted Build's complete Mesh set | the election + current-round completion evidence |
 | node restart | no | maybe later | node lifecycle only unless another explicit event follows | Build + node lifecycle |
 | WAL reset | no | not inherently | yes, only through its explicit reset/re-entry contract | reset lifecycle path |
-| Mesh join | yes | yes/new authority may appear | yes | Build + Mesh/Fabric lifecycle transition |
+| Mesh join | yes | yes/a new primary may appear | yes | Build + Mesh/Fabric lifecycle transition |
 | Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition |
-| node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build (the [mesh investigation](lifecycles/mesh-investigation.md) carrier-edge-lost verdict runs node.create) + canonical LeadershipView + hydration |
+| node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build (the [mesh investigation](lifecycles/mesh-investigation.md) carrier-edge-lost verdict runs node.create) + the election + hydration |
 | Mesh replacement (mesh.delete, then a new mesh) | yes | yes | yes | Build + Mesh/Fabric lifecycle transition |
-| Day 0 | establishes the first accepted Build | initial authority | yes | lifecycle root + canonical LeadershipView |
+| Day 0 | establishes the first accepted Build | the initial primaries | yes | lifecycle root + the election |
 
-A reset-specific clear/rewrite/re-entry path must remain explicit. It must not be inferred from seat movement, and takeover code must not be reused as a hidden reset transition.
+A reset-specific clear/rewrite/re-entry path must remain explicit. It must not be inferred from a primary change, and takeover code must not be reused as a hidden reset transition.
 
 ### 11.1 fabric.delete
 
@@ -342,7 +342,7 @@ A reset-specific clear/rewrite/re-entry path must remain explicit. It must not b
 
 ## 12. Node RPC and LifecycleTransitionPipeline
 
-Node RPC does not own a second Fabric/Mesh state machine or a second topology authority: it gives exact-target transport and certainty for one requested transition. The accepted Build owns the Fabric's mesh set (§5), [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) owns who holds authority, [build.md §9](build.md#9-lifecycletransitionpipeline) owns the transition pipeline, and [gossip.md](gossip.md) disseminates the resulting projection. The Status calls, their direction, replies and natural idempotency keys are defined only in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm). A reply never decides when a Mesh or Fabric may change state or which meshes the Fabric contains.
+Node RPC does not own a second Fabric/Mesh state machine or a second topology writer: it gives exact-target transport and certainty for one requested transition. The accepted Build owns the Fabric's mesh set (§5), [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) owns who is primary, [build.md §9](build.md#9-lifecycletransitionpipeline) owns the transition pipeline, and [gossip.md](gossip.md) disseminates the resulting projection. The Status calls, their direction, replies and natural idempotency keys are defined only in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm). A reply never decides when a Mesh or Fabric may change state or which meshes the Fabric contains.
 
 ---
 
@@ -352,7 +352,7 @@ The node-admin storage interfaces, `fabric.storage` and `builds.storage`, Build 
 
 ### 13.1 Required recovery proofs
 
-A relaunch's proofs follow the [storage and relaunch owner](node-admin-lifecycle.md#7-rafka-storage-and-relaunch). A live fabric-primary takeover uses held current records and the same accepted Build, and re-sends the current round under [the round checklist](lifecycles/states.md#the-round-checklist); no new Build or competing topology is minted because authority moved.
+A relaunch's proofs follow the [storage and relaunch owner](node-admin-lifecycle.md#7-rafka-storage-and-relaunch). A live fabric-primary takeover uses held current records and the same accepted Build, and re-sends the current round under [the round checklist](lifecycles/states.md#the-round-checklist); no new Build or competing topology is minted because the primary changed.
 
 ---
 

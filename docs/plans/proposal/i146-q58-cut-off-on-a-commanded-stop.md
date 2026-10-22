@@ -3,7 +3,7 @@
 ### 1. Spec
 
 No spec covers this step. The pages name a "cut-off or healing node-admin" as one that holds no
-authority ([fabric-authority.md](../../architecture/fabric-authority.md) line 110,
+authority ([fabric-primary.md](../../architecture/fabric-primary.md) line 110,
 [build.md](../../architecture/build.md) line 218, [gossip.md](../../architecture/gossip.md) line
 948), but no page says when a view is cut off. The rule lives only in code (§4).
 

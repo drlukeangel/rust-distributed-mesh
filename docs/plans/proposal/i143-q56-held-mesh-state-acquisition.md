@@ -4,7 +4,7 @@ Assigned to the i144 owner by Luke's Q54 A, 2026-10-17. This read accompanies th
 
 ## 1. Spec
 
-Q54 A makes only `status/<mesh>/declared` durable before Applied; other held rows keep their publication boundary. [Fabric authority §7](../../architecture/fabric-authority.md#7-mesh-primary-takeover-is-hydration-not-transition): “A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.” It adopts held or durable state, without manufacturing a transition. [Mesh investigation, a node-admin joins the live mesh](../../architecture/lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), steps 2–4: maker topology/control context, local topology, completed own-mesh sweep, Ready, election and adoption of the mesh's held state. The fabric-primary creates the missing admin; the successor acquires its mesh's state.
+Q54 A makes only `status/<mesh>/declared` durable before Applied; other held rows keep their publication boundary. [Fabric authority §7](../../architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition): “A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.” It adopts held or durable state, without manufacturing a transition. [Mesh investigation, a node-admin joins the live mesh](../../architecture/lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), steps 2–4: maker topology/control context, local topology, completed own-mesh sweep, Ready, election and adoption of the mesh's held state. The fabric-primary creates the missing admin; the successor acquires its mesh's state.
 
 ## 2. Issue
 

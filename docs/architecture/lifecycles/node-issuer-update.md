@@ -6,7 +6,7 @@ A primitive. `node.issuer.update` installs a mesh's issuing material (the issuin
 signed by the fabric CA) on one running node-admin of that mesh. It is run by the fabric-primary,
 one admin at a time, inside [mesh.issuer.renew](mesh-issuer-renew.md): to the mesh-primary directly, and
 to each other node-admin of the mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier); commands go down
-([fabric authority](../fabric-authority.md#11-identity-creation-order)). It is a single call, not a
+([fabric authority](../fabric-primary.md#11-identity-creation-order)). It is a single call, not a
 Build. From the install the admin signs member certs with the new key; certs it issued before stay
 valid to their own expiry.
 

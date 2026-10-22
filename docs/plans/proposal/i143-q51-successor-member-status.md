@@ -4,7 +4,7 @@ Asked 2026-10-17. Unruled. Evidence: s88 concurrent release `5b485f228750f0b077a
 
 ## 1. Spec
 
-[node-status-heartbeat-connections.md §A.3](node-status-heartbeat-connections.md): “the successor acquires the held member statuses and publishes a complete projection”. [states.md, Who sets each state](../../architecture/lifecycles/states.md#who-sets-each-state) makes the mesh-primary set Pending from node.joined and ReadyForTraffic from node.started. [fabric-authority.md §7](../../architecture/fabric-authority.md#7-mesh-primary-takeover-is-hydration-not-transition): “A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.” Owner: the successor mesh-primary. Sequence: acquire the predecessor’s held statuses → publish the complete projection; authority changing is no new lifecycle transition.
+[node-status-heartbeat-connections.md §A.3](node-status-heartbeat-connections.md): “the successor acquires the held member statuses and publishes a complete projection”. [states.md, Who sets each state](../../architecture/lifecycles/states.md#who-sets-each-state) makes the mesh-primary set Pending from node.joined and ReadyForTraffic from node.started. [fabric-primary.md §7](../../architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition): “A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally.” Owner: the successor mesh-primary. Sequence: acquire the predecessor’s held statuses → publish the complete projection; authority changing is no new lifecycle transition.
 
 ## 2. Issue
 

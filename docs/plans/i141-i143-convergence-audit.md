@@ -120,7 +120,7 @@ the ordering is not a claim that implementation must stop until every prose edit
 | 2. `node-rpc-rdm-ownership.md` + `node-rpc.md` | Normative precedence and family ownership first, then fold §§3/8–10/21/38/49 legacy wire/header/catalog descriptions under #2927; preserve migration-source examples | sealed catalog, pool fences, Forward/context, direction/auth and certainty tests |
 | 3. `build.md` and `deployment-provider.md` | Normative deployment (deployment-provider.md §2) / accepted Build (build.md §§1–4): explicit NodeMeta, ingress-only normalization, provider concrete storage action, typed drain receipt and bounded failure arms; resolves policy before lifecycle recipes | #2925 normalization/cardinality/journal tests, #2924 pipeline tests |
 | 4. `fabric-mesh-ops.md` | Normative §§3–4/9: RPC drain -> typed evidence -> bounded wait -> termination/inspection; counter and lifecycle overlay are separate; uses the prior contracts | node delete/restart/replacement cells, exact-birth races and all drain arms |
-| 5. `fabric-authority.md` | Normative §12 status cross-reference/result names; retain §§2/8/13 topology and hydration rules, which need no new architecture | Pending gate, authority movement and recovery tests |
+| 5. `fabric-primary.md` | Normative §12 status cross-reference/result names; retain §§2/8/13 topology and hydration rules, which need no new architecture | Pending gate, authority movement and recovery tests |
 | 6. `data-plane-transport.md` | Migration documentation §§2–3: label legacy data-plane framing and retired Echo, separate canonical ALPN from adapters; no redesign of DataFrame | i141 catalog/coexistence tests; i142 U6 data migration |
 | 7. `i143-prd.md`, `i143-design.md`, export index, then `i141-node-rpc-substrate-prd.md` | Migration planning: fold lock B–F and exact export SHA/evidence first; then import bindings/gates. Do not derive eligibility from stale progress | full upstream gate, single-revision pin, downstream canaries |
 
@@ -279,7 +279,7 @@ Files changed:
 - `docs/architecture/deployment-provider.md`: canonical resource vocabulary, storage defaults and
   normalization ownership, storage disposition and bounded typed RPC-first retirement.
 - `docs/architecture/fabric-mesh-ops.md`: direction matrix and typed drain evidence before termination.
-- `docs/architecture/fabric-authority.md`: status schema cross-reference and downward operation names.
+- `docs/architecture/fabric-primary.md`: status schema cross-reference and downward operation names.
 - `docs/architecture/data-plane-transport.md`: current adapter/migration boundary and retired Echo notice.
 - `docs/plans/i141-node-rpc-substrate-prd.md`: convergence checkpoint and upstream ownership.
 - `docs/plans/i143-node-rpc-pos-on-RDM.md`: relocated record references and current wire fence.

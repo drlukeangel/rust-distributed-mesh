@@ -13,7 +13,7 @@ page that owns each step is linked at the step.
 |---|---|
 | Caller / executor | A person starts the first node-admin with no mesh and no durable topology ([start modes](../node-admin-lifecycle.md#3-start-modes)); that node-admin is the executor and the fabric-primary |
 | Entry | No fabric exists; the spec names each mesh and its first node-admin |
-| Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-authority.md#11-identity-creation-order)) |
+| Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-primary.md#11-identity-creation-order)) |
 | Seats | The first node-admin is the only eligible candidate and holds both seats ([elections](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) |
 | Rows | The fabric-primary creates the fabric row and its own mesh's row at Day 0, held in the scratchpad until state-commit ([fabric entity](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)) |
 | Status | pending, then the rounds state-sync, state-commit and ready-for-traffic ([States](states.md#rounds)) |

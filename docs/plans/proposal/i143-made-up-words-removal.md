@@ -23,7 +23,7 @@ word was on a page, code was written to conform to it, and the word became "cano
 | Word | First appears | Commit | Landed by |
 |---|---|---|---|
 | authority (the mesh's, the fabric's) | "the authority" as plain English | rafka-v2 `7b213d6eda`, 2026-06-06, the v1 flat copy | v1 |
-| `fabric-authority.md`, "authority" as a thing | the page | rafka-v2 `99fb3d70c8`, 2026-10-05, "make RDM the single leadership and reconciliation owner" | agent docs commit under Luke's git user |
+| `fabric-primary.md`, "authority" as a thing | the page | rafka-v2 `99fb3d70c8`, 2026-10-05, "make RDM the single leadership and reconciliation owner" | agent docs commit under Luke's git user |
 | `NotAuthority`, `RejectedNotAuthority`, `AuthorityReady/Changed/Addressed` on the wire | code conforming to the page | RDM, from 2026-10-05 | agents |
 | seat ("fabric-primary seat") | node-lifecycle §2.7 | rafka-v2 `d812359d32`, 2026-09-28, i138 | agent docs commit under Luke's git user |
 | "mesh-primary seat", "take over on seat gain" | node-lifecycle §2.7 | rafka-v2 `966f06822b`, 2026-10-02, i138 | agent docs commit under Luke's git user |
@@ -43,7 +43,7 @@ line that would need one is listed in §6 as his call.
 
 | Removed word | Stands for | Term, and where it is defined |
 |---|---|---|
-| the mesh's authority | the mesh-primary | `fabric-authority.md` §2.3.1 and `build.md:218` already say "the current fabric-primary" / "the mesh-primary" in the same sentences |
+| the mesh's authority | the mesh-primary | `fabric-primary.md` §2.3.1 and `build.md:218` already say "the current fabric-primary" / "the mesh-primary" in the same sentences |
 | the fabric's authority | the fabric-primary | same |
 | a cohort's primary, "cohort seat" | the node-type primary | Luke, 2026-10-22; not yet on any page |
 | cohort | the nodes of one type in one mesh (`(mesh, node_type)`); its primary is the node-type primary of that mesh, a node of that type, a node-admin only for the `node-admin` type | Q107 (1): "every cohort `(mesh, node_type)` runs one election"; `node-rpc-envelope.md` JoinNode `types` |
@@ -72,7 +72,7 @@ with that node being its mesh-primary.
 
 **The update sequence that replaces the seat rows.** Who is primary is one fact with one writer, so it
 is one field on one row, written once. The Mesh row (`meshes/<mesh>`) is the mesh-primary's row and
-"lifecycle truth" (`fabric-authority.md:178`); the fabric row (`fabric/`) is the fabric-primary's
+"lifecycle truth" (`fabric-primary.md:178`); the fabric row (`fabric/`) is the fabric-primary's
 (`node-identity-and-state.md:264, 314`). Each carries its primaries:
 
 - the Mesh row: the mesh-primary and each node-type primary of that mesh, as `(node_id, incarnation,
@@ -146,7 +146,7 @@ rewritten to this.
 |---|---|---|---|---|
 | build.md | 30 | 5 | 0 | |
 | gossip.md | 25 | 23 | 5 | |
-| fabric-authority.md (the page itself goes or is renamed by its content) | 24 | 2 | 0 | |
+| fabric-primary.md (the page itself goes or is renamed by its content) | 24 | 2 | 0 | |
 | node-rpc-envelope.md | 21 | 35 | 6 | |
 | lifecycles/node-mesh-join.md | 18 | 0 | 0 | |
 | fabric-node-lifecycle-elections.md | 8 | 44 | 6 | |
@@ -175,7 +175,7 @@ rewritten to this.
 | **total lines** | **188** | **244** | **21** | **45** |
 
 Also: "lane" on build.md (269, 323, 413), node-recovery.md (23, 114, 133, 155, 185),
-node-rpc-envelope.md (990); "cut-off" on gossip.md §6 (774-786, 965), fabric-authority.md:110,
+node-rpc-envelope.md (990); "cut-off" on gossip.md §6 (774-786, 965), fabric-primary.md:110,
 node-admin-lifecycle.md:38, fabric-recovery.md:28, node-rpc-envelope.md:1363 and the eight lines of
 node-primary-update.md already listed in `i143-q109-b-cut-off-page-text.md`; "leadership" on 61 lines;
 "holder" on 133.

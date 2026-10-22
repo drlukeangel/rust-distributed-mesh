@@ -21,7 +21,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka relaunch copy |
 | [Build](build.md) | the Build engine: accepted topology, the Build/attempt/claim model, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
 | [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime handle |
-| [Fabric primary](fabric-authority.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
+| [Fabric primary](fabric-primary.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
 | [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path.name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
 | [Connections](connections.md) | connections, routes, reach and reroute |
 

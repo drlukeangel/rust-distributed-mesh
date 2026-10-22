@@ -1,4 +1,4 @@
-**Q58: A — Luke, 2026-10-18, delegated; ruled by the lead**, worded in the pages' terms (the packet's arm A uses a banned word for a deleted birth, and "expects to hear", which no page says). A node's view is cut off while it hears no other member of its mesh and holds a member whose silence no lifecycle gossip event it applied explains. Expected silence never cuts a view off: a member whose node.stop this view admitted or applied (stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`: gossip.md, "no Gone from expected silence") or whose deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an event the view applied, and is neither stale nor counted. A view that holds no other member, or whose other members all left it that way, is not cut off: a mesh-primary whose mesh has no other live member keeps its seat, publishes as its primary and serves its mesh's topology and rafka-time, and a stopped member's start reads them from it (node-start.md step 4). One rule governs the stale observation (`via-member-stale`) and the cut-off count; the `Leaving` skip in `watch_meshes` is the stopping half of it and is subsumed. Because no cut-off starts, no healing window opens (`CutOff::authorizes`: one silence window after a heal), so the start's ReadyForTraffic lands on a primary. B refused: a coping layer over a wrong fact (the mesh-primary flag, the mesh rows writer, the Members projection and Build dispatch all follow the dropped flag, and would still), and in a real cut-off a stale view served as complete topology, which fabric-authority.md §2.3.1 forbids. No wire, frame, timer or gossip change: rdm-transport's `watch_meshes`, the book and their cells. The gossip.md §6 paragraph below lands with the code. Dev, lane e4s8.
+**Q58: A — Luke, 2026-10-18, delegated; ruled by the lead**, worded in the pages' terms (the packet's arm A uses a banned word for a deleted birth, and "expects to hear", which no page says). A node's view is cut off while it hears no other member of its mesh and holds a member whose silence no lifecycle gossip event it applied explains. Expected silence never cuts a view off: a member whose node.stop this view admitted or applied (stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`: gossip.md, "no Gone from expected silence") or whose deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an event the view applied, and is neither stale nor counted. A view that holds no other member, or whose other members all left it that way, is not cut off: a mesh-primary whose mesh has no other live member keeps its seat, publishes as its primary and serves its mesh's topology and rafka-time, and a stopped member's start reads them from it (node-start.md step 4). One rule governs the stale observation (`via-member-stale`) and the cut-off count; the `Leaving` skip in `watch_meshes` is the stopping half of it and is subsumed. Because no cut-off starts, no healing window opens (`CutOff::authorizes`: one silence window after a heal), so the start's ReadyForTraffic lands on a primary. B refused: a coping layer over a wrong fact (the mesh-primary flag, the mesh rows writer, the Members projection and Build dispatch all follow the dropped flag, and would still), and in a real cut-off a stale view served as complete topology, which fabric-primary.md §2.3.1 forbids. No wire, frame, timer or gossip change: rdm-transport's `watch_meshes`, the book and their cells. The gossip.md §6 paragraph below lands with the code. Dev, lane e4s8.
 
 ---
 
@@ -69,7 +69,7 @@ A, in the pages' words.
    `heard_others` and the `Leaving` skip are parts of it and go.
 5. Unchanged: every cut-off produced by silence with no event (a member suspended, a transport cut, a crash) is
    still a cut-off, with today's consequences; the pages' statements about what a cut-off or healing view
-   may not do (fabric-authority.md §2.3.1, build.md §4, gossip.md §12) are neither restated nor widened. No
+   may not do (fabric-primary.md §2.3.1, build.md §4, gossip.md §12) are neither restated nor widened. No
    wire, frame, timer or gossip change: rdm-transport's `watch_meshes` and the book.
 
 B refused. It leaves the wrong fact standing: the view is not cut off, and everything that reads the flag
@@ -77,7 +77,7 @@ B refused. It leaves the wrong fact standing: the view is not cut off, and every
 `held_sources`, Build dispatch, the stopped-node sweep) would still act on it; the start's ReadyForTraffic
 would land on an admin publishing as no primary, and the heal would cost one more silence window. And it is
 wrong on its own terms: a mesh-primary that *is* cut off serving its own mesh's topology from its seat record
-is the stale view fabric-authority.md §2.3.1 says refuses, handed to a starting node as complete.
+is the stale view fabric-primary.md §2.3.1 says refuses, handed to a starting node as complete.
 
 Not asked, not ruled: whether a genuinely cut-off mesh-primary may serve its own mesh's topology (B's
 premise); and whether a mesh-primary whose every other member falls silent with no event should inspect the
@@ -94,7 +94,7 @@ Luke wants it asked.
 > **A cut-off view.** A node's view is cut off while it hears no other member of its mesh and holds a member
 > whose silence no lifecycle gossip event it applied explains; it ends when the view hears a member again or
 > when that silence is explained, and one silence window of healing follows. What a cut-off or healing view
-> may not do is [fabric-authority.md §2.3.1](fabric-authority.md#231-topology-authority),
+> may not do is [fabric-primary.md §2.3.1](fabric-primary.md#231-topology-authority),
 > [build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) and §12. Expected
 > silence never cuts a view off and is never stale: a member whose node.stop this view admitted or applied
 > (stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose

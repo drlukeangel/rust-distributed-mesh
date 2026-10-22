@@ -272,7 +272,7 @@ For a cohort that is not `node-admin`, the mesh-primary of that mesh commands th
 
 `docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md` (as of 7685ccb5b9) is the design of record for node_type, leadership at
 the node_type level, node.primary.update and node.fabric-primary.update; Luke's yes is the yes to each doc edit it lists (Parts A2, B2, C3).
-Held out at Luke's request while he works it: how the commands-go-down canon (fabric-authority.md:66, "the fabric-primary never acts on a
+Held out at Luke's request while he works it: how the commands-go-down canon (fabric-primary.md:66, "the fabric-primary never acts on a
 mesh's nodes in its place") reconciles with R-FS1 step 2, states.md's "the fabric-primary for a mesh with no primary" rows, R-MD1's Dead
 write and mesh-delete.md step 7's deleted-mesh aggregate.
 

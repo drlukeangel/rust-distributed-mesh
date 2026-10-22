@@ -6,7 +6,7 @@ It defines the generic control-plane contract proven in `rust-distributed-mesh` 
 
 The ownership test is behavioral: a mechanism that makes sense for a non-Rafka distributed mesh belongs in RDM. Behavior that depends on Rafka roles, entities, authorization, storage policy or other product concepts belongs in Rafka.
 
-The Fabric → Mesh → Node hierarchy is [fabric-authority.md §1](fabric-authority.md#1-the-product-hierarchy-is-fabric---mesh---node). Exact node lifecycle operation/RPC/gossip choreography is owned by [fabric-mesh-node-lifecycles.md](fabric-mesh-node-lifecycles.md).
+The Fabric → Mesh → Node hierarchy is [fabric-primary.md §1](fabric-primary.md#1-the-product-hierarchy-is-fabric---mesh---node). Exact node lifecycle operation/RPC/gossip choreography is owned by [fabric-mesh-node-lifecycles.md](fabric-mesh-node-lifecycles.md).
 
 The control plane has deliberately separate mechanisms:
 
@@ -152,7 +152,7 @@ The submitted change may remain on B' as audit/history for build.get, but it is 
 
 Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. One attempt is in flight per mesh, not per fabric: a topology Build's operation on mesh X and mesh X's drift attempt never both open; the loser is refused build-in-progress naming the holder (R-BI7).
 
-Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace recipe (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start, node.restart, node recovery, authority movement and proven runtime drift leave the topology unchanged: each is an attempt of the current Build, never a new Build. One node.create is recovery, not a change to the shape: the node-admin mesh investigation creates into a live mesh that lost its node-admins runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([mesh-investigation.md](lifecycles/mesh-investigation.md) steps 5-6, [fabric-authority.md](fabric-authority.md#13-node-admin-storage-restart-and-recovery)).
+Every change to the topology is its own Build, submitted through build.create with its own build_id: node.create, node.delete, Rafka's replace recipe (one Build of node primitives, [node replace](lifecycles/node-replace.md)), mesh.delete and fabric.delete. node.stop, node.start, node.restart, node recovery, authority movement and proven runtime drift leave the topology unchanged: each is an attempt of the current Build, never a new Build. One node.create is recovery, not a change to the shape: the node-admin mesh investigation creates into a live mesh that lost its node-admins runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([mesh-investigation.md](lifecycles/mesh-investigation.md) steps 5-6, [fabric-primary.md](fabric-primary.md#13-node-admin-storage-restart-and-recovery)).
 
 Workflow input is execution state, not topology: node.restart on an exact birth (node id and incarnation) and node recovery (`node.delete` then `node.create` at the same path.name, keyed on the exited birth) carry the exact birth they act on, which fences them against a stale birth. They never change the accepted topology map.
 

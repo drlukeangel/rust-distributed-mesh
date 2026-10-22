@@ -195,7 +195,7 @@ step-0 CI guard greps `axum` and `"/api/`, not `Router` (iroh exports a Router);
 About 120 RDM comment sites, and six rafka-v2 sites, cite doc pages or sections that were renamed,
 removed or renumbered (`mesh-leave.md`, `node-decommission.md`, `fabric-primary-handover.md`,
 `fabric-open-traffic.md`, `node-lifecycle-elections.md`, `node-rpc-rdm-ownership.md` / "ownership
-amendment §N", `fabric-mesh-ops.md`, `node-rpc.md §38/§48/§5–6`, `fabric-authority.md §11.1`,
+amendment §N", `fabric-mesh-ops.md`, `node-rpc.md §38/§48/§5–6`, `fabric-primary.md §11.1`,
 `FML-n`, `docs/i143/design.md`, `ops-naming-proposal.md`). The findings file maps each to its current
 `path#section`. It is one comment-only RDM landing after the §1 renames, so it is done once.
 

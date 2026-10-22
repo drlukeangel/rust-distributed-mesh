@@ -121,7 +121,7 @@ Fix: one reply shape; the variant becomes a reserved position if its removal mov
 **P9. The same rule one level up (mesh and fabric), about 25 lines, Luke's call whether it applies.** The mesh's
 `pending` set from a Ping and an `ApplyMeshState(Pending)` request (mesh-create.md:23, :41, :64, :81, :155, :188); the
 mesh's `ready-for-traffic` "set by the fabric-primary" (mesh-create.md:23, :46, :54, :157, :164, :190); "Build +
-Mesh/Fabric lifecycle transition" rows (fabric-authority.md:329-332, :345); the fabric rounds' `-ing` frames published
+Mesh/Fabric lifecycle transition" rows (fabric-primary.md:329-332, :345); the fabric rounds' `-ing` frames published
 on the send (fabric-state-commit.md:17, :63-64; fabric-ready-for-traffic.md:6, :48-49; gossip.md:305-307) where the
 pages themselves call them "command intent, never completion" (gossip.md fabric round hooks), which is the overlay the
 contract allows. If the rule applies up, the `-ing` frames are intent overlays and the mesh's and fabric's states come
@@ -234,13 +234,13 @@ node-primary-update.md:39 | D1 | "The writer, as the mesh-primary and sole autho
 node-admin-lifecycle.md:129 | D1 | "The Pending hand-off to a mesh's first admin is a row of [States: who sets each state]" | the first admin reports Pending itself; States lists who records and gossips each reported state
 fabric-mesh-node-lifecycles.md:13 | D1 | "fabric, mesh and node lifecycle states, who sets each" | node states come only from the node's own report; the page owns who records and gossips each
 fabric-mesh-node-lifecycles.md:89 | D5 | "Replacing a member whose exit its mesh-primary proved" | a member whose exit the provider proved and its mesh-primary recorded
-fabric-authority.md:66 | D1 | "A mesh-primary commands its own mesh's nodes, writes their rows and announces their status" | it records and gossips the status each node reports (minor)
-fabric-authority.md:190 | D1 | "The ordinary lifecycle transition machinery owns advancement out of `Pending`." | leaving Pending is what the mesh's authority reports, not something machinery performs (minor)
-fabric-authority.md:329 | D2 | "Mesh join | yes | yes/new authority may appear | yes | Build + Mesh/Fabric lifecycle transition" | the Build sends commands; mesh/fabric status changes only by what its authority reports
-fabric-authority.md:330 | D2 | "Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition" | same
-fabric-authority.md:332 | D2 | "Mesh replacement (mesh.delete, then a new mesh) | yes | yes | yes | Build + Mesh/Fabric lifecycle transition" | same
-fabric-authority.md:345 | D2 | "it gives exact-target transport and certainty for one requested transition" | it carries a command; the transition is what the target reports it reached
-fabric-authority.md:345 | D2 | "A reply never decides when a Mesh or Fabric may change state" | the authority's reply or report is what says what happened and which state it reached
+fabric-primary.md:66 | D1 | "A mesh-primary commands its own mesh's nodes, writes their rows and announces their status" | it records and gossips the status each node reports (minor)
+fabric-primary.md:190 | D1 | "The ordinary lifecycle transition machinery owns advancement out of `Pending`." | leaving Pending is what the mesh's authority reports, not something machinery performs (minor)
+fabric-primary.md:329 | D2 | "Mesh join | yes | yes/new authority may appear | yes | Build + Mesh/Fabric lifecycle transition" | the Build sends commands; mesh/fabric status changes only by what its authority reports
+fabric-primary.md:330 | D2 | "Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition" | same
+fabric-primary.md:332 | D2 | "Mesh replacement (mesh.delete, then a new mesh) | yes | yes | yes | Build + Mesh/Fabric lifecycle transition" | same
+fabric-primary.md:345 | D2 | "it gives exact-target transport and certainty for one requested transition" | it carries a command; the transition is what the target reports it reached
+fabric-primary.md:345 | D2 | "A reply never decides when a Mesh or Fabric may change state" | the authority's reply or report is what says what happened and which state it reached
 fabric-node-lifecycle-elections.md:43 | D1 | "before lifecycle makes it Ready" | before the node-admin reports itself ready-for-traffic
 fabric-node-lifecycle-elections.md:45 | D3 | "A node that is starting, pending, connections-deleting, connections-deleted, stopping, stopped or deleting" | starting and deleting are workflow-intent overlays; list only reported states and name the overlays separately
 fabric-node-lifecycle-elections.md:149 | D5 | "watching admins record `held-running { since, verdicts }` on the holder's status row" | held-running is the watchers' external observation, kept apart from the holder's reported lifecycle state
@@ -376,7 +376,7 @@ node-rpc-envelope.md:1267 | D3 | "// RecipeStep = Create | Stop | Update | Start
 By page, line numbers only; the readers' quotes are in their transcripts and every one is on main at `4de221c3`.
 
 - states.md 14, 110, 118, 119, 139, 152, 167 · node-start.md 6, 75 · node-stop.md 8, 20, 39 · node-restart.md 5, 19, 30 · node-create.md 52, 64, 67, 89 · node-delete.md 17, 19, 22, 27, 35, 55, 58 · node-mesh-join.md 65, 66, 73, 127, 256 · node-mesh-leave.md 23 (twice) · node-connections-delete.md 43, 50, 77, 83 · node-status.md 24, 44 · node-name-update.md 52 · node-config-update.md 15 · node-recovery.md 22, 37, 51, 57, 85, 109 · node-tickle.md 8, 44, 69, 133 · node-runtime-inspect.md 8, 27, 29 · node-topology-get.md 15, 69 · node-replace.md 84 · node-primary-update.md 41, 73, 113.
-- node-admin-lifecycle.md 31, 36, 77, 125, 170 · fabric-mesh-node-lifecycles.md 83, 84, 146, 150 · fabric-authority.md 17, 106, 129, 184, 186, 192, 208, 256, 294 · fabric-node-lifecycle-elections.md 29, 93, 147, 198, 216 · mesh-create.md 100 · mesh-delete.md 7, 23, 28, 67, 95, 218, 242 · mesh-investigation.md 9, 18, 32, 40, 76, 159, 162, 167, 193, 203, 231, 273, 275, 279 · fabric-delete.md 22, 65 · fabric-recovery.md 74, 75, 79, 99 · fabric-state-sync.md 76 · fabric-ready-for-traffic.md 8.
+- node-admin-lifecycle.md 31, 36, 77, 125, 170 · fabric-mesh-node-lifecycles.md 83, 84, 146, 150 · fabric-primary.md 17, 106, 129, 184, 186, 192, 208, 256, 294 · fabric-node-lifecycle-elections.md 29, 93, 147, 198, 216 · mesh-create.md 100 · mesh-delete.md 7, 23, 28, 67, 95, 218, 242 · mesh-investigation.md 9, 18, 32, 40, 76, 159, 162, 167, 193, 203, 231, 273, 275, 279 · fabric-delete.md 22, 65 · fabric-recovery.md 74, 75, 79, 99 · fabric-state-sync.md 76 · fabric-ready-for-traffic.md 8.
 - gossip.md 94, 156, 165, 166, 201, 230-231, 232-233, 233-234, 272, 332-333, 354-355, 407-408, 620, 658, 689, 693-695, 810, 812, 869, 882 · node-identity-and-state.md 22-24, 29-30, 362-364, 491-493, 546-547, 580, 639, 674, 732, 806.
 - node-rpc.md 133, 149, 151, 153, 384, 557, 589, 900 · node-rpc-envelope.md 199, 217, 238, 239, 243, 244, 321, 579, 581, 768, 771, 803, 846, 853, 886, 985, 1157, 1181, 1200, 1218, 1410-1412.
 

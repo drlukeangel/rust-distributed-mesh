@@ -11,7 +11,7 @@ assigned to i144 by Q54. Read on main `e278636c`.
   "Ready waits for the sweep to finish … It then becomes ready-for-traffic and takes the
   mesh-primary seat under the election; as the mesh's successor primary it adopts the mesh's held
   state."
-- [fabric-authority.md §7](../../architecture/fabric-authority.md#7-mesh-primary-takeover-is-hydration-not-transition):
+- [fabric-primary.md §7](../../architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition):
   "A successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts
   that exact state locally … It republishes the adopted projection, with no durable Mesh write,
   without manufacturing a lifecycle transition. `Pending` is not promoted by a takeover shortcut."
