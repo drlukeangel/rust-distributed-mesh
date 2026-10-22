@@ -1361,7 +1361,7 @@ it stays the serving door's answer.
 Every dispatch passes the fabric-primary check and the claim decision. A
 node-admin that is fabric-primary no more cannot dispatch and refuses NotFabricPrimary { node, by }.
 A fabric-primary change ends the outer
-stream with SeatMoved, **not Indeterminate**. An accidental transport cut remains
+stream with FabricPrimaryMoved, **not Indeterminate**. An accidental transport cut remains
 NotSent or Indeterminate under the existing request commit cut.
 
 There is **no overall deadline** on the outer or inner stream. Stream bounds
@@ -1497,13 +1497,13 @@ pub enum BuildReply {
     ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
-    SeatMoved { build_id: String, fabric_primary: Option<String> },
+    FabricPrimaryMoved { build_id: String, fabric_primary: Option<String> },
 }
 ```
 
 A stream is one refusal, or Started, then Step, Blocked or Steps frames, then one
-terminal: Complete, Failed or SeatMoved for Create; Complete, Failed, HandedOff or
-SeatMoved for AttemptRun; Got for Get; Deleted for Delete.
+terminal: Complete, Failed or FabricPrimaryMoved for Create; Complete, Failed, HandedOff or
+FabricPrimaryMoved for AttemptRun; Got for Get; Deleted for Delete.
 
 <a id="primaryupdate-op-0x21-rdm"></a>
 
