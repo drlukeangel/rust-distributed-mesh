@@ -7,7 +7,11 @@ import re, subprocess, sys
 base, head = sys.argv[1], sys.argv[2]
 RETIRED = {"drain", "drains", "draining", "drained", "park", "parked", "parking", "fence", "fenced", "fencing",
            "relaunch", "relaunched", "reborn", "rebirth", "cluster", "relay", "tailer", "sidecar", "sysadmin",
-           "viewer", "operator", "departed", "retire", "retired"}
+           "viewer", "operator", "departed", "retire", "retired",
+           # the made-up words (docs/plans/proposal/i143-made-up-words-removal.md §5): the primaries are the
+           # fabric-primary, the mesh-primary and the node-type primary; nothing is a seat, an authority or a cohort
+           "seat", "seats", "seated", "unseat", "authority", "authorities", "authoritative", "authorizes",
+           "cohort", "cohorts", "lane", "lanes", "sticky"}
 DEF = re.compile(r'\b(?:fn|struct|enum|mod|trait|type|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)')
 def words(name):
     parts = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower().split('_')

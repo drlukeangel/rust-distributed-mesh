@@ -62,81 +62,28 @@ line that would need one is listed in §6 as his call.
 | `NotSeatHolder` (the fabric store's refusal by seat record) | nothing: storage decides nothing | Q109 |
 
 
-**The rule the sequence serves (Luke, 2026-10-22; Q89; Q107 (4)).** The mesh-primary and the
-fabric-primary are transferred together: the fabric-primary is the mesh-primary of one mesh. They are
-separated in one case only: no node-admin of that mesh can be identified from the backbone. Then the
-mesh-primary of another mesh takes the fabric-primary temporarily, stays mesh-primary of its own mesh,
-and re-creates the lost mesh's node-admins; once the node at the first primary's path.name, returned
-or re-created, has been ReadyForTraffic for one floor, the fabric-primary returns to that mesh together
-with that node being its mesh-primary.
+**The pages now say it.** The sequence, the storage beneath it and the recovery are on the pages, in
+the terms, and this page points at them rather than restating them:
 
-**The update sequence that replaces the seat rows.** Who is primary is one fact with one writer, so it
-is one field on one row, written once. The Mesh row (`meshes/<mesh>`) is the mesh-primary's row and
-"lifecycle truth" (`fabric-primary.md:178`); the fabric row (`fabric/`) is the fabric-primary's
-(`node-identity-and-state.md:264, 314`). Each carries its primaries:
-
-- the Mesh row: the mesh-primary and each node-type primary of that mesh, as `(node_id, incarnation,
-  revision)` per type;
-- the fabric row: the mesh whose mesh-primary is the fabric-primary. Because the fabric row names a
-  mesh and not a node, the fabric-primary follows that mesh's mesh-primary by construction, and the
-  combined transfer of the rule above is one write. Nothing else is stored for a takeover: which mesh
-  the fabric-primary left, and the path.name being re-created there, are facts of the recovery Build the
-  temporary holder runs (fabric-recovery.md step 4: "The hand-back runs as an attempt of the current
-  accepted Build, keyed `handback:<path.name>@<T>`"), and a Build is read back on restart.
-
-1. A mesh-primary changes by `node.primary.update`, whether it hands over itself or is unheard past
-   the staleness floor: the successor writes the Mesh row once, naming itself, since it is that row's
-   writer from then. If its mesh holds the fabric-primary, it is now the fabric-primary too: the fabric
-   row names its mesh and does not change. A node-type primary of any other type changes by the same
-   operation, the Mesh row written by the mesh-primary. A same-mesh successor keeps both: there is no
-   hand-back inside a mesh (Q107 (3): "No hand-back for any primary but the fabric seat's: the successor
-   keeps the seat, and the old holder heard again is a member"), and under the rule above the
-   fabric-primary cannot leave its mesh-primary, so the re-created node at the lost primary's path.name
-   is a member. fabric-recovery.md step 4 today hands back in the own-mesh arm too; that line changes to
-   this, and is listed in the landing's file as a page-vs-rule difference.
-2. The one exception, `node.fabric-primary.update` from the backbone: when no node-admin of the
-   fabric-primary's mesh is available to the backbone, the lowest ReadyForTraffic mesh-primary on the
-   backbone (Q89) writes the fabric row once, naming its own mesh. It then runs the lost mesh's
-   recovery as the current Build's attempt (§8), re-creating its node-admins at their path.names. A
-   takeover of a takeover (A's mesh lost, B took it, B's mesh lost before A's returned, C takes it)
-   changes only the fabric row again; the recovery of A's mesh is the current Build, which C resumes per
-   its receipts like any interrupted attempt, so the destination is never lost and nothing is stored for
-   it. The temporary holder's mesh-primary may change by step 1 meanwhile; the fabric-primary follows it
-   and the fabric row does not change.
-3. The hand-back (Q107 (4); fabric-recovery.md step 4), in two existing operations by two writers,
-   each one write of its own row. First the re-created node-admin at the lost primary's path.name
-   becomes its mesh's mesh-primary by step 1: its Mesh row names an unheard birth and it is the lowest
-   ReadyForTraffic node-admin of its mesh, so it writes the Mesh row naming itself. Then, once that node
-   has been ReadyForTraffic for one floor and its Mesh row names it, the temporary holder's hand-back
-   attempt of the current Build writes the fabric row once, naming that mesh. The fabric-primary is that
-   mesh's mesh-primary from then, which is that node. `handback_due` reads the current Build's recovery
-   attempt and the Mesh row, not a seat-move log and not a field of its own.
-4. A planned `node.fabric-primary.update` to another mesh (mesh.delete of the fabric-primary's mesh is
-   the one page case) names the destination mesh. While a recovery with its hand-back is the current
-   Build's open attempt, the planned transfer is refused `build-in-progress` like any other Build until
-   it completes (R-BI7); nothing is cancelled silently.
-5. Every one of these is one write of one row: the row lands or answers a named error (R14's fs
-   contract, as node-primary-update.md already states for the one row); on a named error nothing
-   changed and the step fails by name. There is no second write to resume. A node-admin that restarts
-   reads the Mesh row and the fabric row and holds what they say.
-6. The operation then announces `node.primary.updated` (gossip.md, "primary updated"); the announcement
-   is never the fact. `is_primary` and `is_fabric_primary` are properties `node.get` answers from the
-   Mesh row and the fabric row (`node-rpc-envelope.md:362-363`, "never a put"); no node row is touched by
-   a primary change.
-7. A joining or restarting node reads the fact, never gossip: `node.start` step 4 reads its projections
-   from its node-admin; a join sent to a node that is not the primary is answered
-   `ReceiverNotPrimary { needed }` naming the one to report to (`node-rpc-envelope.md:709`,
-   node-mesh-join.md step 3).
-8. A reader of the store folds nothing: the rows say who is primary. The `seat-moves/<T>` log, its fold
-   and its revision bookkeeping go; `revision` stays on the row as the primary's revision.
-
-The Build records are the fabric-primary's. It writes every Build record (acceptance, attempts, claims,
-step receipts, results) through the configured Build storage (`build.md:218`: "Authority is the current
-fabric-primary ... never creates a second writer"). A mesh-primary runs its mesh's attempt and reports
-each receipt up the attempt's own `build.attempt.run` stream; running an attempt does not make it a
-Build-record writer. It writes its own mesh's rows: the Mesh row, its members' node rows and status rows.
-`build.md:350`'s "one claimant per mesh for drift (its mesh-primary, on its mesh's in-flight row)" is
-rewritten to this.
+- who is primary, the one write, the writer, and the fabric-primary's own update:
+  [node-primary-update.md](../../architecture/lifecycles/node-primary-update.md) (the Mesh row names the
+  mesh's primaries; the fabric row names the mesh whose mesh-primary is the fabric-primary; the successor
+  writes for the `node-admin` type, the mesh-primary for every other; `is_primary` and
+  `is_fabric_primary` are projections);
+- the rows and their fields: [node-identity-and-state.md §2.7 and §2.8](../../architecture/node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)
+  (`MeshRecord.primaries`, `FabricIdentity.primary_mesh`);
+- the election, a heard primary kept, the staleness-floor rule, the hand-over:
+  [fabric-node-lifecycle-elections.md](../../architecture/fabric-node-lifecycle-elections.md);
+- the loss of the fabric-primary, the combined move, the one backbone exception and the hand-back as an
+  attempt of the current Build: [fabric-recovery.md](../../architecture/lifecycles/fabric-recovery.md);
+- the one decision about an unheard node: [node-investigation.md](../../architecture/lifecycles/node-investigation.md),
+  run from [node-recovery.md](../../architecture/lifecycles/node-recovery.md) and
+  [mesh-investigation.md](../../architecture/lifecycles/mesh-investigation.md);
+- the fabric-primary as the writer of every Build record, each at its own key: [build.md §5.3](../../architecture/build.md#53-node-admin-storage-boundaries);
+- the wire in the terms (`NotPrimary`, `RejectedNotPrimary`, `Primaries`, `FabricPrimaryMoved`,
+  `NotFabricPrimary`, `TakeOverFabricPrimary`, `PrimaryUpdate { primaries }`):
+  [node-rpc-envelope.md](../../architecture/node-rpc-envelope.md);
+- the fabric-primary page, formerly "fabric authority": [fabric-primary.md](../../architecture/fabric-primary.md).
 
 ## 4. Inventory
 
@@ -261,29 +208,26 @@ These have no life apart from seat. Recommendation: they go with it, in the same
 
 ## 7. Order of landings
 
-0. The name check (§5). Cheap, today, stops the spread before any removal.
-1. The write cut-off and the words "committed seat" out of code and pages (lane e7s3, proposal B's eight
-   lines plus the 21 lines of §4.1's third column).
-2. Lanes out: Build records at their own keys through the configured Build storage, every one written
-   by the fabric-primary; a mesh-primary runs its mesh's attempts and reports receipts up the attempt's
-   stream (§3's writer rule). Q113 withdrawn. `build-fact/1` under the durable-format rule.
-3. `authorizes()` and the cut-off view out, with their 18 callers, 11 page lines and 9 cells, and a
-   before-and-after flame, since it is gossip code.
-4. seat, authority and cohort out, page by page, each page's old and new lines listed in that landing's
-   file, the wire and durable items of §4.2 under the durable-format rule in the same landing as the page
-   that names them. Q110 (Luke, 2026-10-21) lands in the same pass: the pages still say a primary changes
-   only on "the provider's exit proof" or "a proven loss" (elections page lines 92, 171, 224 and nine more;
-   57 lines on twelve pages; 29 source files with `is_proven_gone` and the exit-proof hold), and Q110 ruled
-   that an unreachable node is re-created with a new node id, refused at admission when it comes back, then
-   killed, with nothing kept verifying it. Those lines are rewritten once, in the terms of §3, never in the
-   old words.
+The pages landed first, as Luke asked on 2026-10-22 ("update the documents directly now, then reference
+them"): every architecture page is in the terms, the index carries node investigation, and CLAUDE.md's
+vocabulary names the primaries and retires the words. The name check (§5) landed with them. The code
+follows the pages, in this order, each landing with the cells that prove the operations:
 
-5. Q110's machinery out (§8): the exit proof as the condition of any primary change or recovery, the
-   hung hold, the held-running and exit rows, and the sticky file whole.
+1. The write cut-off and the words "committed seat" out of the code (lane e7s3).
+2. Lanes out: Build records at their own keys through the Build storage contract, every one written by
+   the fabric-primary; a mesh-primary runs its mesh's attempts and reports receipts up the attempt's
+   stream. Q113 withdrawn. `build-fact/1` under the durable-format rule.
+3. `authorizes()` and the cut-off view out, with their 18 callers and 9 cells, and a before-and-after
+   flame, since it is gossip code.
+4. seat, authority and cohort out of the code: the Mesh row's `primaries` and the fabric row's
+   `primary_mesh` replace the seat-move log (`seat-move/1` retired under the durable-format rule, its
+   decoding kept), the wire and durable items of §4.2 renamed as the envelope page now names them.
+5. Q110's machinery out (§8): the exit proof as a condition, the hung hold, the held-running and exit
+   rows, and the sticky file whole.
 
-Every landing lands its page lines and code together. Cells that prove the operations stay: a primary
-changes, a mesh keeps repairing, a Build recovers, both storage backends. Cells whose only purpose was a
-removed word's machinery go with it. Nothing removed gets a renamed equivalent.
+Cells that prove the operations stay: a primary changes, a mesh keeps repairing, a Build recovers, the
+fabric-primary is handed back, both storage backends. Cells whose only purpose was a removed word's
+machinery go with it. Nothing removed gets a renamed equivalent.
 
 ## 8. Q110: the exit-proof machinery, and the sticky file
 
@@ -291,9 +235,8 @@ Q110 (Luke, 2026-10-21): "node is unreachable, you create a new node; you don't 
 if it comes back it's denied because its cert doesn't match the node-id that is in the topology anymore,
 then you kill it." Q111 (Luke, the same day): "anything that requires proof of termination is removed";
 "this whole 'you must prove this thing is dead': that's what the node investigation is for". Q111's row
-counts about 94 statements on 20 pages and says the lead lists them by line before the page text comes to
-Luke; this section is that list's start, by file, and the line list follows it. Both rows still read "the
-page text for Luke's yes, then the code": nothing of either has landed. What stands in the pages and the code instead is the older rule, that only the provider's proof
+counted about 94 statements on 20 pages; those pages are now rewritten (§3, §7), so what is left of both
+rulings is the code. What stands in the pages and the code instead is the older rule, that only the provider's proof
 of a runtime's exit lets a primary change or a recovery start, and everything built to produce, hold and
 wait for that proof. All of it goes; the kill stays.
 

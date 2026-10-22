@@ -26,6 +26,25 @@ def check(path, source):
     return out.getvalue().strip()
 
 
+class MadeUpWords(unittest.TestCase):
+    """A landing that adds a seat, authority, cohort or lane name is refused; one that only touches a file holding
+    such a name is not (the check is scoped to names the diff introduces)."""
+
+    def test_a_new_definition_named_by_a_made_up_word_is_refused(self):
+        for name in ['fn take_seat', 'struct SeatHolder', 'enum Authority', 'fn cohort_primary', 'mod build_lanes', 'fn sticky_primary', 'fn authorizes']:
+            with self.subTest(name=name):
+                out = check('crates/rdm-admin/src/primary.rs', name + ' {}\n')
+                self.assertIn('retired word', out)
+
+    def test_a_new_file_named_by_a_made_up_word_is_refused(self):
+        self.assertIn('retired word', check('crates/rdm-admin/src/seat_watch.rs', 'fn watch() {}\n'))
+
+    def test_the_primaries_are_not_refused(self):
+        for name in ['fn mesh_primary', 'struct FabricPrimary', 'fn node_type_primary', 'enum NotPrimary']:
+            with self.subTest(name=name):
+                self.assertEqual(check('crates/rdm-admin/src/primary.rs', name + ' {}\n'), '')
+
+
 class RuntimeAuthCodes(unittest.TestCase):
     def test_permission_denied_and_unauthenticated_are_never_constructed(self):
         for path in ['crates/rdm-core/src/handler.rs', 'crates/rdm-test/src/handler.rs', 'crates/rdm-core/tests/handler.rs', 'tests/handler.rs']:
