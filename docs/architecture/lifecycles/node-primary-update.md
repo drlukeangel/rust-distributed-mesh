@@ -15,10 +15,10 @@ installs itself from the election and the mesh-primary announces the change; the
 one writer of its mesh's rows ([node-identity-and-state.md §2.7](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)),
 records it as `is_primary` on the node's row, and as `is_fabric_primary` on a node-admin's own row for the
 fabric-primary. **The write records the role; it does not grant it.** The mesh-primary and the
-fabric-primary move together: a same-mesh successor becomes both, and records both on its own row. They
-are never separated: a mesh with no node-admin available to the backbone is the
-[fabric recovery](fabric-recovery.md) workflow, whose executor is not fabric-primary, and under mesh.delete
-the fabric-primary moves to another mesh first ([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
+fabric-primary move together and are never separated. A fabric-primary unheard past the staleness floor
+is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path.name (Q122). Under
+mesh.delete the fabric-primary hands over to another mesh first
+([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
 seat row, no move log, nothing to fold.
 
 ## Operation contract

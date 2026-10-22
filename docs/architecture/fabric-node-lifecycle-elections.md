@@ -104,6 +104,9 @@ Ordinary nodes publish current facts. They do not author election outcomes.
 
 A primary unheard past the staleness floor is superseded by the lowest ReadyForTraffic node of its type
 in its mesh; the mesh-primary announces and records it ([node.primary.update](lifecycles/node-primary-update.md)).
+For a node-admin the questions are, in order: am I a node-admin; am I the lowest ReadyForTraffic one;
+was the former mesh-primary also the fabric-primary? No: I am mesh-primary now. Yes: I take no primary
+role and run [fabric recovery](lifecycles/fabric-recovery.md) (Q122).
 The mesh-primary then runs [node investigation](lifecycles/node-recovery.md) on the unheard node, whatever
 its type, and that verdict decides what becomes of it (Q111): reached, it is commanded back as a member;
 anything else, it is re-created.
@@ -128,19 +131,15 @@ ReadyForTraffic node-admins of the fabric-primary's mesh
     -> mesh primary, and fabric primary with it
 ~~~
 
-There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric-primary stays
-in its mesh while that mesh has a Ready node-admin: when it hands over or is unheard past the staleness
-floor, the lowest ReadyForTraffic node-admin NodeId of the same mesh takes both (Q89) and records both
-on its own row; if only Pending admins survive it waits. The fabric-primary never leaves its mesh. When no
-node-admin of the mesh answers [mesh investigation](lifecycles/mesh-investigation.md)'s ladder by its
-decision step, the lowest ReadyForTraffic mesh-primary on the backbone runs the
-[fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives)
-workflow as its executor, without becoming fabric-primary: it re-creates the lost mesh's node-admin
-(over the inherited data dir when the investigation's provider step found the old runtime exited,
-otherwise over a newly allocated data dir with a new endpoint key, `inherited = false`,
-[node recovery](lifecycles/node-recovery.md), R-FM2), the fabric is `degraded` meanwhile, and once the
-node at the lost fabric-primary's path.name has been Ready for one staleness floor and is its mesh's
-mesh-primary, it is the fabric-primary by this rule and records it on its own row.
+There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric-primary hands
+over by [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate);
+nothing else moves it. Unheard past the staleness floor, nobody takes it: the lowest ReadyForTraffic
+node-admin of its mesh, or when the mesh has none the lowest ReadyForTraffic mesh-primary on the
+backbone from [mesh investigation](lifecycles/mesh-investigation.md)'s decision step, runs
+[fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
+the one mechanism in either case (Q122): the node-admin at the fabric-primary's path.name is re-created
+and is mesh-primary and fabric-primary again when it is ReadyForTraffic. The fabric is `degraded`
+meanwhile.
 
 Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
 write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)

@@ -17,47 +17,40 @@ The sequence below reads topology from a node that is alive; when no node is,
 
 ## The loss of the fabric-primary while a node-admin lives
 
-Fabric recovery is one workflow, an attempt of the current Build, run when no node-admin of the
-fabric-primary's mesh answers [mesh investigation](mesh-investigation.md) by its decision step. Its
-executor is the lowest ReadyForTraffic mesh-primary on the backbone. The executor does not become
-fabric-primary and gossips nothing of the kind: the fabric-primary stays the node at the lost
-primary's path.name throughout, the fabric is `degraded` for the workflow's duration (R-DG1), and the
-workflow re-creates that mesh's node-admin. Once the node at that path.name has been ReadyForTraffic
-for one staleness floor and is its mesh's mesh-primary, it is the fabric-primary by the standing rule
-([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)) and the workflow completes.
-No node-admin takes the fabric-primary and keeps it; nothing records who it was, because nothing
-changed it. The attempt names what it recovers, the lost node-admin's path.name and exact birth, as
-every recovery attempt does ([node recovery](node-recovery.md)); its executor writes this attempt's
-Build records while the fabric-primary is unavailable, the one case in which a node-admin other than
-the fabric-primary writes a Build record ([build.md §5.3](../build.md#53-node-admin-storage-boundaries)).
-If the executor is lost, the next lowest ReadyForTraffic mesh-primary resumes the attempt from its
-recorded progress, as any attempt is resumed.
-
-Inside the fabric-primary's own mesh nothing of this runs: the mesh-primary and the fabric-primary move
-together, the fabric-primary is the mesh-primary of one mesh, an explicit property of that node-admin
-(`is_fabric_primary`, [node.primary.update](node-primary-update.md)), and the lowest ReadyForTraffic
-node-admin of the mesh is both at the staleness floor.
+Fabric recovery is one workflow, an attempt of the current Build, and one mechanism wherever it starts
+(Q122). At the staleness floor each node-admin of the fabric-primary's mesh asks: am I a node-admin; am I
+the lowest ReadyForTraffic one; was the former mesh-primary also the fabric-primary? If not, it is
+mesh-primary now ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)).
+If so, it takes no primary role: it runs fabric recovery and broadcasts it on the backbone, the fabric
+`degraded` with the workflow named (R-DG1). When the mesh has no node-admin left, the lowest
+ReadyForTraffic mesh-primary on the backbone, from [mesh investigation](mesh-investigation.md)'s decision
+step, does exactly the same. The workflow re-creates the node-admin at the fabric-primary's path.name
+([node recovery](node-recovery.md), over the inherited data dir when the investigation's provider step
+found the old runtime exited, otherwise over a newly allocated one, R-FM2). When that node is
+ReadyForTraffic it is mesh-primary and fabric-primary, as it was, and the workflow completes. Nothing is
+taken over and nothing is handed back; the fabric-primary's path.name never changed, so a replacement
+executor starting the workflow over knows it. The attempt names what it recovers, as every recovery
+attempt does, and its executor writes this attempt's Build records while the fabric-primary is
+unavailable, the one case in which a node-admin other than the fabric-primary writes a Build record
+([build.md §5.3](../build.md#53-node-admin-storage-boundaries)). If the executor is lost, the next one in
+the same order starts the workflow again, resuming the attempt from its recorded progress.
 
 1. **Unheard past the staleness floor.** Every admin marks the fabric-primary `PendingReconnect` at the
    floor ([node recovery](node-recovery.md) step 1). Silence is the trigger; no provider verdict stands
    between the mark and the row.
-2. **The successor writes the one row.** It names itself by the election on its own view and runs the
-   writer's steps of [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate):
-   the call, the successor's digest carrying the change, the record at the next revision. Any other admin that notices
-   tells the successor; the successor acts only when its own view agrees; repeats answer `AlreadyApplied`.
-   - *Its own mesh*: the successor is mesh-primary and fabric-primary at the first tick after the mark,
-     once the record has named the unheard primary for one staleness floor in its own book: a record
-     learned after a heal names a primary whose silence in this admin's book began before the record
-     did. It records both on its own row as the mesh's writer. It needs no probe
-     to know it is alive, and it publishes the mesh's aggregate as its primary within one backbone interval.
+2. **Fabric recovery starts.** The executor names itself by the four questions on its own view, opens
+   the attempt and broadcasts it. Any other admin that notices tells it; it acts only when its own view
+   agrees; repeats answer `AlreadyApplied`.
+   - *Its own mesh*: the lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after
+     the mark, once the record has named the unheard primary for one staleness floor in its own book: a
+     record learned after a heal names a primary whose silence in this admin's book began before the
+     record did. It takes no primary role. It needs no probe to know it is alive.
    - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its aggregate stops, so it runs
      [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
      node-admins. An answer from any of them ends the investigation and the fabric-primary stays in that
-     mesh. No answer from any of them by the decision step opens the fabric recovery workflow, with
-     the lowest ReadyForTraffic mesh-primary as its executor; no node-admin is fabric-primary until the
-     re-created one is.
-3. **The successor in its own mesh, or the workflow's executor from the backbone, runs the standing
-   playbook on the lost one**: [node investigation](node-investigation.md) decides (Q111). Reached, by the investigation's answer
+     mesh. No answer from any of them by the decision step starts fabric recovery at the lowest
+     ReadyForTraffic mesh-primary, exactly as in the own-mesh arm.
+3. **The executor runs the standing playbook on the lost one**: [node investigation](node-investigation.md) decides (Q111). Reached, by the investigation's answer
    from the exact birth and nothing else, the lost birth is commanded back through [node.mesh.join](node-mesh-join.md) and runs its start sequence,
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path.name
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
@@ -65,23 +58,21 @@ node-admin of the mesh is both at the staleness floor.
    otherwise (`R-FM2`). An old birth that comes back after that is refused at admission
    ([node.mesh.join](node-mesh-join.md), `superseded-birth`) and its runtime is terminated (Q110).
    Nothing holds, and nothing waits for proof.
-4. **The fabric-primary is back.** In its own mesh, the successor was both from the staleness floor and
-   the returned or re-created node is a member. From the backbone, once the node at the lost
-   fabric-primary's path.name, returned or re-created, has been ReadyForTraffic for one staleness floor
-   and is its mesh's mesh-primary by the election (the recorded primary is a birth that is gone), it is
-   the fabric-primary by the standing rule, records it on its own row, and the workflow completes. The
-   fabric's shared store root stays where it was. The fabric resolves to a fabric-primary at the
-   original path.name over the original data dir and endpoint key when the investigation's provider step
-   found the old runtime exited, and over a newly allocated data dir and endpoint key otherwise (R-FM2).
+4. **The fabric-primary is back.** When the node at the fabric-primary's path.name, returned or
+   re-created, is ReadyForTraffic, it is mesh-primary and fabric-primary, as it was, records both on its
+   own row, and the workflow completes. The fabric's shared store root stays where it was. The fabric
+   resolves to a fabric-primary at the original path.name over the original data dir and endpoint key
+   when the investigation's provider step found the old runtime exited, and over a newly allocated data
+   dir and endpoint key otherwise (R-FM2).
 
 | from the fabric-primary's last frame | default (floor 30 s) | gate (floor 3 s) |
 |---|---|---|
 | mark `PendingReconnect`, every admin | 30 s | 3 s |
-| its own mesh: the successor's row, at the first tick after the mark | 30 to 32 s | 3 to 3.5 s |
+| its own mesh: fabric recovery starts, at the first tick after the mark | 30 to 32 s | 3 to 3.5 s |
 | its own mesh: the mesh's aggregate published again | by 34 s | by 4 s |
 | outside its mesh: probe 1, probe 2, decision ([mesh investigation](mesh-investigation.md)) | 20 s, 40 s, 60 s | 2 s, 4 s, 6 s |
 | outside its mesh: the row, when nobody in that mesh answered either probe | 60 s | 6 s |
-| the workflow completes, after the node at its path.name is ReadyForTraffic and mesh-primary | one floor | one floor |
+| the workflow completes, when the node at the fabric-primary's path.name is ReadyForTraffic | — | — |
 
 1. Load the durable topology and the accepted Build map; bind port 0 and retain the OS-assigned
    endpoint. The first GetTopology targets a node from that durable map: OWN MESH first,

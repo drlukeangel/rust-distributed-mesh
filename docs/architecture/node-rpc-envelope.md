@@ -1545,7 +1545,7 @@ or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when i
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
-There is no take-over op. The loss of the fabric-primary is the [fabric recovery](lifecycles/fabric-recovery.md) workflow, an attempt of the current Build run by an executor that does not become fabric-primary; the fabric-primary is the node at the lost primary's path.name throughout, and the re-created node-admin is fabric-primary by the election once Ready for one floor and its mesh's mesh-primary.
+There is no take-over op. A fabric-primary unheard past the staleness floor is [fabric recovery](lifecycles/fabric-recovery.md)'s: the node-admin at its path.name is re-created and is mesh-primary and fabric-primary again when ReadyForTraffic; nobody takes the role meanwhile (Q122).
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is
