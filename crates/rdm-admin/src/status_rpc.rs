@@ -1429,8 +1429,7 @@ impl StatusAuthority {
             unreachable!("serve_command is called for commands only")
         };
         let me_name = self.held_name_in(view);
-        // The birth the call reached obeys it (R-RX5: no receiver refuses a downward call for the
-        // node id it names); the exact birth it names is checked.
+        // The exact birth the call names is checked.
         let me = view.own(&self.node_id);
         let reply = match (me, self.own.get()) {
             (Some(me), _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => rdm_core::reply::stale(me.incarnation_id.clone().expect("checked")),

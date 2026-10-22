@@ -67,7 +67,7 @@ pub struct RunningNode {
     /// Cancelled when this birth is retired (stop-node, its process stopping): the
     /// `before_ready` hook and any pull it has in flight end.
     pub cancel: rdm_transport::Retirement,
-    /// The surface that obeys this birth's lifecycle and round commands
+    /// The surface that serves this birth's lifecycle and round commands
     /// (`crate::node_self`).
     pub own: Arc<crate::node_self::NodeSelf>,
     before_ready: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
@@ -1337,7 +1337,7 @@ pub(crate) struct Kicked {
     membership: Membership,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
-    /// This birth obeying its node commands from its mesh-admin.
+    /// This birth serving its node commands from its mesh-admin.
     own: Arc<crate::node_self::NodeSelf>,
     /// The down ops node-admins sent this birth: what a hook blocked on its authority's word wakes on.
     addressed: Arc<crate::before_ready::Addressed>,

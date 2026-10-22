@@ -356,7 +356,7 @@ mod tests {
     /// happen: a progress frame before acceptance, a refusal after it, or a second completion.
     // @feature: node-lifecycle
     #[test]
-    fn both_scopes_obey_the_stream_order_and_a_refusal_is_one_frame() {
+    fn both_scopes_follow_the_stream_order_and_a_refusal_is_one_frame() {
         let mut all = FrameOrder::new();
         for f in [accepted(), NodeCommandReply::ConnectionsDeleting { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, deleted(Some(ConnectionsReceipt::Established { in_flight: 0, closed: vec![] }))] {
             all.admit(NodeCommand::frame_kind(&f)).unwrap_or_else(|e| panic!("All: {f:?}: {e}"));

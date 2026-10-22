@@ -1,4 +1,4 @@
-//! A node birth obeying the commands of its owning mesh-admin: `node.connections.delete`,
+//! A node birth serving the commands of its owning mesh-admin: `node.connections.delete`,
 //! `node.stop` and `node.start` (node-connections-delete.md, node-stop.md, node-start.md). Every node
 //! kind runs this one logic over its own surface: an rpc node, a role node and a node-admin differ
 //! only in how they refuse new work, how they publish and how they leave and rejoin the mesh (their

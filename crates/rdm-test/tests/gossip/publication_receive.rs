@@ -160,43 +160,43 @@ fn story(story: Story) {
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.membership.update.via-delta").count(),deltas);
 }
 
-/// CONTRACT: Stale obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: Stale follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_stale() { story(Story::Stale); }
 
-/// CONTRACT: ReadFloor obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: ReadFloor follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_readfloor() { story(Story::ReadFloor); }
 
-/// CONTRACT: Duplicate obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: Duplicate follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_duplicate() { story(Story::Duplicate); }
 
-/// CONTRACT: Inconsistent obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: Inconsistent follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_inconsistent() { story(Story::Inconsistent); }
 
-/// CONTRACT: Chunks obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: Chunks follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_chunks() { story(Story::Chunks); }
 
-/// CONTRACT: PendingConflict obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: PendingConflict follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_pendingconflict() { story(Story::PendingConflict); }
 
-/// CONTRACT: Gap obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: Gap follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_gap() { story(Story::Gap); }
 
-/// CONTRACT: DeltaApply obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: DeltaApply follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_deltaapply() { story(Story::DeltaApply); }
 
-/// CONTRACT: DeltaRepeat obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: DeltaRepeat follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_deltarepeat() { story(Story::DeltaRepeat); }
 
-/// CONTRACT: DeltaInconsistent obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: DeltaInconsistent follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_deltainconsistent() { story(Story::DeltaInconsistent); }
 
-/// CONTRACT: DeltaStale obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: DeltaStale follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_deltastale() { story(Story::DeltaStale); }
 
-/// CONTRACT: LowerStamp obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: LowerStamp follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_lowerstamp() { story(Story::LowerStamp); }
 
-/// CONTRACT: ReadRepair obeys the installed source version and publication identity, with no partial install.
+/// CONTRACT: ReadRepair follows the installed source version and publication identity, with no partial install.
 #[test] fn publication_readrepair() { story(Story::ReadRepair); }
 
 /// CONTRACT: a first new gossip publication at a read-installed version preserves the material image and is heard.

@@ -258,7 +258,7 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
 
 /// CONTRACT: while its hook is blocked the node answers its authority's status probe with Status
 /// `Blocked { node_id, incarnation, reason, retry_on }` (node-start.md step 3): the exact birth, the
-/// hook's own reason and the event it runs again on. It obeys `node.connections.delete { All }`
+/// hook's own reason and the event it runs again on. It serves `node.connections.delete { All }`
 /// (`ConnectionsDeleted`); the retirement at its admission cancels the hook: the blocker span closes `retired`, the hook does not run again, and
 /// the node never publishes ReadyForTraffic. What must NOT happen: `Current` or `NotReady` for a
 /// blocked node's probe (the executor could not name the blocker, or would take its door for it), or
