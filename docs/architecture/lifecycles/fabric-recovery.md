@@ -17,8 +17,11 @@ The sequence below reads topology from a node that is alive; when no node is,
 
 ## The loss of the fabric-primary while a node-admin lives
 
-One sequence, whatever stopped the fabric-primary and whichever node-admin is fabric-primary until it is
-back. Only two things vary: when the row is written, and which node-admin the one leadership election
+Fabric recovery is one workflow, an attempt of the current Build: taking the fabric-primary is its first
+step, recovering the lost node-admin its middle, handing the fabric-primary back its last. No node-admin
+takes the fabric-primary and keeps it. The workflow holds the lost primary's path.name while it runs, and
+if it must, reads it from the Build. One sequence, whatever stopped the fabric-primary and whichever
+node-admin is fabric-primary until it is back. Only two things vary: when the row is written, and which node-admin the one leadership election
 names ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): the lowest
 ReadyForTraffic node-admin of the fabric-primary's own mesh while it has one, else the lowest
 ReadyForTraffic mesh-primary on the backbone. The mesh-primary and the fabric-primary move together: the
@@ -62,8 +65,8 @@ primary's path.name as its mesh-primary (step 4).
    backbone, the re-created node-admin first becomes mesh-primary of its mesh by the election (the
    recorded primary is a birth that is gone) and records it; then the temporary fabric-primary's
    hand-back, `node.fabric-primary.update` to it, makes it fabric-primary and each records its own row.
-   The hand-back runs as an attempt of the current accepted Build, keyed `handback:<path.name>@<T>`, and
-   does not declare the returning node lost. The fabric-primary returns only that way. The fabric's shared
+   The hand-back is the last step of the fabric recovery workflow, and does not declare the returning
+   node lost. The fabric-primary returns only that way. The fabric's shared
    store root stays where it was. The fabric resolves to a fabric-primary at the original path.name over
    the original data dir and endpoint key when the investigation's provider step found the old runtime
    exited, and over a newly allocated data dir and endpoint key otherwise (R-FM2).
