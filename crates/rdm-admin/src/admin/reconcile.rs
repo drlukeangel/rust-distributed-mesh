@@ -110,6 +110,8 @@ pub(crate) struct ProviderDeparture {
     pub(crate) records: Arc<Records>,
     /// The fabric's seat moves, read for the takeover that moved the fabric seat.
     pub(crate) fabric: Arc<dyn crate::fabric_storage::FabricStorage>,
+    /// This admin's status authority, whose command book holds the commands it has open.
+    pub(crate) authority: crate::status_rpc::AuthoritySlot,
 }
 
 impl ProviderDeparture {
@@ -171,6 +173,10 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 
     /// The fabric seat's latest move read from the fabric's seat moves, when it is a takeover. Moves
     /// that cannot be read are named and answer none: nothing is re-created without the takeover read.
+    fn commanded(&self, node: &crate::model::Node) -> bool {
+        self.authority.get().is_some_and(|a| node.incarnation_id.as_ref().is_some_and(|inc| a.commands.open_for(&node.node_id, inc)))
+    }
+
     fn lost_name(&self, lost: &rdm_core::handover::HandoverBirth) -> Option<PathName> {
         self.records.exited_name(&lost.node_id, &lost.incarnation)
     }
@@ -416,6 +422,7 @@ pub async fn reconcile_drift(
     defers: &(dyn Fn(&str) -> bool + Sync),
     decided: &(dyn Fn(&str) -> bool + Sync),
     unreachable: &(dyn Fn(&str) -> bool + Sync),
+    commanded: &(dyn Fn(&crate::model::Node) -> bool + Sync),
     exits: &Records,
     taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>,
     lost_name: Option<&PathName>,
@@ -612,7 +619,7 @@ pub async fn reconcile_drift(
     // plan holds the handback, and the drive moves the seat, naming that admin, as its preceding update.
     // Only the holder the committed seat move names owes it (Q104): an admin whose view still names it
     // the fabric-primary after a takeover (the lost birth heard again) plans none.
-    let handback = taken.filter(|(_, _, holder)| holder.node_id == *me_id).and_then(|_| crate::accepted::handback_due_after_dwell(t, taken, lost_name, rdm_transport::membership::staleness_floor(), &|_| false));
+    let handback = taken.filter(|(_, _, holder)| holder.node_id == *me_id).and_then(|_| crate::accepted::handback_due_after_dwell(t, taken, lost_name, rdm_transport::membership::staleness_floor(), commanded));
     if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() && handback.is_none() {
         return None;
     }

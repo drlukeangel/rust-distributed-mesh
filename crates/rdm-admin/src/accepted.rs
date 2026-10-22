@@ -505,10 +505,17 @@ fn handback_ready() -> &'static std::sync::Mutex<std::collections::HashMap<rdm_c
 
 /// [`handback_due`] once the node it names has been ready-for-traffic for `dwell` (Q89): `None` before.
 /// `commanded` is whether a command of this holder's authority is open for the node's exact birth.
-pub fn handback_due_after_dwell(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>, dwell: std::time::Duration, _commanded: &dyn Fn(&crate::model::Node) -> bool) -> Option<PathName> {
+pub fn handback_due_after_dwell(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>, lost_name: Option<&PathName>, dwell: std::time::Duration, commanded: &dyn Fn(&crate::model::Node) -> bool) -> Option<PathName> {
     let due = handback_due(observed, taken, lost_name)?;
-    let id = observed.node(&due)?.node_id.clone();
+    let node = observed.node(&due)?;
+    let id = node.node_id.clone();
     let mut ready = handback_ready().lock().unwrap();
+    // A birth this holder's command back is still out to has not returned (fabric-recovery.md step 3):
+    // the ReadyForTraffic its digest carries is not its return, and the floor runs from the answer.
+    if commanded(node) {
+        ready.remove(&id);
+        return None;
+    }
     let since = *ready.entry(id).or_insert_with(std::time::Instant::now);
     (since.elapsed() >= dwell).then_some(due)
 }

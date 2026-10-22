@@ -1062,6 +1062,7 @@ mod tests {
                 Arc::new(r)
             },
             fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::default()),
+            authority: Arc::default(),
         };
         let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
         let birth = (executor.node.node_id.to_string(), executor.node.incarnation.to_string());
@@ -1120,6 +1121,7 @@ mod tests {
             nodes: Arc::new(CountsRuntimeLists::default()),
             records: records.clone(),
             fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::default()),
+            authority: Arc::default(),
         };
         let name: PathName = "mesh2.admin.1".parse().unwrap();
         assert!(!departure.recorded(&name).await, "nothing is recorded yet");

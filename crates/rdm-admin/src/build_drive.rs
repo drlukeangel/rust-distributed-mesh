@@ -247,6 +247,12 @@ pub trait DepartureProof: Send + Sync {
     async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
         None
     }
+    /// Whether a command of this admin's authority is open for the exact birth `node` names (a stop, a
+    /// start, its command back): the birth's lifecycle is that command's until its answer. A proof
+    /// with no authority holds none.
+    fn commanded(&self, _node: &crate::model::Node) -> bool {
+        false
+    }
     /// The path.name the lost birth's exit-proof row names, when one was read: where the node the
     /// hand-back is owed to was re-created (fabric-recovery.md step 4). A proof with no rows names none.
     fn lost_name(&self, _lost: &rdm_core::handover::HandoverBirth) -> Option<PathName> {
@@ -352,6 +358,9 @@ pub struct Drive {
     taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>>,
     /// The path.name the lost birth's exit-proof row names, read beside `taken`.
     taken_name: Mutex<Option<PathName>>,
+    /// The departure proof this pass read `taken` from: whether its authority has a command open for
+    /// the node the handback is owed to.
+    proof: Mutex<Option<Arc<dyn DepartureProof>>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -371,7 +380,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), taken: Mutex::new(None), taken_name: Mutex::new(None) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), taken: Mutex::new(None), taken_name: Mutex::new(None), proof: Mutex::new(None) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -381,7 +390,8 @@ impl Drive {
 
     /// The node-admin the fabric seat is owed back to in view `t`, from the takeover this pass read.
     fn handback(&self, t: &Topology) -> Option<PathName> {
-        crate::accepted::handback_due_after_dwell(t, self.taken.lock().unwrap().as_ref(), self.taken_name.lock().unwrap().as_ref(), rdm_transport::membership::staleness_floor(), &|_| false)
+        let proof = self.proof.lock().unwrap().clone();
+        crate::accepted::handback_due_after_dwell(t, self.taken.lock().unwrap().as_ref(), self.taken_name.lock().unwrap().as_ref(), rdm_transport::membership::staleness_floor(), &|n| proof.as_ref().is_some_and(|p| p.commanded(n)))
     }
 
     /// Make a progress frame readable. A frame whose receipt key is already held is dropped, so a
@@ -1076,6 +1086,7 @@ impl DriveEnv {
             let taken = self.departure.taken_from().await;
             *drive.taken_name.lock().unwrap() = taken.as_ref().and_then(|(_, lost, _)| self.departure.lost_name(lost));
             *drive.taken.lock().unwrap() = taken;
+            *drive.proof.lock().unwrap() = Some(self.departure.clone());
             let p = match self.builds.read_build(&id).await {
                 Ok(p) => p,
                 Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} could not be read: {e}")),
