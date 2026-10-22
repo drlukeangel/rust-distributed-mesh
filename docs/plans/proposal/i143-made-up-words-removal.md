@@ -192,7 +192,12 @@ These have no life apart from seat. Recommendation: they go with it, in the same
    before-and-after flame, since it is gossip code.
 4. seat, authority and cohort out, page by page, each page's old and new lines listed in that landing's
    file, the wire and durable items of §4.2 under the durable-format rule in the same landing as the page
-   that names them.
+   that names them. Q110 (Luke, 2026-10-21) lands in the same pass: the pages still say a primary changes
+   only on "the provider's exit proof" or "a proven loss" (elections page lines 92, 171, 224 and nine more;
+   57 lines on twelve pages; 29 source files with `is_proven_gone` and the exit-proof hold), and Q110 ruled
+   that an unreachable node is re-created with a new node id, refused at admission when it comes back, then
+   killed, with nothing kept verifying it. Those lines are rewritten once, in the terms of §3, never in the
+   old words.
 
 Every landing lands its page lines and code together. Cells that prove the operations stay: a primary
 changes, a mesh keeps repairing, a Build recovers, both storage backends. Cells whose only purpose was a
