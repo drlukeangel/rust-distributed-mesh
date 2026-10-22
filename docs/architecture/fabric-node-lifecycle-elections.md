@@ -165,8 +165,10 @@ fact.
 
 A Build that runs `node.connections.delete { scope: All }` on, stops, restarts or replaces a primary
 follows the [node.primary.update](lifecycles/node-primary-update.md) sequence: the primary, commanded
-from above, calls node.primary.update on its successor, and the one row is written. The row is the same
-election input as any other, and the old primary writes the mesh's rows no more from the row's revision.
+from above, calls node.primary.update on its successor; the successor becomes primary and, for the
+`node-admin` type, the mesh's writer from that moment, and records the change itself. The record is the
+same election input as any other, and the old primary writes the mesh's rows no more from the moment
+the successor is mesh-primary.
 
 ## 5. Day 0, preemption, restart, and replacement
 

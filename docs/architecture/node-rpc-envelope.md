@@ -1314,7 +1314,7 @@ never a defect and never a new execution (Node RPC §34, §43).
 | Frame / outcome | Meaning |
 |---|---|
 | Started { build_id, attempt, disposition } | accepted Build identity on the outer stream |
-| Step, the durable step-outcome frame | emitted on the inner and outer progress path only after the fabric-primary has recorded its receipt |
+| Step, the durable step-outcome frame | on the inner attempt stream, the executor reporting the step's result upstream to the fabric-primary; on the outer stream, the fabric-primary publishing it downstream only after it has recorded the receipt |
 | Complete | terminal success; completed step receipts are read and replayed, never executed again |
 | Failed { step, reason } | terminal named failure; nothing follows it on that stream |
 | Blocked { step, reason } | nonterminal hook blocker, emitted on a new blocker or reason change, never on a timer; replay the current blocker on reattach if still blocked. Its only source is the subject's [Status `Blocked`](#status-op-0x1b-rdm) reply to the executor's ProbeNodeState |
@@ -1523,8 +1523,8 @@ successor → primary   PrimaryUpdated { revisions }   (on that call's reply str
 
 `primaries` carries the election's result the successor installs, one entry or two: the fabric-primary
 is a second entry, node type `fabric`. For the `node-admin` type the successor records its own row on
-this call; for every other type the mesh-primary recorded the row before its command. The receiver
-refuses only:
+this call, after it answered; for every other type the mesh-primary records the successor's row on
+the acknowledgement, after its command. The receiver refuses only:
 
 - RejectedConflictingPayload: the same operation with different content; the row decides;
 - `fabric-not-ready`: before the initial fabric first reached ready-for-traffic.

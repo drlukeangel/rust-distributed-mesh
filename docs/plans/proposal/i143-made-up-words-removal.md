@@ -269,9 +269,10 @@ mesh-delete.md (5 each); fabric-recovery.md (4); fabric-delete.md (3); node-iden
 node-rpc-envelope.md, gossip.md, fabric-certs.md (2 each); node-delete.md (1). CLAUDE.md line 102.
 Under Q107, Q110 and Q111 the sequence for an unheard primary is, in order:
 
-1. Unheard past the staleness floor, the lowest ReadyForTraffic node of its type in its mesh takes over
-   by the one row write of §3 (Q107 (1); Q89 for the fabric-primary, whose successor is its mesh's
-   lowest Ready node-admin). No investigation runs before this write (Q107 (2)).
+1. Unheard past the staleness floor, the lowest ReadyForTraffic node of its type in its mesh becomes
+   primary by the election (Q107 (1); Q89 for the fabric-primary, whose successor is its mesh's lowest
+   Ready node-admin), announces it, and the mesh-primary records it (NA2 its own row, as the mesh's writer
+   from that moment). No investigation runs before this (Q107 (2)).
 2. The mesh-primary, a node-admin, runs node investigation on the unheard node as a member, whatever
    the node's type (Q107 (2); Q111: "that's what the node investigation is for"). When the unheard
    node was the mesh-primary, the node-admin that took over in step 1 is the mesh-primary and runs it;
