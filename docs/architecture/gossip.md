@@ -7,10 +7,10 @@ This page owns how facts travel over gossip: the channels, the frame catalog (ea
 Fabric, mesh and node lifecycle states and who sets them are defined only in [States](lifecycles/states.md#states).
 Join admission is defined by [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm).
 
-Gossip is the dissemination/topology plane. It is not a second control RPC system and it is not the authority for destructive recovery decisions.
+Gossip is the dissemination/topology plane. It is not a second control RPC system and it decides nothing about recovery.
 
 Companion owners:
-- [`build.md`](build.md) for topology authority (one fabric-primary, the current Build), Build/recovery and the RDM/Rafka ownership boundary, and [`deployment-provider.md`](deployment-provider.md) for runtime adoption;
+- [`build.md`](build.md) for the topology writer (one fabric-primary, the current Build), Build/recovery and the RDM/Rafka ownership boundary, and [`deployment-provider.md`](deployment-provider.md) for runtime adoption;
 - the [lifecycle index](fabric-mesh-node-lifecycles.md) for the workflows whose events ride these channels;
 - [`fabric-node-lifecycle-elections.md`](fabric-node-lifecycle-elections.md) for the single normative leadership/election specification;
 - [`connections.md`](connections.md) for Direct/Proxy route truth.
@@ -44,9 +44,9 @@ node / runtime birth
        through its own current membership digest/projection
 ```
 
-There is no second launcher-owned authoritative RuntimeFact stream. For example, a process may self-discover PID + process-start token, while a container provider learns the immutable container ID after `docker run` and makes it available to the child before Ready.
+There is no second launcher-owned RuntimeFact stream. For example, a process may self-discover PID + process-start token, while a container provider learns the immutable container ID after `docker run` and makes it available to the child before Ready.
 
-Operational metadata required by successor management, such as `data_dir`, is current Node/runtime projection state, not part of exact RuntimeFact identity merely because it must converge to future authorities.
+Operational metadata required by successor management, such as `data_dir`, is current Node/runtime projection state, not part of exact RuntimeFact identity merely because it must converge to a future primary.
 
 ---
 
@@ -81,7 +81,7 @@ Build/lifecycle/leadership
 
 Gossip silence, neighbour loss, failed dial, or missing push never proves a node Dead by itself.
 
-Completed Build receipt history is not required to recover current runtime identity and is not replayed merely so a future authority can manage a birth.
+Completed Build receipt history is not required to recover current runtime identity and is not replayed merely so a future primary can manage a birth.
 
 ---
 
@@ -115,13 +115,13 @@ receiving peer mesh primary
 Rules:
 - ordinary nodes never join the backbone;
 - only node-admins join the backbone;
-- the current mesh primary from the canonical LeadershipView publishes its own mesh's aggregate on the backbone; a mesh with no primary goes unheard: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's Members projection; [mesh investigation](lifecycles/mesh-investigation.md) gives it a node-admin, and that new mesh-primary publishes once it is established (R-RX4);
+- the current mesh-primary, as the election names it, publishes its own mesh's aggregate on the backbone; a mesh with no primary goes unheard: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's Members projection; [mesh investigation](lifecycles/mesh-investigation.md) gives it a node-admin, and that new mesh-primary publishes once it is established (R-RX4);
 - only receiving peer mesh primaries forward remote aggregates locally;
 - lifecycle events are published by the executor on its own mesh channel and reach the backbone only inside Members.in_flight and Members.deleted;
 - ordinary nodes converge to all-mesh topology without a flat fabric-wide membership channel;
 - publisher responsibility follows imported leadership changes;
-- leadership projections are derived by the canonical LeadershipView, not trusted because a publisher claimed them;
-- the aggregate/current birth projection preserves the current RuntimeFact and required current runtime metadata needed by an authority-bearing admin to manage that birth.
+- who is primary is the election's result and the Mesh row's fact, not trusted because a publisher claimed it;
+- the aggregate/current birth projection preserves the current RuntimeFact and required current runtime metadata needed by its primary to manage that birth.
 
 Use **forward** for this topology action. The transport's relay servers are disabled on every endpoint (`relay_mode Disabled`) and the word names nothing here.
 
@@ -154,11 +154,10 @@ local Instant         silence and elapsed time                    (receiver-loca
 | `MembersDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted }` | the forwarding primary's own mesh channel | the local mesh primary, when a source Mesh it holds moved from one version to another; and the source Mesh's primary, for its own Mesh, on its own mesh channel | nobody | `(mesh, source_publisher, base_version, topology_version)`; applied only when the receiver holds exactly `base_version` of that source and publisher | not retained as a frame | transforms the held remote projection from `base_version` into `topology_version`: births added or changed, identities removed, overlay and deleted changes, loads omitted. In `changed`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive authoritative statuses through the primary's versioned member projection. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). A delta whose base version the receiver does not hold triggers GetTopology repair. Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events. |
 | `Members` forwarded full `{ …, snapshot_id, chunk_index, chunk_count }` | the forwarding primary's own mesh channel | the local mesh primary: every `FULL_EVERY` rounds as passive anti-entropy | nobody | `(mesh, source_publisher, topology_version, snapshot_id)`; applied atomically once every chunk is held | the held remote projection, until the next full or top-up | the complete remote Mesh without loads |
 | [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone Members.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped; none for a mesh's last admin after mesh.deleted ([Mesh delete](#mesh-delete)) | peer mesh primaries preserve op | `(kind, build_id, attempt, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not runtime-exit proof. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
-| [`primary updating`, `primary updated`](#primary-update-announcements) | mesh channel; backbone | the mesh-primary (the holder itself for the `node-admin` cohort), the sole author of member status: "primary updating" before the seat row, "primary updated" after `node.primary.updated`; a node of another cohort never publishes its own seat | peer mesh primaries preserve operation and subject | `(operation, cohort, committed revision)` | announcements only | name the operation, the cohort, both exact births and the revisions; the committed seat row is the authority; a late "updating" never undoes an "updated" |
-| `Seated { seat, holder }` | the holder's mesh channel; backbone | the mesh-primary of the seat's mesh when the ordinary rule fills a seat there with no node.primary.update (its own mesh-primary seat and each other cohort's primary seat, a holder seated again after a failed update included); the fabric-primary for the fabric seat | peer mesh primaries preserve seat, holder and revision and never author a result | the holder record's revision, per seat key (`(mesh, node_type)` for a cohort, `fabric` for the fabric seat); an older record is ignored in the receive path | until the next record of that seat | the ordinary election's holder record with its exact birth ([elections §3](fabric-node-lifecycle-elections.md#3-election-key)), an election input; never sufficient to override a committed seat row |
+| [`primary updating`, `primary updated`](#primary-update-announcements) | mesh channel; backbone | the mesh-primary (the successor itself for the `node-admin` type), the sole author of member status: "primary updating" before the Mesh row, "primary updated" after `node.primary.updated`; a node of another type never publishes its own primary | peer mesh primaries preserve operation and subject | `(operation, node type, revision)` | announcements only | name the operation, the node type, both exact births and the revisions; the Mesh row is the fact; a late "updating" never undoes an "updated" |
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `Members` and `MembersDelta` rows above); node.connections.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
-| [`NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: a seat update is announced by `primary updating` and `primary updated`, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection | — | — | — | — |
+| [`NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: a primary change is announced by `primary updating` and `primary updated`, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection | — | — | — | — |
 | `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the mesh primary's own mesh channel; then each peer mesh channel | the mesh primary only, when its Mesh's status changes | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its holder on a join, heal, refeed or top-up | the Mesh's status projection |
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its holder on a join, heal, refeed or top-up | the Fabric's status projection |
 | `NodeRestarting { op: LifecycleOp, forwarded_by, publisher, topology_version }` | executor's own mesh channel; backbone Members.in_flight | the mesh-primary of the restarting node | peer mesh-primary derives external projection from aggregate | `(kind, build_id, attempt, operation)` | while restart operation is open | keep same logical node known; no Gone from expected silence. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
@@ -197,7 +196,7 @@ Receiver rules:
 
 - a `Digest`, an aggregate entry, a delta entry or a snapshot entry for a deleted exact birth is refused by name, and so is any later incarnation of a NodeId accepted as `NodeDeleted`, for the deleted retention; the deleted record keeps `(NodeId, IncarnationId)` for exact proof, the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a new incarnation along the lineage of a node that was not deleted is taken;
 - a lifecycle event whose key the receiver already applied is a no-op;
-- the `NodeDeleting` overlay, like every lifecycle state and overlay, is read only by application routing, under the [routing rule](lifecycles/states.md#routing-stop); the resolver and the Node RPC client never read lifecycle;
+- the `NodeDeleting` overlay, like every lifecycle state and overlay, is read only by application routing, under the [routing rule](lifecycles/states.md#routing-stop); the election and the Node RPC client never read lifecycle;
 - a receiving primary forwards a status frame and never restates it as its own;
 - a frame received out of order is ignored by one check in the gossip receive path, for every frame kind: a frame whose order key is earlier than the newest the receiver holds from that source is ignored before any handler reads it, whichever channel or read it arrives by. The order keys are the ones on the frames:
   - `Members` and `MembersDelta`: `published_at_rafka_ms`, then `topology_version`, per mesh; the publisher reads
@@ -205,8 +204,7 @@ Receiver rules:
     version's stamp is never earlier than the one before it;
   - `Digest`: `digest_seq`, per birth;
   - lifecycle facts (`NodeStopped`, `NodeDeleting`, `NodeRestarting`): `topology_version`, per publisher and subject mesh;
-  - `Seated`: the holder record's revision, per seat key (`(mesh, node_type)` for a cohort, `fabric` for the fabric seat);
-  - `primary updating` and `primary updated`: the committed revision, per seat key; at one revision "updated" is after "updating".
+  - `primary updating` and `primary updated`: the row's revision, per `(mesh, node_type)`; at one revision "updated" is after "updating".
 - no Rafka-time field decides liveness or `Gone`: silence is local receipt age.
 
 <a id="gossip-correlation"></a>
@@ -240,7 +238,7 @@ NodeConnectionsDeleting { op: LifecycleOp, forwarded_by: Option<String> }, // re
 NodeLeaving             { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 NodeLeft                { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 NodeConnectionsDeleted  { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
-NewFabricPrimary        { holder: SeatHolder, endpoint_id: String, transport_addr: SocketAddr, admin_api_base: Option<String> }, // reserved (R-G3): never published
+NewFabricPrimary        { primary: Primary, endpoint_id: String, transport_addr: SocketAddr, admin_api_base: Option<String> }, // reserved (R-G3): never published
 
 LifecycleOp {
     build_id: String,
@@ -253,7 +251,7 @@ LifecycleOp {
 }
 ```
 
-`LifecycleOp` is the body every lifecycle event frame below carries. RDM keeps the five reserved variants in the membership `Frame` enum with byte fixtures. `NewFabricPrimary` (position 14) is likewise a reserved position, never published: a seat update is announced by `primary updating` and `primary updated`, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection.
+`LifecycleOp` is the body every lifecycle event frame below carries. RDM keeps the five reserved variants in the membership `Frame` enum with byte fixtures. `NewFabricPrimary` (position 14) is likewise a reserved position, never published: a primary change is announced by `primary updating` and `primary updated`, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection.
 
 #### Node-stopped lifecycle overlay
 
@@ -273,7 +271,7 @@ What a stopped node is, and why its endpoint stays reachable, is [States](lifecy
 The announcement is not node.deleted or provider proof and refreshes no liveness.
 
 Inside node.restart, the stop's stopped is published as NodeRestarting, not NodeStopped;
-peers hold the instance and expect it back. NodeRestarting stays until node.started of the same `(node.id, incarnation)` arrives; a digest with a different incarnation does not complete it. An exit and relaunch under a new node.id is the [recover recipe](lifecycles/node-recovery.md), not a restart. No other gossip frame is renamed here.
+peers hold the instance and expect it back. NodeRestarting stays until node.started of the same `(node.id, incarnation)` arrives; a digest with a different incarnation does not complete it. An exit and a new birth under a new node.id is the [recover recipe](lifecycles/node-recovery.md), not a restart. No other gossip frame is renamed here.
 NodeStopped is a postcard enum variant with byte fixtures; it rides the same in-flight mechanism as NodeRestarting
 and NodeDeleting. NodeStopped stays in the in-flight overlay until the next
 lifecycle op on the same `(node.id, incarnation)`. node.start clears it at
@@ -285,15 +283,16 @@ No timer expires it.
 #### Primary update announcements
 
 [node.primary.update](lifecycles/node-primary-update.md) has two announcements on the mesh channel and the
-backbone: "primary updating" before the writer writes the seat row, and "primary updated" after the
-successor answers `node.primary.updated`. Each names the operation, the cohort, both exact births and the
-revisions. The announcer is the mesh-primary (the holder itself for the `node-admin` cohort), the sole
-author of member status; a node of another cohort never publishes its own seat.
+backbone: "primary updating" before the writer writes the Mesh row, and "primary updated" after the
+successor answers `node.primary.updated`. Each names the operation, the node type, both exact births and
+the revisions. The announcer is the mesh-primary (the successor itself for the `node-admin` type), the
+sole author of member status; a node of another type never publishes its own primary. A primary the
+staleness-floor rule elects is announced the same way, by the same writer steps.
 
 Peer mesh primaries carry them under the forwarding rules, preserving operation and subject. They are
-announcements, never authority: the committed seat row is the authority, and a node that hears an
-announcement installs nothing until the row names the revision. A late "updating" never undoes an
-"updated": the committed revision, per cohort, is their order key in the one gossip receive path
+announcements, never the fact: the Mesh row is the fact, and a node that hears an announcement installs
+nothing until the row names the revision. A late "updating" never undoes an "updated": the row's
+revision, per node type, is their order key in the one gossip receive path
 (R-RX3). They are best-effort dissemination, and a stop does not wait for their delivery (R-NS2).
 
 #### Fabric round gossip hooks
@@ -303,9 +302,9 @@ command/completion paths as their [Status calls](node-rpc-envelope.md#fabric-rou
 
 | directed call | hook frame | author |
 |---|---|---|
-| commit-state | StateCommitting | commanding authority |
+| commit-state | StateCommitting | the commanding primary |
 | state-committed | StateCommitted | subject sending its completed check-in |
-| open-traffic | TrafficOpening | commanding authority |
+| open-traffic | TrafficOpening | the commanding primary |
 | traffic-opened | TrafficOpened | subject sending its completed check-in |
 
 Each frame carries these fields:
@@ -327,7 +326,7 @@ hop. Node-admin authors publish on their own mesh channel and backbone; ordinary
 node authors publish on their own mesh channel and their mesh-admin carries the same
 record onto the backbone. Peer mesh primaries forward without changing authored
 fields. Identity is `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)`.
-Neither timestamp nor forwarded receipt supplies liveness or operation authority.
+Neither timestamp nor forwarded receipt supplies liveness or a right to act.
 
 What a check-in is and when a primary may report upward is the
 [round checklist](lifecycles/states.md#the-round-checklist). Gossip receipt cannot replace
@@ -504,7 +503,7 @@ the receiver holds about the same subject: refused by name), *duplicate* (the sa
 identity, with identical content: nothing happens), *gap* (ahead of what the receiver holds in a way it
 cannot apply: it requests repair, §3.3 and §6, and logs a gap, never "stale"). A frame equal in revision
 to the held one but different in content is an inconsistency, refused by name, for every state
-projection, seat record and snapshot publication. What a receiver may do with any frame: install a projection, record a fact, or carry the frame onward. It decides nothing on a frame (§10: gossip disseminates; the directed call is the certainty). Four categories:
+projection, primary announcement and snapshot publication. What a receiver may do with any frame: install a projection, record a fact, or carry the frame onward. It decides nothing on a frame (§10: gossip disseminates; the directed call is the certainty). Four categories:
 
 | category | stale | duplicate | gap |
 |---|---|---|---|
@@ -513,7 +512,7 @@ projection, seat record and snapshot publication. What a receiver may do with an
 | operation fact | — ; an unrelated newer frame does not supersede it, and its effect is reconciled against the same operation's completion and the exact birth's later lifecycle evidence: a completed operation is never reopened | the same operation identity already applied | — |
 | reserved | — | — | — ; refused by name, nothing applied |
 
-P(n) is the 20-digit zero-padded decimal representation of the existing u64 version. Context is CloudEvents §3.4; sequencetype is unset. Operation facts omit sequence. Identity admission is in the envelope; carried projection and committed-seat data retain their existing validity rules. A receiver decides nothing on a frame.
+P(n) is the 20-digit zero-padded decimal representation of the existing u64 version. Context is CloudEvents §3.4; sequencetype is unset. Operation facts omit sequence. Identity admission is in the envelope; carried projection and primary data retain their existing validity rules. A receiver decides nothing on a frame.
 
 | frame / type | category | source / subject | sequence / data validity | id / identity |
 |---|---|---|---|---|
@@ -522,16 +521,16 @@ P(n) is the 20-digit zero-padded decimal representation of the existing u64 vers
 | `MembersDelta` (`rdm.mesh.members.delta`) | delta | the original author birth / `(mesh, source_publisher)` | `P(topology_version)`; `base_version` in data equals installed to apply, ahead requests repair as via-gap, lower version is stale | source projection, base version and topology version |
 | `NodeDeleting`, `NodeRestarting`, `NodeStopped` (`rdm.node.deleting`, `rdm.node.restarting`, `rdm.node.stopped`) | operation fact | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; the operation cannot reopen after completion or the exact birth's later lifecycle. The carried `topology_version` is data, checked on the projection's own subject by its existing per-publisher floor rule, even for a repeated fact | kind and the complete operation identity; a repeat runs no effect twice, including when the carried version is refused |
 | `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
-| `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(committed seat revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from its own held committed seat row. A predecessor's later timestamp loses to the successor's higher revision; within one holder its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
+| `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(the primary's revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from the Mesh row. A predecessor's later timestamp loses to the successor's higher revision; within one primary its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
 | `Seated` (`rdm.seat.seated`) | replacement state | the announcing birth / complete cohort `(mesh, node_type)` or fabric seat | `P(committed revision)` against the installed cohort record | cohort and committed revision |
-| `PrimaryUpdating`, `PrimaryUpdated` (`rdm.node.primary.updating`, `rdm.node.primary.updated`) | operation fact: announcement of one committed transfer | the announcing birth / `handover/<build_id>/<attempt>/<operation>` | absent; type names the stage. Per-cohort revisions are data: every cohort is checked atomically against the committed rows, the whole frame is refused when either cohort is stale, and updated is later than updating at one revision. Equal-revision content conflicts remain inconsistent. Gossip announces, never supplies authority | type/stage and transfer operation; a repeat runs no effect twice |
+| `PrimaryUpdating`, `PrimaryUpdated` (`rdm.node.primary.updating`, `rdm.node.primary.updated`) | operation fact: announcement of one primary change | the announcing birth / `handover/<build_id>/<attempt>/<operation>` | absent; type names the stage. Per-type revisions are data: each is checked against the Mesh row, the whole frame is refused when either is stale, and updated is later than updating at one revision. Equal-revision content conflicts remain inconsistent. Gossip announces, never decides | type/stage and operation; a repeat runs no effect twice |
 | `Concern` (`rdm.mesh.concern`, position 10) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
 | `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` (`rdm.fabric.state.committing`, `rdm.fabric.state.committed`, `rdm.fabric.traffic.opening`, `rdm.fabric.traffic.opened`) | operation fact | the original author birth / `(fabric_id, build_id, attempt, operation, node_id, incarnation)` | absent; Q21 stands: no checklist or reopening, ordinary span and the existing open-round carrier only; a closed or superseded round is carried nowhere | kind and complete round operation identity; a repeat invokes no carrier |
 | `NodeConnectionsDeleting`, `NodeLeaving`, `NodeLeft`, `NodeConnectionsDeleted`, `NewFabricPrimary` (`rdm.node.connections.deleting`, `rdm.node.leaving`, `rdm.node.left`, `rdm.node.connections.deleted`, `rdm.fabric.primary.new`) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
 
 A publisher change: a delayed predecessor cannot replace the successor's status: the author's
-committed seat revision is the first component of status sequence, before change time. The other
-source-projection and cohort floors remain as specified above. A recovery
+the primary's revision is the first component of status sequence, before change time. The other
+source-projection floors remain as specified above. A recovery
 through a topology read installs the held version under the receiver's one hold; stale gossip after
 it is refused by these rules and never rolls it back. Spans: `rdm.mesh.membership.reject.via-stale`
 (frame, subject, held key, frame key), `rdm.mesh.membership.update.via-duplicate` (frame, identity,
@@ -591,7 +590,7 @@ and any node uses its own call results and connection facts, including `carrier-
 A forwarded frame refreshes nobody's liveness, node-admins included. Source versions order
 topology; they are not liveness receipts. See the [peer-mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
 
-A delta is an optimization. It is never authority and never the only recovery.
+A delta is an optimization. It is never the fact and never the only recovery.
 
 **Versions belong to the source Mesh.** `topology_version` is the source primary's; the source
 publisher's exact identity is its revision. A new source primary begins a new revision, and a receiver
@@ -601,7 +600,7 @@ installs a full of that revision before applying any of its deltas.
 holds 43 emits one delta `base_version = 41, topology_version = 43`: the complete difference between
 the two projections it holds, not a replay of intermediate events. `base_version` is the version
 the forwarder last published into its Mesh, so the forwarder's own missed backbone frames never
-break the chain inside the Mesh. A forwarder that takes the seat publishes a full first; it needs no
+break the chain inside the Mesh. A forwarder that becomes the primary publishes a full first; it needs no
 stream of its own.
 
 **A version mismatch desynchronizes, and the node tops up.** A receiver applies a delta only when
@@ -627,7 +626,7 @@ proofs.
 remain on the backbone. If ordinary nodes are ever made responsible for load-aware remote target
 selection, the forwarded frames carry loads again; nothing here makes their absence a law.
 
-**Events keep the express lane, and recover two different ways.** `NodeDeleting` and `NodeDeleted`
+**Events keep the fast path, and recover two different ways.** `NodeDeleting` and `NodeDeleted`
 are immediate events on the executor's own mesh channel and in the next Members aggregate;
 `MeshStatus` and `FabricStatus` are immediate on every channel. None waits for a delta.
 A node that missed a lifecycle event recovers it from `Members.in_flight` or `Members.deleted`,
@@ -654,8 +653,8 @@ catalog's per-frame fields (§3.1) are the values these attributes carry.
 | `id` | the delivery identity: one per frame, the same on a resend |
 | `source` | the author's exact birth, `rdm://<fabric_id>/<node_id>/<incarnation>`; a new incarnation is a new source |
 | `type` | the frame kind (`rdm.mesh.digest`, `rdm.mesh.members`, `rdm.node.deleted`, …); a reserved kind is a `type` the receiver refuses by name |
-| `subject` | the key the fact is about: a birth, a `(mesh, publisher)` projection, a cohort, a fabric |
-| `sequence` | the per-`(source, subject)` version: a birth's `digest_seq`, a projection's `topology_version`, a seat's `revision` |
+| `subject` | the key the fact is about: a birth, a `(mesh, publisher)` projection, the nodes of one type in one mesh, a fabric |
+| `sequence` | the per-`(source, subject)` version: a birth's `digest_seq`, a projection's `topology_version`, a primary's `revision` |
 | `time` | rafka-time of the fact; never an ordering |
 | `data` | the body, the frame's own fields |
 | `datacontenttype` | `application/octet-stream`, always: `data` is postcard bytes; any other value is refused by name |
@@ -710,7 +709,7 @@ Sequence: [node.mesh.join](lifecycles/node-mesh-join.md), then [node.start](life
 section owns only what gossip is to a joiner:
 
 - the join is a call, [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm), and gossip plays no part in
-  it; the authority learns the birth from the accepted report, never from a frame;
+  it; the primary learns the birth from the accepted report, never from a frame;
 - after the accepted join the birth joins its mesh channel, `f(FabricId, MeshId)`, and the
   node-admin backbone when it is a node-admin; a mesh with no live listener has its channel created
   again by its first listener under the mesh's own MeshId;
@@ -719,9 +718,9 @@ section owns only what gossip is to a joiner:
   and top-ups (§3.3) keep them current;
 - the accepted topology is the current Build, read last in, first out from `builds.storage`; it is
   never reconstructed from Build gossip. Gossip disseminates; it is not the persistence of a Build;
-- a node-admin is not Ready because it can observe peers. Ready is authority-capable readiness, and
+- a node-admin is not Ready because it can observe peers. Ready is readiness to act as a primary, and
   an ordinary joining admin cannot self-Ready around missing hydration; only the Day-0 root and
-  fabric recovery's root establish Ready without a live Ready authority
+  fabric recovery's root establish Ready without a live Ready primary
   ([fabric recovery](lifecycles/fabric-recovery.md)).
 
 ---
@@ -749,7 +748,7 @@ member is still held/current
 Required behavior:
 - one failed rejoin per peer/window or equivalent bounded backoff;
 - failed dial does not mark Dead;
-- retries continue only while the member remains held/current and unproven dead;
+- retries continue only while the member remains held/current;
 - relearning the current birth also restores its RuntimeFact + required current runtime metadata through ordinary membership convergence;
 - when canonical exact-runtime/lifecycle evidence retires/tombstones the birth, it stops being a refeed target;
 - zero-neighbour refeed may remain an edge fallback;
@@ -771,20 +770,15 @@ join result
 
 The exact span name follows repository observability canon.
 
-**A cut-off view.** A node's view is cut off while it hears no other member of its mesh and holds a member
-whose silence no lifecycle gossip event it applied explains; it ends when the view hears a member again or
-when that silence is explained, and one silence window of healing follows. What a cut-off or healing view
-may not do is [fabric-primary.md §2.3.1](fabric-primary.md#231-topology-authority),
-[build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build), §12 and
-[node-admin-lifecycle.md §1 rule 6](node-admin-lifecycle.md#1-rules): a node-admin commands no member and writes
-no seat row from it. Expected
-silence never cuts a view off and is never stale: a member whose node.stop this view admitted or applied
-(stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose
-deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an
-event the view applied, and is not counted. A view that holds no other member, or whose other members all
-left it that way, is not cut off: a mesh-primary whose mesh has no other live member keeps its seat,
-publishes as its primary and serves its mesh's topology and rafka-time, and a stopped member's start reads
-them from it ([node.start](lifecycles/node-start.md) step 4).
+**Expected silence is never stale.** A member whose node.stop this view admitted or applied (stopping;
+stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose deletion
+it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an event the
+view applied, and is not counted as silent. A node-admin acts on its own view: what it hears is its view,
+and a question its view cannot answer is answered by its direct operations
+([node investigation](lifecycles/node-investigation.md)), never by a rule about its own silence. A
+mesh-primary whose mesh has no other live member stays mesh-primary, publishes as its primary and serves
+its mesh's topology and rafka-time, and a stopped member's start reads them from it
+([node.start](lifecycles/node-start.md) step 4).
 
 ### 6.1 Deletions: an event for promptness, `Members` for retention
 
@@ -811,7 +805,7 @@ These are **not** deletion proof:
 Retention is bounded current membership state, not permanent history: at least the membership
 repair horizon, expired by local age since the receiver accepted it; `event_at_rafka_ms` is evidence
 and never a remote expiry decision. After retention a formerly `Gone` identity resolves `Unknown`.
-`Gone` means this process currently retains authoritative deletion knowledge, not that the Fabric
+`Gone` means this process currently retains the deletion, not that the Fabric
 keeps an eternal NodeId graveyard.
 
 A NodeId accepted as `NodeDeleted` stays deleted for the retention: a later digest of the deleted
@@ -876,7 +870,7 @@ its members' declarations and what it learned from other node-admins, growing as
 never shrinking within a birth. A node-admin joins its own `types` before its `before_ready` hook, as
 every node does. Its mesh's node-admin records the declaration beside the row (a node-admin that
 writes no rows yet, the Day-0 admin before it is Ready, holds the declaration and writes it with its
-first write after it takes the seat; the join is answered on the held declaration),
+first write after it becomes the primary; the join is answered on the held declaration),
 joins every type it does not already hold before it answers the join, and writes its own row's
 `held_hash` (blake3 of the sorted `held`), the one hash that rides a digest. Another node-admin
 that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
@@ -914,7 +908,7 @@ stores and its raw projection under the one comparator, and the node installs th
 and pulled rows share one apply rule, so nothing gossiped during the pull is lost. Only then does the node mark
 itself ready (span `rafka.mesh.entry.update.via-projection-pulled`, with `entity_rows` and `raw_applied`).
 
-A pull that cannot be answered holds the node below `ready-for-traffic`. node-admin refuses a pull it cannot serve (it is not the snapshot authority, the snapshot will not encode, or it cannot serve the system org's own record) by name (`rafka.mesh.entry.reject.via-projection-refused`). The node names each failed attempt, refused, unreachable or cut short, on `rafka.mesh.entry.reject.via-projection-pull-failed` with its reason, backs off, re-resolves the current primary node-admin from the topology it holds on every attempt, and pulls again from that authority until an answer is applied; only then does it mark itself ready. A `not-born` answer before day 0 is a valid answer and does not hold the node. Every store reads through to the broker on a runtime miss; read-through never stands in for a refused pull. The durable topics remain the completeness backstop: the pull carries the hot working set node-admin holds, not a copy of every broker's whole set.
+A pull that cannot be answered holds the node below `ready-for-traffic`. node-admin refuses a pull it cannot serve (it is not the primary that serves the snapshot, the snapshot will not encode, or it cannot serve the system org's own record) by name (`rafka.mesh.entry.reject.via-projection-refused`). The node names each failed attempt, refused, unreachable or cut short, on `rafka.mesh.entry.reject.via-projection-pull-failed` with its reason, backs off, re-resolves the current primary node-admin from the topology it holds on every attempt, and pulls again from that primary until an answer is applied; only then does it mark itself ready. A `not-born` answer before day 0 is a valid answer and does not hold the node. Every store reads through to the broker on a runtime miss; read-through never stands in for a refused pull. The durable topics remain the completeness backstop: the pull carries the hot working set node-admin holds, not a copy of every broker's whole set.
 
 ---
 
@@ -948,21 +942,21 @@ The workflows whose events ride these channels are listed in the [lifecycle inde
 
 Gossip carries the current candidate facts consumed by leadership. It does not define election semantics.
 
-The **single normative election specification** is [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). This document deliberately does not repeat eligibility, ordering, hierarchy, preemption, or shutdown-seat rules.
+The **single normative election specification** is [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). This document deliberately does not repeat eligibility, ordering, hierarchy, preemption, or shutdown rules.
 
-Primary bits learned over gossip are projections/hints. Consumers that need current authority use the imported LeadershipView rather than rebuilding an election from gossip locally.
+Primary bits learned over gossip are projections/hints. Consumers that need the current primary use the election's result rather than rebuilding an election from gossip locally.
 
 ---
 
 ## 12. An unheard peer mesh
 
-While a peer mesh goes unheard, LeadershipView may temporarily differ because current membership views differ. The semantics of that condition are owned by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md), not redefined here.
+While a peer mesh goes unheard, the elected primary may temporarily differ because current membership views differ. The semantics of that condition are owned by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md), not redefined here.
 
 Safety comes from:
 - exact birth/runtime fencing;
 - definitive lifecycle/control receipts;
 - idempotent Build operations;
-- one fabric-primary topology writer (a cut-off view holds no fabric-primary authority);
+- one fabric-primary topology writer;
 - direct-answer fencing before destructive replacement;
 - failed reachability is not death.
 
@@ -986,7 +980,7 @@ is the sole Build driver; it claims and calls the executor over the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm). Caller progress waits on
 no gossip receipt.
 
-For lost admin authority the sequence is [mesh investigation](lifecycles/mesh-investigation.md)
+For a mesh whose node-admins are unheard the sequence is [mesh investigation](lifecycles/mesh-investigation.md)
 for a mesh with no node-admin and [node recovery](lifecycles/node-recovery.md) for a member whose
 mesh-primary is live; who claims and executes is [build.md](build.md). Gossip's part is fixed:
 canonical runtime and lifecycle evidence, never silence, establishes which births are gone; the
@@ -995,7 +989,7 @@ an existing mesh keeps that mesh's MeshId.
 
 Held live ordinary members remain reconciliation inputs and are preserved through their current membership + RuntimeFacts/runtime metadata.
 
-A deletion is published only from proof. `NodeDeleted` for an exact birth is emitted by the executor that holds the operation, after the provider's exact inspection says the runtime is terminal. Holding a claim does not prove death; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): tickle, exact provider exit proof, then one recovery Build that deletes the exited node (NodeDeleted from that proof) and creates its successor at the same path.name.
+A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Holding a claim does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path.name.
 
 ---
 
@@ -1009,8 +1003,8 @@ At minimum:
 5. lost pushes recover through ordinary iroh-gossip repair;
 6. node-admins that cannot hear each other, each with neighbours, are re-fed through held-member stale-coverage rejoin;
 7. failed rejoin never marks Dead;
-8. proven-dead held member is removed from repair targets;
-9. restarted/joining authority node cannot become Ready before required topology + the current Build + RuntimeFact/runtime-metadata + provider-domain hydration;
+8. a held member node investigation re-created is removed from repair targets;
+9. a restarted/joining node-admin cannot become Ready before required topology + the current Build + RuntimeFact/runtime-metadata + provider-domain hydration;
 10. normal joining admin cannot self-Ready around missing hydration; only Day-0/single-admin recovery-root behavior is permitted;
 11. late lower-NodeId admin can learn/adopt current runtimes it did not launch without completed Build receipts;
 12. provider/bootstrap locator production results in exactly one normalized node-published RuntimeFact, not a competing launcher-owned fact;
@@ -1027,7 +1021,7 @@ At minimum:
 23. a status change is reinforced five times and then stops; a late joiner learns the status from a join-triggered re-send, not from a heartbeat;
 24. one node changing in a remote Mesh produces a delta naming that node, not a re-broadcast of the Mesh;
 25. a delta whose `base_version` the receiver does not hold desynchronizes that source's projection, and the node tops up from its own mesh-primary; nothing is requested over gossip;
-26. a forwarder that takes the seat publishes a full before any delta; a new source primary is a new revision and its first delta is never applied before its full;
+26. a forwarder that becomes the primary publishes a full before any delta; a new source primary is a new revision and its first delta is never applied before its full;
 27. a full missing a chunk is never applied, on the backbone or inside a Mesh; the held projection and the held source version survive until a complete snapshot or a top-up, and no delta is derived from an incomplete one;
 28. a node that noticed nothing wrong holds stale remote topology for at most `FULL_EVERY` rounds;
 29. the forwarded cross-Mesh projection carries no loads while the backbone aggregate does;
@@ -1035,5 +1029,5 @@ At minimum:
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
 32. a source Mesh whose nodes only heartbeat does not bump `topology_version`, and no delta travels;
 33. `NodeDeleting` is never emitted before the executor's own journal holds its adopted claim for the attempt; a multi-mesh Build's second Mesh emits its `NodeDeleting` only after the fabric-primary claims the next attempt and dispatches build.attempt.run and that Mesh's executor adopts the won claim, keyed on that attempt, never on Build acceptance;
-34. `NodeDeleted` is never emitted without exact provider proof; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no holder until a new birth, and the current topology does not list the node;
+34. `NodeDeleted` is never emitted without node.delete's step receipt; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no node until a new birth, and the current topology does not list the node;
 35. unplanned loss produces one `NodeDeleted` for the old identity, after proof, from the recovery Build's node.delete.
