@@ -137,7 +137,15 @@ impl Estate {
     /// when it does not answer for this Fabric within 2 s.
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
         let peers = self.peers().await;
-        let views = node_views_of(peers.as_ref(), admin, &self.fabric_id).await?;
+        let views = match node_views_of(peers.as_ref(), admin, &self.fabric_id).await {
+            Some(views) => views,
+            // The path may hold a new birth (a node-admin re-created at its path.name, by fabric recovery
+            // or a replace): every known admin's view names it, and the read goes to that birth once more.
+            None => {
+                self.relearn(&peers).await;
+                node_views_of(peers.as_ref(), admin, &self.fabric_id).await?
+            }
+        };
         // What the view lists is reachable from here on: a node created again at a path.name (a new node
         // id, as a retired admin's successor is) is dialled as the view names it, never by the id the
         // path held before.
@@ -245,6 +253,12 @@ impl Estate {
 
     /// `fabric.get` at the admin the estate asks.
     pub async fn fabric_view(&self) -> FabricView {
+        if let Ok(view) = self.fabrics_obj().await.get().await {
+            return view;
+        }
+        // The entry admin's path may hold a new birth: hand over again, reading every known admin's view
+        // first, and ask that birth once more.
+        self.rehandover().await;
         let entry = self.entry().await;
         self.fabrics_obj().await.get().await.unwrap_or_else(|e| panic!("fabric.get at {entry}: {e}"))
     }
