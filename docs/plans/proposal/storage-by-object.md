@@ -93,6 +93,49 @@ exactly one, named here; an implementation refuses nothing a named writer writes
 (`durable format moved`) routes such a landing to a rebirth, never a restage, so no old `status.storage`
 record is ever read, and no issue is ever confused with a receipt by a copy.
 
+### What goes (i143)
+
+- `status.storage` as an interface and a store: `StatusStorage`, `FileStatusStorage`, `MemoryStatusStorage`,
+  the `status/<mesh>/` directories on the store root (`meshes`, `fabric`, `declared`, `operations`,
+  `silence`, `data-dir-lost`, `data-dir-unreadable`, `data-dir-lost-at`, `data-dir-unreadable-at`,
+  `node-certs`, `node-cert-receipts`, `issuers`, `issuer-receipts`) and their formats; the "other
+  meshes" rows it opened on first use; its `StorageBoundaries.status` slot. The five storage interfaces
+  become four: fabric, mesh, nodes, connections, beside the Build journal.
+- The cert and issuer receipt rows and their formats (Q141): the written expiry is the receipt.
+- The idea that a row about one object can live in a store named for something else: a new row goes in
+  the store of the object it describes, never the nearest one.
+
+### Page lines, old to new, landing with the code
+
+- `build.md:56`, `:102`, `:413`: "the five storage interfaces, fabric, mesh, nodes, connections and status"
+  becomes "the four storage interfaces, fabric, mesh, nodes and connections"; `:413`'s layout
+  `{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, status/<mesh>/}` loses `status/<mesh>/`, and
+  its writer sentence loses "and `status/<mesh>/`".
+- `node-admin-lifecycle.md:57`: the same layout loses `status/<mesh>/`.
+- `lifecycles/states.md:51`: "is written to `status/<mesh>/declared` on the shared store root before the
+  reply" becomes "is written to the birth's `declared/<state>` row in `nodes/<mesh>/` on the shared store
+  root before the reply".
+- `node-identity-and-state.md:656`: "is its status rows: the `PendingReconnect` and" becomes "is rows on
+  the node: the `PendingReconnect` and".
+- `fabric-certs.md:104`: "a status-row kind beside" becomes "a row on the birth in `nodes.storage` beside".
+- `lifecycles/node-cert-renew.md` and `lifecycles/mesh-issuer-renew.md`: the Q141 lines below;
+  `node-issuer-update.md` (step 1, Steps): "mesh issuer" / "issuer row" to the node-admin's signing cert
+  and its dates on its node row.
+
+### Cells, RED first
+
+- one per key family: two facts of one birth under different keys both survive a compaction and a fold
+  (`declared/<state>` keeps `ReadyForTraffic` beside a late `Pending`; two attempts' operation effects
+  both stand; lost and unreadable data-dir facts both stand);
+- one per writer: the mesh-primary writes its nodes' facts, the fabric-primary writes them while the mesh
+  has no primary and stops when one exists, the issuer writes cert dates for a member and for a
+  mesh-primary's own cert, and no named writer is refused;
+- the durable declared write: `Applied` answered, the writer killed before state-commit, the fact read
+  back by its successor;
+- the renewal paths: answered, unanswered, and answered but lost before the write, each ending with the
+  row's dates as the proposal states;
+- both storage backends.
+
 ### Q141 A: the date on the node row is the receipt (Luke, 2026-10-23)
 A renewal writes the cert's dates once, when the node answers. `CertRenewed` and `IssuerUpdated` carry the
 birth and the expiry of the cert installed, nothing else (`rdm-core/src/status.rs`), so the issuer matches
@@ -126,7 +169,4 @@ Step 4: old "The row records the last receipt. The old issuer expires on its own
 ### Open
 - `ops.nodes.offline` is rafka's own (`NodeOfflineRecord`: one observer's offline episode of one node, with a
   broker's refill; `rafka-entity-topology/src/offline.rs:147`). No RDM row maps to it, so Q139 is withdrawn.
-- Page text, for Luke's yes before the build: a storage-provider page with this map; fabric-certs.md:104
-  ("a status-row kind") to "a row on the birth in `nodes.storage`"; the "mesh issuer" / "issuer row"
-  wording in `mesh-issuer-renew.md` and `node-issuer-update.md` (step 1, Steps) to the node-admin's signing
-  cert and its dates on its node row.
+- A storage-provider page with this map (i141, with the rafka mapping).
