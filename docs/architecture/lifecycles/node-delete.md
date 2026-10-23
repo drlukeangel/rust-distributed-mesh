@@ -2,8 +2,8 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
-`node.delete` composes the whole [node.stop](node-stop.md), then proves exact runtime
-exit and releases identity. It releases node.id and name, **not storage**. The data
+`node.delete` composes the whole [node.stop](node-stop.md), then terminates the exact runtime
+through its provider, reads it `Exited`, and releases identity. It releases node.id and name, **not storage**. The data
 dir and node-identity.json / endpoint key stay with that data dir. Application storage
 removal is separate work.
 
@@ -14,26 +14,26 @@ removal is separate work.
 | Caller / executor | Typed caller / accepted node-admin executor |
 | Live target | Complete node.stop first; the stopped process remains reachable |
 | Crashed target | Stop steps are already done; no call is required from an exited process |
-| OS-suspended target | The provider reports the exact runtime `os-stopped` ([deployment-provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)): the stop is skipped by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the exact handle, as `terminate(Immediate)`: a suspended runtime runs no handler, so there is no graceful wait, and nothing of it is resumed; the delete completes only on the provider's exit proof. Explicit delete only, never recovery, which respects suspension |
-| Runtime action | Request termination and inspect the exact accepted runtime |
-| Terminal event | Executor emits node.deleted only from exact runtime Exited proof, after releasing node.id and name |
+| OS-suspended target | The provider reports the exact runtime `os-stopped` ([deployment-provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)): the stop is skipped by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the exact handle, as `terminate(Immediate)`: a suspended runtime runs no handler, so there is no graceful wait, and nothing of it is resumed; the delete completes only on the provider's `Exited`. Explicit delete only, never recovery, which respects suspension |
+| Runtime action | `TerminateRuntime` on the exact accepted runtime, whatever the provider reads of it (a running one is stopped; an exited one has what it left removed; one already removed is done), then its inspection (Q145) |
+| Terminal event | Executor emits node.deleted only from the provider's `Exited` of the exact runtime, after releasing node.id and name |
 | Storage | Retain data dir and endpoint key; a later spec can inherit them |
 | Peer block | node.deleted blocks old `(node.id, incarnation)` in the peer-location book |
-| Forbidden proof | Gossip, silence, Ping failure and timeout never prove runtime exit |
+| Never evidence | Gossip, silence, Ping failure and timeout never say the runtime exited |
 
 ## Numbered end-to-end sequence
 
 1. For a live process compose the whole [node.stop](node-stop.md#numbered-end-to-end-sequence).
    For a crashed process those stop steps are already done; do not fabricate node replies or
    receipts.
-2. Stop and inspect the exact runtime through provider control. Match its immutable
-   runtime identity; a recycled pid or reusable container name cannot satisfy proof.
+2. Terminate and inspect the exact runtime through provider control. Match its immutable
+   runtime identity; a recycled pid or a reusable container name is not the runtime.
 3. The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh)
    writes the node's row with status deleted; the record and its config stay. Release node.id
    and the name claim. Retain the data dir, node-identity.json and endpoint key.
-4. The surviving executor emits node.deleted on the caller stream from the Exited
-   evidence and records the complete delete receipt. The exited node cannot publish
-   its own terminal proof or serve that stream.
+4. The surviving executor emits node.deleted on the caller stream from the provider's
+   `Exited` and records the complete delete receipt. The exited node cannot publish
+   its own end or serve that stream.
 5. Block the old `(node.id, incarnation)` in the peer-location book. Peers refuse a late
    digest of the deleted birth under the [frame catalog's receiver rules](../gossip.md#31-frame-catalog),
    even when a successor uses the same endpoint key.
@@ -43,7 +43,7 @@ removal is separate work.
 ```text
 node.delete
   ← every node.stop event, if the process is live
-  ← node.deleted [executor: exact provider Exited proof; node.id and name released]
+  ← node.deleted [executor: the provider's Exited of the exact runtime; node.id and name released]
 ```
 
 The executor, not the exited node, publishes the last event.
@@ -54,7 +54,10 @@ node.deleted is the caller event. The caller waits on the stream and durable rec
 
 Stop's node.stopped is pre-exit (stopped) and insufficient. Retain the exact accepted RuntimeFact
 and reach node.deleted and identity release through the delete's own steps, `TerminateRuntime`
-included. An unreachable provider leaves delete incomplete. A crashed node is
+included. `TerminateRuntime` is never skipped because the runtime already exited: the provider's
+terminate of an exited runtime removes what it left (a container and the address it held, its logs
+kept beside the data dir first; a process leaves nothing), and a runtime already removed terminates as
+done, so a re-run of the step succeeds (Q145). An unreachable provider leaves delete incomplete. A crashed node is
 [node investigation](node-investigation.md)'s verdict; lack of a reply never licenses deletion. The runtime-exit responsibility
 is owned here and is composed by [node recovery](node-recovery.md), the mesh-primary's
 drift reconciliation.
@@ -69,7 +72,7 @@ sequenceDiagram
     C->>F: build.create(node.delete)
     F->>M: build.attempt.run
     M-->>F: node.stop events for a live process
-    Note over M: exact provider Exited proof; row deleted
+    Note over M: the provider's Exited of the exact runtime; row deleted
     M-->>F: node.deleted
     F-->>C: step frames, Complete
 ```

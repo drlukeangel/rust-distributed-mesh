@@ -77,11 +77,16 @@ own:
    that stream; the fabric-primary writes the records. A mesh cut from the fabric-primary gets no
    attempt until the heal.
 3. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the target instance, as a target with
-   no RPC to the old process and no stop frames. When the verdict was `running`, the first step is
+   no RPC to the old process and no stop frames. Its first step is
    `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime handle recorded at launch,
-   the provider's `terminate(handle, Graceful)` then `Forced` after the stop grace: Q110's "then you kill
-   it". A terminate the provider refuses ends the attempt `Failed { step: TerminateRuntime, reason }` by
-   name; the next tick's investigation decides again.
+   read at the step's instant and never skipped for what it reads, except `os-stopped`, which recovery
+   leaves as it is ([node.delete](node-delete.md)). A `running` runtime is the provider's
+   `terminate(handle, Graceful)` then `Forced` after the stop grace: Q110's "then you kill it". An
+   `exited` runtime is the same call: the provider removes what the runtime left (a container and the
+   address it held, its logs kept beside the data dir first; a process leaves nothing), so no runtime of
+   a superseded birth stays on the host; a runtime already removed terminates as done (Q145). A
+   terminate the provider refuses ends the attempt `Failed { step: TerminateRuntime, reason }` by name;
+   the next tick's investigation decides again.
 4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir when the
    verdict was `exited` (or a newly allocated data dir otherwise, and when the old data dir is absent,
    `R-FM2`): it loads the endpoint key from the kept data dir (or mints a new endpoint key in the fresh
@@ -97,7 +102,7 @@ own:
 mesh-primary tick: PendingReconnect → node investigation → verdict
   reached:    node.mesh.join (commanded back)
   otherwise:  open attempt N of the current Build, run
-                node.delete(unheard instance) → node.deleted   (TerminateRuntime first when running; no stop frames)
+                node.delete(unheard instance) → node.deleted   (TerminateRuntime first; no stop frames)
                 node.create(same path.name; inherited data dir when exited) → every FirstStart event, node.started, node.created
 ```
 
@@ -117,7 +122,7 @@ sequenceDiagram
     M->>P: node.runtime.inspect
     P-->>M: verdict
     Note over M: reached: node.mesh.join; otherwise open attempt N of the current Build, run
-    Note over M: node.delete → node.deleted (TerminateRuntime first when running)
+    Note over M: node.delete → node.deleted (TerminateRuntime first)
     Note over M: node.create, same path.name (inherited data dir when exited)
     M-->>F: receipts up the attempt's stream; node.started, node.created
 ```
