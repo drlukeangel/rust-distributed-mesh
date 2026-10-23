@@ -447,6 +447,33 @@ mod container {
         super::a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(&c).await;
     }
 
+    /// CONTRACT (deployment-provider.md §2.5 `Exited` row, node-delete.md "Exact runtime exit evidence",
+    /// Q145): the provider's terminate of a container that already exited sends it nothing, keeps its
+    /// logs beside the data dir (`container.log`) and removes it, and it still reads `Exited` with its
+    /// code; a second terminate of the same handle, the runtime already removed, terminates as done.
+    /// Must NOT happen: the exited container left on the host, its logs lost, or the re-run refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exited_container_is_removed_by_its_terminate_its_logs_kept_and_a_second_terminate_succeeds() {
+        let fabric = fabric_name("state-exited-removed");
+        let Some(provider) = provider(&fabric).await else { return };
+        let cleanup = Fabric(fabric.clone());
+        let mut spec = launch(&provider, &fabric, 0);
+        spec.executable = std::path::PathBuf::from("/usr/bin/sh");
+        spec.args = vec!["-c".into(), "echo its last words; exit 3".into()];
+        let handle = provider.spawn(&spec).await.expect("the launch");
+        let c = Container { provider, handle, data_dir: spec.data_dir, _fabric: cleanup };
+        until_host(&c, &["exited"], "the container exited by itself").await;
+        assert_eq!(c.provider.inspect(&c.handle).await, DeploymentStatus::Exited { code: Some(3) }, "it exited by itself with its own code");
+        let mode = TerminationMode::Graceful { grace: Duration::from_secs(1) };
+        c.provider.terminate(&c.handle, mode).await.expect("the terminate of an exited container");
+        let o = std::process::Command::new("docker").args(["inspect", &c.id()]).output().unwrap();
+        assert!(!o.status.success(), "the exited container is removed from the host: {}", String::from_utf8_lossy(&o.stdout));
+        let log = std::fs::read_to_string(c.data_dir.join("container.log")).unwrap_or_default();
+        assert!(log.contains("its last words"), "its logs are kept beside the data dir: {log:?}");
+        assert_eq!(c.provider.inspect(&c.handle).await, DeploymentStatus::Exited { code: Some(3) }, "the removed container still reads Exited with its code");
+        c.provider.terminate(&c.handle, mode).await.expect("a runtime already removed terminates as done");
+    }
+
     /// The container side of R19: a container created and not started.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_created_container_reads_running() {

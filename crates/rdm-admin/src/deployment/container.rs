@@ -475,6 +475,13 @@ impl ContainerDeploymentProvider {
         self.data_dirs.lock().unwrap().iter().map(|(id, (_, dep))| self.handle(dep.clone(), id.clone(), None)).collect()
     }
 
+    /// The container `name` of `handle` is gone, and the address its birth held with it.
+    fn removed(&self, handle: &DeploymentHandle, name: &str, code: Option<i32>) {
+        self.ips.lock().unwrap().held.remove(&handle.deployment_id);
+        self.data_dirs.lock().unwrap().remove(name);
+        self.exited.lock().unwrap().insert(name.to_string(), code);
+    }
+
     fn container_of<'a>(&self, handle: &'a DeploymentHandle) -> Result<&'a str, DeployError> {
         handle.container.as_deref().ok_or_else(|| DeployError::Terminate {
             deployment: handle.deployment_id.to_string(),
@@ -598,17 +605,29 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
         let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason };
+        // A runtime already removed terminates as done (Q145): the daemon's "No such container" on
+        // any of the calls below is that, so a re-run of the step succeeds.
+        let gone = |reason: &String| reason.contains("No such container");
         let code = match mode {
-            TerminationMode::Graceful { grace } => {
-                docker(&["stop", "-t", &grace.as_secs().max(1).to_string(), name]).await.map_err(err)?;
-                docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.ok().and_then(|c| c.parse().ok())
-            }
+            TerminationMode::Graceful { grace } => match docker(&["stop", "-t", &grace.as_secs().max(1).to_string(), name]).await {
+                Ok(_) => docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.ok().and_then(|c| c.parse().ok()),
+                Err(e) if gone(&e) => return Ok(self.removed(handle, name, None)),
+                Err(e) => return Err(err(e)),
+            },
             // Forced termination: the daemon's kill (SIGKILL), never a stop, which delivers SIGTERM
             // first and thaws a paused container so it runs its handler (i144 R23). The kill is
             // waited out, and the wait answers the exit code.
             TerminationMode::Immediate => {
-                docker(&["kill", name]).await.map_err(err)?;
-                let waited = docker(&["wait", name]).await.map_err(err)?;
+                match docker(&["kill", name]).await {
+                    Ok(_) => {}
+                    Err(e) if gone(&e) => return Ok(self.removed(handle, name, None)),
+                    Err(e) => return Err(err(e)),
+                }
+                let waited = match docker(&["wait", name]).await {
+                    Ok(w) => w,
+                    Err(e) if gone(&e) => return Ok(self.removed(handle, name, None)),
+                    Err(e) => return Err(err(e)),
+                };
                 let waited = waited.trim();
                 Some(waited.parse().map_err(|e| err(format!("docker wait {name} answered {waited:?}, which is not an exit code: {e}")))?)
             }
@@ -620,7 +639,11 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         if let Some(dir) = data_dir {
             let logs = Command::new("docker").args(["logs", name]).stdin(std::process::Stdio::null()).output().await.map_err(|e| err(format!("docker logs {name}: {e}")))?;
             if !logs.status.success() {
-                return Err(err(format!("docker logs {name}: {}", String::from_utf8_lossy(&logs.stderr).trim())));
+                let reason = format!("docker logs {name}: {}", String::from_utf8_lossy(&logs.stderr).trim());
+                if gone(&reason) {
+                    return Ok(self.removed(handle, name, code));
+                }
+                return Err(err(reason));
             }
             let file = dir.join("container.log");
             let written = file.clone();
@@ -628,11 +651,12 @@ impl DeploymentProvider for ContainerDeploymentProvider {
                 .await
                 .map_err(|e| err(format!("the container's logs cannot be kept at {}: {e}", file.display())))?;
         }
-        docker(&["rm", "-f", name]).await.map_err(err)?;
-        // The container is gone, and the address its birth held with it.
-        self.ips.lock().unwrap().held.remove(&handle.deployment_id);
-        self.data_dirs.lock().unwrap().remove(name);
-        self.exited.lock().unwrap().insert(name.to_string(), code);
+        match docker(&["rm", "-f", name]).await {
+            Ok(_) => {}
+            Err(e) if gone(&e) => {}
+            Err(e) => return Err(err(e)),
+        }
+        self.removed(handle, name, code);
         Ok(())
     }
 

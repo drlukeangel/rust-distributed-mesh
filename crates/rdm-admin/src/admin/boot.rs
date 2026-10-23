@@ -459,8 +459,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             );
             // The inherited birth is re-created through node recovery, never waited for (fabric-recovery.md
             // "Nothing alive"): a boot on an inherited data dir proceeds as recovery, `TerminateRuntime`
-            // first when the provider reads the old runtime running (node-runtime-inspect.md "What
-            // follows"). An old process that comes back is refused at admission and terminated.
+            // first on every read of the old runtime but os-stopped (node-runtime-inspect.md "What
+            // follows", Q145). An old process that comes back is refused at admission and terminated.
             let provider = match &early {
                 Some((_, p)) => p.as_ref(),
                 None => return Err(format!("refusing to start: {}: no deployment provider prepared for the inherited birth {} at {}", cfg.data_dir.display(), own.node_id, own.name)),
@@ -468,7 +468,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             let own_runtime = nodes_storage.runtime(&own.node_id, &own.incarnation_id).await.map_err(storage_err)?;
             if let Some(handle) = own_runtime.as_ref().and_then(|r| crate::deployment::provider::adopt(provider, &r.runtime).ok()) {
                 let mode = crate::deployment::provider::TerminationMode::Graceful { grace: crate::deployment::pipeline::Timeouts::default().stop_grace };
-                crate::deployment::provider::terminate_when_running(provider, &handle, mode)
+                crate::deployment::provider::terminate_unless_os_stopped(provider, &handle, mode)
                     .instrument(step.clone())
                     .await
                     .map_err(|e| format!("refusing to start: {}: {} cannot terminate the inherited birth {} ({}) at {}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name))?;

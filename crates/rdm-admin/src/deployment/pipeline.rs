@@ -2371,9 +2371,11 @@ impl DeploymentPipeline<'_> {
             };
             let verdict = if when == Terminate::Unreached {
                 // node.runtime.inspect at the terminate's instant: its span is the evidence (node-runtime-inspect.md).
-                match self.inspected_at(node, handle, "terminate", "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates only a running one").await {
+                match self.inspected_at(node, handle, "terminate", "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates it on every read but os-stopped").await {
                     DeploymentStatus::Running => Some("running"),
-                    DeploymentStatus::Exited { code } => return receipt(code, Some("exited")),
+                    // Never skipped for an exited runtime: the provider's terminate removes what it
+                    // left (node-recovery.md step 3, Q145); the receipt still names the read.
+                    DeploymentStatus::Exited { .. } => Some("exited"),
                     DeploymentStatus::OsStopped => return receipt(None, Some("os-stopped")),
                     DeploymentStatus::Unknown => return receipt(None, Some("unavailable")),
                 }
@@ -2806,6 +2808,31 @@ mod tests {
         assert_eq!(capture.named("rdm.node_admin.node.delete.via-os-stopped").len(), 1, "the skipped stop is named once");
         let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| r.step).collect();
         assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec(), "the delete begins at TerminateRuntime");
+    }
+
+    /// CONTRACT (node-recovery.md step 3; deployment-provider.md §2.7 "Signal stop and terminate"): a
+    /// recovery's delete of a birth whose runtime already exited sends it nothing and still asks its
+    /// provider to `terminate` it once, which removes what the runtime left (a container); the receipt
+    /// is the inspection's `exited` with its code. Must NOT happen: the step ending on the inspection's
+    /// `exited` with no `terminate`, leaving the exited container on the host.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_recovery_of_a_birth_whose_runtime_exited_asks_its_provider_to_terminate_it_once() {
+        let provider = Answers { status: DeploymentStatus::Exited { code: Some(137) }, terminated: Default::default(), refuse: None };
+        let observer = Birth { stop: CommandAdmission::NotSent { reason: "an unheard birth is sent no stop".into(), code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        let template = cell_template("exited-recovery-delete");
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        node.status = NodeStatus::PendingReconnect;
+        node.incarnation_id = Some(IncarnationId::mint());
+        let req = RetireRequest { build_id, attempt: 1, node, handle: process_handle(), unreached: true };
+        let terminal = pipeline.retire(&req).await.expect("the recovery's delete of an exited birth completes");
+        assert_eq!((terminal.exit_code, terminal.verdict.as_deref()), (Some(137), Some("exited")), "the receipt is the inspection's exited: {terminal:?}");
+        assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the unheard birth: {:?}", observer.sent.lock().unwrap());
+        assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 1, "the provider is asked once to terminate the exited runtime, which removes what it left");
     }
 
     /// CONTRACT (node-runtime-inspect.md Observability contract: the inspect span carries "node,

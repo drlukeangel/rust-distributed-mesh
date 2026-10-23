@@ -278,12 +278,12 @@ pub enum TerminationMode {
 
 /// `TerminateRuntime` of a runtime read at its own instant (node-runtime-inspect.md: node recovery's
 /// `TerminateRuntime` asks "at the step's own instant, before it asks the provider to terminate";
-/// node-recovery.md step 3: `TerminateRuntime` first when the runtime runs): the provider's
-/// `terminate(mode)` when it reads `handle` running, nothing otherwise. The answer is what the read at
-/// the step's instant found; a terminate the provider refuses is the error, by name.
-pub async fn terminate_when_running(provider: &dyn DeploymentProvider, handle: &DeploymentHandle, mode: TerminationMode) -> Result<DeploymentStatus, String> {
+/// node-recovery.md step 3, Q145): the provider's `terminate(mode)` on every read but `OsStopped`,
+/// which recovery leaves as it is; of an exited runtime the provider removes what it left. The answer
+/// is what the read at the step's instant found; a terminate the provider refuses is the error, by name.
+pub async fn terminate_unless_os_stopped(provider: &dyn DeploymentProvider, handle: &DeploymentHandle, mode: TerminationMode) -> Result<DeploymentStatus, String> {
     let found = provider.inspect(handle).await;
-    if found == DeploymentStatus::Running {
+    if found != DeploymentStatus::OsStopped {
         provider.terminate(handle, mode).await.map_err(|e| e.to_string())?;
     }
     Ok(found)

@@ -80,10 +80,9 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let recreated = estate.container_of(NODE).await.expect("the re-created node runs in a container");
     assert_ne!(recreated, killed, "a new container, never the killed one restarted");
     assert_ne!(after["node_id"], before["node_id"], "node-recovery.md: recovery creates a new node id at the retained path");
-    // The recovery's delete reads the killed container exited (exit 137, SIGKILL) and acts on nothing
-    // (node-recovery.md step 3: `TerminateRuntime` only for a running runtime, Q111): the killed
-    // container never runs again.
-    assert!(!docker_state(&killed).starts_with("running"), "the killed container never runs again: {}", docker_state(&killed));
+    // The recovery's delete reads the killed container exited (exit 137, SIGKILL) and still terminates
+    // it, which removes it (node-recovery.md step 3, Q145): the killed container is gone from the host.
+    assert_eq!(docker_state(&killed), "", "the killed container is removed by the recovery's TerminateRuntime");
     assert_eq!(estate.container_of("mesh1.rpc.2").await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
     assert_eq!(after["provider"], "container");
 
