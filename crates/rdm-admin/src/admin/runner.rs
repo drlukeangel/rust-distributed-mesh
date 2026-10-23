@@ -133,6 +133,14 @@ pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, proj
     Arc::new(move |row: crate::status_storage::NodeDeclaredRow, operation: rdm_core::status::DeclaredOperation| {
         let (membership, backbone, project) = (membership.clone(), backbone.clone(), project.clone());
         Box::pin(async move {
+            // Inside node.restart the stop's stopped is held by NodeRestarting, never published as
+            // NodeStopped (gossip.md, "Node-stopped lifecycle overlay"; Q135): NodeRestarting ends at
+            // node.started of the same birth, where a NodeStopped would wait for a node.joined.
+            if let Some(restart) = membership.book.restart_of(row.node_id.as_str(), &row.incarnation_id) {
+                tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), build_id = %operation.build_id, attempt = operation.attempt, operation = %operation.operation, outcome = "held-by-restart", restart = %restart.operation)
+                    .in_scope(|| tracing::info!("the stop belongs to an open restart of this birth: NodeRestarting holds it and no NodeStopped is published"));
+                return;
+            }
             let op = rdm_core::LifecycleOp {
                 build_id: operation.build_id,
                 attempt: operation.attempt,
