@@ -181,15 +181,12 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     assert_eq!(deleted.len(), 1, "NodeDeleted published once for {last}: {deleted:?}");
     assert!(start(deleted[0]) >= end(obs), "NodeDeleted follows the exit proof: {}", deleted[0]);
     assert_eq!(resolution["reply"]["resolution"], "gone", "a peer holds {last} Gone: {resolution}");
-    // Every member's exit is node.delete's (mesh-delete.md step 3; node-runtime-inspect.md step 5):
-    // its NodeDeleted published once by its executor, and no exit-proof row a projection read is a
-    // receipt copied by hand.
+    // Every member's end is node.delete's (mesh-delete.md step 3): its NodeDeleted published once by
+    // its executor.
     for (name, _) in pids.iter().filter(|(n, _)| *n != last) {
         let published: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == name.as_str() && of_builds(sp)).collect();
         assert_eq!(published.len(), 1, "{name}'s NodeDeleted is published once under {builds:?}: {published:?}");
     }
-    let copied: Vec<String> = named(&spans, "rdm.node_admin.node.resolve.via-exit-proof-row").into_iter().filter(|sp| sp["attributes"]["proof"] == "terminal-receipt").map(|sp| format!("{} {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["proof"]))).collect();
-    assert!(copied.is_empty(), "no exit-proof row is a copied receipt: {copied:?}");
 
     let result = json!({
         "cell": cell,

@@ -1,32 +1,29 @@
-//! Proven drift: a birth the accepted topology names is gone (RDM #47).
+//! Drift: a birth the accepted topology names is unheard (RDM #47).
 //!
-//! The fabric authority (the fabric primary, while its view authorizes)
-//! compares the current Build's topology with the births it holds. A birth
-//! counts as present until canonical evidence retires it: one the view no
-//! longer hears (silent, unreachable, partitioned) is still present. It is
-//! missing only when the provider inspected its exact published runtime and
-//! found it exited. RPC failure, gossip silence, a partition or a runtime in
-//! another control domain is never proof.
+//! The fabric-primary compares the current Build's topology with the births
+//! it holds. A birth counts as present until node investigation decides it:
+//! one the view no longer hears is unheard, and the provider's inspection of
+//! its exact runtime gives the verdict that re-creates it (node-recovery.md
+//! step 3, Q111).
 //!
-//! A path in the topology with no present birth and a proven exit is drift.
-//! The authority opens the next attempt of the same Build (the current Build
-//! is unchanged: the topology did not change); it never mints a Build.
+//! A path in the topology with no present birth is drift. The fabric-primary
+//! opens the next attempt of the same Build (the current Build is unchanged:
+//! the topology did not change); it never mints a Build.
 
 use crate::accepted::FabricTopology;
 use crate::model::{IncarnationId, NodeKind, NodeStatus};
 use crate::topology::Topology;
 use std::collections::HashSet;
 
-/// One birth whose exact runtime the provider proved exited, and the exit code that proof carries
-/// (`None` when no code is provable: the exit is then unplanned and unexplained).
+/// One unheard birth the provider was asked about, its verdict and, when it exited, the exit code
+/// (`None` when none is provable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExitedBirth {
     pub node_id: crate::model::NodeId,
     pub incarnation: IncarnationId,
     pub code: Option<i32>,
-    /// Where the code came from: the provider's own status (`provider`), the runtime's exit record
-    /// in its data dir (`exit-record`), or nothing provable (`none`).
-    pub source: &'static str,
+    /// node.runtime.inspect's verdict: `running`, `os-stopped`, `exited` or `unavailable`.
+    pub verdict: &'static str,
 }
 
 /// One cohort below what the topology names.
@@ -36,18 +33,18 @@ pub(crate) struct Shortfall {
     pub kind: NodeKind,
     pub desired: u32,
     pub present: u32,
-    /// The births whose exact runtime was proven exited (`path.name`).
+    /// The unheard births the provider was asked about (`path.name`).
     pub exited: Vec<String>,
 }
 
 impl std::fmt::Display for Shortfall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = self.kind.name();
-        write!(f, "{}.{kind}: {} present of {} accepted (exited: {})", self.mesh, self.present, self.desired, self.exited.join(" "))
+        write!(f, "{}.{kind}: {} present of {} accepted (unheard: {})", self.mesh, self.present, self.desired, self.exited.join(" "))
     }
 }
 
-/// The births of `t` the authority may have to prove: the ones it no longer hears
+/// The births of `t` the fabric-primary may have to recover: the ones it no longer hears
 /// (`PendingReconnect`, or `Dead` once its offline tickle found no path). Only these are inspected.
 pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
     // `members`: a replaced predecessor (`<path>.old`) is its replacement operation's, never drift's.
@@ -55,9 +52,8 @@ pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
 }
 
 /// The cohorts of `topology` that `t` holds fewer births for than it names,
-/// counting every held birth but those in `exited` (incarnations whose exact
-/// runtime was inspected and found exited). A cohort short without a proven
-/// exit is not drift.
+/// counting every held birth but those in `exited` (unheard incarnations the
+/// provider was asked about). A cohort short without one is not drift.
 pub(crate) fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
     let mut out = Vec::new();
     for m in topology.meshes.values() {
@@ -118,7 +114,7 @@ mod tests {
         let exited: HashSet<_> = [t.nodes[2].incarnation_id.clone().unwrap()].into();
         let s = shortfall(&d, &t, &exited);
         assert_eq!(s, vec![Shortfall { mesh: "mesh1".into(), kind: NodeKind::RpcNode, desired: 3, present: 2, exited: vec!["mesh1.rpc.2".into()] }]);
-        assert_eq!(s[0].to_string(), "mesh1.rpc_node: 2 present of 3 accepted (exited: mesh1.rpc.2)");
+        assert_eq!(s[0].to_string(), "mesh1.rpc_node: 2 present of 3 accepted (unheard: mesh1.rpc.2)");
     }
 
     /// CONTRACT: a replaced predecessor (`<path>.old`) is its replacement's, never drift's: it is not

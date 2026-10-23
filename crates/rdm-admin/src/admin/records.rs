@@ -4,27 +4,6 @@ use super::*;
 
 /// The digest key carrying a node-admin's mesh id.
 
-/// The environment variable configuring the hold duration (in staleness floors) before a
-/// `held-running` member or mesh-primary is terminated and recovered (`R-FM1`, default 10).
-pub const ENV_HUNG_HOLD_FLOORS: &str = "RDM_HUNG_HOLD_FLOORS";
-
-/// Default hold duration in staleness floors (`R-FM1`: 10 staleness floors = 5 min at 30 s).
-pub const DEFAULT_HUNG_HOLD_FLOORS: u64 = 10;
-
-/// Configured hold floors for `held-running` (`RDM_HUNG_HOLD_FLOORS`, default 10).
-pub fn hung_hold_floors() -> u64 {
-    std::env::var(ENV_HUNG_HOLD_FLOORS)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&n| n >= 1)
-        .unwrap_or(DEFAULT_HUNG_HOLD_FLOORS)
-}
-
-/// Configured hold duration in milliseconds (`hung_hold_floors() * staleness_floor()`).
-pub fn hung_hold_ms() -> u64 {
-    hung_hold_floors().saturating_mul(rdm_core::cadence::staleness_floor().as_millis() as u64)
-}
-
 /// The environment variable configuring the hold duration (in staleness floors) before an absent
 /// inherited `data_dir` on a proven-exited member is declared lost and recovered over a newly
 /// allocated `data_dir` (`R-FM2`, default 2).
@@ -160,7 +139,7 @@ impl AdminConfig {
                 Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_HUNG_HOLD_FLOORS, ENV_DATA_DIR_GONE_FLOORS]
+        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_DATA_DIR_GONE_FLOORS]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -305,21 +284,7 @@ pub struct Records {
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
     pub(crate) published_degraded: std::sync::atomic::AtomicBool,
-    /// The exact births whose exit-proof row (`status/<mesh>/exits/`, written by whichever admin
-    /// proved the exit from the provider) the installing projection read: each birth the projection
-    /// holds and each seat holder the book records, a point read of its key at every install, never
-    /// fed by a prover. Shown `Dead` whatever their last digest said, and the proof an election takes
-    /// that a seat's holder is gone (fabric-node-lifecycle-elections.md §4.1).
-    pub(crate) exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
-    /// The path.name each exit-proof row read named for its birth: where a birth proven gone lived, for
-    /// the hand-back owed to the node re-created at that name (fabric-recovery.md step 4).
-    pub(crate) exited_names: Mutex<std::collections::HashMap<(NodeId, IncarnationId), PathName>>,
-    /// The `os-stopped` facts (deployment-provider.md §2.5) of the births the installing projection
-    /// read ([`Self::read_os_stopped`]): a point read of each birth's own row at every install, never
-    /// fed by the recorder. Folded into the view as `Node::os_stopped`.
-    pub(crate) os_stopped: Mutex<HashMap<(NodeId, IncarnationId), rdm_core::views::OsStopped>>,
-    /// The membership book whose seat records name holders the exit read covers beside the view's
-    /// births (a holder the view no longer lists). Set once at start.
+    /// The membership book whose deleted births leave these records. Set once at start.
     pub(crate) book: std::sync::OnceLock<DigestBook>,
     /// This admin is entering an existing mesh and has not yet been told who holds the seats: it
     /// computes none until its entry read has (ruling R-A2).
@@ -719,98 +684,7 @@ impl Records {
         self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
     }
 
-    /// Record the provider's proof that `node`'s exact birth exited (node-recovery.md: "Exited is the
-    /// proof, recorded durably"; node-runtime-inspect.md step 5): its exit-proof row, a blind put of
-    /// its `(node_id, incarnation)` key among the status rows of its own mesh (`status/<mesh>/exits/`),
-    /// whichever admin proved it. This is the fact every projection reads as the birth's proven loss
-    /// ([`Self::read_exits`]); nothing is held in memory for it. Fed only from node.runtime.inspect's
-    /// `exit-proven`, node.delete's own `TerminateRuntime` or a committed takeover: `proof` names what
-    /// proved the exit and is refused by name otherwise ([`exit_proof_named`]).
-    pub async fn put_exit(&self, node: &Node, exit_code: Option<i32>, proof: &str) -> Result<crate::status_storage::NodeExitRow, String> {
-        let incarnation_id = node.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its exit-proof row by", node.name, node.node_id))?;
-        exit_proof_named(proof).map_err(|e| format!("the exit-proof row of {} ({}) at {} is not written: {e}", node.name, node.node_id, incarnation_id.as_str()))?;
-        let store = self.status.get().map(|f| f.storage().clone()).ok_or_else(|| format!("no status store is held to record the exit of {} ({}) at {}", node.name, node.node_id, incarnation_id.as_str()))?;
-        let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms: local_now_ms() };
-        store.put_node_exit_of(&node.mesh, &row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row among {}'s status rows: {e}", node.name, node.node_id, node.mesh))?;
-        self.wake.poke();
-        Ok(row)
-    }
-
-    /// The exit-proof row of `node`'s exact birth among its own mesh's status rows, a point read
-    /// (`None`: no exit of that birth is recorded). `Err` names the birth, the mesh and the cause.
-    pub async fn exit_row_of(&self, node: &Node) -> Result<Option<crate::status_storage::NodeExitRow>, String> {
-        let Some(incarnation) = node.incarnation_id.as_ref() else { return Ok(None) };
-        self.exit_row_of_birth(&node.mesh, &node.node_id, incarnation, &node.name.to_string()).await
-    }
-
-    /// The exit-proof row of the exact birth `(node_id, incarnation)` of mesh `mesh` among that mesh's
-    /// status rows, a point read (`None`: no exit of that birth is recorded); `named` names the birth
-    /// in an error. `Err` names the birth, the mesh and the cause.
-    pub async fn exit_row_of_birth(&self, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId, named: &str) -> Result<Option<crate::status_storage::NodeExitRow>, String> {
-        let store = self.status.get().map(|f| f.storage().clone()).ok_or_else(|| format!("no status store is held to read the exit of {named} ({node_id}) at {}", incarnation.as_str()))?;
-        store.node_exit_of(mesh, node_id, incarnation).await.map_err(|e| format!("status.storage read of {named} ({node_id}) exit-proof row at {} among {mesh}'s status rows: {e}", incarnation.as_str()))
-    }
-
-    /// [`Self::put_exit`] of the birth a node.delete's `TerminateRuntime` receipt names: the inspect
-    /// node.delete runs after the stop (node-runtime-inspect.md: "after the stop, before
-    /// `node.deleted`"), whose exact Exited the receipt commits; the row's proof is `terminate-runtime`.
-    pub async fn put_exit_of_terminate(&self, t: &crate::deployment::pipeline::TerminalReceipt) -> Result<crate::status_storage::NodeExitRow, String> {
-        let name: PathName = t.node.parse().map_err(|e| format!("the Exited receipt of {} {} names no path.name: {e:?}", t.node, t.incarnation_id))?;
-        let mut node = Node::allocated(name);
-        node.node_id = NodeId::parse(&t.node_id).map_err(|e| format!("the Exited receipt of {} {} names no node id ({:?}): {e}", t.node, t.incarnation_id, t.node_id))?;
-        node.incarnation_id = Some(IncarnationId::parse(&t.incarnation_id).map_err(|e| format!("the Exited receipt of {} {} names no incarnation: {e}", t.node, t.incarnation_id))?);
-        self.put_exit(&node, t.exit_code, "terminate-runtime").await
-    }
-
-    /// Record a `held-running` verdict for `node` (`R-FM1`): on first verdict sets `since = now_ms`
-    /// and `verdicts = 1`; on subsequent verdicts preserves `since` and increments `verdicts`.
-    pub async fn record_held_running(&self, node: &Node, now_ms: u64, recorder: &str) -> Option<crate::status_storage::NodeHeldRunningRow> {
-        let storage = self.status.get()?.storage().clone();
-        let inc = node.incarnation_id.clone()?;
-        let prev = storage.node_held_running_of(&node.mesh, &node.node_id, &inc).await.ok().flatten();
-        let (since, verdicts) = match prev {
-            Some(r) => (r.since, r.verdicts.saturating_add(1)),
-            None => (now_ms, 1),
-        };
-        let row = crate::status_storage::NodeHeldRunningRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc, since, verdicts };
-        let _ = storage.put_node_held_running_of(&node.mesh, &row).await;
-        tracing::info_span!(
-            "rdm.node_admin.node.update.via-held-running",
-            node = %node.name,
-            node_id = %node.node_id,
-            incarnation_id = %row.incarnation_id.as_str(),
-            recorder,
-            since = row.since as i64,
-            verdicts = row.verdicts as i64,
-            outcome = "recorded",
-            "otel.kind" = "internal",
-        )
-        .in_scope(|| tracing::info!("recorded held-running verdict"));
-        Some(row)
-    }
-
-    /// Clear any `held-running` row for `node` (`R-FM1`).
-    pub async fn clear_held_running(&self, node: &Node) {
-        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
-        let Some(inc) = node.incarnation_id.as_ref() else { return };
-        let _ = storage.remove_node_held_running_of(&node.mesh, &node.node_id, inc).await;
-    }
-
-    /// Remove the `os-stopped` row of `node`'s exact birth (deployment-provider.md §2.5, R20), its
-    /// runtime proven `verdict`; spanned `cleared` when a row stood.
-    pub async fn clear_os_stopped(&self, node: &Node, verdict: &str) {
-        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
-        crate::admin::recovery::remove_os_stopped(&*storage, node, verdict).await;
-    }
-
-    /// Read the durable `held-running` row of `node` among its mesh's status rows (`R-FM1`).
-    pub async fn held_running_row_of(&self, node: &Node) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, String> {
-        let Some(inc) = node.incarnation_id.as_ref() else { return Ok(None) };
-        let Some(status) = self.status.get() else { return Ok(None) };
-        status.storage().node_held_running_of(&node.mesh, &node.node_id, inc).await.map_err(|e| e.to_string())
-    }
-
-    /// The membership book whose seat records the exit read covers (set once, at start).
+    /// The membership book whose deleted births leave these records (set once, at start).
     pub fn set_book(&self, book: DigestBook) {
         let _ = self.book.set(book);
     }
@@ -837,106 +711,6 @@ impl Records {
         }
     }
 
-    /// The read of the exit-proof rows, one part of the view's read phase (taken before the view's
-    /// write lock, [`ViewReads::read`], [`Self::install_projected`]): the row of every birth a projection draws from `book`
-    /// and these records (each digest held, each stopped birth with or without a digest, each launch
-    /// record) and of every seat holder the book records, a point read among its own mesh's status
-    /// rows, and the proven exits held. The store root is the fabric's own (R14), so a birth of
-    /// another fabric names no row there. An exit-proof row is never withdrawn (the status store
-    /// puts and point-reads it, nothing removes it), so the fold is monotone for every birth this
-    /// pass names: what this pass read, plus every exit already held for a birth it names (a read
-    /// older than one already stored, or a read that failed, takes nothing away). A birth this pass
-    /// no longer names drops out. A row that cannot be read proves nothing new and is named on one
-    /// `rdm.node_admin.node.reject.via-exit-row-unreadable` span.
-    pub async fn read_exits(&self, book: &DigestBook) {
-        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
-        let mut births: HashMap<(NodeId, IncarnationId), (String, String)> = HashMap::new();
-        for d in book.all().into_iter().chain(book.parked()) {
-            births.entry((d.node.node_id.clone(), d.node.incarnation.clone())).or_insert((d.node.name.mesh.clone(), d.node.name.to_string()));
-        }
-        for op in book.parked_unheard() {
-            births.entry((op.node_id.clone(), op.incarnation.clone())).or_insert((op.name.mesh.clone(), op.name.to_string()));
-        }
-        for n in self.nodes.lock().unwrap().values() {
-            if let Some(inc) = &n.incarnation_id {
-                births.entry((n.node_id.clone(), inc.clone())).or_insert((n.mesh.clone(), n.name.to_string()));
-            }
-        }
-        for h in book.seats.fabric().into_iter().chain(book.seats.meshes().into_values()) {
-            births.entry((h.node_id.clone(), h.incarnation.clone())).or_insert((h.mesh.clone(), format!("the {} seat holder", h.mesh)));
-        }
-        let named: std::collections::HashSet<(NodeId, IncarnationId)> = births.keys().cloned().collect();
-        let mut read: HashMap<(NodeId, IncarnationId), (String, crate::status_storage::NodeExitRow)> = HashMap::new();
-        let mut unreadable = Vec::new();
-        for ((node_id, inc), (mesh, named)) in births {
-            match storage.node_exit_of(&mesh, &node_id, &inc).await {
-                Ok(Some(row)) => {
-                    read.insert((node_id, inc), (mesh, row));
-                }
-                Ok(None) => {}
-                Err(e) => unreadable.push(format!("{named} ({node_id} at {}) among {mesh}'s status rows: {e}", inc.as_str())),
-            }
-        }
-        if !unreadable.is_empty() {
-            tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unreadable", rows = unreadable.len(), detail = %unreadable.join("; "))
-                .in_scope(|| tracing::info!("an exit-proof row could not be read: this pass proves nothing new of that birth"));
-        }
-        // The fold, against what is held now (another install may have stored since this pass began).
-        let entered: Vec<(String, crate::status_storage::NodeExitRow)> = {
-            let mut exited = self.exited.lock().unwrap();
-            let entered = read.iter().filter(|(k, _)| !exited.contains(*k)).map(|(_, v)| v.clone()).collect();
-            let kept: std::collections::HashSet<(NodeId, IncarnationId)> = exited.iter().filter(|k| named.contains(*k)).cloned().collect();
-            self.exited_names.lock().unwrap().extend(read.iter().map(|(k, (_, row))| (k.clone(), row.name.clone())));
-            *exited = kept.into_iter().chain(read.into_keys()).collect();
-            entered
-        };
-        for (mesh, row) in entered {
-            tracing::info_span!("rdm.node_admin.node.resolve.via-exit-proof-row", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), mesh = %mesh, exit_code = row.exit_code.map(|c| c.to_string()).unwrap_or_default(), proof = %row.proof)
-                .in_scope(|| tracing::info!("the projection reads the birth's exit-proof row: it is held exited, Dead and gone from every seat"));
-        }
-    }
-
-    /// The view's read of the `os-stopped` rows (deployment-provider.md §2.5, R20): the row of every
-    /// birth the book holds, a point read among its own mesh's status rows. `node.get` surfaces the
-    /// durable fact as it stands: the mesh-primary's removal on `Running`, `Exited` or the birth's
-    /// return is what clears it, never the birth being heard. What this pass read replaces what was
-    /// held; a row that cannot be read holds nothing for that birth and is named on one
-    /// `rdm.node_admin.node.reject.via-os-stopped-row-unreadable` span.
-    pub async fn read_os_stopped(&self, book: &DigestBook) {
-        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
-        let births: Vec<(NodeId, IncarnationId, String, String)> = book
-            .all()
-            .into_iter()
-            .map(|d| (d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.mesh.clone(), d.node.name.to_string()))
-            .collect();
-        let mut read = HashMap::new();
-        let mut unreadable = Vec::new();
-        for (node_id, inc, mesh, named) in births {
-            match storage.node_os_stopped_of(&mesh, &node_id, &inc).await {
-                Ok(Some(row)) => {
-                    read.insert((node_id, inc), rdm_core::views::OsStopped { since: row.since, inspections: row.inspections });
-                }
-                Ok(None) => {}
-                Err(e) => unreadable.push(format!("{named} ({node_id} at {}) among {mesh}'s status rows: {e}", inc.as_str())),
-            }
-        }
-        if !unreadable.is_empty() {
-            tracing::info_span!("rdm.node_admin.node.reject.via-os-stopped-row-unreadable", rows = unreadable.len(), detail = %unreadable.join("; "))
-                .in_scope(|| tracing::info!("an os-stopped row could not be read: the view holds no such fact of that birth"));
-        }
-        *self.os_stopped.lock().unwrap() = read;
-    }
-
-    /// The `os-stopped` fact the installed projection read for the birth, when one stands.
-    pub fn os_stopped_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::views::OsStopped> {
-        self.os_stopped.lock().unwrap().get(&(node_id.clone(), incarnation.clone())).cloned()
-    }
-
-    /// Whether the birth's exit-proof row was read by the installed projection.
-    pub fn is_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.exited.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
-    }
-
     /// The admin has been told (or needs no telling of) who holds the seats: elections run.
     pub fn set_entering(&self, entering: bool) {
         self.entering.store(entering, std::sync::atomic::Ordering::SeqCst);
@@ -945,16 +719,6 @@ impl Records {
     /// Whether this admin has not yet been told who holds the seats (its entry read has not answered).
     pub fn is_entering(&self) -> bool {
         self.entering.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// The path.name the exit-proof row of this birth named, when the projection read one.
-    pub fn exited_name(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<PathName> {
-        self.exited_names.lock().unwrap().get(&(node_id.clone(), incarnation.clone())).cloned()
-    }
-
-    /// The incarnations whose exit-proof row the installed projection read.
-    pub(crate) fn exited_incarnations(&self) -> std::collections::HashSet<IncarnationId> {
-        self.exited.lock().unwrap().iter().map(|(_, i)| i.clone()).collect()
     }
 
     /// A non-holder of the fabric-primary role serves the `degraded` status the holder published.
@@ -986,14 +750,10 @@ impl Records {
     ///
     /// The view's read phase runs first, before its write lock is taken: no disk read holds a
     /// reader of the view. Each birth the book holds deleted leaves these records
-    /// ([`Self::remove_deleted`]); then it reads the exit-proof rows of the births the book this admin's
-    /// membership holds and these records name ([`Self::read_exits`]); the projection taken under
-    /// the lock reads the exits held. A birth that enters the book between the two is read at the
-    /// next rebuild.
+    /// ([`Self::remove_deleted`]).
     pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
         if let Some(book) = self.book.get() {
             self.remove_deleted(book);
-            self.read_exits(book).await;
         }
         let held = topology.write().await;
         let t = project();
@@ -1085,16 +845,3 @@ impl TopologySink for Records {
     }
 }
 
-/// What an exit-proof row's `proof` may name (node-runtime-inspect.md step 5; node-delete.md "Exact
-/// runtime exit evidence": "the provider's matching Exited observation ... or the committed takeover
-/// that superseded it"): the inspect's `provider`, `exit-record` or `none`; node.delete's own
-/// `TerminateRuntime`, `terminate-runtime`; or a committed takeover, `takeover { revision: <t> }`
-/// (fabric-recovery.md step 3). Anything else (a receipt copied by hand) is refused by name: silence,
-/// a reply and a copy never prove a runtime exit.
-pub fn exit_proof_named(proof: &str) -> Result<(), String> {
-    let takeover = proof.strip_prefix("takeover { revision: ").and_then(|rest| rest.strip_suffix(" }")).is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()));
-    if matches!(proof, "provider" | "exit-record" | "none" | "terminate-runtime") || takeover {
-        return Ok(());
-    }
-    Err(format!("`{proof}` names no proof of a runtime exit: the inspect's `provider`, `exit-record` or `none`, node.delete's `terminate-runtime`, or `takeover {{ revision: <t> }}`"))
-}

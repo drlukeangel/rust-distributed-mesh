@@ -1,15 +1,12 @@
-//! A silent seat holder is looked at, never replaced for being silent (ruling R-A2).
-//!
-//! The fabric primary stays in its mesh until that mesh is proven unable to hold it, and silence
-//! proves nothing. Each admin uses its own view's silence evidence to investigate: an admin of
-//! the holder's mesh (a standby included), and any admin looking at the fabric holder's mesh
-//! from outside it, looks at the exact silent birth: the one tickle ladder (node-tickle.md: one
-//! probe direct, then the same probe through up to two live members of its mesh at once), and on
-//! `unreached` the provider's inspection of the birth's exact runtime (node-recovery.md step 2,
-//! ruling R-SW1). An answer from the exact birth (`Current`, `CurrentParked`, `Blocked`), or a
-//! runtime that still runs, ends it: the seat stays. Only a runtime found exited is a verified loss,
-//! its exit-proof row put (`Records::put_exit`); `unreached`, `NotSent`, a deadline, silence and the
-//! observer-inferred `Dead` are not.
+//! A silent primary node-admin is looked at by node investigation (node-recovery.md step 2): an admin
+//! of the primary's mesh (a standby included), any admin looking at the fabric-primary's mesh from
+//! outside it, and the fabric-primary for a peer mesh's primary, look at the exact silent birth: the
+//! one tickle ladder (node-tickle.md: one probe direct, then the same probe through up to two live
+//! members of its mesh at once), and on `unreached` the provider's inspection of the birth's exact
+//! runtime. An answer from the exact birth is `reached`: the fabric-primary commands it back (Q87).
+//! Any other verdict of a peer mesh's primary is the fabric-primary's recovery of it, at once
+//! (node-recovery.md step 3, Q111); the fabric-primary itself is superseded by its successor
+//! ([`takeover_due`]).
 //!
 //! [`plan`] decides what a pass owes, from the view and births already inspected; [`run`] drives it.
 
@@ -38,7 +35,7 @@ pub struct Plan {
 pub struct Said {
     investigated: HashSet<Birth>,
     /// Each node-admin birth of the fabric-primary's mesh this admin found unreached and
-    /// uninspectable (`Unproven`), from the first such look: the hold of elections §5's takeover. Any
+    /// uninspectable (`Unproven`), from the first such look: commanded back when heard again. Any
     /// other finding ends it.
     unreachable: std::collections::HashMap<Birth, std::time::Instant>,
 }
@@ -85,7 +82,6 @@ pub fn mesh_seat_record(mesh: &str, record: Option<&Primary>, me: &Birth, lost: 
     seat_record(&format!("the mesh-primary record of mesh {mesh} this admin holds"), record, me, lost, name_of)
 }
 
-
 fn seat_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
@@ -108,7 +104,7 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said) -
     // What this admin sees itself: a silent seat holder of its own mesh, any silent node-admin
     // of the mesh that holds the fabric seat (a standby, or a candidate looking from outside),
     // and, when this admin holds the fabric seat, any silent primary node-admin of a peer mesh
-    // (R-FM1: the fabric-primary runs the hung-runtime hold and recovery for a hung mesh-primary).
+    // (node-recovery.md step 2: the fabric-primary runs the investigation of an unheard mesh-primary).
     let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
     let holds_fabric = view.holds_fabric_seat(&me_birth.0);
     for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && n.node_id != me_birth.0) {
@@ -204,11 +200,11 @@ pub struct Watch {
     pub looker: Looker,
     /// This admin's Build log: its committed facts are handed on when the fabric seat's record names another birth.
     pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
-    /// The recovery submitter, used when the fabric-primary's hold on a hung peer-mesh primary expires (R-FM1).
+    /// The recovery submitter: the fabric-primary's recovery of an unheard peer-mesh primary (node-recovery.md step 3).
     pub recovery: Option<crate::admin::RecoverySubmitter>,
-    /// The node.primary.update door, set once it is built: a mesh-primary proposes the takeover of a
-    /// fabric seat whose holder's mesh is unreached and uninspectable past the hold through it.
-    pub handover: crate::fabric_handover::HandoverSlot,
+    /// Fabric recovery (Q122): this watch starts it at the first tick after the fabric-primary's mark when
+    /// this admin is the lowest ReadyForTraffic node-admin of its mesh.
+    pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
 }
 
 /// Run the watch on seat changes and the gossip cadence, from the admin's own silence evidence.
@@ -240,10 +236,9 @@ pub async fn run(w: Watch) {
         let view = w.topology.read().await.clone();
         // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
         let fabric_mesh = w.membership.seats().fabric().map(|h| h.mesh.clone());
-        // Any node-admin in the view whose digest has returned (`ReadyForTraffic`) ends its hold (R-FM1).
+        // A node-admin in the view whose digest has returned (`ReadyForTraffic`).
         let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
         for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
-            w.records.clear_held_running(n).await;
             if let Some(b) = birth(n) {
                 // A seat holder this watch said unreachable, heard again by its digest, is commanded
                 // back through node.mesh.join by the fabric-primary (Q87), on its own task.
@@ -258,6 +253,12 @@ pub async fn run(w: Watch) {
             }
         }
         let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
+        // The fabric-primary unheard past the floor (fabric-recovery.md step 2, its own mesh; Q122): its
+        // mesh's lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after the mark,
+        // once the record has named the unheard birth for a floor in its own book (a record learned after a
+        // heal names a birth whose silence here began before it). It takes no primary role and needs no probe.
+        let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
+        w.fabric_recovery.start_if_mine(held_a_floor, false).await;
         let plan = plan(&view, &me, &me_birth, &mut said);
         for node in plan.investigate {
             let span = tracing::info_span!(
@@ -272,7 +273,6 @@ pub async fn run(w: Watch) {
                 detail = tracing::field::Empty,
                 iroh_known_addrs = tracing::field::Empty,
                 iroh_active_addrs = tracing::field::Empty,
-                exit_proof_row = tracing::field::Empty,
             );
             // One read of iroh's local view of the suspect, recorded beside the investigation;
             // the finding is the provider's and the Node RPC's, never this.
@@ -283,8 +283,8 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
-            // The takeover's hold (elections §5): a node-admin of the fabric-primary's mesh unreached
-            // and uninspectable is held from its first such look; any other finding ends the hold.
+            // A node-admin of the fabric-primary's mesh unreached and uninspectable is commanded back
+            // when heard again; any other finding ends that.
             if let Some(b) = birth(&node) {
                 if matches!(finding, Finding::Unproven { .. }) && fabric_mesh.as_deref() == Some(node.mesh.as_str()) {
                     said.unreachable.entry(b).or_insert_with(std::time::Instant::now);
@@ -292,110 +292,30 @@ pub async fn run(w: Watch) {
                     said.unreachable.remove(&b);
                 }
             }
-            match &finding {
-                Finding::Reached { .. } => {
-                    w.records.clear_held_running(&node).await;
-                }
-                Finding::Running => {
-                    // R-FM1: a hung fabric-primary is marked held-running by peer mesh-primaries and
-                    // same-mesh standbys and is never terminated; a hung mesh-primary is held-running
-                    // by the fabric-primary, which submits its recovery Build once the hold expires.
-                    if node.is_fabric_primary || view.holds_fabric_seat(&me_birth.0) {
-                        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-                        // The fabric-primary's hold of a hung mesh-primary submits its terminate, gated by the
-                        // birth's failed terminates (node-recovery.md step 4's end); a hung fabric-primary's
-                        // admins only record.
-                        let submitter = w.recovery.as_ref().filter(|_| !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0));
-                        let gate = match submitter {
-                            Some(recovery) => {
-                                let since = w.records.held_running_row_of(&node).await.ok().flatten().map(|r| r.since);
-                                let gate = recovery.hold_gate_of(&node, since).await;
-                                if let crate::admin::HoldGate::Void(f) = &gate {
-                                    w.records.clear_held_running(&node).await;
-                                    recovery.span_hold_voided(&node, f);
-                                }
-                                Some((recovery, gate))
-                            }
-                            None => None,
-                        };
-                        if let Some(held) = w.records.record_held_running(&node, now_ms, &me.to_string()).await {
-                            if let Some((recovery, gate)) = gate {
-                                if held.verdicts > 1 && now_ms.saturating_sub(held.since) >= crate::admin::hung_hold_ms() {
-                                    recovery.submit_hold_terminate(&node, gate).await;
-                                }
-                            }
+            // Any verdict but `reached` of a peer mesh's primary is this fabric-primary's recovery of it,
+            // at once (node-recovery.md step 3, Q111): nothing holds and nothing waits for a proof.
+            // Submitted once per silence; a recovery that ends Failed is the drift pass's to open again.
+            let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
+                (Finding::Reached { .. }, _, _) => false,
+                (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0) => {
+                    let node = node.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = recovery.submit(&node, &inspected).await {
+                            tracing::info!(node = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery");
                         }
-                    }
+                    });
+                    true
                 }
-                Finding::Exited { .. } => {
-                    w.records.clear_held_running(&node).await;
-                }
-                // A seat holder the operating system holds suspended is neither hung nor gone: a hold
-                // this admin opened while it read Running is cancelled (deployment-provider.md §2.5).
-                Finding::OsStopped => {
-                    w.records.clear_held_running(&node).await;
-                }
-                Finding::Unproven { .. } => {}
-            }
-            let proven = if let Finding::Exited { code, proof } = &finding {
-                // The verified loss is recorded durably: the holder's exit-proof row is what every
-                // projection reads as its proven loss, its proof the inspect's.
-                let recorded = w.records.put_exit(&node, *code, proof).await;
-                span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
-                recorded.is_ok()
-            } else {
-                false
+                _ => false,
             };
-            if !proven {
+            if !submitted && !matches!(finding, Finding::Reached { .. }) {
                 if let Some(b) = birth(&node) {
                     said.investigated.remove(&b);
                 }
             }
             span.in_scope(|| tracing::info!("a silent seat holder was looked at"));
         }
-        // A held takeover ends once the seat's record moved or its lost birth is proven gone.
-        if let Some(door) = w.handover.get() {
-            door.release_held_takeover();
-        }
-        // The fabric-primary unheard past the staleness floor is superseded (Q89, elections §4.3): its own
-        // mesh's standby proposes at the first tick after the mark; outside its mesh, an admin proposes once
-        // the whole mesh is held past the hold (the lost-mesh arm), and only once this admin has held the
-        // record's holder as the holder for a floor: a record learned a moment ago names a holder whose
-        // silence in this book predates it.
-        let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
-        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric()).filter(|_| held_a_floor) {
-            if let Some(door) = w.handover.get().cloned() {
-                drop(turn.take());
-                let _ = door.propose_take_over(&lost).await;
-                turn = Some(w.gate.turn("seat-watch").await);
-            }
-        }
     }
-}
-
-/// The fabric seat's record `record` when this admin, a ReadyForTraffic node-admin of the record's own
-/// mesh and not its holder, holds the record's birth off ready-for-traffic (`PendingReconnect` or
-/// `Dead`) in its view: the fabric-primary unheard past the staleness floor is superseded by its own
-/// mesh's standby at the first tick after the mark, whatever the provider says of its runtime (Q89;
-/// fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2, "Its own
-/// mesh"; elections §4.3). `None` otherwise: outside the record's mesh the proposal is mesh
-/// investigation's, at its decision step (`investigate::run`), and the holder never proposes its own.
-pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::Primary>) -> Option<rdm_core::Primary> {
-    let record = record?;
-    if record.is_birth(&me.0, &me.1) {
-        return None;
-    }
-    let mine = view.members().find(|n| n.node_id == me.0)?;
-    if mine.kind != NodeKind::NodeAdmin || mine.status != NodeStatus::ReadyForTraffic {
-        return None;
-    }
-    // Its own mesh (Q89): the fabric-primary held off ready-for-traffic in this admin's view, at the mark,
-    // whatever the provider says of its runtime; the standby the election names is fabric-primary.
-    if mine.mesh == record.mesh {
-        let held = view.members().any(|n| n.node_id == record.node_id && n.incarnation_id.as_ref() == Some(&record.incarnation) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
-        return held.then_some(record);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -443,29 +363,6 @@ mod tests {
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), None, "once per move");
         let mut never = false;
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
-    }
-
-    /// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2;
-    /// elections §4.3): the standby of the fabric-primary's own mesh proposes the takeover at the first
-    /// tick after the mark, when the record's birth is held off ready-for-traffic in its view, and needs
-    /// no provider verdict and no hold. Not a mesh-primary outside that mesh (its proposal is mesh
-    /// investigation's decision step), not the holder itself, not a standby that is not ReadyForTraffic,
-    /// not while the holder is heard, not without a record.
-    #[test]
-    fn the_standby_of_the_fabric_primarys_own_mesh_proposes_the_takeover_at_the_mark_and_an_outsider_never_does() {
-        let (mut t, holder, standby, outsider) = world();
-        let record = Primary { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation_id.clone().unwrap(), revision: 7 };
-        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), Some(record.clone()), "the holder PendingReconnect in the standby's view: the standby proposes at the mark");
-        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone())), None, "an admin outside the holder's mesh proposes from the investigation's decision step, never from the seat watch");
-        assert_eq!(takeover_due(&t, &me_of(&holder), Some(record.clone())), None, "the holder never proposes its own takeover");
-        assert_eq!(takeover_due(&t, &me_of(&standby), None), None, "no record, no takeover");
-        t.nodes[0].status = NodeStatus::Dead;
-        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), Some(record.clone()), "a holder the view holds Dead is held off ready-for-traffic too");
-        t.nodes[0].status = NodeStatus::ReadyForTraffic;
-        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), None, "a holder heard keeps its seats");
-        t.nodes[0].status = NodeStatus::PendingReconnect;
-        t.nodes[1].status = NodeStatus::Pending;
-        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone())), None, "a standby that is not ReadyForTraffic is not the leadership rule's successor");
     }
 
     /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,

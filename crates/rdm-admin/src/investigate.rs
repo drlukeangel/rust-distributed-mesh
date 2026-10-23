@@ -361,10 +361,9 @@ pub struct Watch {
     pub ladder: Arc<Mutex<Ladder>>,
     /// The carrier each mesh's latest probe went through.
     pub carriers: Mutex<BTreeMap<String, PathName>>,
-    /// The handover door: a mesh-primary outside the fabric-primary's mesh proposes the takeover of
-    /// the fabric seat from the ladder's decision step (fabric-recovery.md "The loss of the
-    /// fabric-primary while a node-admin lives" step 2, "Outside its mesh").
-    pub handover: crate::fabric_handover::HandoverSlot,
+    /// Fabric recovery (Q122): no node-admin of the fabric-primary's mesh answered by the decision step, so
+    /// the lowest ReadyForTraffic mesh-primary on the backbone starts it.
+    pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
 }
 
 impl Watch {
@@ -429,18 +428,10 @@ pub async fn run(w: Watch) {
                         if let Some(due) = w.membership.book.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
                             wait = wait.min(due);
                         }
-                        // The decision stands (no node-admin of that mesh answered): the backbone rule's
-                        // proposal, every round until the record moves (elections §5: "Every mesh-primary
-                        // that notices tells the winner"; repeats answer AlreadyApplied; a store that
-                        // could not commit is asked again).
+                        // No node-admin of that mesh answered by the decision step: fabric recovery starts at the
+                        // lowest ReadyForTraffic mesh-primary on the backbone, exactly as in the own-mesh arm (Q122).
                         let decided = { let l = w.ladder.lock().unwrap(); l.unreachable_decided(&mesh) || l.recovery_decided(&mesh) };
-                        let record = w.membership.seats().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
-                        // ... and only a holder this book has held as the holder for a floor (a record learned a
-                        // moment ago, after a heal, names a holder whose silence predates it).
-                        let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
-                        if let (true, true, Some(record), Some(door)) = (decided, held_a_floor, record, w.handover.get().cloned()) {
-                            let _ = door.propose_take_over(&record).await;
-                        }
+                        w.fabric_recovery.start_if_mine(false, decided).await;
                     }
                 }
                 None => w.ladder.lock().unwrap().clear(),

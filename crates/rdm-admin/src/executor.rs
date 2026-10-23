@@ -108,10 +108,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A mesh retire whose mesh holds the fabric seat waits for node.fabric-primary.update ([`seat_move`]):
         // the new fabric-primary, outside the leaving mesh, drives the rest (mesh-delete.md step 1).
         BuildOperation::ShutdownMesh { .. } if seat_move(op, t).is_some() => None,
-        // The handback is the fabric seat's move alone ([`seat_move`]): no admin executes it while the
-        // seat is still to move, and once it moved the plan holds it no more.
-        BuildOperation::HandFabricSeat { .. } if seat_move(op, t).is_some() => None,
-        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } | BuildOperation::HandFabricSeat { .. } => fabric(),
+        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
     }
 }
 
@@ -241,15 +238,6 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// refuses it first, `control_plane::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     use rdm_core::build::RecipeStep;
-    // The hand-back (Q89, elections §4.3, §4.4): the seats the takeover took go back to the node at the
-    // lost fabric-primary's path.name, the one named. From a holder of another mesh the fabric seat
-    // alone moves; from the lost mesh's own standby, which holds the mesh seat too, both seats move in
-    // one row (node-primary-update.md "Both seats").
-    if let BuildOperation::HandFabricSeat { to } = op {
-        let holder = t.fabric_primary().filter(|fp| fp.name != *to)?.clone();
-        let mesh_seat = holder.mesh == to.mesh && t.cohort_primary(&holder.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == holder.node_id);
-        return Some(SeatMove { holder, mesh_seat, fabric_seat: true, cohort_seat: false, successor: Some(to.clone()) });
-    }
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         if !t.meshes.iter().any(|m| m.name != *mesh && m.status != crate::model::ScopeStatus::Dead) {
             return None;
@@ -272,7 +260,7 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         // no other node of its type is still named for non-delete actions: the update refuses it by Q7's
         // name (the Build door refuses it first, `control_plane::last_admin`).
         let holder = t.node(node)?.clone();
-        let only_of_cohort = t.cohort(&node.mesh, node.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == holder.node_id);
+        let only_of_cohort = t.cohort(&node.mesh, node.kind).all(|n| n.node_id == holder.node_id);
         if !t.cohort_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && only_of_cohort) {
             return None;
         }

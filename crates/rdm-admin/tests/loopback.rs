@@ -131,16 +131,8 @@ impl DepartureProof for Proofs {
             Err(format!("{executor}'s runtime is not proven exited"))
         }
     }
-    async fn recorded(&self, executor: &PathName) -> bool {
-        self.recorded.lock().unwrap().contains(&executor.to_string())
-    }
     async fn mesh_given_node_admin(&self, mesh: &str, build_id: &rdm_admin::build::BuildId, attempt: u32, _from: std::time::Instant) {
         self.given.lock().unwrap().push((mesh.to_string(), build_id.to_string(), attempt));
-    }
-    async fn exits_of(&self, nodes: &[PathName]) -> rdm_admin::build_drive::ExitProofs {
-        let exited = self.exited.lock().unwrap();
-        let (proven, unproven): (Vec<&PathName>, Vec<&PathName>) = nodes.iter().partition(|a| exited.contains(&a.to_string()));
-        rdm_admin::build_drive::ExitProofs { proven: proven.iter().map(|a| a.to_string()).collect(), unproven: unproven.iter().map(|a| format!("{a}: its runtime is not proven exited: Running")).collect() }
     }
 }
 

@@ -140,7 +140,6 @@ async fn drive(a: &Admin, h: &mut FetchBuild, within: Duration) -> Result<Vec<&'
     }
 }
 
-
 const FETCH: &str = "rdm.node_admin.build.update.via-fetch-facts";
 const FETCH_INCOMPLETE: &str = "rdm.node_admin.build.reject.via-fetch-incomplete";
 const FETCH_FAILED: &str = "rdm.node_admin.build.reject.via-fetch-failed";
@@ -588,9 +587,6 @@ impl BuildStateAdapter for PointerMovesOnceRead {
     }
     async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, rdm_admin::build_state::BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn terminate_failures_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, rdm_admin::build_state::BuildStateError> {
-        self.inner.terminate_failures_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, rdm_admin::build_state::BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await

@@ -523,9 +523,6 @@ pub(crate) struct OfflineTickle {
     observer: String,
     /// The admin's stop gate: a stop's park retires the rounds in flight.
     gate: crate::stop_gate::StopGate,
-    /// Node ids held TRUE OFFLINE whose runtime still runs (`held-running`) and are due another
-    /// probe round on this tick (R-FM1).
-    reprobe: HashSet<String>,
 }
 
 impl Drop for OfflineTickle {
@@ -549,12 +546,6 @@ impl OfflineTickle {
         tickle.observer = observer;
         tickle.gate = gate;
         tickle
-    }
-
-    /// Schedule another probe round on the next tick for a `TRUE OFFLINE` birth whose runtime
-    /// still runs (`held-running`, R-FM1).
-    pub fn reprobe(&mut self, id: String) {
-        self.reprobe.insert(id);
     }
 
     #[cfg(test)]
@@ -643,11 +634,9 @@ impl OfflineTickle {
         if holds_seat {
             self.hold_down.retain(|id, _| silent_ids.contains(id));
             self.settled.retain(|id| silent_ids.contains(id));
-            self.reprobe.retain(|id| silent_ids.contains(id));
         } else {
             self.hold_down.clear();
             self.settled.clear();
-            self.reprobe.clear();
         }
         // The window runs from the mark the admin's book holds for the birth (node-recovery.md step 2:
         // "Half a floor after the mark"); a birth with no mark is first seen at this tick.
@@ -740,8 +729,7 @@ impl OfflineTickle {
             // The mark (or, with none, the instant this admin first saw the node silent): a seat taken
             // mid-window tickles on it.
             let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
-            let reprobe = self.reprobe.remove(&id);
-            if now_ms.saturating_sub(seen_at) < probe_delay_ms || (self.settled.contains(&id) && !reprobe) {
+            if now_ms.saturating_sub(seen_at) < probe_delay_ms || self.settled.contains(&id) {
                 continue;
             }
             let birth = (id.clone(), incarnation);
@@ -856,20 +844,6 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
         Some(Dead) => "dead",
         Some(Deleted) => "deleted",
     }
-}
-
-/// Record the provider's proof that a birth of the mesh primary's own mesh exited
-/// (node-recovery.md "Exited is the proof, recorded durably"): the birth's own exit-proof row in
-/// status.storage, a blind put of its `(node_id, incarnation)` key. Nothing is read back. A held
-/// record with no incarnation names no birth: that is named, never a silent skip.
-pub(crate) async fn put_exit_proof(store: &dyn crate::status_storage::StatusStorage, node: &crate::model::Node, exit_code: Option<i32>, proof: &str, observed_at_ms: u64) -> Result<crate::status_storage::NodeExitRow, String> {
-    let Some(incarnation_id) = node.incarnation_id.clone() else {
-        return Err(format!("{} ({}) holds no incarnation: no birth to key its exit-proof row by", node.name, node.node_id));
-    };
-    crate::admin::exit_proof_named(proof).map_err(|e| format!("the exit-proof row of {} ({}) at {} is not written: {e}", node.name, node.node_id, incarnation_id.as_str()))?;
-    let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms };
-    store.put_node_exit(&row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row: {e}", node.name, node.node_id))?;
-    Ok(row)
 }
 
 #[cfg(test)]
@@ -1886,30 +1860,11 @@ pub(crate) mod tests {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.node_silences().await
         }
-        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit(row).await
-        }
-        async fn node_exit(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.node_exit(node_id, incarnation_id).await
-        }
         async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
             self.inner.mesh_status_held_of(mesh, row).await
         }
         async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_status_of(mesh, row).await
-        }
-        async fn node_exit_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit_of(mesh, row).await
-        }
-            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
-            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_held_running_of(mesh, row).await
         }
         async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
             self.inner.node_certs_of(mesh).await
@@ -1935,18 +1890,6 @@ pub(crate) mod tests {
         async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_issuer_receipt_of(mesh, row).await
         }
-        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
-            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_os_stopped_of(mesh, row).await
-        }
-        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
         async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
         }
@@ -1970,29 +1913,6 @@ pub(crate) mod tests {
         }
 }
 
-    /// CONTRACT (#3051, node-recovery.md "Exited is the proof, recorded durably"): the mesh
-    /// primary records a member's exit proof as that birth's own keyed row, a blind put that reads
-    /// nothing; a later birth of the same node is its own row and leaves the first standing.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn mesh_primary_records_an_exit_proof_as_the_births_own_row() {
-        use crate::model::{IncarnationId, Node, PathName};
-        use crate::status_storage::StatusStorage;
-        let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
-        let first = IncarnationId::mint();
-        held.incarnation_id = Some(first.clone());
-        let store = ReadCounting::default();
-        let row = put_exit_proof(&store, &held, Some(4), "exit-record", 7).await.unwrap();
-        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0, "the exit-proof put reads no row");
-        let next = IncarnationId::mint();
-        held.incarnation_id = Some(next.clone());
-        put_exit_proof(&store, &held, None, "none", 9).await.unwrap();
-        assert_eq!(store.node_exit(&held.node_id, &first).await.unwrap(), Some(row), "the first birth's proof stands");
-        assert_eq!(store.node_exit(&held.node_id, &next).await.unwrap().map(|r| (r.exit_code, r.proof)), Some((None, "none".to_string())));
-        held.incarnation_id = None;
-        assert!(put_exit_proof(&store, &held, Some(4), "provider", 1).await.is_err(), "no birth is named, never skipped");
-    }
-
     // @feature: node-lifecycle
     #[tokio::test]
     async fn mesh_primary_status_write_puts_only_the_births_own_silence_row() {
@@ -2014,12 +1934,10 @@ pub(crate) mod tests {
         assert!(put_silence_status(&store, &held, None).await.is_err(), "a held record with no birth is named, never skipped");
     }
 
-    /// A status store whose puts of silence rows and, when `exit`, of exit-proof rows are refused,
-    /// as a full or read-only disk would.
+    /// A status store whose puts of silence rows are refused, as a full or read-only disk would.
     #[derive(Default)]
     pub(crate) struct SilenceRefusing {
         pub inner: crate::status_storage::MemoryStatusStorage,
-        pub exit: bool,
     }
 
     #[async_trait::async_trait]
@@ -2064,32 +1982,11 @@ pub(crate) mod tests {
         async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
             self.inner.node_silences().await
         }
-        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            if self.exit {
-                return Err(crate::storage_error::StorageError::Io { file: format!("status/exit/{}", row.key()), reason: "No space left on device (os error 28)".into() });
-            }
-            self.inner.put_node_exit(row).await
-        }
-        async fn node_exit(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit(node_id, incarnation_id).await
-        }
         async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
             self.inner.mesh_status_held_of(mesh, row).await
         }
         async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_status_of(mesh, row).await
-        }
-        async fn node_exit_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit_of(mesh, row).await
-        }
-            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
-            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_held_running_of(mesh, row).await
         }
         async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
             self.inner.node_certs_of(mesh).await
@@ -2114,18 +2011,6 @@ pub(crate) mod tests {
         }
         async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
-            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_os_stopped_of(mesh, row).await
-        }
-        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
         }
         async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await

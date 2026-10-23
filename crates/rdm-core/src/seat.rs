@@ -89,7 +89,7 @@ impl std::fmt::Display for Primary {
     }
 }
 
-/// The exact birth `TakeOverFabricPrimary` names on op `0x21`, and the seat names of the `seat-move/1`
+/// An exact birth as op `0x21`'s entries name it, and the seat names of the `seat-move/1`
 /// rows an older store root holds, decoded and never written (durable-format rule).
 pub mod transfer {
     use crate::ids::{IncarnationId, NodeId};

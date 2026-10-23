@@ -174,12 +174,6 @@ impl MemberDoor {
         match req {
             Request::PrimaryUpdate { primaries, build_id, run, operation } => self.install(primaries, build_id, run, operation),
             Request::UpdatePrimary { node_type, build_id, run, operation } => self.update(node_type, build_id, run, operation).await,
-            Request::TakeOverFabricPrimary { lost, .. } => {
-                let reason = format!("{} is no node-admin: it never takes over the fabric-primary from {}", self.held_name(), lost.node_id);
-                tracing::info_span!("rdm.node_admin.primary.reject.via-not-primary", node = %self.held_name(), op = "take-over-fabric-primary", reason = %reason)
-                    .in_scope(|| tracing::info!("node.fabric-primary.update was refused"));
-                rdm_core::reply::handover::bounded_not_primary(&reason)
-            }
         }
     }
 

@@ -123,7 +123,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, exit: None };
+            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, unreached: false };
             match workflow {
                 NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
                 _ => pipeline.delete_connections(&req).instrument(root).await,

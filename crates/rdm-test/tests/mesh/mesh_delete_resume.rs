@@ -4,8 +4,8 @@
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `mesh.delete:<mesh2 id>`.
 //! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete StopNode receipt) and
 //! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
-//! holds the lost primary proven exited (`via-final-primary-exited`), never on the hand-off bound,
-//! and the next attempts record the lost primary's exact Exited, amend the roster with the new final
+//! holds the lost primary unheard (`via-final-primary-lost`), never on the hand-off bound, and the next
+//! attempts delete the lost primary by its node.delete, amend the roster with the new final
 //! primary once it is seated (or created, when none survives), and finish at mesh.deleted: its
 //! completion covers the accepted roster plus the amendment but the new final primary, which stays
 //! alive. Its end is its own node.delete (mesh-delete.md step 7), after which MeshLeft covers every
@@ -264,29 +264,20 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
         assert!(!v.is_empty(), "a {name} span for {outer}");
         v[0].clone()
     };
-    // Attempt 1 ends on the lost primary's proven exit in the owner's view, never on the timer.
-    let ended = one("rdm.node_admin.mesh.update.via-final-primary-exited");
-    assert_eq!((s(&ended["attributes"]["final_primary"]), attr_u(&ended, "attempt")), (format!("{} {}", lost.0, lost.1), 1), "attempt 1 ends on the lost primary's proven exit: {ended}");
+    // Attempt 1 ends on the lost primary's loss in the owner's view, never on the timer.
+    let ended = one("rdm.node_admin.mesh.update.via-final-primary-lost");
+    assert_eq!((s(&ended["attributes"]["final_primary"]), attr_u(&ended, "attempt")), (format!("{} {}", lost.0, lost.1), 1), "attempt 1 ends on the lost primary's loss: {ended}");
     // The lost primary's roster receipt is its own node.delete's (mesh-delete.md "Resume after the
-    // primary's loss" step 1; node-delete.md "Crashed target"): the fabric-primary deletes the exact
-    // exited birth under the leave's Build, its TerminateRuntime the receipt and its NodeDeleted
-    // published from the inspect's exit proof (node-runtime-inspect.md step 5); no receipt of it is
-    // written outside node.delete.
+    // primary's loss" step 1): the fabric-primary deletes the exact unreached birth under the leave's
+    // Build, its TerminateRuntime the receipt; no receipt of it is written outside node.delete.
     let lost_terminate: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == lost.0 && sp["attributes"]["step"] == "TerminateRuntime" && s(&sp["attributes"]["build_id"]) == *b && sp["attributes"]["outcome"] == "complete").collect();
-    assert_eq!(lost_terminate.len(), 1, "the lost primary {}'s exit is proven by its node.delete's TerminateRuntime under {b}: {lost_terminate:?}", lost.0);
-    let proven: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-exit-proof").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == lost.0 && s(&sp["attributes"]["build_id"]) == *b).collect();
-    assert_eq!(proven.len(), 1, "the lost primary is deleted once as a crashed target on its exit-proof row: {proven:?}");
-    let recorded = proven[0];
-    assert!(["provider", "exit-record", "none"].contains(&s(&recorded["attributes"]["proof"]).as_str()) && attr_u(recorded, "observed_at_ms") > 0, "the exit-proof row is the inspect's, at the instant it was observed: {recorded}");
-    assert!(start_ns(&ended) <= start_ns(recorded), "the wait ends on the proof before the resume records it");
+    assert_eq!(lost_terminate.len(), 1, "the lost primary {}'s node.delete runs its TerminateRuntime once under {b}: {lost_terminate:?}", lost.0);
+    let recorded = lost_terminate[0];
+    assert!(start_ns(&ended) <= start_ns(recorded), "the wait ends on the loss before the resume deletes it");
     let applied: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-roster-amended").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && sp["attributes"]["outcome"] == "applied").collect();
     assert_eq!(applied.len(), 1, "the amendment was applied once: {applied:?}");
-    assert!(start_ns(recorded) <= start_ns(applied[0]), "the lost primary's exit is recorded before the amendment");
+    assert!(start_ns(recorded) <= start_ns(applied[0]), "the lost primary is deleted before the amendment");
     assert!(named(spans, "rdm.node_admin.mesh.update.via-predecessor-exit-recorded").is_empty(), "no exit receipt is recorded outside node.delete");
-    // Every exit-proof row a projection read names the inspect's proof, node.delete's terminate or
-    // a takeover: none is a receipt copied by hand.
-    let copied: Vec<String> = named(spans, "rdm.node_admin.node.resolve.via-exit-proof-row").into_iter().filter(|sp| sp["attributes"]["proof"] == "terminal-receipt").map(|sp| format!("{} {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["proof"]))).collect();
-    assert!(copied.is_empty(), "no exit-proof row is a copied receipt: {copied:?}");
     // NodeDeleted at most once per roster birth the leave deleted (node-delete.md step 4): by the
     // executor of its node.delete, never again by a later primary that keeps its receipt (a killed
     // executor's publication may never reach the export; a peer that never heard it keeps the birth

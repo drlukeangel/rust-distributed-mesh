@@ -39,6 +39,9 @@ pub struct ControlPlane {
     /// node reads, so it never acts on a snapshot up to one refresh old (set once by the admin that
     /// owns the inputs).
     pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Topology> + Send>> + Send + Sync>>,
+    /// Fabric recovery in a view (Q122): its executor opens the re-create of the node-admin at the
+    /// fabric-primary's path.name, in the fabric lane.
+    pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
@@ -73,11 +76,12 @@ pub struct ControlPlane {
     pub first_ready: crate::fabric_state::FirstReady,
     /// The status rows of this admin's mesh on the fabric's store root: the ready-for-traffic row of the
     /// fabric among them is the durable fact that it first reached ready-for-traffic (states.md, "The
-    /// initial fabric before ready-for-traffic"), and each exited birth's exit-proof row is the durable
-    /// proof of its departure (node-recovery.md: "Exited is the proof, recorded durably"), which a drift
-    /// lane's take-over from a departed claimant reads. Held in memory, empty, until the admin hands its
-    /// own ([`ControlPlane::with_first_ready`]).
+    /// initial fabric before ready-for-traffic"). Held in memory, empty, until the admin hands its own
+    /// ([`ControlPlane::with_first_ready`]).
     pub ready_rows: Arc<dyn crate::status_storage::StatusStorage>,
+    /// The exact departure proof of a drift lane's claimant (build.md: "after exact departure proof"),
+    /// set once the admin's drive is built; none proves nothing.
+    pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::DepartureProof>>,
 }
 
 impl ControlPlane {
@@ -98,12 +102,14 @@ impl ControlPlane {
             connections: std::sync::OnceLock::new(),
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
+            fabric_recovery: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
             first_ready: crate::fabric_state::FirstReady::new(),
             ready_rows: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            departure: std::sync::OnceLock::new(),
         }
     }
 
@@ -244,18 +250,14 @@ impl ControlPlane {
         Ok((admission, current, None))
     }
 
-    /// The exit-proof row of the exact birth this admin's view names at `claimant` in `mesh`, a point
-    /// read: `None` while no exit of that birth is recorded (silence is never departure: build.md
-    /// §5.2, R-BI4), or while the view names no birth there. A row that cannot be read is refused by
-    /// name, never taken as no proof.
-    async fn departure_of(&self, claimant: &PathName, mesh: &str) -> Result<Option<(crate::model::Node, crate::status_storage::NodeExitRow)>, Refusal> {
-        let Some(n) = self.topology.read().await.node(claimant).cloned() else { return Ok(None) };
-        let Some(incarnation) = n.incarnation_id.clone() else { return Ok(None) };
-        let me = self.held_name().await;
-        match self.ready_rows.node_exit_of(mesh, &n.node_id, &incarnation).await {
-            Ok(row) => Ok(row.map(|row| (n, row))),
-            Err(e) => Err(Refusal::Unavailable(format!("{me}: the exit-proof row of {claimant} ({}) at {} among mesh {mesh}'s status rows could not be read to prove its departure: {e}", n.node_id, incarnation.as_str()))),
-        }
+    /// The exact birth this admin's view names at `claimant` when its departure is proven (build.md:
+    /// "after exact departure proof"; silence is never departure, R-BI4): the provider reads its exact
+    /// runtime exited. `None` while it is not, while the view names no birth there, or while no
+    /// departure proof is held.
+    async fn departure_of(&self, claimant: &PathName) -> Result<Option<crate::model::Node>, Refusal> {
+        let Some(n) = self.topology.read().await.node(claimant).cloned().filter(|n| n.incarnation_id.is_some()) else { return Ok(None) };
+        let Some(proof) = self.departure.get() else { return Ok(None) };
+        Ok(proof.proven(claimant).await.ok().map(|()| n))
     }
 
     /// End `mesh`'s drift attempt of `current` whose claimant departed with it unfinished, when its
@@ -272,22 +274,20 @@ impl ControlPlane {
     /// lane's attempt (its drive takes it over) are left holding the mesh.
     async fn end_departed_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
         let fabric_holds = current.state == BuildState::Running && current.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).is_some_and(|e| e.mesh == mesh);
-        let Some(lane) = current.lanes.get(mesh).filter(|l| !fabric_holds && l.state == BuildState::Running) else { return Ok(false) };
+        if fabric_holds {
+            return self.end_fabric_attempt_of_a_lost_claimant(current, mesh).await;
+        }
+        let Some(lane) = current.lanes.get(mesh).filter(|l| l.state == BuildState::Running) else { return Ok(false) };
         let Some(claimant) = lane.claimant.as_deref().and_then(|c| c.parse::<PathName>().ok()) else { return Ok(false) };
         let me = self.held_name().await;
         if claimant == me || claimant == self.me {
             return Ok(false);
         }
-        let Some((n, row)) = self.departure_of(&claimant, mesh).await? else { return Ok(false) };
+        let Some(n) = self.departure_of(&claimant).await? else { return Ok(false) };
         let attempt = lane.attempt;
-        let incarnation = row.incarnation_id.as_str().to_string();
-        let reason = format!(
-            "{claimant} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its exit is proven ({}{}) and recorded; {me} takes the lane over",
-            n.node_id,
-            row.proof,
-            row.exit_code.map(|c| format!(", exit code {c}")).unwrap_or_default(),
-        );
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, exit_proof = %row.proof, node = %me, outcome = tracing::field::Empty);
+        let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
+        let reason = format!("{claimant} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt { mesh: Some(mesh.to_string()), build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason , code: rdm_core::outcome::Code::FailedPrecondition } };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
@@ -302,6 +302,37 @@ impl ControlPlane {
         }
         span.record("outcome", "ended");
         span.in_scope(|| tracing::info!("the mesh's drift attempt ends with its departed claimant, and its in-flight row is released"));
+        Ok(true)
+    }
+
+    /// End the fabric lane's attempt of `current` acting in `mesh` whose claimant departed with it unfinished,
+    /// on that departure's exact proof: the next one in the same order starts the workflow again, resuming the
+    /// attempt from its recorded progress (fabric-recovery.md, Q122; build.md "after exact departure proof").
+    async fn end_fabric_attempt_of_a_lost_claimant(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
+        let Some(claimant) = current.claimant.as_deref().and_then(|c| c.parse::<PathName>().ok()) else { return Ok(false) };
+        let me = self.held_name().await;
+        if claimant == me || claimant == self.me {
+            return Ok(false);
+        }
+        let Some(n) = self.departure_of(&claimant).await? else { return Ok(false) };
+        let attempt = current.attempt;
+        let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
+        let reason = format!("{claimant} ({} at {incarnation}) departed with attempt {attempt} of the fabric lane unfinished, acting in mesh {mesh}: its departure is proven; {me} starts the workflow again", n.node_id);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = "fabric", attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
+        let verdict = crate::build_state::BuildAttemptReceipt { mesh: None, build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition } };
+        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
+            span.record("outcome", "verdict-unwritten");
+            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's fabric-lane attempt could not be ended: the mesh stays held by it"));
+            return Err(Refusal::State(e));
+        }
+        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: None, attempt, claimant: claimant.to_string() };
+        if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
+            span.record("outcome", "in-flight-unreleased");
+            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's fabric-lane attempt is ended and the mesh's in-flight row could not be released"));
+            return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of {}'s fabric lane is ended on {claimant}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
+        }
+        span.record("outcome", "ended");
+        span.in_scope(|| tracing::info!("the fabric lane's attempt ends with its departed claimant, and the mesh's in-flight row is released"));
         Ok(true)
     }
 
@@ -342,17 +373,12 @@ impl ControlPlane {
                 }
             }
             let observed = self.topology.read().await.clone();
-            // node.delete's target (node-delete.md "Operation contract"): a live birth, a stopped one, or
-            // one its mesh-primary recorded os-stopped ("OS-suspended target"; deployment-provider.md
-            // §2.5: "An explicit `node.delete` of an OS-stopped birth stays available"), which is silent
-            // by definition: the fact the view folded, the one the plan reads to retire it. Any other
-            // birth the view holds is refused `node-not-live` by name: silence alone deletes nothing.
+            // node.delete's target (node-delete.md "Operation contract"): a live birth or a stopped one.
+            // An unheard birth is its mesh-primary's to recover on node investigation's verdict
+            // (node-recovery.md step 3): it is refused `node-not-live` by name.
             if let TopologyChange::RemoveNode { node } = &change {
                 if let Some(n) = observed.node(node).filter(|n| !n.status.is_live() && !n.parked) {
-                    match &n.os_stopped {
-                        Some(fact) => outer.in_scope(|| tracing::info!(node = %node, node_id = %n.node_id, status = ?n.status, os_stopped_since = fact.since, "the delete's target is os-stopped: admitted; its stop is skipped by name")),
-                        None => return Err(not_live(&outer, route, node, n.status, "a delete needs a live node, a stopped one, or one its mesh-primary recorded os-stopped")),
-                    }
+                    return Err(not_live(&outer, route, node, n.status, "a delete needs a live node or a stopped one"));
                 }
             }
             let topology = match compile(&current.topology, &change, &observed) {
@@ -706,7 +732,7 @@ impl ControlPlane {
     /// topology operation's claimed attempt there, or the mesh's own drift attempt) answers
     /// `BuildInProgress` naming the Build, the mesh and its claimant; an attempt in another mesh
     /// refuses nothing. Then the mesh's in-flight row is taken on the store root before any fact is
-    /// written, the attempt is opened in the mesh's lane (the fabric lane for a hung mesh-primary, which the
+    /// written, the attempt is opened in the mesh's lane (the fabric lane for an unheard mesh-primary, which the
     /// fabric-primary recovers), and its claim is decided by this admin. The
     /// lane's attempt already opened with this very recovery and claimed by no one (its opener lost
     /// between its open and its claim) is claimed as it stands: never opened again, and nothing ends it.
@@ -730,13 +756,16 @@ impl ControlPlane {
             let t = self.topology.read().await.clone();
             // A node-admin is node-recovered by its mesh's live primary (mesh-recovery.md:8-9); one
             // with no other live admin in its mesh is that mesh's lost mesh-primary: mesh recovery.
-            // A hung mesh-primary whose held-running hold expired is recovered by the fabric-primary
-            // (R-FM1: the seat never moves before the exit proof; once TerminateRuntime proves exit,
-            // R-EL1 seats the successor on that proof).
-            let hung_mesh_primary = path.kind == crate::model::NodeKind::NodeAdmin
-                && t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && !p.exit_proven)
-                && self.ready_rows.node_held_running_of(&path.mesh, &node_id, &incarnation).await.ok().flatten().is_some();
-            let recoverer = if hung_mesh_primary {
+            // An unheard mesh-primary is recovered by the fabric-primary (node-recovery.md sequence
+            // step 1: "for an unheard mesh-primary, the fabric-primary opens it").
+            // Fabric recovery's re-create of the node-admin at the fabric-primary's path.name is its
+            // executor's, in the fabric lane (fabric-recovery.md step 3, Q122): nobody is fabric-primary.
+            let fabric_recovery = self.fabric_recovery.get().and_then(|read| read(&t)).filter(|fr| path.kind == NodeKind::NodeAdmin && fr.target.node_id == node_id && fr.target.incarnation == incarnation);
+            let unheard_mesh_primary = fabric_recovery.is_some()
+                || (path.kind == crate::model::NodeKind::NodeAdmin && t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live()));
+            let recoverer = if let Some(fr) = &fabric_recovery {
+                fr.executor.clone()
+            } else if unheard_mesh_primary {
                 t.fabric_primary().map(|n| n.name.clone())
             } else if path.kind == crate::model::NodeKind::NodeAdmin {
                 let Some(recoverer) = crate::executor::node_admin_recoverer(&path, &t) else {
@@ -770,15 +799,20 @@ impl ControlPlane {
             // mesh's rows wins (R-BI7 caveat 3). The row names its claim's lane key (Q35), so it is
             // taken in the claim's own writer's turn; a row standing for another attempt that still
             // holds the mesh refuses here, before anything of this attempt is written.
-            // A hung mesh-primary is recovered by the fabric-primary from the fabric lane, as a lost
-            // mesh's node-admin is (node-recovery.md, "for a lost mesh's node-admin"; mesh-investigation.md):
-            // the mesh's lane is written by its seat holder (build.md, the Build journal's writers), and
-            // the hung holder keeps that seat until this attempt's exit proof (elections §4.3). The mesh's
-            // in-flight row still holds the mesh.
-            let lane = if hung_mesh_primary { None } else { Some(path.mesh.as_str()) };
+            // An unheard mesh-primary is recovered by the fabric-primary from the fabric lane, as a lost
+            // mesh's node-admin is (node-recovery.md, "for an unheard mesh-primary, the fabric-primary
+            // opens it"; mesh-investigation.md): the mesh's lane is written by its primary (build.md, the
+            // Build journal's writers), which is the unheard birth. The mesh's in-flight row still holds
+            // the mesh.
+            // Fabric recovery's re-create runs in its target mesh's lane: free while the fabric lane holds an
+            // attempt the lost fabric-primary claimed, which the restored fabric-primary resumes.
+            let lane = if unheard_mesh_primary && fabric_recovery.is_none() { None } else { Some(path.mesh.as_str()) };
             // The lane's attempt opened with this very recovery and claimed by no one is claimed as
             // it stands; otherwise the lane's next attempt is opened for it.
-            let open = open.filter(|_| lane.is_some());
+            // A fabric-lane attempt opened with this very recovery and claimed by no one (an executor's open whose
+            // claim another attempt refused) is claimed as it stands (fabric-recovery.md: "resuming the attempt
+            // from its recorded progress").
+            let open = if lane.is_some() { open } else { (current.state == BuildState::Pending && current.opened == current.attempt + 1 && current.attempt_actions.get(&current.opened) == Some(&action)).then_some(current.opened) };
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
             let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string() };
@@ -791,11 +825,11 @@ impl ControlPlane {
                 // fold (its run ended and the row was never released, or nothing of it was written
                 // before the claimant was lost) is released on that departure's exact proof.
                 let departed = match held.claimant.parse::<PathName>() {
-                    Ok(c) if held.lane.as_deref() == Some(path.mesh.as_str()) && c != me && c != self.me => self.departure_of(&c, &path.mesh).await?.map(|(n, row)| (c, n, row)),
+                    Ok(c) if held.lane.as_deref() == Some(path.mesh.as_str()) && c != me && c != self.me => self.departure_of(&c).await?.map(|n| (c, n)),
                     _ => None,
                 };
-                if let Some((claimant, n, exit)) = departed {
-                    let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %exit.incarnation_id.as_str(), exit_proof = %exit.proof, node = %me, outcome = tracing::field::Empty);
+                if let Some((claimant, n)) = departed {
+                    let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(), node = %me, outcome = tracing::field::Empty);
                     if let Err(e) = self.claims.release_in_flight(&path.mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
                         return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
@@ -911,7 +945,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     // of its type (Q7); the delete of its mesh's only node skips the update (R-MT1).
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.cohort_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
-        let only_of_cohort = t.cohort(&node.mesh, target.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == target.node_id);
+        let only_of_cohort = t.cohort(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
         if !holds || (action == "retire" && only_of_cohort) || (action == "delete" && t.only_node(&node.mesh, &target.node_id)) {
             return None;
         }
@@ -1141,7 +1175,6 @@ pub enum Recovery {
     AlreadyApplied(Opened),
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1285,48 +1318,6 @@ mod tests {
         assert!(crate::executor::seat_move(&crate::build::BuildOperation::RestartNode { node: only.clone() }, &t).is_some_and(|m| m.mesh_seat), "restart of mesh1's only node never skips the seat move");
         assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::RetireNode { node: only, exited: None }, &t), None, "the delete of mesh1's only node skips the seat move");
         assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
-    }
-
-    /// CONTRACT (mesh-delete.md "Resume after the primary's loss", step 1: "The lost primary's exact
-    /// provider Exited is recorded as its roster receipt", step 4: "The new mesh-primary is then deleted
-    /// by the separate node.delete of step 7"; the approved proposal
-    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases": "The one
-    /// exception is R-MT1's: the delete of a mesh's only node skips the update"; elections §4.1: only
-    /// the provider's exit proof vacates a seat): mesh2's lost primary `mesh2.admin.1` is proven exited
-    /// (its exit-proof row read: `exit_proven`, `Dead`), and `mesh2.admin.2`, the final primary the
-    /// roster amendment admitted, is the only node of mesh2. Its node.delete (`delete`) skips the
-    /// update at the Build door (`last_admin`) and at the drive (`executor::seat_move`), and the fabric
-    /// primary executes it. A member `Dead` by the true-offline mark alone (no exit proof) is still a
-    /// node of the mesh: the same delete moves the seat first, and with no Ready secondary it is refused
-    /// with Q7's text.
-    /// Must NOT happen: a birth proven exited counted as the mesh's other node (step 7's delete refused
-    /// `last-admin`), or a birth only marked offline discounted.
-    #[test]
-    fn a_birth_proven_exited_is_not_the_other_node_of_its_mesh_when_its_final_primary_is_deleted() {
-        let mut lost = node("mesh2.admin.1", false, false);
-        lost.status = NodeStatus::Dead;
-        lost.exit_proven = true;
-        let mut t = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![
-                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
-            ],
-            nodes: vec![node("mesh1.admin.1", true, true), lost, node("mesh2.admin.2", true, false)],
-        };
-        let last: PathName = "mesh2.admin.2".parse().unwrap();
-        let delete = crate::build::BuildOperation::RetireNode { node: last.clone(), exited: None };
-        assert!(last_admin(&last, "delete", &t).is_none(), "the delete of mesh2's only node skips the update: {:?}", last_admin(&last, "delete", &t));
-        assert_eq!(crate::executor::seat_move(&delete, &t), None, "no seat moves before it");
-        assert_eq!(crate::executor::executor_for(&delete, &t).map(|p| p.to_string()), Some("mesh1.admin.1".to_string()), "the fabric primary executes it");
-        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
-            n.exit_proven = false;
-        }
-        match last_admin(&last, "delete", &t) {
-            Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer: no secondary of type node-admin in mesh mesh2"),
-            other => panic!("a birth marked offline is still mesh2's other node: the delete is refused last-admin: {other:?}"),
-        }
-        assert!(crate::executor::seat_move(&delete, &t).is_some_and(|m| m.mesh_seat), "a birth marked offline is still mesh2's other node: the seat moves first");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2

@@ -1,5 +1,6 @@
-//! Node investigation (rulings INDEX Q107 item 1): the one function every caller uses on one exact
-//! birth, ending in one verdict, reached / running / os-stopped / exited with proof / unproven.
+//! Node investigation (rulings INDEX Q107 item 1; node-investigation.md): the one function every
+//! caller uses on one exact birth, ending in one verdict, reached / running / os-stopped / exited /
+//! unproven.
 //!
 //! Its steps, in order: (a) the leads, one read of the store's by-destination connections index
 //! (connections.md §3.1), naming the nodes in any mesh that hold a connection to the exact birth: the
@@ -7,7 +8,7 @@
 //! dropped survives a cut or a crashed source; (b) the direct tickle and (c) the same kick through
 //! peers, the leads first ([`crate::offline::tickle`], node-tickle.md); (d) on `unreached` alone, the
 //! provider about the exact runtime (node.runtime.inspect, node-runtime-inspect.md). Only an answer
-//! from the exact birth is `reached`; only the provider proves an exit.
+//! from the exact birth is `reached`; every other verdict is the provider's.
 
 use crate::model::{Node, NodeId, NodeStatus};
 use crate::offline::{Tickle, TickleCalls};
@@ -27,20 +28,16 @@ pub enum Finding {
     },
     /// The provider inspected its exact runtime and it still runs.
     Running,
-    /// The provider inspected its exact runtime and the operating system holds it suspended:
-    /// neither hung nor gone, so no hold opens and nothing is terminated (deployment-provider.md §2.5).
+    /// The provider inspected its exact runtime and the operating system holds it suspended
+    /// (deployment-provider.md §2.5).
     OsStopped,
-    /// The provider inspected its exact runtime and it exited: a verified loss, `exit-proven { code }`
+    /// The provider inspected its exact runtime and it exited, `exited { code }`
     /// (node-runtime-inspect.md "Result").
     Exited {
         /// The exit code, when one is provable.
         code: Option<i32>,
-        /// Where the proof came from, the `proof` of the exit-proof row the caller writes
-        /// (node-runtime-inspect.md step 5): `provider` (the provider's own terminal status),
-        /// `exit-record` (the runtime's exit record in its data dir) or `none` (exited with no code).
-        proof: &'static str,
     },
-    /// Nothing proves the birth gone or alive: named by what was missing.
+    /// Nothing tells the birth gone or alive: named by what was missing.
     Unproven {
         /// What was missing.
         reason: String,
@@ -48,16 +45,28 @@ pub enum Finding {
 }
 
 impl Finding {
-    /// The finding's name as it appears in spans: a `reached` is `answered` direct and
-    /// `answered-via-peer` through a peer.
+    /// The verdict as node-investigation.md names it: `reached`, `running`, `os-stopped`, `exited` or
+    /// `unproven`.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Reached { carrier: None, .. } => "answered",
-            Self::Reached { carrier: Some(_), .. } => "answered-via-peer",
+            Self::Reached { .. } => "reached",
             Self::Running => "running",
             Self::OsStopped => "os-stopped",
-            Self::Exited { .. } => "exit-proven",
+            Self::Exited { .. } => "exited",
             Self::Unproven { .. } => "unproven",
+        }
+    }
+
+    /// The provider's answer the verdict came from (node.runtime.inspect's), `unproven` as its
+    /// `unavailable`; `None` for `reached`, which asked the provider nothing.
+    pub fn inspected(&self) -> Option<crate::deployment::provider::Inspected> {
+        use crate::deployment::provider::Inspected;
+        match self {
+            Self::Reached { .. } => None,
+            Self::Running => Some(Inspected::Running),
+            Self::OsStopped => Some(Inspected::OsStopped),
+            Self::Exited { code } => Some(Inspected::Exited(*code)),
+            Self::Unproven { reason } => Some(Inspected::Unavailable(reason.clone())),
         }
     }
 
@@ -65,7 +74,7 @@ impl Finding {
     pub fn detail(&self) -> String {
         match self {
             Self::Reached { carrier: Some(carrier), .. } => carrier.clone(),
-            Self::Exited { code, proof } => format!("{} ({proof})", code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into())),
+            Self::Exited { code } => code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into()),
             Self::Unproven { reason } => reason.clone(),
             _ => String::new(),
         }
@@ -73,13 +82,12 @@ impl Finding {
 }
 
 /// node.runtime.inspect's answer ([`crate::deployment::provider::inspect_runtime`]) as the
-/// investigation's verdict: its `exit-proven` an `Exited` whose `proof` is the inspect's, its
-/// `unavailable` unproven.
+/// investigation's verdict: its `unavailable` unproven.
 impl From<crate::deployment::provider::Inspected> for Finding {
     fn from(inspected: crate::deployment::provider::Inspected) -> Self {
         use crate::deployment::provider::Inspected;
         match inspected {
-            Inspected::Exited(code, proof) => Finding::Exited { code, proof },
+            Inspected::Exited(code) => Finding::Exited { code },
             Inspected::Running => Finding::Running,
             Inspected::OsStopped => Finding::OsStopped,
             Inspected::Unavailable(reason) => Finding::Unproven { reason },
@@ -385,11 +393,10 @@ mod tests {
         f
     }
 
-    /// CONTRACT (Q107 item 1: "Only an answer from the exact birth is 'reached'; only the provider
-    /// proves an exit"; node-tickle.md "Result": "Unreached is never death"; node-runtime-inspect.md
-    /// "Result"): an answer from the exact birth, direct or carried, is `reached` with that answer and
-    /// its carrier, and the provider is never asked; with nobody reaching it, the verdict is the
-    /// provider's, `running`, `os-stopped`, `exited` or `unproven`, and only its `exited` is a loss; a
+    /// CONTRACT (Q107 item 1; node-investigation.md: "Only an answer from the exact birth counts as
+    /// `reached`"; node-runtime-inspect.md "Result"): an answer from the exact birth, direct or carried,
+    /// is `reached` with that answer and its carrier, and the provider is never asked; with nobody
+    /// reaching it, the verdict is the provider's, `running`, `os-stopped`, `exited` or `unproven`; a
     /// node with no birth runs no ladder and is unproven by name, the provider not asked. An answer
     /// naming another birth reaches nothing.
     #[tokio::test]
@@ -397,13 +404,13 @@ mod tests {
         let (node, view) = world();
         let rig = |direct: Option<StatusReply>, carried: Option<(&'static str, StatusReply)>| Rig { direct, carried, asked: Mutex::default() };
         let asked = AtomicBool::new(false);
-        let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(Finding::Exited { code: Some(137), proof: "provider" }, &asked)).await;
+        let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(Finding::Exited { code: Some(137) }, &asked)).await;
         assert_eq!(found, Finding::Reached { answer: current(&node), carrier: None });
-        let found = investigate(&node, &view, &rig(None, Some(("mesh1.rpc.3", current(&node)))), provider_says(Finding::Exited { code: Some(137), proof: "provider" }, &asked)).await;
+        let found = investigate(&node, &view, &rig(None, Some(("mesh1.rpc.3", current(&node)))), provider_says(Finding::Exited { code: Some(137) }, &asked)).await;
         assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some("mesh1.rpc.3".into()) });
-        assert_eq!((found.name(), found.detail()), ("answered-via-peer", "mesh1.rpc.3".to_string()));
+        assert_eq!((found.name(), found.detail()), ("reached", "mesh1.rpc.3".to_string()));
         assert!(!asked.load(Ordering::SeqCst), "an answer settles it: the provider is not asked");
-        for said in [Finding::Running, Finding::OsStopped, Finding::Exited { code: Some(137), proof: "provider" }, Finding::Unproven { reason: "Unknown".into() }] {
+        for said in [Finding::Running, Finding::OsStopped, Finding::Exited { code: Some(137) }, Finding::Unproven { reason: "Unknown".into() }] {
             let asked = AtomicBool::new(false);
             let another_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
             let r = rig(Some(current(&another_birth)), Some(("mesh1.rpc.2", current(&another_birth))));

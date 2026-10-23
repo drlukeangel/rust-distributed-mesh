@@ -57,7 +57,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
 
         let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral
         pipeline
-            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), exit: None })
+            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("retire: {e}"));
 
@@ -139,7 +139,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         release.meshes.get_mut("mesh1").unwrap().set_path_config(&again.node.name, released).unwrap();
         let again_build = publish_build(&builds, release).await;
         pipeline
-            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), exit: None })
+            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), unreached: false })
             .await
             .unwrap();
         assert!(matches!(provider.inspect(&again.handle).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");

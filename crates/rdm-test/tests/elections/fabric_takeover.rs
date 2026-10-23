@@ -28,11 +28,10 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready, with the hold at
-/// two staleness floors.
+/// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready.
 async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_HUNG_HOLD_FLOORS", "2")]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", shape).await;
     estate.settles_to(shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -94,7 +93,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_onc
     let test = "a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_once_at_the_decision_step";
     // The faulted-admin binding set: every admin serves the testkit's fault door.
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_HUNG_HOLD_FLOORS", "2")]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 2, 1)], Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -146,7 +145,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_onc
     assert_eq!(s(&took_over[0]["attributes"]["node"]), winner_name, "by the backbone's winner: {took_over:#?}");
     assert!(s(&took_over[0]["attributes"]["lost"]).contains(&s(&holder["node_id"])), "of mesh1's fabric-primary: {took_over:#?}");
     let looks = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter().filter(|sp| s(&sp["attributes"]["suspect"]).starts_with("mesh1.admin.")).cloned().collect::<Vec<_>>();
-    assert!(!looks.is_empty() && looks.iter().all(|sp| sp["attributes"]["finding"] != "exit-proven"), "mesh1's admins are looked at and never proven exited: {looks:#?}");
+    assert!(!looks.is_empty() && looks.iter().all(|sp| sp["attributes"]["finding"] != "reached"), "mesh1's admins are looked at and never reached: {looks:#?}");
     estate.record_trace_url(s(&took_over[0]["trace_id"]).as_str());
     let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == winner_name && sp["attributes"]["mesh"] == "mesh1").collect();
     assert!(probes.len() >= 2 && probes.iter().all(|sp| sp["attributes"]["outcome"] != "admin-alive"), "mesh2's primary probed mesh1's admins twice, none answering, before the decision: {probes:#?}");
@@ -176,23 +175,19 @@ fn spans_where(spans: &[Value], name: &str, key: &str, value: &str) -> Vec<Strin
     named(spans, name).into_iter().filter(|sp| s(&sp["attributes"][key]) == value).map(|sp| format!("{} {}", sp["trace_id"], sp["attributes"])).collect()
 }
 
-/// CONTRACT (elections §4.3: "The new fabric-primary re-creates the lost mesh's node-admin (mesh
-/// investigation's fully-crashed arm, run by it): over the inherited data dir only with exit proof of
-/// the old birth; otherwise over a newly allocated data dir with a new endpoint key, `inherited =
-/// false`"; node-recovery.md `R-FM2`: "For a lost mesh's node-admin, the fabric-primary runs this arm
-/// from the fabric lane ... with no inspection possible there is no exit proof and no gone-floors wait;
-/// the node-admin is created at its path.name over a newly allocated `data_dir` with a newly minted
-/// endpoint key, `inherited = false`, and the old birth's data dir is reused only once its exit is
-/// proven"; fabric-recovery.md step 4: once the node at the lost fabric-primary's path.name is
-/// ReadyForTraffic for one floor and its mesh's mesh-primary, the temporary fabric-primary hands back by
-/// `node.fabric-primary.update`): mesh1 is the fabric-primary's mesh and is lost, uninspectable from mesh2.
-/// mesh2's primary takes the fabric-primary over once, releases the lost birth (its row `Deleted`), then
-/// re-creates mesh1.admin.1 from the fabric lane: a new node.id at mesh1.admin.1, ready for traffic, over a
-/// data dir that is not the old birth's, with a newly minted endpoint key, told `RDM_INHERITED_DATA_DIR=0`,
-/// mesh1's mesh-primary by the election; the old birth's data dir is left as it was. The fabric-primary is
-/// handed back to it by the temporary fabric-primary's own update, whose successor installs it. Must NOT
-/// happen: the old birth's data dir or endpoint key reused, a provider exit proof recorded for mesh1's
-/// admins, or a second take-over.
+/// CONTRACT (mesh-investigation.md step 5, "No member answers": the fabric-primary creates mesh-x's
+/// node-admin in process "over the inherited data dir when the verdict is `exited` and over a newly
+/// allocated one otherwise (R-FM2)"; fabric-recovery.md step 3 and step 4: once the node at the lost
+/// fabric-primary's path.name is ReadyForTraffic for one floor and its mesh's mesh-primary, the temporary
+/// fabric-primary hands back by `node.fabric-primary.update`): mesh1 is the fabric-primary's mesh and is
+/// lost, uninspectable from mesh2. mesh2's primary takes the fabric-primary over once, then re-creates
+/// mesh1.admin.1 from the fabric lane: its node.delete of the lost birth (verdict `unavailable`, nothing
+/// terminated) writes the old row `Deleted`, and its node.create makes a new node.id at mesh1.admin.1,
+/// ready for traffic, over a data dir that is not the old birth's, with a newly minted endpoint key, told
+/// `RDM_INHERITED_DATA_DIR=0`, mesh1's mesh-primary by the election; the old birth's data dir is left as it
+/// was. The fabric-primary is handed back to it by the temporary fabric-primary's own update, whose
+/// successor installs it. Must NOT happen: the old birth's data dir or endpoint key reused, or a second
+/// take-over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_dir_with_inherited_false() {
     let test = "a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_dir_with_inherited_false";
@@ -229,46 +224,42 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
     };
     estate.stop().await;
     let spans = estate.spans();
-    let admitted = spans_where(&spans, "rdm.node_admin.mesh.update.via-takeover-recreate", "lost_node_id", &old_id);
     let claims = spans_where(&spans, "rdm.node_admin.node.create.via-node-row", "subject", "mesh1.admin.1");
     let steps = spans_where(&spans, "rdm.node_admin.deployment.update.via-step", "node", "mesh1.admin.1");
     let Some(new) = recreated else {
-        panic!("mesh1.admin.1 was not re-created from the fabric lane; admitted {admitted:#?}; name claims {claims:#?}; create steps {steps:#?}");
+        panic!("mesh1.admin.1 was not re-created from the fabric lane; name claims {claims:#?}; create steps {steps:#?}");
     };
-    assert!(!admitted.is_empty(), "the re-creation was admitted on the takeover, with no exit proof");
     assert_ne!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "a newly minted endpoint key: {new:?}");
     let new_dir = new.data_dir.clone().expect("the re-created admin's data dir");
     assert_ne!(std::path::Path::new(&new_dir), old_dir.as_path(), "a newly allocated data dir: {new:?}");
     assert_eq!(std::fs::read(old_dir.join("node-key")).ok(), Some(old_key), "the old birth's data dir is left as it was");
     assert_eq!(told.as_deref(), Some("0"), "the re-created admin was told inherited = false");
-    let proofs: Vec<String> = named(&spans, "rdm.node_admin.mesh.update.via-crash-proof").into_iter().filter(|sp| s(&sp["attributes"]["mesh"]) == "mesh1" && s(&sp["attributes"]["outcome"]) == "proven").map(|sp| sp["attributes"].to_string()).collect();
-    assert!(proofs.is_empty(), "no provider exit proof of mesh1 was read: {proofs:#?}");
     // One take-over, by mesh2's admin, of the lost birth.
     let took_over: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| sp["attributes"]["outcome"] == "primary-updated").collect();
     assert_eq!(took_over.len(), 1, "one take-over: {took_over:#?}");
     assert!(s(&took_over[0]["attributes"]["node"]) == winner_name && s(&took_over[0]["attributes"]["lost"]).contains(&old_id), "{winner_name} took over from the lost birth: {took_over:#?}");
-    // The lost birth holds nothing any more: its row Deleted.
-    let released = spans_where(&spans, "rdm.node_admin.node.delete.via-takeover-release", "subject", "mesh1.admin.1");
-    assert!(released.iter().any(|r| r.contains("\"row\":\"deleted\"")), "the lost birth is released by the take-over: {released:#?}");
+    // The lost birth holds nothing any more: its node.delete wrote its row Deleted.
+    let deleted = spans_where(&spans, "rdm.node_admin.node.delete.via-node-row", "subject", "mesh1.admin.1");
+    assert!(deleted.iter().any(|r| r.contains(&old_id) && r.contains("row-deleted")), "the lost birth's row is written Deleted by its node.delete: {deleted:#?}");
     // The hand-back: the temporary fabric-primary's own update moves the fabric-primary to mesh1's
     // re-created admin, which installs it.
     let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == winner_name && sp["attributes"]["moving"] == "fabric-primary" && sp["attributes"]["outcome"] == "updated" && sp["attributes"]["successor"] == "mesh1.admin.1").collect();
     assert!(handed_back && back.len() == 1, "the fabric-primary is handed back to mesh1's re-created admin {} by one update: {back:#?}", new.node_id);
     let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && s(&sp["attributes"]["primaries"]).starts_with("fabric ") && sp["attributes"]["outcome"] == "held").collect();
     assert_eq!(installed.len(), 1, "mesh1's re-created admin installed the fabric-primary once: {installed:#?}");
-    estate.record_trace_url(admitted[0].split(' ').next().unwrap_or("").trim_matches('"'));
+    estate.record_trace_url(deleted[0].split(' ').next().unwrap_or("").trim_matches('"'));
 }
 
-/// CONTRACT (elections §4.3: "over the inherited data dir only with exit proof of the old birth";
-/// node-recovery.md "Retained": "inherited data dir and endpoint key"): mesh1 holds the fabric seat and
-/// is lost; mesh2's admin can inspect it, so every node of mesh1 is proven exited, the seat moves by the
-/// ordinary rule, and mesh2's primary re-creates mesh1.admin.1 (the fully crashed arm) over the old
-/// birth's data dir: a new node.id at mesh1.admin.1, ready for traffic, with the old birth's endpoint
-/// key, told `RDM_INHERITED_DATA_DIR=1`. Must NOT happen: a newly allocated data dir or a newly minted
-/// key for an admin whose exit is proven.
+/// CONTRACT (mesh-investigation.md step 5: "over the inherited data dir when the verdict is `exited`";
+/// node-recovery.md "Retained": "the inherited data dir and endpoint key when the verdict is
+/// `exited`"): mesh1 holds the fabric seat and is lost; mesh2's admin can inspect it, so the old birth's
+/// node.delete reads its runtime exited at its `TerminateRuntime`, and mesh2's primary re-creates
+/// mesh1.admin.1 over the old birth's data dir: a new node.id at mesh1.admin.1, ready for traffic, with
+/// the old birth's endpoint key, told `RDM_INHERITED_DATA_DIR=1`. Must NOT happen: a newly allocated
+/// data dir or a newly minted key for an admin whose runtime exited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_exit_proof() {
-    let test = "a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_exit_proof";
+async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited() {
+    let test = "a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited";
     let mut estate = estate_of(test, &[("mesh1", 1, 1), ("mesh2", 1, 1)]).await;
     let nodes = estate.node_values().await;
     let old = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().expect("mesh1.admin.1");
@@ -300,6 +291,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_
     assert_eq!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "the old birth's endpoint key, loaded from its data dir: {new:?}");
     assert_eq!(new.data_dir.as_deref().map(std::path::PathBuf::from), Some(old_dir.clone()), "the old birth's data dir: {new:?}");
     assert_eq!(told.as_deref(), Some("1"), "the re-created admin was told inherited = true");
-    let proof = named(&spans, "rdm.node_admin.mesh.update.via-crash-proof").into_iter().find(|sp| s(&sp["attributes"]["mesh"]) == "mesh1" && s(&sp["attributes"]["outcome"]) == "proven").cloned().expect("every node of mesh1 proven exited");
-    estate.record_trace_url(&s(&proof["trace_id"]));
+    let read = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == old_id && s(&sp["attributes"]["caller"]) == "terminate").cloned().expect("the old birth's node.delete read its runtime at its TerminateRuntime");
+    assert_eq!(s(&read["attributes"]["verdict"]), "exited", "{read}");
+    estate.record_trace_url(&s(&read["trace_id"]));
 }

@@ -372,9 +372,6 @@ pub fn set_member_status(book: &rdm_transport::membership::DigestBook, receipt: 
 pub struct StatusAuthority {
     /// This admin's own declaration and the application channels it holds.
     pub app_channels: Option<rdm_transport::membership::Membership>,
-    /// The fabric-seat takeover this admin holds because the store could not commit it, shared with
-    /// its handover door; `fabric.get` surfaces it (elections §5).
-    pub held_takeover: crate::fabric_handover::HeldTakeovers,
     /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
@@ -428,6 +425,10 @@ pub struct StatusAuthority {
     /// This admin's rounds (commit-state, open-traffic); filled once the admin holds the handles
     /// they act through.
     pub rounds: Arc<OnceLock<Arc<crate::fabric_rounds::FabricRounds>>>,
+    /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
+    /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
+    /// waits on (build.md §5.3).
+    pub fabric_recovery: Arc<OnceLock<crate::fabric_recovery::Reader>>,
     /// This admin's `node.config.update` door, served while it holds a mesh's primary seat (the writer
     /// of that mesh's rows); filled once the admin's node-RPC client exists.
     pub configs: crate::node_config::NodeConfigsSlot,
@@ -503,8 +504,11 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                 }
             };
             // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
-            // which sets its status (node-status.md "Status report").
-            if !(me.is_primary && me.mesh == subject.mesh) {
+            // which sets its status (node-status.md "Status report"). While fabric recovery runs and the
+            // mesh has no mesh-primary, its executor takes the declarations of the node it re-creates at
+            // the target's path.name: its own node.create waits on them (build.md §5.3, Q122).
+            let recovers = auth.fabric_recovery.get().is_some_and(|read| crate::fabric_recovery::executes_for(Some(read), view, &me_name, &subject.mesh) && read(view).is_some_and(|fr| fr.at.as_ref() == Some(&subject.name)));
+            if !(me.is_primary && me.mesh == subject.mesh) && !recovers {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
             }
             // The exact birth: a declaration for an incarnation the view no longer holds is stale.
@@ -843,8 +847,7 @@ impl StatusAuthority {
                     // a read that fails is named, never answered as no Build.
                     return match self.builds.current_build().await {
                         Ok(current) => {
-                            let takeover = self.held_takeover.lock().unwrap().clone();
-                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage, takeover, self.certs.as_ref().and_then(|c| c.now_ms())).await
+                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage, self.certs.as_ref().and_then(|c| c.now_ms())).await
                         }
                         Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
@@ -1604,7 +1607,6 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
     }
 }
 
-
 /// The downward exact-node operations, answered by the birth they reach, whoever sends them
 /// (node-rpc.md §14) and whatever node id they name (R-RX5). `Some(reply)` for those requests;
 /// `None` for every other request.
@@ -1959,7 +1961,6 @@ mod tests {
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -1977,7 +1978,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
@@ -2025,7 +2026,6 @@ mod tests {
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2043,7 +2043,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
@@ -2101,7 +2101,6 @@ mod tests {
         StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2119,7 +2118,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
@@ -2379,29 +2378,11 @@ mod tests {
         async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
             self.inner.node_silences().await
         }
-        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit(row).await
-        }
-        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit(node_id, incarnation_id).await
-        }
         async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
             self.inner.mesh_status_held_of(mesh, row).await
         }
         async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_status_of(mesh, row).await
-        }
-        async fn node_exit_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit_of(mesh, row).await
-        }
-            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
-            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_held_running_of(mesh, row).await
         }
         async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
             self.inner.node_certs_of(mesh).await
@@ -2426,18 +2407,6 @@ mod tests {
         }
         async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
-            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_os_stopped_of(mesh, row).await
-        }
-        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
         }
         async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
@@ -2485,7 +2454,6 @@ mod tests {
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2503,7 +2471,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
@@ -2552,7 +2520,6 @@ mod tests {
         StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2571,7 +2538,7 @@ mod tests {
             mesh_deleter: Default::default(),
             hold_next_reply: Default::default(),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -2915,7 +2882,6 @@ mod tests {
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2933,7 +2899,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
@@ -3014,7 +2980,6 @@ mod tests {
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3032,7 +2997,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),

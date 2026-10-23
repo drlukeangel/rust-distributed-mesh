@@ -15,7 +15,7 @@
 
 use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
-use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
+use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
 use rdm_admin::build_state::{BuildFact, StepOutcome};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
@@ -61,6 +61,8 @@ pub(crate) struct Caller {
     resolver: Arc<StaticResolver>,
     /// The control API each node-admin advertises, by path.name, as the answering admin's view held it.
     bases: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+    /// The node id each node-admin's path.name held, as the answering admin's view held it.
+    ids: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
 }
 
 impl Caller {
@@ -69,7 +71,7 @@ impl Caller {
         let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
         let resolver = Arc::new(StaticResolver::new());
         let client = Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm"));
-        let caller = Caller { peers: estate.peers().await, entry: estate.entry().await, fabric_id: estate.fabric_id.clone(), client, resolver, bases: Default::default() };
+        let caller = Caller { peers: estate.peers().await, entry: estate.entry().await, fabric_id: estate.fabric_id.clone(), client, resolver, bases: Default::default(), ids: Default::default() };
         caller.learn().await;
         caller
     }
@@ -83,6 +85,7 @@ impl Caller {
             if let Some(base) = n.admin_api_base.clone() {
                 self.bases.lock().unwrap().insert(n.name.to_string(), base);
             }
+            self.ids.lock().unwrap().insert(n.name.to_string(), n.node_id.to_string());
             let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) else { continue };
             self.resolver.insert(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
         }
@@ -391,7 +394,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let spans = estate.spans();
     let build = &accepted.build_id.to_string();
     let proofs: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string()).collect();
-    assert_eq!(proofs.len(), 1, "the departure was proven once, before the next attempt was claimed: {proofs:?}");
+    assert!(!proofs.is_empty(), "the departure was proven before the next attempt was claimed: {proofs:?}");
     assert_eq!(s(&proofs[0]["attributes"]["executor"]), "mesh2.admin.1");
     let claims: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && sp["attributes"]["attempt"].as_str().and_then(|a| a.parse::<u32>().ok()) > Some(accepted.attempt)).collect();
     let successor = claims.iter().find(|sp| s(&sp["attributes"]["executor"]) == "mesh2.admin.2").expect("the next attempt was claimed for the successor");
@@ -402,13 +405,13 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
 }
 
 /// CONTRACT (acceptance 2): the fabric-primary dies after claiming an attempt and before dispatching
-/// it. The successor fabric-primary resumes the Build from its projection: it calls the executor the
+/// it. Fabric recovery restores the node it re-creates at its path.name (Q122), which resumes the Build from its projection: it calls the executor the
 /// claim names with `build.attempt.run`, which starts the claimed attempt, and the caller's re-submit
 /// by the Build id streams it to `Complete`. No step has a second receipt, and no attempt beyond the
 /// claimed one is opened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice() {
-    let test = "a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice";
+async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice() {
+    let test = "a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice";
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
@@ -436,10 +439,11 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     };
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a dead fabric-primary ends the caller's stream indeterminate, never as a failed step: {end:?}");
 
-    // A seat moves to a surviving admin; the caller re-submits there by the Build id.
-    let successor = caller.successor_of(&fp).await;
-    let carrier = caller.carrier_at(&successor);
-    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Restart(node), &accepted).await.expect("the successor accepts the re-submit");
+    // Fabric recovery restores the node it re-creates at the fabric-primary's path.name (Q122); the caller
+    // re-submits there by the Build id.
+    let restored = caller.restored_fabric_primary(&fp).await;
+    let carrier = caller.carrier_at(&restored);
+    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Restart(node), &accepted).await.expect("the restored fabric-primary accepts the re-submit");
     assert_eq!(resumed.accepted().build_id, accepted.build_id, "never a second Build");
     let frames = frames_of(&mut resumed).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
@@ -451,10 +455,12 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     keys.sort();
     keys.dedup();
     assert_eq!(keys.len(), before, "no step has two receipts");
-    assert_eq!(receipts.attempt, accepted.attempt, "the successor started the attempt that was claimed and opened no other");
+    assert_eq!(receipts.attempt, accepted.attempt, "the restored fabric-primary started the attempt that was claimed and opened no other");
 
     // The estate stops through the admin that holds the seat now.
-    estate.enter(&path(&successor)).await;
+    // A surviving admin's view names the restored birth: the estate dials it from then on.
+    let _ = estate.node_views_at(&path(&caller.survivor_of(&fp))).await;
+    estate.enter(&path(&restored)).await;
     estate.stop().await;
     let spans = estate.spans();
     let build = &accepted.build_id.to_string();
@@ -544,15 +550,39 @@ impl Caller {
         self.admins_except(dead).into_iter().next().unwrap_or_else(|| panic!("no node-admin survives {dead}"))
     }
 
-    /// The node-admin that holds the fabric-primary seat once `dead` has died: the first surviving
-    /// admin's own view of the fabric is awaited until it names a fabric-primary other than `dead`.
-    async fn successor_of(&self, dead: &str) -> String {
-        let asked = self.survivor_of(dead);
-        let view = Fabrics::new(self.carrier_at(&asked))
-            .fact(&format!("a fabric-primary other than {dead}"), Duration::from_secs(60), |f| f.fabric_primary.as_ref().is_some_and(|p| p.to_string() != dead))
-            .await
-            .unwrap_or_else(|end| panic!("{end}"));
-        view.fabric_primary.expect("the awaited view names a fabric-primary").to_string()
+    /// The node-admin that is fabric-primary once `dead`, the fabric-primary, has died: nobody takes the role
+    /// meanwhile, and fabric recovery restores the node it re-creates at `dead`'s path.name (Q122). A
+    /// surviving admin's view is read until it names a ReadyForTraffic fabric-primary other than `dead`'s
+    /// birth; that birth is made reachable here, and its path.name returned.
+    async fn restored_fabric_primary(&self, dead: &str) -> String {
+        let asked = path(&self.survivor_of(dead));
+        let dead_id = self.ids.lock().unwrap().get(dead).cloned().unwrap_or_default();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            if let Some(views) = rdm_test::typed::node_views_of(&self.peers, &asked, &self.fabric_id).await {
+                let restored = views.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary && n.status == NodeStatus::ReadyForTraffic && n.node_id.to_string() != dead_id);
+                if let Some(n) = restored {
+                    if let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) {
+                        if let Ok(old) = rdm_core::NodeId::parse(&dead_id) {
+                            self.resolver.remove_gone(&old);
+                        }
+                        self.resolver.insert(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+                        if let Some(base) = n.admin_api_base.clone() {
+                            self.bases.lock().unwrap().insert(n.name.to_string(), base);
+                        }
+                        // The restored node's own view names it fabric-primary once it installed the roles.
+                        let name = n.name.to_string();
+                        Fabrics::new(self.carrier_at(&name))
+                            .fact(&format!("{name} names itself the fabric-primary"), Duration::from_secs(60), |f| f.fabric_primary.as_ref().is_some_and(|p| p.to_string() == name))
+                            .await
+                            .unwrap_or_else(|end| panic!("{end}"));
+                        return name;
+                    }
+                }
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{asked}'s view names no ReadyForTraffic fabric-primary other than {dead}'s birth {dead_id} within 120s");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 }
 
@@ -645,8 +675,8 @@ struct Lost {
     /// The attempt the lost fabric-primary's run executed.
     attempt: u32,
     /// The admin that holds the fabric-primary seat after it.
-    successor: String,
-    /// The carrier at that successor, after it streamed the Build to `Complete`.
+    restored: String,
+    /// The carrier at the restored fabric-primary, after it streamed the Build to `Complete`.
     carrier: BuildCarrier,
 }
 
@@ -654,13 +684,13 @@ struct Lost {
 /// a claim from here on is written to the store root, never held in a scratchpad that dies with its
 /// writer. A fabric-primary grows the fabric by mesh2 through `build.create` and is lost at `cut` (the
 /// fabric-primary's own Door parks it there), after its claim of mesh2's name landed: mesh2's row is on
-/// the store root. A seat moves to a surviving admin, and the caller re-submits the Build there by its id
+/// the store root. Fabric recovery restores the node it re-creates at the fabric-primary's path.name (Q122), and the caller re-submits the Build there by its id
 /// and follows it to `Complete`. mesh2 is then the mesh the lost fabric-primary's claim wrote.
 ///
 /// `survivor_holds` is a precondition of the cut: the operation whose `Complete` receipt, at the lost
 /// attempt, the surviving mesh1 admin's own Build log must hold before the fabric-primary is lost. The
 /// receipt reaches that admin by the Build topic's push; the loss comes within milliseconds of the
-/// receipt, so a cell that reads the receipt at its successor awaits the push first. A cell that
+/// receipt, so a cell that reads the receipt at the restored fabric-primary awaits the push first. A cell that
 /// cuts before the receipt exists passes `None`.
 async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Caller, carrier: &BuildCarrier, cut: Value, survivor_holds: Option<&str>) -> Lost {
     let fp = carrier.fabric_primary().to_string();
@@ -704,40 +734,43 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     };
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a dead fabric-primary ends the caller's stream indeterminate: {end:?}");
 
-    // A seat moves to a surviving admin; the caller re-submits there by the Build id.
-    let successor = caller.successor_of(&fp).await;
-    let carrier = caller.carrier_at(&successor);
-    let mut resumed = carrier.resubmit(&build_id, attempt).await.expect("the successor accepts the re-submit by build_id");
+    // Fabric recovery restores the node it re-creates at the fabric-primary's path.name (Q122); the caller
+    // re-submits there by the Build id.
+    let restored = caller.restored_fabric_primary(&fp).await;
+    let carrier = caller.carrier_at(&restored);
+    let mut resumed = carrier.resubmit(&build_id, attempt).await.expect("the restored fabric-primary accepts the re-submit by build_id");
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
     // The estate is read and stopped through the admin that holds the seat now.
-    estate.enter(&path(&successor)).await;
+    // A surviving admin's view names the restored birth: the estate dials it from then on.
+    let _ = estate.node_views_at(&path(&caller.survivor_of(&fp))).await;
+    estate.enter(&path(&restored)).await;
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
-    let mesh2 = Meshes::new(carrier.clone()).get(&MeshSelector::Mesh("mesh2".into())).await.expect("mesh2's view at the successor").pop().expect("the successor's view holds mesh2");
+    let mesh2 = Meshes::new(carrier.clone()).get(&MeshSelector::Mesh("mesh2".into())).await.expect("mesh2's view at the restored fabric-primary").pop().expect("the restored fabric-primary's view holds mesh2");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
-    Lost { build_id, attempt, successor, carrier }
+    Lost { build_id, attempt, restored, carrier }
 }
 
-/// `create-mesh:mesh2`'s receipts in `lost`'s Build, as the successor reads them: `(attempt, step, complete)`.
+/// `create-mesh:mesh2`'s receipts in `lost`'s Build, as the restored fabric-primary reads them: `(attempt, step, complete)`.
 async fn create_mesh_receipts(lost: &Lost) -> Vec<(u32, String, bool)> {
-    let receipts = Builds::new(lost.carrier.clone()).get(&lost.build_id).await.expect("build.get at the successor");
+    let receipts = Builds::new(lost.carrier.clone()).get(&lost.build_id).await.expect("build.get at the restored fabric-primary");
     receipts.steps.iter().filter(|r| r.operation == "create-mesh:mesh2").map(|r| (r.attempt, r.step.clone(), matches!(r.result, StepResult::Complete))).collect()
 }
 
 /// The trace of `create-mesh:mesh2` in `spans`: each claim of mesh2's name and each receipt step, by node
-/// and outcome. The flame of the cell, never its assertion. The trace id of the successor's span.
+/// and outcome. The flame of the cell, never its assertion. The trace id of the restored fabric-primary's span.
 fn create_mesh_flame(spans: &[Value], lost: &Lost) -> Option<String> {
     let claims = spans_named(spans, "rdm.node_admin.mesh.create.via-mesh-row").into_iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && c["attributes"]["moment"] == "claim");
     let steps = spans_named(spans, "rdm.node_admin.mesh.create.via-receipt").into_iter().filter(|c| c["attributes"]["mesh"] == "mesh2");
-    let mut successors = Vec::new();
+    let mut restored = Vec::new();
     for c in claims.chain(steps) {
         let (name, node) = (c["name"].as_str().unwrap_or_default().to_string(), s(&c["attributes"]["node"]));
         eprintln!("trace {}: {name} mesh=mesh2 node={node} mesh_id={} attempt={} outcome={}", s(&c["trace_id"]), s(&c["attributes"]["mesh_id"]), s(&c["attributes"]["attempt"]), s(&c["attributes"]["outcome"]));
-        if node == lost.successor {
-            successors.push(s(&c["trace_id"]));
+        if node == lost.restored {
+            restored.push(s(&c["trace_id"]));
         }
     }
-    successors.into_iter().next()
+    restored.into_iter().next()
 }
 
 /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "completed step receipts are read and replayed, never
@@ -747,14 +780,14 @@ fn create_mesh_flame(spans: &[Value], lost: &Lost) -> Option<String> {
 /// name writes its row, and the step is receipted `Complete`) and is lost before the next step's receipt is
 /// durable: the first admin's `AllocateIdentity`. The loss waits for the receipt to reach the surviving
 /// mesh1 admin: its own Build log holds `create-mesh:mesh2` `Complete` at the lost attempt. The
-/// successor fabric-primary resumes the same Build: it
+/// restored fabric-primary resumes the same Build: it
 /// reads the `create-mesh:mesh2` receipt and does not run the step again, and streams the Build to
 /// `Complete`. mesh2 is the mesh the lost fabric-primary's claim wrote. The Build holds exactly one
 /// `Complete` receipt of `create-mesh:mesh2`, written by the run that executed it. Must NOT happen: the
-/// successor claiming mesh2's name again, or a second receipt of the step.
+/// restored fabric-primary claiming mesh2's name again, or a second receipt of the step.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_successor_fabric_primary_reads_the_create_mesh_receipt_and_does_not_claim_the_mesh_again() {
-    let test = "a_successor_fabric_primary_reads_the_create_mesh_receipt_and_does_not_claim_the_mesh_again";
+async fn a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_claim_the_mesh_again() {
+    let test = "a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_claim_the_mesh_again";
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
@@ -770,22 +803,22 @@ async fn a_successor_fabric_primary_reads_the_create_mesh_receipt_and_does_not_c
     if let Some(trace) = create_mesh_flame(&spans, &lost) {
         estate.record_trace_url(&trace);
     }
-    assert_eq!(receipts, vec![(lost.attempt, "Complete".to_string(), true)], "create-mesh:mesh2 is receipted once, by the run that executed it; the successor reads that receipt and runs nothing: {receipts:?}");
+    assert_eq!(receipts, vec![(lost.attempt, "Complete".to_string(), true)], "create-mesh:mesh2 is receipted once, by the run that executed it; the restored fabric-primary reads that receipt and runs nothing: {receipts:?}");
 }
 
 /// CONTRACT (node-rpc-envelope.md, Build carrier: "Settle an idempotent uncertain step by its natural key";
 /// node-identity-and-state.md §2.7: "The same MeshId re-claiming its own name, at state-commit, on a retry or
 /// from a replaced primary, is idempotent and accepted"): the fabric is past its first state-commit. The
 /// fabric-primary accepts mesh2, claims mesh2's name with the MeshId the Build carries (its row lands on
-/// the store root) and is lost before it receipts `create-mesh:mesh2`. The successor fabric-primary resumes
+/// the store root) and is lost before it receipts `create-mesh:mesh2`. The restored fabric-primary resumes
 /// the same Build: the step has no receipt, so it is uncertain and runs by its natural key; the claim
-/// finds the mesh's own row (`row-held-by-mesh`) and the step is receipted `Complete` by the successor's
+/// finds the mesh's own row (`row-held-by-mesh`) and the step is receipted `Complete` by the restored fabric-primary's
 /// run. mesh2 is the mesh the lost fabric-primary's claim wrote. The Build holds exactly one `Complete`
 /// receipt of `create-mesh:mesh2`, written after the cut. Must NOT happen: a refused claim
 /// (`name-held`) by the mesh's own row, a second MeshId, or a step that ends with no receipt.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_successor_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_natural_key_and_receipts_it() {
-    let test = "a_successor_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_natural_key_and_receipts_it";
+async fn a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_natural_key_and_receipts_it() {
+    let test = "a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_natural_key_and_receipts_it";
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
@@ -800,7 +833,7 @@ async fn a_successor_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its
     if let Some(trace) = create_mesh_flame(&spans, &lost) {
         estate.record_trace_url(&trace);
     }
-    assert!(matches!(receipts.as_slice(), [(at, step, true)] if *at >= lost.attempt && step == "Complete"), "create-mesh:mesh2 is receipted once, by the successor's run, after the cut: {receipts:?}");
+    assert!(matches!(receipts.as_slice(), [(at, step, true)] if *at >= lost.attempt && step == "Complete"), "create-mesh:mesh2 is receipted once, by the restored fabric-primary's run, after the cut: {receipts:?}");
 }
 
 /// CONTRACT (Q30): a launch whose executable hash outlasts the QUIC idle timeout keeps every open

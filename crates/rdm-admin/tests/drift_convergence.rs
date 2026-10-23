@@ -44,7 +44,6 @@ const DOMAIN: &str = "process:test-world";
 struct Runtime {
     path: String,
     node_id: String,
-    pid: u32,
     status: DeploymentStatus,
     answers: bool,
 }
@@ -54,8 +53,6 @@ struct Runtime {
 struct World {
     runtimes: Mutex<BTreeMap<u32, Runtime>>,
     next_pid: Mutex<u32>,
-    /// The runtimes recorded at a path cannot be read: why.
-    unreadable: Mutex<Option<String>>,
 }
 
 impl World {
@@ -63,7 +60,7 @@ impl World {
         let mut p = self.next_pid.lock().unwrap();
         *p += 1;
         let pid = 1000 + *p;
-        self.runtimes.lock().unwrap().insert(pid, Runtime { path: path.into(), node_id: node_id.into(), pid, status: DeploymentStatus::Running, answers: true });
+        self.runtimes.lock().unwrap().insert(pid, Runtime { path: path.into(), node_id: node_id.into(), status: DeploymentStatus::Running, answers: true });
         pid
     }
     fn of(&self, node_id: &str) -> Option<Runtime> {
@@ -95,13 +92,9 @@ impl World {
 struct Provider(Arc<World>);
 
 /// The drive's departure proof over the estate: an executor's departure is proven by nothing here
-/// (the drive's executors in these cells never leave), and a fully crashed mesh's node-admins are
-/// proven by the product's own read of the world's provider (`admin::nodes_exit_proof`), the read
-/// the fabric authority's pass makes.
+/// (the drive's executors in these cells never leave).
 struct WorldProofs {
     view: Arc<RwLock<Topology>>,
-    book: DigestBook,
-    provider: Provider,
     /// The fabric-primary's records the claim of a fully crashed mesh's create authors degraded in, and the
     /// fabric-primary they are the records of.
     records: Arc<rdm_admin::admin::Records>,
@@ -115,10 +108,6 @@ impl rdm_admin::build_drive::DepartureProof for WorldProofs {
     }
     async fn mesh_given_node_admin(&self, mesh: &str, _build_id: &BuildId, _attempt: u32, from: std::time::Instant) {
         rdm_admin::admin::give_mesh_node_admin(&self.records, &self.me, &self.view, mesh, from).await;
-    }
-    async fn exits_of(&self, nodes: &[PathName]) -> rdm_admin::build_drive::ExitProofs {
-        let view = self.view.read().await.clone();
-        rdm_admin::admin::nodes_exit_proof(nodes, &view, &self.book, &[], Some(&Probe(self.provider.0.clone())), &self.provider).await
     }
 }
 
@@ -160,18 +149,11 @@ impl PathProbe for Probe {
             None => Inspected::Unavailable(format!("{} has no runtime in this world", node.name)),
             Some(DeploymentStatus::Running) => Inspected::Running,
             Some(DeploymentStatus::OsStopped) => Inspected::OsStopped,
-            Some(DeploymentStatus::Exited { code }) => Inspected::Exited(code, "provider"),
-            Some(DeploymentStatus::Unknown) => Inspected::Unavailable("its runtime is not proven exited: Unknown".into()),
+            Some(DeploymentStatus::Exited { code }) => Inspected::Exited(code),
+            Some(DeploymentStatus::Unknown) => Inspected::Unavailable("the provider cannot tell its runtime's state: Unknown".into()),
         }
-    }
-    async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
-        if let Some(why) = self.0.unreadable.lock().unwrap().clone() {
-            return Err(why);
-        }
-        Ok(self.0.runtimes.lock().unwrap().values().filter(|r| r.path == path.to_string()).map(|r| (format!("pid {}", r.pid), r.status.clone())).collect())
     }
 }
-
 
 /// The node id of the birth `me` names in `t`: the drift pass's authority identity.
 fn own_id(t: &rdm_admin::topology::Topology, me: &PathName) -> rdm_core::NodeId {
@@ -414,7 +396,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.book, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.book, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
     }
 
     /// The fabric-primary drives the accepted Build until no Build is active: the claim on its own
@@ -472,7 +454,7 @@ impl Estate {
             door,
             dispatcher: self.dispatch.clone(),
             gate,
-            departure: Arc::new(WorldProofs { view: self.view.clone(), book: self.book.clone(), provider: Provider(self.world.clone()), records: self.records.clone(), me: primary.clone() }),
+            departure: Arc::new(WorldProofs { view: self.view.clone(), records: self.records.clone(), me: primary.clone() }),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
             turns: rdm_admin::stop_gate::StopGate::new(),
         })
@@ -961,9 +943,10 @@ async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_th
 }
 
 /// A successor fabric primary that never heard a dead sibling holds nothing of it but the durable
-/// row its predecessor handed over: that row is the exact runtime to inspect.
+/// row its predecessor handed over: that row is the exact runtime to inspect, and its exited birth is
+/// recovered first, before the hung admin whose runtime runs (node-recovery.md step 3).
 #[tokio::test]
-async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row() {
+async fn a_successor_recovers_a_sibling_admin_known_only_by_its_durable_runtime_row() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
     // A peer mesh's node-admin cohort is lost (its first admin hung and silent, so no live
@@ -992,37 +975,13 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
     let current = e.builds.current().await.unwrap().unwrap();
     let action = current.action;
-    assert_eq!(one_step_create_of(&action).as_deref(), Some(lost), "the durable row's birth was proven exited: the mesh that lost its mesh-primary gets node.create of its node-admin, a one-step recipe, never a Recover or a replace: {action:?}");
+    assert_eq!(one_step_create_of(&action).as_deref(), Some(lost), "the durable row's birth reads exited: the mesh that lost its mesh-primary gets node.create of its node-admin, a one-step recipe, never a Recover or a replace: {action:?}");
     assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
     let _ = old;
-}
-
-#[tokio::test]
-async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
-    let e = estate().await;
-    let lost = "mesh1.admin.2";
-    let old = e.node_id(lost).await;
-    let row = {
-        let (d, _) = e.book.get(&old).unwrap();
-        rdm_admin::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
-    };
-    e.world.freeze(&old);
-    let heard = DigestBook::default();
-    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
-        heard.record(d);
-    }
-    let mut t = e.view.read().await.clone();
-    t.nodes.retain(|n| n.name.to_string() != lost);
-    rdm_admin::election::resolve(&mut t.nodes);
-    let me: PathName = t.fabric_primary().unwrap().name.clone();
-    let mut started = HashSet::new();
-    let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await;
-    assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }
 
 /// CONTRACT (mesh-recovery.md:8-9 "A lost member of a mesh with a live mesh-primary is node
@@ -1065,7 +1024,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     // The fabric-primary's drift folds the row and leaves the birth to that mesh-primary.
     let me: PathName = fp.parse().unwrap();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
     assert_eq!(opened, None, "the fabric-primary opens nothing for a node-admin its mesh-primary recovers");
 
     // The mesh-primary's tick: what it watches, from its view and its durable rows.
@@ -1078,9 +1037,9 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     let offline: HashSet<(NodeId, IncarnationId)> = [(row.node_id.clone(), row.incarnation_id.clone())].into();
     let due: Vec<String> = rdm_admin::admin::recovery_due(true, peer, &watched, &offline).iter().map(|n| n.name.to_string()).collect();
     assert_eq!(due, vec![lost.clone()], "{mp} inspects {lost} for recovery");
-    // The provider's exact-exit proof, from the row.
-    let proof = rdm_admin::admin::exit_proof_of(&e.provider, &None, Some(&row)).await;
-    assert!(proof.is_ok(), "the row's exact runtime is proven exited: {proof:?}");
+    // The provider's verdict, from the row.
+    let verdict = rdm_admin::admin::inspection_of(&e.provider, &None, Some(&row)).await;
+    assert!(matches!(verdict, Inspected::Exited(_)), "the row's exact runtime reads exited: {verdict:?}");
 
     // The mesh-primary opens and claims the recovery at its own door and runs it (R-BI7).
     let submitted = e.door_at(&mp.to_string()).await.open_recovery("node-recovery", row.name.clone(), row.node_id.clone(), row.incarnation_id.clone()).await;
@@ -1222,9 +1181,6 @@ mod one_attempt_number {
         async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, String)>, BuildStateError> {
             self.inner.mesh_deleted_of(node_id, incarnation).await
         }
-        async fn terminate_failures_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
-            self.inner.terminate_failures_of(node_id, incarnation).await
-        }
         async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
             self.inner.exits_owed(build_id, mesh).await
         }
@@ -1275,7 +1231,7 @@ mod one_attempt_number {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
         let t = e.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
@@ -1442,9 +1398,7 @@ mod one_attempt_number {
         let t = e.view.read().await.clone();
         let me_id = own_id(&t, &me);
         let refused = {
-            let exits = exit_records();
-            let verdicts = rdm_admin::admin::ExitVerdicts::default();
-            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &verdicts, &hold, &defers, &recovery, &|_| false, &|_| false, &exits, None, None));
+            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false));
             // One poll while the restart holds the admission inside its write.
             let early = tokio::select! {
                 biased;
@@ -1462,7 +1416,7 @@ mod one_attempt_number {
         let settled = e.builds.current().await.unwrap().unwrap();
         assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
         let t = e.view.read().await.clone();
-        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &Default::default(), &hold, &defers, &recovery, &|_| false, &|_| false, &exit_records(), None, None).await;
+        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
         assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
@@ -1490,9 +1444,9 @@ async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_
     assert!(t.cohort(lost, NodeKind::NodeAdmin).all(|a| a.status.is_live()), "the view still holds the dead admins ready");
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await;
+    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
-    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false, &|_| false, &exit_records(), None, None).await;
+    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the next attempt of the same Build");
     let opened = e.builds.current().await.unwrap().unwrap();
     assert_eq!(one_step_create_of(&opened.action).as_deref(), Some(format!("{lost}.admin.1").as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", opened.action);
@@ -1523,7 +1477,7 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &exit_records(), None, None).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
     assert_eq!(opened, None, "a proven departure is held: its runtime row is not drift");
 }
 
@@ -1574,19 +1528,17 @@ mod fully_crashed_mesh {
         (peer_mesh, admins)
     }
 
-    /// CONTRACT (R-ML3; mesh-investigation.md step 5, "Fully crashed"): every node of a peer mesh has
-    /// crashed, its node-admins included. The ladder's 60 s decision found the mesh `unreachable`
-    /// (a hold) and the provider proves the exact runtime of every one of its node-admins exited, so
-    /// the fabric-primary opens the next attempt of the SAME accepted Build as the one-step recipe
+    /// CONTRACT (R-ML3; mesh-investigation.md step 5, "No member answers"): every node of a peer mesh
+    /// has crashed, its node-admins included. The ladder's 60 s decision found the mesh `unreachable`,
+    /// so the fabric-primary opens the next attempt of the SAME accepted Build as the one-step recipe
     /// node.create of the mesh's first node-admin (no new wire variant), and the drive runs it to the
-    /// Build's completion. The proof read is its own named span listing every node-admin it proved;
-    /// the opening rides `via-proven-drift` with the proof's exit code and source. Before the
-    /// decision the same exits open nothing. Must NOT happen: the held mesh waiting for ever
-    /// (the opening needs the ladder's carrier-edge-lost decision, which a mesh with no member to
-    /// answer can never reach), or an opening before the ladder's decision on silence.
+    /// Build's completion; the opening rides `via-proven-drift`. Before the decision nothing opens.
+    /// Must NOT happen: the held mesh waiting for ever (the opening needs the ladder's
+    /// carrier-edge-lost decision, which a mesh with no member to answer can never reach), or an
+    /// opening before the ladder's decision on silence.
     #[tokio::test]
-    async fn every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it() {
-        let dir = evidence_dir("every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it");
+    async fn every_node_admin_of_a_peer_mesh_held_unreachable_opens_the_one_step_create_and_the_drive_completes_it() {
+        let dir = evidence_dir("every_node_admin_of_a_peer_mesh_held_unreachable_opens_the_one_step_create_and_the_drive_completes_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
@@ -1598,14 +1550,14 @@ mod fully_crashed_mesh {
             let before = e.builds.current().await.unwrap().unwrap();
             let (mut held, mut started) = (Held::new(), HashSet::new());
             let peer = peer_mesh.clone();
-            assert_eq!(pass(&e, &mut started, &mut held, &|_| BEFORE_THE_DECISION).await, None, "before the ladder's decision the exit proofs open nothing");
+            assert_eq!(pass(&e, &mut started, &mut held, &|_| BEFORE_THE_DECISION).await, None, "before the ladder's decision nothing opens");
             let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
             let opened = pass(&e, &mut started, &mut held, &decided).await;
-            assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision plus the proof of every node-admin opens the next attempt of the same Build");
+            assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision opens the next attempt of the same Build");
             let current = e.builds.current().await.unwrap().unwrap();
             assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", current.action);
             assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
-            // The drive reads the ladder's hold: the create the exit proof opened is the one thing that crosses the fence.
+            // The drive reads the ladder's hold: the create the decision opened is the one thing that crosses the fence.
             e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: DECIDED_UNREACHABLE.unwrap() })).await;
             assert_eq!(e.born(), vec![admins[0].clone()], "the create ran: the mesh's first node-admin is born, and nothing else of the mesh");
             let settled = e.builds.current().await.unwrap().unwrap();
@@ -1617,121 +1569,11 @@ mod fully_crashed_mesh {
         drop(root);
         let spans = capture.spans().expect("the cell's spans can be read");
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
-        // Two readers of the one proof: the pass that opened the attempt, and the drive whose fence
-        // admits the create on it (a span under its `via-drive`). Each names its read once.
-        let drives: Vec<&str> = named("rdm.node_admin.build.update.via-drive").iter().filter_map(|d| d["span_id"].as_str()).collect();
-        let proofs = named("rdm.node_admin.mesh.update.via-crash-proof");
-        let (admitted, opened): (Vec<&&serde_json::Value>, Vec<&&serde_json::Value>) = proofs.iter().partition(|p| p["parent_span_id"].as_str().is_some_and(|parent| drives.contains(&parent)));
-        assert_eq!((opened.len(), admitted.len()), (1, 1), "the proof read is named once by the pass that opened and once by the drive that admitted the create: {proofs:?}");
-        for p in opened.iter().chain(admitted.iter()) {
-            let a = &p["attributes"];
-            assert_eq!(a["outcome"], "proven", "{a}");
-            assert!(a["proven"].as_str().unwrap_or_default().contains(".admin.1") && a["proven"].as_str().unwrap_or_default().contains(".admin.2"), "the proof lists both node-admins: {a}");
-            assert_eq!(a["unproven"], "", "{a}");
-        }
-        let proof = opened;
-        let a = &proof[0]["attributes"];
         let drift = named("rdm.node_admin.build.update.via-proven-drift");
         assert_eq!(drift.len(), 1, "{drift:?}");
         let d = &drift[0]["attributes"];
-        assert_eq!((d["action"].as_str(), d["reason"].as_str(), d["exit_code"].as_str(), d["exit_proof"].as_str()), (Some("recipe"), Some("recipe"), Some("137"), Some("provider")), "{d}");
-        assert_eq!(proof[0]["trace_id"], drift[0]["trace_id"], "the proof and the opening are one story");
-        println!("build_id={trace_id} trace_id={} proof={a} opening={d}", drift[0]["trace_id"].as_str().unwrap_or_default());
-    }
-
-    /// CONTRACT (mesh-investigation.md step 5): any exit proof lacking, the mesh is held as ever and
-    /// the hold names why. One node-admin of the crashed mesh still runs but answers nothing: the
-    /// provider does not prove it exited, so the fabric-primary opens no attempt and creates no
-    /// node-admin, and the proof read names that admin and the reason. Must NOT happen: the create
-    /// opened on the proof of the admins that exited (the live admin's mesh would be given a second
-    /// first node-admin), or the hold unnamed.
-    #[tokio::test]
-    async fn a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it() {
-        let dir = evidence_dir("a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
-        let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-held");
-        use tracing::Instrument as _;
-        let admin2 = async {
-            let e = estate().await;
-            let (peer_mesh, admins) = crash_the_peer_mesh(&e, &[1]).await;
-            let before = e.builds.current().await.unwrap().unwrap();
-            let (mut held, mut started) = (Held::new(), HashSet::new());
-            let decided = move |m: &str| (m == peer_mesh).then_some(DECIDED_UNREACHABLE).flatten();
-            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "one node-admin is not proven exited: the mesh is held");
-            let after = e.builds.current().await.unwrap().unwrap();
-            assert_eq!(after.attempt, before.attempt, "no attempt was opened");
-            assert!(e.born().is_empty(), "no node was created: {:?}", e.born());
-            admins[1].clone()
-        }
-        .instrument(root.clone())
-        .await;
-        drop(root);
-        let spans = capture.spans().expect("the cell's spans can be read");
-        let proof: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
-        assert_eq!(proof.len(), 1, "the held proof read is named once: {proof:?}");
-        let a = &proof[0]["attributes"];
-        assert_eq!(a["outcome"], "held", "{a}");
-        assert!(a["unproven"].as_str().unwrap_or_default().contains(&admin2) && a["unproven"].as_str().unwrap_or_default().contains("not proven exited"), "the proof names the admin and why: {a}");
-        assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift"), "a held mesh opens no attempt");
-        println!("trace_id={} proof={a}", proof[0]["trace_id"].as_str().unwrap_or_default());
-    }
-
-    /// CONTRACT (mesh-investigation.md step 5): "Fully crashed. Every node of mesh-x, its node-admins
-    /// included, has crashed" and "No answer from any member in either probe, with no exact provider exit
-    /// proof, means hold". The ladder's 60 s decision on the peer mesh came out `unreachable`, and the
-    /// provider proves both of its node-admins exited, but one of its ordinary members still runs
-    /// (it answers nothing). The mesh is not fully crashed: the fabric-primary opens no attempt and
-    /// creates no node-admin, and the proof read names the running member. When that member has exited
-    /// too, every node of the mesh is proven exited and the create of its first node-admin opens.
-    /// Must NOT happen: a node-admin created in process over a mesh whose member runs (the
-    /// members-live arm is carrier-edge-lost only), or a hold that does not name the member.
-    #[tokio::test]
-    async fn a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too() {
-        let dir = evidence_dir("a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
-        let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-member-runs");
-        use tracing::Instrument as _;
-        let (member, nodes) = async {
-            let e = estate().await;
-            // The nodes of the peer mesh in path order are admin.1, admin.2, rpc.1, rpc.2, rpc.3: the
-            // third keeps running and answers nothing, the rest exit.
-            let (peer_mesh, admins) = crash_the_peer_mesh(&e, &[2]).await;
-            let member = format!("{peer_mesh}.rpc.1");
-            let before = e.builds.current().await.unwrap().unwrap();
-            let (mut held, mut started) = (Held::new(), HashSet::new());
-            let peer = peer_mesh.clone();
-            let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
-            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "{member} still runs: the mesh is not fully crashed and is held");
-            let after = e.builds.current().await.unwrap().unwrap();
-            assert_eq!(after.attempt, before.attempt, "no attempt was opened");
-            assert!(e.born().is_empty(), "no node-admin was created in process: {:?}", e.born());
-            // The member exits too: every node of the mesh is proven exited.
-            e.world.exit_with(&e.node_id(&member).await, Some(137));
-            let (peer, opened) = (peer_mesh.clone(), pass(&e, &mut started, &mut held, &|m: &str| (m == peer_mesh).then_some(DECIDED_UNREACHABLE).flatten()).await);
-            assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "{member} exited too: the create of {peer}'s first node-admin opens");
-            let current = e.builds.current().await.unwrap().unwrap();
-            assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin: {:?}", current.action);
-            (member, SHAPE.iter().find(|(m, _, _)| *m == peer).map(|(_, a, r)| a + r).unwrap())
-        }
-        .instrument(root.clone())
-        .await;
-        drop(root);
-        let spans = capture.spans().expect("the cell's spans can be read");
-        let mut proofs: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
-        proofs.sort_by_key(|p| p["end_unix_nano"].as_u64().unwrap_or_default());
-        assert_eq!(proofs.len(), 2, "the proof read is named once per distinct result, held and then proven: {proofs:?}");
-        let held = &proofs[0]["attributes"];
-        assert_eq!(held["outcome"], "held", "{held}");
-        assert!(held["unproven"].as_str().unwrap_or_default().contains(&member) && held["unproven"].as_str().unwrap_or_default().contains("not proven exited"), "the hold names the running member and why: {held}");
-        assert_eq!(held["nodes"].as_str(), Some(nodes.to_string().as_str()), "the proof is read over every node of the mesh: {held}");
-        let proven = &proofs[1]["attributes"];
-        assert_eq!((proven["outcome"].as_str(), proven["unproven"].as_str()), (Some("proven"), Some("")), "{proven}");
-        assert!(proven["proven"].as_str().unwrap_or_default().contains(&member), "the proof lists the member: {proven}");
-        println!("trace_id={} held={held} proven={proven}", proofs[0]["trace_id"].as_str().unwrap_or_default());
+        assert_eq!((d["action"].as_str(), d["reason"].as_str()), (Some("recipe"), Some("recipe")), "{d}");
+        println!("build_id={trace_id} trace_id={} opening={d}", drift[0]["trace_id"].as_str().unwrap_or_default());
     }
 
     /// CONTRACT (R-DG1; mesh-investigation.md steps 5-7): the fabric-primary gives a fully crashed
@@ -1806,66 +1648,6 @@ mod fully_crashed_mesh {
         assert_eq!(recovered.len(), 1, "the clear is named once: {recovered:?}");
         assert_eq!(recovered[0]["trace_id"], recovery[0]["trace_id"], "set and cleared are one story");
         println!("trace_id={} authored={} cleared={}", recovery[0]["trace_id"].as_str().unwrap_or_default(), recovery[0]["attributes"], recovered[0]["attributes"]);
-    }
-
-    /// CONTRACT (mesh-investigation.md step 5, "Fully crashed"; node-create.md: "Runtime exit requires
-    /// independent exact provider proof, even for a deployment that never joined"): a node the accepted
-    /// topology names that no view and no durable runtime row holds a birth of (a Build's growth, not
-    /// yet created) is asked of the provider the way the create's own fence asks it for a path the view
-    /// holds nothing at (`PathProbe::recorded`): a runtime recorded at its path that runs holds the mesh
-    /// and the proof names it; a record that cannot be read holds it, naming why; nothing recorded that
-    /// runs, and the mesh is proven. Every other node of the mesh has exited throughout. Must NOT
-    /// happen: a growth Build over a fully crashed mesh held for ever because its new node has no birth,
-    /// or the unborn path taken for free over a runtime recorded there that runs.
-    #[tokio::test]
-    async fn a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read() {
-        let dir = evidence_dir("a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
-        let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-unborn");
-        use tracing::Instrument as _;
-        let unborn = async {
-            let e = estate().await;
-            let (peer_mesh, admins) = crash_the_peer_mesh(&e, &[]).await;
-            // The accepted topology names `rpc.3`; the view holds no birth of it.
-            let unborn = format!("{peer_mesh}.rpc.3");
-            e.view.write().await.nodes.retain(|n| n.name.to_string() != unborn);
-            let before = e.builds.current().await.unwrap().unwrap();
-            let (mut held, mut started) = (Held::new(), HashSet::new());
-            let peer = peer_mesh.clone();
-            let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
-            // A runtime recorded at the path still runs.
-            for r in e.world.runtimes.lock().unwrap().values_mut().filter(|r| r.path == unborn) {
-                r.status = DeploymentStatus::Running;
-            }
-            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "a runtime recorded at {unborn} runs: the mesh is held");
-            // The records at the path cannot be read.
-            e.world.runtimes.lock().unwrap().retain(|_, r| r.path != unborn);
-            *e.world.unreadable.lock().unwrap() = Some("the data root cannot be read: Permission denied".into());
-            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "the records at {unborn} cannot be read: the mesh is held");
-            // Nothing is recorded at the path.
-            *e.world.unreadable.lock().unwrap() = None;
-            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, Some((before.build_id.clone(), before.attempt + 1)), "nothing recorded at {unborn} runs: every node is proven and the create of {} opens", admins[0]);
-            unborn
-        }
-        .instrument(root.clone())
-        .await;
-        drop(root);
-        let spans = capture.spans().expect("the cell's spans can be read");
-        let mut proofs: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
-        proofs.sort_by_key(|p| p["end_unix_nano"].as_u64().unwrap_or_default());
-        assert_eq!(proofs.len(), 3, "one proof read per distinct result: {proofs:?}");
-        let runs = &proofs[0]["attributes"];
-        assert_eq!(runs["outcome"], "held", "{runs}");
-        assert!(runs["unproven"].as_str().unwrap_or_default().contains(&unborn) && runs["unproven"].as_str().unwrap_or_default().contains("still runs"), "the hold names the unborn path and the runtime recorded there that runs: {runs}");
-        let unreadable = &proofs[1]["attributes"];
-        assert_eq!(unreadable["outcome"], "held", "{unreadable}");
-        assert!(unreadable["unproven"].as_str().unwrap_or_default().contains(&unborn) && unreadable["unproven"].as_str().unwrap_or_default().contains("Permission denied"), "the hold names the unborn path and why its records cannot be read: {unreadable}");
-        let proven = &proofs[2]["attributes"];
-        assert_eq!((proven["outcome"].as_str(), proven["unproven"].as_str()), (Some("proven"), Some("")), "{proven}");
-        assert!(proven["proven"].as_str().unwrap_or_default().contains(&unborn), "the proof lists the unborn path: {proven}");
-        println!("trace_id={} runs={runs} unreadable={unreadable} proven={proven}", proofs[0]["trace_id"].as_str().unwrap_or_default());
     }
 
     /// CONTRACT: the proof is read for a mesh whose ladder decision came out `unreachable`, not
@@ -2007,7 +1789,7 @@ mod unheard_mesh_hold {
         let t = e.view.read().await.clone();
         // The provider's probe of what is recorded at a path, as the running admin's runner is (set once).
         records.set_path_probe(Arc::new(Probe(e.world.clone())));
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &Default::default(), &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), &|_| false, records, None, None).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided)).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), recovery_decided: false, unreachable_decided: false });
@@ -2181,408 +1963,4 @@ fn exit_records() -> rdm_admin::admin::Records {
     let r = rdm_admin::admin::Records::default();
     r.set_status(std::sync::Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
     r
-}
-
-/// A status store counting the exit-proof rows it is offered; every row is the memory store's.
-#[derive(Default)]
-struct CountsExitPuts {
-    inner: rdm_admin::status_storage::MemoryStatusStorage,
-    exit_puts: std::sync::atomic::AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl rdm_admin::status_storage::StatusStorage for CountsExitPuts {
-    async fn put_mesh_status(&self, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_status(row).await
-    }
-    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, rdm_core::status::MeshState>, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_statuses().await
-    }
-    async fn put_fabric_event(&self, row: &rdm_admin::status_storage::FabricEventRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_fabric_event(row).await
-    }
-    async fn fabric_events(&self) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.fabric_events().await
-    }
-    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.fabric_events_of(mesh).await
-    }
-    async fn put_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-    async fn node_operations(&self) -> Result<Vec<rdm_admin::status_storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> { self.inner.node_operations().await }
-    async fn remove_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
-
-    async fn put_node_declared(&self, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_declared(row).await
-    }
-    async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_declared(node_id, incarnation_id).await
-    }
-    async fn put_node_declared_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_declared_of(mesh, row).await
-    }
-    async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_declared(&self) -> Result<Vec<rdm_admin::status_storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_declared().await
-    }
-    async fn put_node_silence(&self, row: &rdm_admin::status_storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_silence(row).await
-    }
-    async fn node_silences(&self) -> Result<Vec<rdm_admin::status_storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_silences().await
-    }
-    async fn put_node_exit(&self, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.put_node_exit(row).await
-    }
-    async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_exit(node_id, incarnation_id).await
-    }
-    async fn mesh_status_held_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<bool, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_status_held_of(mesh, row).await
-    }
-    async fn put_mesh_status_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_status_of(mesh, row).await
-    }
-    async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_exit_of(mesh, node_id, incarnation_id).await
-    }
-    async fn put_node_exit_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.put_node_exit_of(mesh, row).await
-    }
-    async fn node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeHeldRunningRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-    }
-    async fn put_node_held_running_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeHeldRunningRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_held_running_of(mesh, row).await
-    }
-    async fn node_certs_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_certs_of(mesh).await
-    }
-    async fn put_node_cert_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_cert_of(mesh, row).await
-    }
-    async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertReceiptRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_cert_receipts_of(mesh).await
-    }
-    async fn put_node_cert_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeCertReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_cert_receipt_of(mesh, row).await
-    }
-    async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::MeshIssuerRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_issuers_of(mesh).await
-    }
-    async fn put_mesh_issuer_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_issuer_of(mesh, row).await
-    }
-    async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::MeshIssuerReceiptRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_issuer_receipts_of(mesh).await
-    }
-    async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-    }
-    async fn remove_node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_os_stopped_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeOsStoppedRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-    }
-    async fn put_node_os_stopped_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeOsStoppedRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_os_stopped_of(mesh, row).await
-    }
-    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<bool, rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_lost_at(mesh, name).await
-    }
-    async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_data_dir_lost_of(mesh, row).await
-    }
-    async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::status_storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_unreadable_at(mesh, name).await
-    }
-    async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_data_dir_unreadable_of(mesh, row).await
-    }
-    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
-    }
-}
-
-/// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
-/// durably"; the exit-proof row is a blind put of the birth's own key, `Records::put_exit`): the
-/// fabric primary's drift pass proves both exited node-admins of a peer mesh whose recovery the
-/// ladder decided and opens the attempt that creates the first of them; that attempt ends Failed.
-/// Two later passes find the same exited births with the Build settled and nothing moved: each
-/// returns without an attempt (`via-drift-unchanged`), and neither puts an exit-proof row again. Each
-/// birth's row is put once, by the pass that proved its exit. Must NOT happen: the row put again on
-/// every pass for an exit already recorded (admin.rs `reconcile_drift`, part 8's finding: the put
-/// runs on every pass until its inputs move).
-#[tokio::test]
-async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it() {
-    use rdm_admin::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, ClaimOutcome};
-    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s78-drift-exit-once");
-    let e = estate().await;
-    let before = e.builds.current().await.unwrap().unwrap();
-    let me: PathName = e.fabric_primary().await.parse().unwrap();
-    let lost = if me.mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let admins = [format!("{lost}.admin.1"), format!("{lost}.admin.2")];
-    for p in &admins {
-        let id = e.node_id(p).await;
-        e.world.kill(&id);
-    }
-    e.unheard(&admins.iter().map(String::as_str).collect::<Vec<_>>()).await;
-    let t = e.view.read().await.clone();
-    let store = Arc::new(CountsExitPuts::default());
-    let exits = rdm_admin::admin::Records::default();
-    exits.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
-    let mut started = HashSet::new();
-    let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    #[allow(clippy::too_many_arguments)]
-    async fn pass(e: &Estate, t: &Topology, me: &PathName, _lost: &str, contexts: &rdm_admin::build_claim::AttemptContexts, exits: &rdm_admin::admin::Records, started: &mut HashSet<(BuildId, u32, Vec<String>)>, verdicts: &rdm_admin::admin::ExitVerdicts) -> Option<(BuildId, u32)> {
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), me, &own_id(t, me), t, &e.book, &e.provider, &*e.builds, contexts, &tokio::sync::Mutex::new(()), &[], started, &mut Default::default(), verdicts, &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, exits, None, None).await
-    }
-    let verdicts = rdm_admin::admin::ExitVerdicts::default();
-    let opened = pass(&e, &t, &me, lost, &contexts, &exits, &mut started, &verdicts).await;
-    assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decided mesh's exited admins open the next attempt");
-    assert_eq!(store.exit_puts.load(std::sync::atomic::Ordering::SeqCst), 2, "the pass that proved them puts each exited admin's row once");
-    let failed = before.attempt + 1;
-    let fp = e.fabric_primary().await;
-    assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: before.build_id.clone(), attempt: failed, executor: fp }).await.unwrap(), ClaimOutcome::Won);
-    e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: failed, outcome: AttemptOutcome::Failed { reason: format!("node.create:{lost}.admin.1 step PrepareStorage") , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
-    for later in 1..=2 {
-        assert_eq!(pass(&e, &t, &me, lost, &contexts, &exits, &mut started, &verdicts).await, None, "pass {later} after the Failed attempt: nothing moved, no next attempt");
-    }
-    assert_eq!(store.exit_puts.load(std::sync::atomic::Ordering::SeqCst), 2, "two passes that find the same exits put no row again");
-    for i in 1..=2 {
-        let n = t.node(&format!("{lost}.admin.{i}").parse().unwrap()).unwrap();
-        assert!(rdm_admin::status_storage::StatusStorage::node_exit_of(&*store, lost, &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().is_some(), "{lost}.admin.{i}'s exit-proof row stands");
-    }
-    let both = |stands: &str| format!("{lost}.admin.1={stands}, {lost}.admin.2={stands}");
-    let opening = capture.spans("rdm.node_admin.build.update.via-proven-drift");
-    assert_eq!(opening.len(), 1, "one attempt opened: {opening:?}");
-    assert_eq!(opening[0].1.get("exit_proof_rows"), Some(&both("put")), "the opening pass put both rows: {opening:?}");
-    let unchanged = capture.spans("rdm.node_admin.build.reject.via-drift-unchanged");
-    assert_eq!(unchanged.len(), 1, "the unchanged inputs are named once: {unchanged:?}");
-    assert_eq!(unchanged[0].1.get("exit_proof_rows"), Some(&both("recorded")), "the later pass finds both rows recorded and puts neither: {unchanged:?}");
-    eprintln!("span rdm.node_admin.build.update.via-proven-drift trace_id={} {:?}", opening[0].0, opening[0].1);
-    eprintln!("span rdm.node_admin.build.reject.via-drift-unchanged trace_id={} {:?}", unchanged[0].0, unchanged[0].1);
-}
-
-/// How one node.fabric-primary.update of a hand-back ends at the store root, in a [`HandBack`] cell.
-#[derive(Clone, Copy, Debug)]
-enum HandBackEnd {
-    /// The read of the update's seat move fails (`RejectedSourceFailed`): refused before its row,
-    /// nothing written.
-    ReadFails,
-    /// The row commits and the successor answers node.primary.updated: the seat is its.
-    Commits,
-    /// The row commits and its answer is lost: the store holds the hand-back's row, the holder hears
-    /// a failed write and its view still names it the fabric-primary.
-    CommitsAnswerLost,
-}
-
-/// The take-over the fabric-primary made (fabric-recovery.md step 4), for the hand-back cells: the lost
-/// birth and the winner while the hand-back is owed, none once the hand-back applied
-/// ([`rdm_admin::fabric_handover::TakenOver`]). It is the
-/// fabric-primary's drive's departure proof (its `taken_from`, read each pass) and its gate, whose
-/// node.fabric-primary.update ends as the cell says, in order.
-struct HandBack {
-    view: Arc<RwLock<Topology>>,
-    /// The takeover the store's latest fabric seat move is; `None` once a hand-back's row commits.
-    taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)>>,
-    /// How the next updates end, in order.
-    ends: Mutex<std::collections::VecDeque<HandBackEnd>>,
-    /// Every update asked: `(holder, successor, operation, end)`.
-    asked: Mutex<Vec<(String, String, String, String)>>,
-}
-
-impl HandBack {
-    fn taken(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
-        self.taken.lock().unwrap().clone()
-    }
-    fn asked(&self) -> Vec<(String, String, String, String)> {
-        self.asked.lock().unwrap().clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl rdm_admin::build_drive::Gate for HandBack {
-    async fn move_seats(&self, m: &rdm_admin::executor::SeatMove, build_id: &BuildId, _attempt: u32, run: u32, operation: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
-        let to = m.successor.as_ref().map(|p| p.to_string()).unwrap_or_default();
-        let update = rdm_admin::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, operation);
-        let end = self.ends.lock().unwrap().pop_front().unwrap_or_else(|| panic!("a hand-back the cell did not plan: {update}"));
-        self.asked.lock().unwrap().push((m.holder.name.to_string(), to.clone(), update.clone(), format!("{end:?}")));
-        // As `HandoverDoor::move_own_seats` renders a refusal before the row.
-        let refused = |r: rdm_core::handover::NodePrimaryUpdateReply| rdm_admin::build_drive::SeatMoveEnd::Refused(format!("{}: {r:?}", r.name()));
-        match end {
-            HandBackEnd::ReadFails => Err(refused(rdm_core::reply::handover::not_ready(format!("{}: whether the fabric first reached ready-for-traffic could not be read for {update}: planted: the disk refused", m.holder.name)))),
-            HandBackEnd::Commits => {
-                *self.taken.lock().unwrap() = None;
-                // The holder took the seats the row moved: its view names the successor the fabric-primary.
-                for n in self.view.write().await.nodes.iter_mut() {
-                    n.is_fabric_primary = n.name.to_string() == to;
-                }
-                Ok(())
-            }
-            HandBackEnd::CommitsAnswerLost => {
-                *self.taken.lock().unwrap() = None;
-                Err(refused(rdm_core::reply::handover::not_ready(format!("{}: the answer of {update} to {to} was lost", m.holder.name))))
-            }
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl rdm_admin::build_drive::DepartureProof for HandBack {
-    async fn proven(&self, executor: &PathName) -> Result<(), String> {
-        Err(format!("{executor}'s runtime is not proven exited"))
-    }
-    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth, rdm_core::handover::HandoverBirth)> {
-        self.taken()
-    }
-}
-
-/// The estate after a takeover (elections §5): the fabric seat, held by the fabric-primary `lost` of
-/// one mesh, was taken by the other mesh's primary, the winner, which the view names the
-/// fabric-primary; `lost` itself is back and ReadyForTraffic at its path.name (Q89, fabric-recovery.md
-/// step 4). Returns the winner, the lost birth's path.name, the [`HandBack`] whose updates end as
-/// `ends`, and the winner's drive over it.
-async fn taken_over(e: &Estate, ends: &[HandBackEnd]) -> (PathName, PathName, Arc<HandBack>, Arc<DriveEnv>) {
-    let lost: PathName = e.fabric_primary().await.parse().unwrap();
-    let other = if lost.mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let winner = e.view.read().await.cohort_primary(other, NodeKind::NodeAdmin).map(|n| n.name.clone()).expect("the other mesh's primary");
-    for n in e.view.write().await.nodes.iter_mut() {
-        n.is_fabric_primary = n.name == winner;
-    }
-    let birth = |p: &PathName| {
-        let n = e.view.try_read().unwrap().node(p).cloned().unwrap();
-        rdm_core::handover::HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }
-    };
-    let hb = Arc::new(HandBack { view: e.view.clone(), taken: Mutex::new(Some((5, birth(&lost), birth(&winner)))), ends: Mutex::new(ends.iter().copied().collect()), asked: Mutex::new(Vec::new()) });
-    let winner_id = own_id(&*e.view.read().await, &winner);
-    let env = Arc::new(DriveEnv {
-        me: winner.clone(),
-        topology: e.view.clone(),
-        builds: e.builds.clone(),
-        door: Arc::new(rdm_admin::build_claim::ClaimDoor { node_id: winner_id, me: winner.clone(), topology: e.view.clone(), builds: e.builds.clone(), contexts: Arc::new(rdm_admin::build_claim::AttemptContexts::in_memory()), claims: e.claims.clone() }),
-        dispatcher: e.dispatch.clone(),
-        gate: hb.clone(),
-        departure: hb.clone(),
-        verdicts: Arc::new(crate::loopback::NoVerdicts),
-        turns: rdm_admin::stop_gate::StopGate::new(),
-    });
-    (winner, lost, hb, env)
-}
-
-/// The winner's drift pass, as the admin's executor loop runs it: `taken` read from the store root
-/// each pass, and the pass's memory `started` kept across passes.
-async fn hand_back_pass(e: &Estate, me: &PathName, hb: &HandBack, started: &mut HashSet<(BuildId, u32, Vec<String>)>) -> Option<(BuildId, u32)> {
-    let t = e.view.read().await.clone();
-    let taken = hb.taken();
-    rdm_admin::admin::reconcile_drift(&crate::adopted_time(), me, &own_id(&t, me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &|_| false, &e.records, taken.as_ref(), None).await
-}
-
-/// The verdict of each attempt of `build_id` after `after`, in order.
-async fn verdicts_after(e: &Estate, build_id: &BuildId, after: u32) -> Vec<(u32, rdm_admin::build_state::AttemptOutcome)> {
-    e.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
-        rdm_admin::build_state::BuildFact::Attempt(a) if a.build_id == *build_id && a.attempt > after => Some((a.attempt, a.outcome)),
-        _ => None,
-    }).collect()
-}
-
-/// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 4: once
-/// the node at the lost fabric-primary's path.name has been ReadyForTraffic for one staleness floor the
-/// holder hands every seat it took back to it; Q104: a hand-back that is owed is planned again on every
-/// drift pass until its row commits, and a refusal or a failed attempt is never terminal for it): after
-/// a takeover, the winner's drift opens the hand-back's attempt one floor after the lost fabric-primary
-/// is Ready again; its node.fabric-primary.update is refused before its call because the store's read of
-/// the fabric's first ready-for-traffic row fails (`NotReady`), and the attempt ends Failed. The next pass, with
-/// nothing else moved, plans the hand-back again in the next attempt, whose update commits: that
-/// attempt ends HandedOff to the lost fabric-primary, which the view names the fabric-primary. What
-/// must NOT happen: the refused hand-back's attempt taken as the last word (`via-drift-unchanged`, no
-/// next attempt), which left the fabric seat on the winner after the heal (the container cell at
-/// ce251b3f).
-#[tokio::test]
-async fn an_owed_hand_back_refused_by_a_store_read_is_planned_again_on_the_next_pass_and_commits() {
-    let e = estate().await;
-    let before = e.builds.current().await.unwrap().unwrap();
-    let (winner, lost, hb, env) = taken_over(&e, &[HandBackEnd::ReadFails, HandBackEnd::Commits]).await;
-    let mut started = HashSet::new();
-    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, None, "the first pass that finds {lost} Ready starts the floor: nothing is owed yet");
-    tokio::time::sleep(rdm_core::cadence::staleness_floor() + std::time::Duration::from_millis(200)).await;
-    let first = hand_back_pass(&e, &winner, &hb, &mut started).await;
-    assert_eq!(first, Some((before.build_id.clone(), before.attempt + 1)), "one floor after {lost} is Ready the hand-back opens the next attempt");
-    let end = env.run(&Drive::detached(before.build_id.clone())).await;
-    assert_eq!(end, DriveEnd::Terminal, "the refused hand-back ends its attempt");
-    let failed = verdicts_after(&e, &before.build_id, before.attempt).await;
-    assert!(matches!(failed.as_slice(), [(a, rdm_admin::build_state::AttemptOutcome::Failed { reason, .. })] if *a == before.attempt + 1 && reason.contains("not-ready")), "the hand-back's attempt ended Failed, refused before its call: {failed:?}");
-    let second = hand_back_pass(&e, &winner, &hb, &mut started).await;
-    assert_eq!(second, Some((before.build_id.clone(), before.attempt + 2)), "the next pass plans the owed hand-back again: a refusal is never terminal for it");
-    let end = env.run(&Drive::detached(before.build_id.clone())).await;
-    assert!(matches!(end, DriveEnd::SeatLost(_)), "the winner's drive ends once its view no longer names it the fabric-primary: {end:?}");
-    let asked = hb.asked();
-    assert_eq!(asked.iter().map(|(h, to, _, end)| (h.as_str(), to.as_str(), end.as_str())).collect::<Vec<_>>(), vec![(winner.to_string().as_str(), lost.to_string().as_str(), "ReadFails"), (winner.to_string().as_str(), lost.to_string().as_str(), "Commits")], "two node.fabric-primary.updates of the hand-back, the second committed: {asked:?}");
-    let verdicts = verdicts_after(&e, &before.build_id, before.attempt + 1).await;
-    assert_eq!(verdicts, vec![(before.attempt + 2, rdm_admin::build_state::AttemptOutcome::HandedOff { to: lost.to_string() })], "the hand-back's attempt ends handed to the lost fabric-primary");
-    assert_eq!(e.fabric_primary().await, lost.to_string(), "the fabric seat is back at its lost holder's path.name");
-    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, None, "nothing is owed once the row committed");
-    assert_eq!(hb.asked().len(), 2, "no update after the row");
-}
-
-/// CONTRACT (fabric-recovery.md step 4; Q104 on Architect 2's review: whether a hand-back is still owed
-/// is read from the written seat move on the store root, never from the observed view): the
-/// hand-back's row commits and its answer is lost: the store holds the row, and the winner, which
-/// heard a failed write, still names itself the fabric-primary in its view; its attempt ends Failed.
-/// The next drift pass reads the fabric seat's latest move from the store, finds the transfer done
-/// and opens nothing: no second update, no second row. What must NOT happen: the hand-back planned
-/// again from the observed view, a second node.fabric-primary.update or row.
-#[tokio::test]
-async fn a_hand_back_committed_with_its_answer_lost_is_recognized_on_the_next_pass_and_writes_nothing_again() {
-    let e = estate().await;
-    let before = e.builds.current().await.unwrap().unwrap();
-    let (winner, lost, hb, env) = taken_over(&e, &[HandBackEnd::CommitsAnswerLost]).await;
-    let mut started = HashSet::new();
-    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, None, "the first pass that finds {lost} Ready starts the floor");
-    tokio::time::sleep(rdm_core::cadence::staleness_floor() + std::time::Duration::from_millis(200)).await;
-    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, Some((before.build_id.clone(), before.attempt + 1)), "the hand-back opens the next attempt");
-    assert_eq!(env.run(&Drive::detached(before.build_id.clone())).await, DriveEnd::Terminal, "the update whose answer was lost ends its attempt");
-    assert_eq!(e.fabric_primary().await, winner.to_string(), "the winner's view still names it the fabric-primary");
-    assert!(hb.taken().is_none(), "the store holds the hand-back's row");
-    assert_eq!(hand_back_pass(&e, &winner, &hb, &mut started).await, None, "the next pass finds the transfer done on the store root and opens nothing");
-    assert_eq!(hb.asked().len(), 1, "one node.fabric-primary.update, one row: {:?}", hb.asked());
-}
-
-/// CONTRACT (fabric-recovery.md step 4: the holder hands every seat it took back; Q104 on Architect 2's
-/// review: whether a hand-back is owed is read from the written seat move on the store root): after
-/// a takeover the store names the winner the fabric seat's holder, while the lost fabric-primary, heard
-/// again and Ready at its path.name, still names itself the fabric-primary in its own view until it
-/// hears the takeover. Its drift pass, one floor after it is Ready, opens no hand-back attempt: only
-/// the holder the written seat move names owes the hand-back. What must NOT happen: the lost birth
-/// opening an attempt to hand the seat to itself (the container cell at a7ccadb3: mesh1.admin.1
-/// opened six such attempts).
-#[tokio::test]
-async fn the_lost_fabric_primary_whose_view_still_names_it_the_holder_opens_no_hand_back() {
-    let e = estate().await;
-    let lost: PathName = e.fabric_primary().await.parse().unwrap();
-    let other = if lost.mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let winner = e.view.read().await.cohort_primary(other, NodeKind::NodeAdmin).map(|n| n.name.clone()).expect("the other mesh's primary");
-    let birth = |p: &PathName| {
-        let n = e.view.try_read().unwrap().node(p).cloned().unwrap();
-        rdm_core::handover::HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }
-    };
-    // The store's latest fabric seat move is the takeover from `lost` to `winner`; `lost`'s view has not heard it.
-    let hb = HandBack { view: e.view.clone(), taken: Mutex::new(Some((5, birth(&lost), birth(&winner)))), ends: Mutex::new(Default::default()), asked: Mutex::new(Vec::new()) };
-    let mut started = HashSet::new();
-    assert_eq!(hand_back_pass(&e, &lost, &hb, &mut started).await, None, "{lost}'s first pass");
-    tokio::time::sleep(rdm_core::cadence::staleness_floor() + std::time::Duration::from_millis(200)).await;
-    assert_eq!(hand_back_pass(&e, &lost, &hb, &mut started).await, None, "{lost}, which the written seat move does not name the holder, opens no hand-back to itself");
 }

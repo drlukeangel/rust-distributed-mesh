@@ -303,26 +303,20 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     assert_eq!(primaries, vec![heir.clone()], "{watcher} names one {mesh} primary, {heir}: {heard:#?}");
 }
 
-/// CONTRACT (Q89; fabric-recovery.md step 2 "Outside its mesh" and step 4; elections §4.3;
-/// lifecycles/node-primary-update.md: the mesh-primary and the fabric-primary are separated in one case
-/// only, no node-admin of that mesh being available to the backbone): every UDP path between every node
-/// of the fabric-primary's mesh and every node of the other mesh is cut while all processes run. The
-/// other mesh's primary hears nothing of the fabric-primary's mesh once its aggregate stops, runs mesh
-/// investigation's ladder on it (the fabric-primary first, then its other node-admin; each probe
-/// unanswered by a node-admin of that mesh), and at the decision step the backbone rule names it
-/// fabric-primary: it takes over once (`primary.update.via-take-over`, outcome `primary-updated`). The
-/// incumbent mesh hears its fabric-primary all along and names it unchanged while the cut stands. Healed,
-/// the node at the original path.name is ReadyForTraffic in the temporary fabric-primary's view for one
-/// floor and is handed the fabric-primary back by node.fabric-primary.update naming it: both sides name
-/// the original fabric-primary again. The look at the silent fabric-primary carries iroh's local view of
-/// it (A1), in its shape and read as nothing more. Must NOT happen: an exit proof for a running birth, the
-/// fabric-primary left with the other mesh.
+/// CONTRACT (Q122; fabric-recovery.md step 2 "Outside its mesh", steps 3-4; mesh-investigation.md steps
+/// 5-6; Q111): every UDP path between every node of the fabric-primary's mesh and every node of the other
+/// mesh is cut while all processes run. Each side hears nothing of the other: at its decision step, after
+/// two probes no node-admin of the other mesh answered, mesh2's primary runs fabric recovery from the
+/// backbone (taking no primary role), or the fabric-primary re-creates mesh2's unanswered node-admin.
+/// Which side decides first is the host's (one host: a re-create ends the other side's running runtime
+/// first). Whatever ran, node investigation never reached the birth it re-created, and no node but the one
+/// at the fabric-primary's path.name is ever elected fabric-primary. Healed, both sides name the node at
+/// that path.name fabric-primary (a new node id is expected).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_unreachable_from_the_backbone_loses_the_fabric_primary_at_the_decision_step_and_gets_it_back_after_the_heal() {
-    let (mut estate, nodes) = fabric("a_mesh_unreachable_from_the_backbone_loses_the_fabric_primary_at_the_decision_step_and_gets_it_back_after_the_heal").await;
+async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_converges_on_the_fabric_primarys_path_name() {
+    let (mut estate, nodes) = fabric("a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_converges_on_the_fabric_primarys_path_name").await;
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let fp_node = node(&nodes, &fp).clone();
-    // Every node of the fabric-primary's mesh is cut from every node of the other: no member can carry a probe.
     let (mine, theirs): (Vec<String>, Vec<String>) = {
         let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| s(&n["name"])).collect::<Vec<_>>();
         (side(true), side(false))
@@ -340,64 +334,75 @@ async fn a_mesh_unreachable_from_the_backbone_loses_the_fabric_primary_at_the_de
         }
         Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
     };
-    let cut_at = std::time::Instant::now();
-    let fp_id = s(&fp_node["node_id"]);
-    let looked = wait_for("an admin looked at the exact silent birth", Duration::from_secs(60), || {
+    let cut_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    // A recovery starts at a decision step: mesh2's primary's fabric recovery, or the fabric-primary's re-create
+    // of the mesh it cannot hear, whichever side decides first.
+    let started = wait_for("a side's investigation decides and its recovery starts", decision + floor * 3 + Duration::from_secs(30), || {
         let spans = estate.spans();
-        let found = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter().find(|sp| attr(sp, "suspect_node_id") == fp_id).cloned();
+        let found = named(&spans, "rdm.node_admin.build.update.via-recovery")
+            .into_iter()
+            .chain(named(&spans, "rdm.node_admin.mesh.create.via-recovery"))
+            .filter(|sp| at_ns(sp) >= cut_ns && (attr(sp, "route") == "fabric-recovery" || attr(sp, "verdict") == "fully-crashed"))
+            .min_by_key(|sp| at_ns(sp))
+            .cloned();
         async move { found }
     })
     .await;
-    // The other mesh's primary is fabric-primary at the decision step, by one take-over.
-    let from_other = wait_for(&format!("{other_primary} is fabric-primary at the decision step"), decision + floor * 3 + Duration::from_secs(30), || async {
-        let ns = estate.node_values_at(&other_primary).await;
-        (fabric_primary(&ns).as_deref() == Some(other_primary.as_str())).then_some(ns)
-    })
-    .await;
-    assert!(cut_at.elapsed() >= decision, "the fabric-primary moved before the decision step: {:?} < {decision:?}", cut_at.elapsed());
-    let from_incumbent = estate.node_values_at(&fp).await;
-    assert_eq!(fabric_primary(&from_incumbent).as_deref(), Some(fp.as_str()), "the incumbent mesh hears its fabric-primary and names it unchanged while the cut stands: {from_incumbent:#?}");
+    assert!(at_ns(&started) >= cut_ns + decision.as_nanos() as u64, "a recovery started before the decision step: {started}");
+    // While the cut stands each side may re-create the other's unreached births (one host: their runtimes
+    // run, so TerminateRuntime ends them first); no side names another fabric-primary (the spans below).
     drop(cut);
-    // Healed: the node at the original path.name, Ready for one floor in the temporary fabric-primary's
-    // view, is handed the fabric-primary back.
-    tokio::time::sleep(floor * 3).await;
-    for at in [&other_primary, &fp] {
-        let ns = estate.node_values_at(at).await;
-        let primaries: Vec<String> = ns.iter().map(|n| format!("{}: primary={} fabric={} status={}", s(&n["name"]), n["is_primary"], n["is_fabric_primary"], s(&n["status"]))).collect();
-        eprintln!("{at}'s view three floors after the heal: {primaries:#?}");
-    }
-    let mut healed = Vec::new();
-    for at in [&other_primary, &fp] {
-        let ns = estate
-            .until_view_at(&Estate::path(at), &format!("{at} names the original fabric-primary again after the heal"), floor * 5 + Duration::from_secs(60), |views| {
-                let ns = Estate::values(views);
-                (fabric_primary(&ns).as_deref() == Some(fp.as_str())).then_some(ns)
-            })
-            .await;
-        healed.push(ns);
+    // Both pre-cut admin paths are asked on every pass, until each answers with a ready birth at every
+    // pre-cut path.name and names the node at fp's path.name fabric-primary: an answer teaches the estate
+    // the births re-created during the cut, which it dials from then on.
+    let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let deadline = tokio::time::Instant::now() + floor * 12 + Duration::from_secs(120);
+    loop {
+        let mut healed = 0;
+        let mut last = Vec::new();
+        for at in [&fp, &other_primary] {
+            match estate.node_views_at(&Estate::path(at)).await {
+                Some(v) => {
+                    let ns = Estate::values(&v);
+                    let all = everyone.iter().all(|name| ns.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"));
+                    if all && fabric_primary(&ns).as_deref() == Some(fp.as_str()) {
+                        healed += 1;
+                    }
+                    last.push(format!("{at}: fabric-primary {:?}, ready-at-every-path {all}", fabric_primary(&ns)));
+                }
+                None => last.push(format!("{at}: no answer")),
+            }
+        }
+        if healed == 2 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "both pre-cut admins name the node at {fp} fabric-primary after the heal: {last:?}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     estate.stop().await;
     let spans = estate.spans();
-    let _ = from_other;
-    assert_eq!(attr(&looked, "trigger"), "silence");
-    assert_ne!(attr(&looked, "finding"), "exit-proven", "a running birth is not a loss: {looked:#?}");
-    // A1: the investigation carries iroh's local view of the fabric-primary.
-    iroh_observation_shape(&looked).unwrap_or_else(|why| panic!("{why}"));
-    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| attr(sp, "outcome") == "primary-updated").collect();
-    assert_eq!(takeovers.len(), 1, "one take-over, the backbone rule's: {takeovers:#?}");
-    assert_eq!(attr(takeovers[0], "node"), other_primary, "made by the other mesh's primary: {takeovers:#?}");
-    // The probes before the take-over: after the heal the ladder probes again and is answered.
-    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == other_primary && attr(sp, "mesh") == s(&fp_node["mesh"]) && at_ns(sp) <= at_ns(takeovers[0])).collect();
-    assert!(probes.len() >= 2, "the other mesh's primary probed the fabric-primary's mesh twice before deciding: {probes:#?}");
-    assert!(probes.iter().all(|sp| attr(sp, "outcome") != "admin-alive"), "no node-admin of the cut mesh answered a probe: {probes:#?}");
-    let exits = named(&spans, "rdm.node_admin.node.delete.via-exit-proof").into_iter().filter(|sp| attr(sp, "node_id") == fp_id).count();
-    assert_eq!(exits, 0, "no exit proof for a running birth");
-    // Step 4: the temporary fabric-primary hands the fabric-primary back by node.fabric-primary.update
-    // naming the node at the original path.name.
-    let handed: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().filter(|sp| attr(sp, "node") == other_primary && attr(sp, "moving") == "fabric-primary" && attr(sp, "successor") == fp && attr(sp, "outcome") == "updated").collect();
-    assert!(!handed.is_empty() && handed.iter().all(|sp| at_ns(sp) > at_ns(takeovers[0])), "{other_primary} handed the fabric-primary back to {fp} after its take-over: {handed:#?}");
-    estate.record_trace_url(&s(&takeovers[0]["trace_id"]));
-    eprintln!("whole-mesh cut: {other_primary} took over after {:?} (decision {decision:?}); handed back at both sides after the heal", cut_at.elapsed());
+    // Either side may act first on one host: mesh2's primary runs fabric recovery from the backbone, or the
+    // fabric-primary's side, which hears its own mesh, re-creates mesh2's unanswered node-admin first
+    // (mesh-investigation.md step 5), ending the runtime of the executor before its workflow does.
+    let ran: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at_ns(sp) >= cut_ns).collect();
+    for sp in ran.iter().filter(|sp| attr(sp, "node") == other_primary) {
+        assert_eq!(attr(sp, "arm"), "backbone", "{other_primary} ran fabric recovery from the backbone: {sp}");
+    }
+    // Recovery follows node investigation's verdict: nothing is re-created on `reached`.
+    for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at_ns(sp) >= cut_ns) {
+        assert_ne!(attr(sp, "verdict"), "reached", "a reached birth is commanded back, never re-created: {sp}");
+    }
+    let crashed = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().any(|sp| attr(sp, "mesh") == s(&node(&nodes, &other_primary)["mesh"]) && attr(sp, "verdict") == "fully-crashed" && at_ns(sp) >= cut_ns);
+    assert!(!ran.is_empty() || crashed, "a recovery ran during the cut: fabric recovery from the backbone, or the fabric-primary's re-create of the unanswered mesh");
+    // A side decided only after probing the other mesh twice, each unanswered by a node-admin of it: its
+    // decision step is the unreachable verdict.
+    let decided = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at_ns(sp) >= cut_ns && at_ns(sp) <= at_ns(&started) && attr(sp, "outcome") == "unreachable").cloned().unwrap_or_else(|| panic!("a side decided the other unreachable before the recovery started: {started}"));
+    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == attr(&decided, "node") && attr(sp, "mesh") == attr(&decided, "mesh") && at_ns(sp) >= cut_ns && at_ns(sp) <= at_ns(&decided)).collect();
+    assert!(probes.len() >= 2, "the deciding side probed the other mesh twice before deciding: {probes:#?}");
+    assert!(probes.iter().all(|sp| attr(sp, "outcome") != "admin-alive"), "no node-admin of the cut-off mesh answered the deciding side's probes: {probes:#?}");
+    let recomputes = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
+    assert!(!recomputes.iter().any(|sp| at_ns(sp) >= cut_ns && attr(sp, "winner_path") == other_primary), "{other_primary} was never elected fabric-primary");
+    estate.record_trace_url(&s(&started["trace_id"]));
 }
 
 /// CONTRACT (lifecycles/node-primary-update.md "Both primaries" and its numbered sequence; node-replace.md

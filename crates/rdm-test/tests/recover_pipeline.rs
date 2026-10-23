@@ -117,7 +117,7 @@ fn receipts(steps: &[rdm_admin::build_state::BuildStepReceipt], operation: &str)
     steps.iter().filter(|r| r.operation == operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
 }
 
-/// The node.delete of a crashed target, step by step: nothing is sent to it.
+/// The node.delete of an unreached birth, step by step: nothing is sent to it.
 const DELETE_ORDER: [&str; 5] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"];
 
 /// The node.create over the inherited data dir, step by step.
@@ -139,10 +139,10 @@ const CREATE_ORDER: [&str; 13] = [
 
 /// CONTRACT (node-recovery.md, Operation summary "Steps", "Retained", "New"; sequence steps 3-5;
 /// node-delete.md "Crashed target"; proposal node-properties-own-commands.md §5 item 8): node recovery
-/// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the exited birth (`node.delete:<path>`):
-/// NodeDeleting, the provider's exit proof (nothing sent to the dead process: no drain, no stop frames),
-/// NodeDeleted once for the exact exited birth, spanned with the mesh primary's exit proof it is
-/// published from, exactly that birth removed; the old birth is fenced before the new one is created;
+/// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the unreached birth (`node.delete:<path>`):
+/// NodeDeleting, `TerminateRuntime` reading the exact runtime at its instant (nothing sent to the
+/// process: no drain, no stop frames; nothing terminated, it reads exited), NodeDeleted once for the
+/// exact birth, exactly that birth removed; the old birth is fenced before the new one is created;
 /// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
 /// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
 /// writes a receipt of another, and every receipt has a wire shape on the Build topic.
@@ -165,20 +165,16 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
     std::fs::create_dir_all(old_dir.join("wal")).unwrap();
     std::fs::write(old_dir.join("wal").join("seg-0"), b"records").unwrap();
-    // The runtime exits outside any workflow; the provider's exact inspection is the proof.
+    // The runtime exits outside any workflow.
     rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-    let code = match rig.provider.inspect(&first.handle).await {
-        DeploymentStatus::Exited { code } => code,
-        other => panic!("the runtime exited: {other:?}"),
-    };
+    assert!(matches!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the runtime exited");
     rig.log.lock().unwrap().clear();
     let old_inc = first.node.incarnation_id.clone().unwrap();
-    let exit = rdm_admin::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: old_inc.clone(), exit_code: code, proof: "provider".into(), observed_at_ms: 1 };
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
-    // node.delete of the crashed target, on the mesh-primary's exit proof.
+    // node.delete of the unreached birth.
     pipeline
-        .retire(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(exit) })
+        .retire(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
     // The executor fences the exited birth before the create that takes its key.
@@ -207,6 +203,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let output = |operation: &str, step: &str| view.steps.iter().find(|r| r.operation == operation && r.step == step).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{operation} {step} has an output"));
     assert_eq!(output(&delete, "NodeDeleted")["node_id"], serde_json::to_value(&first.node.node_id).unwrap(), "NodeDeleted names the exited node");
     assert_eq!(output(&delete, "NodeDeleted")["incarnation"], serde_json::to_value(&old_inc).unwrap(), "NodeDeleted names the exact exited birth");
+    assert_eq!(output(&delete, "TerminateRuntime")["verdict"], "exited", "the TerminateRuntime step read the runtime exited at its instant: the create takes the inherited data dir");
     assert!(output(&create, "AllocateIdentity")["supersedes"].is_null(), "no lineage across node.ids: {}", output(&create, "AllocateIdentity"));
 
     // Retained: path.name, data dir and its storage, endpoint key. New: node.id, incarnation, runtime.
@@ -229,53 +226,14 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     assert!(rig.sink.removed.lock().unwrap().is_empty(), "no path-keyed removal: only the exact exited birth leaves");
     assert_eq!(*rig.sink.removed_births.lock().unwrap(), vec![(path(), first.node.node_id.clone(), old_inc.clone())], "the exited instance leaves the path once");
 
-    // Spans: one pipeline per workflow, and node.deleted published from the exit proof.
+    // Spans: one pipeline per workflow.
     let all = spans.0.lock().unwrap().clone();
     for kind in ["retire", "create"] {
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.log().to_string())), "the {kind} workflow ran as its pipeline");
     }
     assert!(!all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover")), "no recovery pipeline of its own");
-    let (_, parent, proof) = all.values().find(|(n, _, _)| n == "rdm.node_admin.node.delete.via-exit-proof").expect("node.deleted is published from the exit proof, spanned");
-    assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-step"));
-    assert_eq!(proof.get("node_id"), Some(&old));
-    assert_eq!(proof.get("incarnation_id"), Some(&old_inc.to_string()));
-    assert_eq!(proof.get("proof").map(String::as_str), Some("provider"));
     rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
     assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the new node was stopped");
-    let _ = std::fs::remove_dir_all(&rig.template.data_root);
-}
-
-/// CONTRACT (node-delete.md "Crashed target": node.deleted only from the exact birth's exit proof):
-/// a crashed-target delete handed an exit proof of another birth is refused by name before anything
-/// is written: no receipt, no node.deleting, nothing removed.
-/// Must NOT happen: a birth deleted on another birth's exit proof.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name_and_writes_nothing() {
-    let spans = Spans::default();
-    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
-    let rig = rig().await;
-    let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
-    let recorder = Recorder(rig.log.clone());
-    let pipeline = rig.pipeline(&observer, &recorder);
-    let birth_build = publish_build(&rig.builds, add_node()).await;
-    let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
-        .await
-        .unwrap_or_else(|e| panic!("create: {e}"));
-    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-    rig.log.lock().unwrap().clear();
-    let other = rdm_admin::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: rdm_core::IncarnationId::mint(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 };
-    let build = publish_build(&rig.builds, add_node()).await;
-    let err = pipeline
-        .retire(&RetireRequest { build_id: build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(other.clone()) })
-        .await
-        .expect_err("another birth's exit proof deletes nothing");
-    assert_eq!(err.step, "NodeDeleting");
-    assert!(err.reason.contains(&other.incarnation_id.as_str()) && err.reason.contains(&first.node.incarnation_id.clone().unwrap().as_str()), "the refusal names both births: {err}");
-    let view = rig.builds.read_build(&build).await.unwrap();
-    assert!(view.steps.is_empty(), "no receipt: {:?}", view.steps);
-    assert!(rig.log.lock().unwrap().is_empty(), "nothing published or sent");
-    assert!(rig.sink.removed_births.lock().unwrap().is_empty() && rig.sink.removed.lock().unwrap().is_empty(), "nothing removed");
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
 

@@ -155,9 +155,6 @@ impl BuildStateAdapter for Refuses {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
-        self.inner.terminate_failures_of(node_id, incarnation).await
-    }
     async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
     }
@@ -204,7 +201,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Answers, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
 
     let err = match pipeline.delete_connections(&req).await {
         Err(e) => e,
@@ -394,7 +391,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
     if stop {
         pipeline.stop(&req).await
     } else {

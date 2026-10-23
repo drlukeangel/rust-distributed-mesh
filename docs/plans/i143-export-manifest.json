@@ -843,8 +843,8 @@
       "job": "rdm-admin:main"
     },
     {
-      "cell": "crates/rdm-test/tests/elections/fabric_takeover.rs::a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_exit_proof",
-      "test": "rdm-test/main: fabric_takeover::a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_exit_proof",
+      "cell": "crates/rdm-test/tests/elections/fabric_takeover.rs::a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited",
+      "test": "rdm-test/main: fabric_takeover::a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_runtime_exited",
       "log": "gates-e4s8-abc1ec15release.log",
       "job": "fabric_takeover"
     },

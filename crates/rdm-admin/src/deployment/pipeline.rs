@@ -739,6 +739,12 @@ pub struct TerminalReceipt {
     pub runtime: Option<RuntimeProof>,
     /// The exit code, when the provider's record proves one.
     pub exit_code: Option<i32>,
+    /// An unreached birth's delete (node-recovery.md step 3): what the provider read of the runtime at
+    /// the step's own instant, `running` (then terminated), `exited`, `os-stopped` or `unavailable`.
+    /// The re-created node takes the inherited data dir only on `exited` (`R-FM2`). `None` for every
+    /// other delete. Positional on the Build topic's wire, after `exit_code`.
+    #[serde(default)]
+    pub verdict: Option<String>,
 }
 
 /// An exact runtime by fingerprint.
@@ -933,10 +939,11 @@ pub struct RetireRequest {
     pub node: Node,
     /// The runtime handle of the birth.
     pub handle: DeploymentHandle,
-    /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
-    /// mesh-primary's recorded exit proof of the exact birth. Its stop steps are already done:
-    /// nothing is sent to it, and node.deleted is published from this proof. `None`: a live target.
-    pub exit: Option<crate::status_storage::NodeExitRow>,
+    /// An unreached birth (node-recovery.md sequence step 3): node investigation's verdict was not
+    /// `reached`. Nothing is sent to it: `TerminateRuntime` first when its runtime runs at the step's
+    /// instant, then node.deleted, waiting for no proof of termination. `false`: a live or stopped
+    /// target.
+    pub unreached: bool,
 }
 
 /// A request to start (or restart) a parked birth: the same process rejoins as itself.
@@ -968,10 +975,14 @@ pub(crate) enum StopEnd {
 /// When a `TerminateRuntime` step fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Terminate {
-    /// On any runtime that is not exited: a delete's terminate.
+    /// On any runtime that is not exited: a delete's terminate, whose `Exited` is the proof
+    /// node.deleted is published from.
     Always,
-    /// Only on a runtime the provider reads `Running` at the step's instant: a hung runtime's hold (R-FM1).
-    OnlyRunning,
+    /// Only on a runtime the provider reads `Running` at the step's instant: an unreached birth's
+    /// delete (node-recovery.md step 3: `TerminateRuntime` first when the verdict was `running`;
+    /// node-runtime-inspect.md: "at the step's own instant, before it asks the provider to
+    /// terminate"). Any other read terminates nothing and waits for nothing.
+    Unreached,
 }
 
 /// What a stop's wait step must have seen to complete.
@@ -997,27 +1008,22 @@ pub struct PipelineError {
     pub reason: String,
 }
 
-/// A step's failure as its receipt records it: why, and for a `TerminateRuntime` where it stopped.
+/// A step's failure as its receipt records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StepFailure {
     pub code: rdm_core::outcome::Code,
     /// Why the step failed.
     pub reason: String,
-    /// Where a failed `TerminateRuntime` stopped; none for every other step.
-    pub stage: Option<crate::build_state::TerminateStage>,
 }
 
 impl From<String> for StepFailure {
     fn from(reason: String) -> Self {
-        Self { reason, stage: None, code: rdm_core::outcome::Code::FailedPrecondition }
+        Self { reason, code: rdm_core::outcome::Code::FailedPrecondition }
     }
 }
 
 impl StepFailure {
-    fn coded(code: rdm_core::outcome::Code, reason: String) -> Self { Self { reason, stage: None, code } }
-    fn at(stage: crate::build_state::TerminateStage, reason: String) -> Self {
-        Self { reason, stage: Some(stage), code: rdm_core::outcome::Code::FailedPrecondition }
-    }
+    fn coded(code: rdm_core::outcome::Code, reason: String) -> Self { Self { reason, code } }
 }
 
 impl std::fmt::Display for PipelineError {
@@ -1247,7 +1253,6 @@ impl DeploymentPipeline<'_> {
             outcome = tracing::field::Empty,
             code = tracing::field::Empty,
             detail = tracing::field::Empty,
-            stage = tracing::field::Empty,
             reason = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
             io_calls = tracing::field::Empty,
@@ -1306,10 +1311,7 @@ impl DeploymentPipeline<'_> {
             },
             Err(f) => {
                 span.record("code", f.code.name()).record("detail", "failed").record("reason", f.reason.as_str());
-                if let Some(stage) = &f.stage {
-                    span.record("stage", stage.name());
-                }
-                (StepOutcome::Failed { reason: f.reason.clone(), stage: f.stage.clone(), code: f.code }, None)
+                (StepOutcome::Failed { reason: f.reason.clone(), code: f.code }, None)
             }
         };
         // The receipt is the step's durable commit: a step whose receipt the Build state does not
@@ -2120,7 +2122,7 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.deleting(&op).await;
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone())).await?;
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone(), false)).await?;
             self.lifecycle.deleted(&op).await;
             self.complete(&mut run).await
         }
@@ -2136,92 +2138,11 @@ impl DeploymentPipeline<'_> {
         self.retire_steps(req).instrument(span).await
     }
 
-    /// Delete a hung birth whose `held-running` hold expired (R-FM1): the first step is
-    /// `TerminateRuntime` on the exact runtime (graceful then forced), which produces the `Exited`
-    /// proof and records the durable exit-proof row; no node command (`node.connections.delete` / `stop-node`) is
-    /// sent to the hung process. A `TerminateRuntime` that fails ends the Build Failed at
-    /// `TerminateRuntime` by name, its receipt naming where it stopped (node-recovery.md step 4's
-    /// end): at its own inspection (the hold is void), at the provider's error, or with exit unproven
-    /// (no hold submits the birth's terminate again; a person decides).
-    pub(crate) async fn delete_hung(&self, req: &RetireRequest, records: &crate::admin::Records) -> Result<TerminalReceipt, PipelineError> {
-        use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.delete_hung_steps(req, records).instrument(span).await
-    }
-
-    async fn delete_hung_steps(&self, req: &RetireRequest, records: &crate::admin::Records) -> Result<TerminalReceipt, PipelineError> {
-        let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
-        let mut node = req.node.clone();
-        let handle = &req.handle;
-        let incarnation = node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
-        let terminal = self.terminate_step_when(&mut run, &node, handle, Terminate::OnlyRunning, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
-        let exit = records
-            .put_exit(&node, terminal.exit_code, "terminate-runtime")
-            .await
-            .map_err(|reason| PipelineError { step: RetireStep::TerminateRuntime.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
-        records.clear_held_running(&node).await;
-        node.exit_proven = true;
-        let op = LifecycleOp {
-            build_id: req.build_id.to_string(),
-            attempt: req.attempt,
-            operation: run.operation.clone(),
-            node_id: node.node_id.clone(),
-            incarnation,
-            name: name.clone(),
-            event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
-        };
-        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
-        self.lifecycle.deleting(&op).await;
-        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-        let op = self
-            .step(&mut run, RetireStep::NodeDeleted.name(), async {
-                tracing::info_span!(
-                    "rdm.node_admin.node.delete.via-exit-proof",
-                    build_id = %req.build_id.log(),
-                    attempt = req.attempt,
-                    node = %name,
-                    node_id = %exit.node_id,
-                    incarnation_id = %exit.incarnation_id.as_str(),
-                    exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
-                    proof = %exit.proof,
-                    observed_at_ms = exit.observed_at_ms,
-                )
-                .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
-                self.deleted_row(&node, op.clone()).await
-            })
-            .await?;
-        self.lifecycle.deleted(&op).await;
-        self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
-            self.sink.remove_birth(name, &op.node_id, &op.incarnation);
-            Ok(())
-        })
-        .await?;
-        self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
-        Ok(terminal)
-    }
-
     async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
         let mut node = req.node.clone();
         let handle = &req.handle;
-        // A crashed target is deleted only on the exit proof of exactly its birth: a proof of
-        // another birth is refused by name before anything is written.
-        if let Some(exit) = &req.exit {
-            if exit.node_id != node.node_id || node.incarnation_id.as_ref() != Some(&exit.incarnation_id) {
-                return Err(PipelineError {
-                    step: RetireStep::NodeDeleting.name(),
-                    reason: format!(
-                        "{name}: the exit proof names birth {} at {}, the delete is of {} at {}",
-                        exit.node_id,
-                        exit.incarnation_id.as_str(),
-                        node.node_id,
-                        node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("no known birth")
-                    ),
-                 code: rdm_core::outcome::Code::FailedPrecondition });
-            }
-        }
         // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
         // before that) and now records this operation; every node hears the node is being removed
         // and stops routing to it, while it stays found.
@@ -2238,13 +2159,16 @@ impl DeploymentPipeline<'_> {
         // moment it is announced, so a successor derives it from the same facts.
         let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
         self.lifecycle.deleting(&op).await;
-        let terminal = if node.parked || req.exit.is_some() {
+        let terminal = if req.unreached {
+            // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
+            // reply or receipt is fabricated; `TerminateRuntime` first when its runtime runs at the
+            // step's instant, and nothing waits for a proof of termination.
+            self.terminate_step_when(&mut run, &node, handle, Terminate::Unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
+        } else if node.parked {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
-            // (lifecycles/node-delete.md 1-2, node-stop.md 6). A crashed target likewise: its stop steps
-            // are already done, and no node reply or receipt is fabricated for the exited process
-            // (node-delete.md step 1); the provider's exact inspection is all that is asked.
+            // (lifecycles/node-delete.md 1-2, node-stop.md 6).
             self.terminate_step(&mut run, &node, handle).await?
         } else if self.stop_skipped_os_stopped(&run, &node, handle).await {
             // An OS-suspended target (node-delete.md): it answers no call, so no stop is sent; the
@@ -2258,32 +2182,16 @@ impl DeploymentPipeline<'_> {
             // terminal proof.
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
-        // The departure: the provider's inspection above is the proof. Nothing earlier (the
-        // node's Leaving, its drained reply, the claim) is. A crashed target's node.deleted is
-        // published from its mesh-primary's recorded exit proof (node-recovery.md sequence step 3).
+        // The departure: the step above. Nothing earlier (the node's Leaving, its drained reply, the
+        // claim) is.
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-        let exit = req.exit.as_ref();
         let op = self
             .step(&mut run, RetireStep::NodeDeleted.name(), async {
-                if let Some(exit) = exit {
-                    tracing::info_span!(
-                        "rdm.node_admin.node.delete.via-exit-proof",
-                        build_id = %req.build_id.log(),
-                        attempt = req.attempt,
-                        node = %name,
-                        node_id = %exit.node_id,
-                        incarnation_id = %exit.incarnation_id.as_str(),
-                        exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
-                        proof = %exit.proof,
-                        observed_at_ms = exit.observed_at_ms,
-                    )
-                    .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
-                }
                 // The deleted birth's row goes Deleted at its path.name, its config kept, inside the
                 // step and before node.deleted (lifecycles/node-delete.md step 3): a node created at that
                 // path.name, a recovery's create included, claims the name over it and seeds its
                 // config from it (node-recovery.md "Retained").
-                self.deleted_row(&node, op.clone()).await
+                self.deleted_row(&node, op.clone(), req.unreached).await
             })
             .await?;
         self.lifecycle.deleted(&op).await;
@@ -2325,10 +2233,12 @@ impl DeploymentPipeline<'_> {
 
     /// `NodeDeleted`'s work (lifecycles/node-delete.md step 3, before node.deleted): the writer of the
     /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
-    /// kept; a refusal fails the step by name.
-    async fn deleted_row(&self, record: &Node, op: LifecycleOp) -> Result<LifecycleOp, String> {
+    /// kept; a refusal fails the step by name. `unreached`: the delete of an unreached birth
+    /// ([`crate::node_rows::NodeRows::deleted_unreached`]).
+    async fn deleted_row(&self, record: &Node, op: LifecycleOp, unreached: bool) -> Result<LifecycleOp, String> {
         if let Some(rows) = self.sink.node_rows() {
-            rows.deleted(record, &op.operation).await.map_err(|e| format!("{}: the Deleted row of {} is not written: {e}", record.name, record.node_id))?;
+            let written = if unreached { rows.deleted_unreached(record, &op.operation).await } else { rows.deleted(record, &op.operation).await };
+            written.map_err(|e| format!("{}: the Deleted row of {} is not written: {e}", record.name, record.node_id))?;
         }
         Ok(op)
     }
@@ -2420,42 +2330,41 @@ impl DeploymentPipeline<'_> {
         self.terminate_step_when(run, node, handle, Terminate::Always, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await
     }
 
-    /// [`Self::terminate_step`], firing as `when` says: a hung runtime's hold (R-FM1) terminates only
-    /// a runtime the provider reads `Running` at the step's instant (deployment-provider.md §2.5: an
-    /// `OsStopped` there voids it, and nothing uncertain is terminated); an `Exited` runtime is proven
-    /// with no signal.
+    /// [`Self::terminate_step`], firing as `when` says: an unreached birth's delete terminates only a
+    /// runtime the provider reads `Running` at the step's instant, and on any other read terminates
+    /// nothing and waits for nothing (node-recovery.md step 3); the receipt names what it read.
     async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
         self.step_with(run, RetireStep::TerminateRuntime.name(), async {
-            use crate::build_state::{InspectionVerdict, TerminateStage};
-            if when == Terminate::OnlyRunning {
+            let receipt = |exit_code: Option<i32>, verdict: Option<&str>| -> Result<TerminalReceipt, StepFailure> {
+                Ok(TerminalReceipt {
+                    node: name.to_string(),
+                    node_id: node.node_id.to_string(),
+                    incarnation_id: node.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{name} has no known birth: the receipt names no birth"))?,
+                    runtime: handle.fact().as_ref().map(RuntimeProof::of),
+                    exit_code,
+                    verdict: verdict.map(str::to_string),
+                })
+            };
+            let verdict = if when == Terminate::Unreached {
                 // node.runtime.inspect at the terminate's instant: its span is the evidence (node-runtime-inspect.md).
-                let status = self.inspected_at(node, handle, "terminate", "the hold's terminate inspects the exact runtime at its instant and fires only on Running").await;
-                match status {
-                    DeploymentStatus::Running | DeploymentStatus::Exited { .. } => {}
-                    DeploymentStatus::OsStopped => {
-                        return Err(StepFailure::at(
-                            TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped },
-                            format!("{name}: the operating system holds its exact runtime suspended at the terminate's instant (os-stopped): the hold is void and nothing is terminated"),
-                        ))
-                    }
-                    DeploymentStatus::Unknown => {
-                        return Err(StepFailure::at(
-                            TerminateStage::Inspection { verdict: InspectionVerdict::Unknown },
-                            format!("{name}: the provider cannot tell its exact runtime's state at the terminate's instant: the hold is void and nothing is terminated"),
-                        ))
-                    }
+                match self.inspected_at(node, handle, "terminate", "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates only a running one").await {
+                    DeploymentStatus::Running => Some("running"),
+                    DeploymentStatus::Exited { code } => return receipt(code, Some("exited")),
+                    DeploymentStatus::OsStopped => return receipt(None, Some("os-stopped")),
+                    DeploymentStatus::Unknown => return receipt(None, Some("unavailable")),
                 }
-            }
+            } else {
+                None
+            };
             if let Err(e) = self.provider.terminate(handle, mode).await {
-                let error = e.to_string();
-                return Err(StepFailure::at(TerminateStage::Provider { error: error.clone() }, error));
+                return Err(StepFailure::from(e.to_string()));
             }
             // Only an exact inspection that says the runtime exited is terminal proof.
             let exit_code = match self.provider.inspect(handle).await {
-                DeploymentStatus::Running => return Err(StepFailure::at(TerminateStage::Unproven, format!("{name} still runs after the stop ladder"))),
-                DeploymentStatus::OsStopped => return Err(StepFailure::at(TerminateStage::Unproven, format!("{name}: the operating system holds its runtime suspended after the stop ladder (os-stopped); no terminal proof"))),
-                DeploymentStatus::Unknown => return Err(StepFailure::at(TerminateStage::Unproven, format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof"))),
+                DeploymentStatus::Running => return Err(StepFailure::from(format!("{name} still runs after the stop ladder"))),
+                DeploymentStatus::OsStopped => return Err(StepFailure::from(format!("{name}: the operating system holds its runtime suspended after the stop ladder (os-stopped)"))),
+                DeploymentStatus::Unknown => return Err(StepFailure::from(format!("{name}: the provider cannot inspect its runtime after the stop ladder"))),
                 DeploymentStatus::Exited { code } => code,
             };
             // Exited is not yet released: the kernel frees a dead process's sockets after the
@@ -2500,20 +2409,12 @@ impl DeploymentPipeline<'_> {
                             .collect::<Vec<String>>()
                     })
                     .await;
-                    // Exit is proven: this failure has no terminate stage, so it stops no resubmission and
-                    // the next tick's Exited carries the birth (node-recovery.md step 4).
                     return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("{name} exited, but the operating system still holds {} after {elapsed:?}", names.join(", "))));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             tracing::info!(node = %name, released_after_ms = started.elapsed().as_millis() as u64, "the runtime exited and the operating system released its addresses");
-            Ok(TerminalReceipt {
-                node: name.to_string(),
-                node_id: node.node_id.to_string(),
-                incarnation_id: node.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{name} has no known birth: the exit proves no birth"))?,
-                runtime: handle.fact().as_ref().map(RuntimeProof::of),
-                exit_code,
-            })
+            receipt(exit_code, verdict)
         })
         .await
     }
@@ -2746,110 +2647,6 @@ mod tests {
         }
     }
 
-    /// CONTRACT (deployment-provider.md §2.5: "the terminate step re-inspects the exact runtime at its
-    /// instant and fires only on `Running`"; node-recovery.md step 4): a hung birth's hold expired and
-    /// its recovery's `TerminateRuntime` runs, but the provider now reads the exact runtime `OsStopped`
-    /// (or cannot tell, `Unknown`). The step fails by name, its receipt `Failed` naming the state, and
-    /// no terminate is asked of the provider. Must NOT happen: a signal to a runtime the operating
-    /// system holds suspended, or to one whose state cannot be told.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn the_holds_terminate_reinspects_and_never_fires_on_an_os_stopped_or_unknown_runtime() {
-        for (status, named) in [(DeploymentStatus::OsStopped, "os-stopped"), (DeploymentStatus::Unknown, "cannot tell")] {
-            let provider = Answers { status: status.clone(), terminated: Default::default(), refuse: None };
-            let builds = crate::build_state::MemoryBuildStateAdapter::new();
-            let build_id = BuildId::mint();
-            builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
-            let template = cell_template("hold-terminate");
-            let joins = Joins::default();
-            let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-            let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
-            node.incarnation_id = Some(IncarnationId::mint());
-            let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: crate::model::ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("process:cell".into()) };
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
-            let capture = crate::span_capture::Capture::new("i144-e2-hold-terminate");
-            let err = {
-                let _g = tracing::dispatcher::set_default(&capture.dispatch);
-                pipeline.delete_hung(&req, &crate::admin::Records::default()).await.expect_err("the hold's terminate does not fire")
-            };
-            let inspected = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
-            assert_eq!(inspected.iter().map(|c| (c.attributes.get("caller").cloned().unwrap_or_default(), c.attributes.get("verdict").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("terminate".to_string(), if status == DeploymentStatus::OsStopped { "os-stopped".to_string() } else { "unavailable".to_string() })], "the re-inspection is spanned");
-            assert_eq!(err.step, RetireStep::TerminateRuntime.name(), "{err}");
-            assert!(err.reason.contains(named) && err.reason.contains("nothing is terminated"), "{status:?}: {err}");
-            assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 0, "{status:?}: no terminate was asked of the provider");
-            let receipts = builds.read_build(&build_id).await.unwrap().steps;
-            assert!(receipts.iter().any(|r| r.step == RetireStep::TerminateRuntime.name() && matches!(&r.outcome, StepOutcome::Failed { reason, .. } if reason.contains(named))), "{status:?}: the step's receipt is Failed by name: {receipts:?}");
-            // i144 R21: the receipt names where it stopped: at its own inspection, which voids the hold.
-            let verdict = if status == DeploymentStatus::OsStopped { crate::build_state::InspectionVerdict::OsStopped } else { crate::build_state::InspectionVerdict::Unknown };
-            let stages: Vec<_> = receipts.iter().filter(|r| r.step == RetireStep::TerminateRuntime.name()).map(|r| r.outcome.clone()).collect();
-            assert!(matches!(stages.as_slice(), [StepOutcome::Failed { stage: Some(crate::build_state::TerminateStage::Inspection { verdict: v }), .. }] if *v == verdict), "{status:?}: the receipt's stage is inspection {verdict:?}: {stages:?}");
-        }
-    }
-
-    /// CONTRACT (i144 R21; node-recovery.md step 4's end: "A terminate the provider refuses or cannot
-    /// prove ends the attempt `Failed { step: TerminateRuntime, reason }` by name, and no hold submits
-    /// that birth's terminate again"): a hung birth's hold expired and its `TerminateRuntime` reads the
-    /// exact runtime `Running`, so it asks the provider. When the provider returns an error the receipt
-    /// is Failed with the typed stage `provider`, carrying that error; when it answers but the runtime
-    /// still runs after the stop ladder, the stage is `unproven`. Both stop a hold's resubmission; a
-    /// failure at the step's own inspection does not.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_hold_terminate_the_provider_refused_or_could_not_prove_names_its_stage() {
-        use crate::build_state::{InspectionVerdict, TerminateStage};
-        for (refuse, want) in [(Some("the daemon refused".to_string()), TerminateStage::Provider { error: "terminating deployment".into() }), (None, TerminateStage::Unproven)] {
-            let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default(), refuse: refuse.clone() };
-            let builds = crate::build_state::MemoryBuildStateAdapter::new();
-            let build_id = BuildId::mint();
-            builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
-            let data_root = tempdir("hold-terminate-stage");
-            let template = LaunchTemplate {
-                fabric: "fabric1".into(),
-                fabric_id: rdm_core::FabricId::mint(),
-                executable: "/nonexistent/rdm-rpc-node".into(),
-                seeds: vec![],
-                launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
-                env: BTreeMap::new(),
-                data_root: data_root.clone(),
-                store_dir: data_root.clone(),
-                issuing: None,
-                roots: Default::default(),
-                connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-            };
-            let joins = Joins::default();
-            let timeouts = Timeouts { stop_grace: Duration::from_millis(1), ..Timeouts::default() };
-            let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
-            let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
-            node.incarnation_id = Some(IncarnationId::mint());
-            let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: crate::model::ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("process:cell".into()) };
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
-            let capture = crate::span_capture::Capture::new("i144-r21-hold-terminate-stage");
-            let err = {
-                let _g = tracing::dispatcher::set_default(&capture.dispatch);
-                pipeline.delete_hung(&req, &crate::admin::Records::default()).await.expect_err("the hold's terminate is not proven")
-            };
-            assert_eq!(err.step, RetireStep::TerminateRuntime.name(), "{err}");
-            assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 1, "{refuse:?}: the provider was asked once");
-            let receipts = builds.read_build(&build_id).await.unwrap().steps;
-            let stage = receipts.iter().find_map(|r| match &r.outcome {
-                StepOutcome::Failed { stage, .. } if r.step == RetireStep::TerminateRuntime.name() => stage.clone(),
-                _ => None,
-            });
-            match (&want, &stage) {
-                (TerminateStage::Provider { error: prefix }, Some(TerminateStage::Provider { error })) => assert!(error.contains(prefix.as_str()) && error.contains("the daemon refused"), "the provider's error is carried: {error}"),
-                (TerminateStage::Unproven, Some(TerminateStage::Unproven)) => {}
-                _ => panic!("{refuse:?}: the receipt's stage is {want:?}: {stage:?} in {receipts:?}"),
-            }
-            let stage = stage.expect("a stage");
-            assert!(stage.stops_resubmission(), "{stage:?} stops a hold's resubmission");
-            let stepped = capture.named("rdm.node_admin.deployment.update.via-step").into_iter().find(|c| c.attributes.get("step").map(String::as_str) == Some("TerminateRuntime")).expect("the step's span");
-            assert_eq!(stepped.attributes.get("stage").map(String::as_str), Some(stage.name()), "the step's span names the stage: {stepped:?}");
-            let named = if refuse.is_some() { "the daemon refused" } else { "still runs after the stop ladder" };
-            assert!(stepped.attributes.get("reason").is_some_and(|r| r.contains(named)), "the step's span names why it failed ({named}): {stepped:?}");
-        }
-        assert!(!TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped }.stops_resubmission() && !TerminateStage::Inspection { verdict: InspectionVerdict::Unknown }.stops_resubmission(), "a failure at the step's own inspection voids the hold, never stops it");
-    }
-
     /// The launch template of a cell whose provider never spawns: mesh1.admin.1's, its data root a
     /// fresh directory named `cell`.
     fn cell_template(cell: &str) -> LaunchTemplate {
@@ -2964,7 +2761,7 @@ mod tests {
         let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
-        let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), exit: None };
+        let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: false };
         let capture = crate::span_capture::Capture::new("i144-e3-os-stopped-delete");
         let terminal = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -2999,7 +2796,7 @@ mod tests {
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let handle = process_handle();
-        let req = RetireRequest { build_id, attempt: 1, node, handle: handle.clone(), exit: None };
+        let req = RetireRequest { build_id, attempt: 1, node, handle: handle.clone(), unreached: false };
         let capture = crate::span_capture::Capture::new("i144-e3-inspect-handle");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);

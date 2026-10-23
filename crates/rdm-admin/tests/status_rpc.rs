@@ -173,7 +173,6 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let authority = Arc::new(StatusAuthority {
         certs: None,
         app_channels: None,
-        held_takeover: Default::default(),
         declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -192,7 +191,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         mesh_deleter: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
-        rounds: Default::default(),
+        rounds: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
         republish: Default::default(), configure: Default::default(),
         before_ready: Default::default(),
@@ -520,7 +519,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the stop
     // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
@@ -631,30 +630,11 @@ impl StatusStorage for Refusing {
     async fn node_silences(&self) -> Result<Vec<rdm_admin::status_storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_silences().await
     }
-    async fn put_node_exit(&self, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.put_node_exit(row).await
-    }
-    async fn node_exit(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_exit(node_id, incarnation_id).await
-    }
     async fn mesh_status_held_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<bool, rdm_admin::storage_error::StorageError> {
         self.inner.mesh_status_held_of(mesh, row).await
     }
     async fn put_mesh_status_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_mesh_status_of(mesh, row).await
-    }
-    async fn node_exit_of(&self, mesh: &str, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_exit_of(mesh, node_id, incarnation_id).await
-    }
-    async fn put_node_exit_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_exit_of(mesh, row).await
-    }
-    async fn node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeHeldRunningRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-    }
-    async fn put_node_held_running_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeHeldRunningRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_held_running_of(mesh, row).await
     }
     async fn node_certs_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_certs_of(mesh).await
@@ -679,18 +659,6 @@ impl StatusStorage for Refusing {
     }
     async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-    }
-    async fn remove_node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_os_stopped_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeOsStoppedRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-    }
-    async fn put_node_os_stopped_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeOsStoppedRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_os_stopped_of(mesh, row).await
-    }
-    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<bool, rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
     }
     async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await

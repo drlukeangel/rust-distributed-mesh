@@ -302,9 +302,6 @@ impl BuildStateAdapter for FramedBuilds {
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
-        self.inner.terminate_failures_of(node_id, incarnation).await
-    }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
     }
@@ -407,9 +404,6 @@ impl BuildStateAdapter for LaneBuilds {
     }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
-        self.inner.terminate_failures_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
@@ -786,7 +780,7 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
         (None, _) => return Err(RecoveryNotRun::Broke { why: format!("{me}: attempt {} of {} is a fabric-lane attempt that names no recovered birth: a recovery runs in its mesh's drift lane, or in the fabric lane for a hung mesh-primary", opened.attempt, opened.build_id), opened }),
     };
     let observed = control.topology.read().await.clone();
-    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed, None).operations, hand_off_to: None };
+    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
     let context = crate::build_claim::current_context();
     let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &me.to_string(), &context, &[], &plan).await {
         Attached::Refused(reply) => return Err(RecoveryNotRun::RunRefused { opened, reply }),
@@ -939,9 +933,6 @@ mod tests {
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
             self.0.mesh_deleted_of(node_id, incarnation).await
         }
-        async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
-            self.0.terminate_failures_of(node_id, incarnation).await
-        }
         async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
             self.0.exits_owed(build_id, mesh).await
         }
@@ -993,9 +984,6 @@ mod tests {
         }
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
             self.0.mesh_deleted_of(node_id, incarnation).await
-        }
-        async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
-            self.0.terminate_failures_of(node_id, incarnation).await
         }
         async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
             self.0.exits_owed(build_id, mesh).await

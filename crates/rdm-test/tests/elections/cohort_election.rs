@@ -1,12 +1,12 @@
 //! i143.e4.s14 process E2E: the canonical cohort election (PRD §11;
 //! `docs/architecture/fabric-node-lifecycle-elections.md`).
 //!
-//! Every seat, each cohort's (rpc, node-admin: the mesh primary) and the
-//! fabric seat, follows elections §5: "a living holder keeps its seat; a
-//! lower-NodeId candidate that later becomes Ready never displaces it"; "a
-//! holder that yields or whose exact birth is proven gone hands the seat to
-//! the lowest ReadyForTraffic NodeId of its own mesh"; "a restarted node is a
-//! candidate for a later vacancy and never displaces the holder". A holder a
+//! Every primary, each cohort's (rpc, node-admin: the mesh primary) and the
+//! fabric-primary, follows elections §5: "a heard primary stays primary; a
+//! lower-NodeId candidate that later becomes Ready never displaces it";
+//! silence past the staleness floor supersedes it; "restart preserves NodeId;
+//! a restarted node is a candidate for a later vacancy and never displaces the
+//! primary". A holder a
 //! Build stops, restarts or deletes yields first by node.primary.update to the
 //! cohort's lowest ReadyForTraffic NodeId with the holder excluded (proposal
 //! node-primary-update-fabric-mesh-and-node-type.md Part C1 steps 1-2). From
@@ -23,9 +23,11 @@
 //! - kill the primary (SIGKILL): the next-lowest ready NodeId succeeds; the
 //!   recreated path is a new NodeId and never displaces it;
 //! - legal removal of the primary: the next-lowest succeeds;
-//! - UDP cut between two sides of the mesh: neither side elects a primary of its own for a holder
-//!   it cannot hear (a silent holder keeps its seat); heal: every admin's view advertises the same
-//!   seats.
+//! - UDP cut between two sides of the mesh (Q111, Q122; one host, one store): the side with an eligible
+//!   ReadyForTraffic successor supersedes the primary it no longer hears at the floor; each side
+//!   re-creates only births node investigation did not reach; heal: every pre-cut path.name holds one
+//!   live ReadyForTraffic birth and every admin's view advertises the same seats. No side's outcome is
+//!   pinned.
 //!
 //! Evidence: each successor is announced by a
 //! `rdm.mesh.election.resolve.via-recompute` span (`election_level =
@@ -300,7 +302,8 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     settle(&estate, &admin1, "after removal").await;
     steady(&estate, &admin1, "after removal", hold).await;
 
-    // partition -> transient split permitted; heal -> the computed seats in every view
+    // The partition (Q111, Q122): one host, one store; no side's outcome is pinned, each is read from the
+    // trace. Side A holds the fabric-primary (the mesh's primary too) and one rpc node; side B the rest.
     let nodes = estate.node_values().await;
     let admin_p = primary_of(&nodes, &admin).unwrap();
     let admin2_name = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != admin_p.as_str()).unwrap()["name"]);
@@ -309,54 +312,80 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let lone_rpc = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["name"] != rpc_now.as_str()).map(|n| s(&n["name"])).unwrap();
     let side_a = vec![admin_p.clone(), lone_rpc.clone()];
     let side_b: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| !side_a.contains(n)).collect();
+    let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let floor = rdm_transport::membership::staleness_floor();
     match Partition::start(&udp_ports(&nodes, &side_a), &udp_ports(&nodes, &side_b)) {
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() == Ok("1") => {
             panic!("RDM_REQUIRE_NETFAULT=1 but this host cannot partition: {why}")
         }
         Err(why) => eprintln!("SKIP partition case: {why}"),
         Ok(partition) => {
-            // Side A stops hearing the rpc holder, and elects no rpc primary of its own: silence and an
-            // observer-inferred Dead are not proof, the holder keeps the seat (elections §5).
-            let a_view = estate
-                .until_view_at(&admin_pp, &format!("side A no longer hears the rpc holder {rpc_now}"), rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
-                    let nodes = Estate::values(views);
-                    nodes.iter().any(|n| n["name"] == rpc_now.as_str() && n["status"] != "ready-for-traffic").then_some(nodes)
-                })
-                .await;
-            assert_eq!(primary_of(&a_view, &rpc).as_deref(), Some(rpc_now.as_str()), "a cut-off rpc holder keeps its seat: side A names no rpc primary of its own: {a_view:#?}");
-            // Side B has heard nothing from the admin primary, the fabric-primary, past the staleness
-            // floor: the playbook (Q89, fabric-recovery.md "The loss of the fabric-primary while a
-            // node-admin lives"): its standby writes the one row and holds both seats.
-            let b_view = estate
-                .until_view_at(&admin2, &format!("side B's standby {admin2_name} holds both seats within a floor of the mark"), rdm_transport::membership::staleness_floor() * 3 + Duration::from_secs(30), |views| {
-                    let nodes = Estate::values(views);
-                    (primary_of(&nodes, &admin).as_deref() == Some(admin2_name.as_str()) && advertised_fabric(&nodes).as_deref() == Some(admin2_name.as_str())).then_some(nodes)
-                })
-                .await;
-            assert_eq!(primary_of(&b_view, &rpc).as_deref(), Some(rpc_now.as_str()), "the rpc seat, whose holder side B hears, does not move: {b_view:#?}");
-            for at in [&admin_pp, &admin2] {
-                for (c, p) in advertised_primaries(&estate.node_values_at(&at.to_string()).await) {
-                    assert!(p.len() <= 1, "{at}: a view never names two primaries of {c:?}: {p:?}");
-                }
-            }
+            let cut_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+            // Side A has an eligible ReadyForTraffic successor to the rpc primary it no longer hears: at the
+            // floor the election supersedes the stale primary (elections §4.1, §5).
+            let superseded = wait_for(&format!("side A supersedes the unheard rpc primary {rpc_now} with {lone_rpc}"), floor * 3 + Duration::from_secs(30), || {
+                let spans = estate.spans();
+                let found = named(&spans, "rdm.mesh.election.resolve.via-recompute")
+                    .into_iter()
+                    .find(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_ns && sp["attributes"]["observer"] == admin_p.as_str() && sp["attributes"]["election_level"] == "node_type" && sp["attributes"]["kind"] == "rpc_node" && sp["attributes"]["winner_path"] == lone_rpc.as_str())
+                    .cloned();
+                async move { found }
+            })
+            .await;
+            estate.record_trace_url(superseded["trace_id"].as_str().unwrap_or(""));
+            // The cut stands for a few floors: the investigations and recoveries of both sides run.
+            tokio::time::sleep(floor * 4).await;
             drop(partition);
-            // Healed, the superseded fabric-primary is commanded back through node.mesh.join by the
-            // interim, and one floor after it is ready the interim hands both seats home (Q89). A view
-            // has healed once it holds every pre-cut member live and ready and the seats are home; then
-            // the computed seats over it agree on both sides.
-            let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
-            let mut healed = Vec::new();
-            for at in [&admin_pp, &admin2] {
-                estate
-                    .until_view_at(at, &format!("{at} holds every pre-cut member ready and the seats home at {admin_p}"), rdm_transport::membership::staleness_floor() * 6 + Duration::from_secs(90), |views| {
-                        let view = live(&Estate::values(views));
-                        (everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic")) && primary_of(&view, &admin).as_deref() == Some(admin_p.as_str()) && advertised_fabric(&view).as_deref() == Some(admin_p.as_str())).then_some(())
-                    })
-                    .await;
-                healed.push(settle(&estate, at, &format!("{at} heals")).await);
-            }
+            // Healed: every pre-cut path.name holds one live ReadyForTraffic birth (a re-created one carries
+            // a new node id), and the views converge. Whichever pre-cut admin answers is read first; its view
+            // lists the births re-created during the cut, which the estate dials from then on.
+            let converged = |views: &[rdm_client::NodeView]| {
+                let view = live(&Estate::values(views));
+                let one_each = everyone.iter().all(|name| view.iter().filter(|n| n["name"] == name.as_str()).count() == 1 && view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"));
+                (one_each && seats_as_expected(&view).is_ok()).then_some(view)
+            };
+            // Both pre-cut admin paths are asked on every pass: an answer teaches the estate the births the
+            // other path holds now (a re-created admin is dialled where a view names it).
+            let deadline = tokio::time::Instant::now() + floor * 12 + Duration::from_secs(120);
+            let healed = loop {
+                let mut last = Vec::new();
+                let mut views = Vec::new();
+                for at in [&admin_pp, &admin2] {
+                    match estate.node_views_at(at).await {
+                        Some(v) => {
+                            let ns = live(&Estate::values(&v));
+                            last.push(format!("{at}: {:?} seats={:?}", ns.iter().map(|n| format!("{}={}/{} p={} f={}", s(&n["name"]), s(&n["status"]), s(&n["node_id"]), n["is_primary"], n["is_fabric_primary"])).collect::<Vec<_>>(), seats_as_expected(&ns)));
+                            views.push(converged(&v));
+                        }
+                        None => {
+                            last.push(format!("{at}: no answer"));
+                            views.push(None);
+                        }
+                    }
+                }
+                if let [Some(a), Some(b)] = &views[..] {
+                    break vec![a.clone(), b.clone()];
+                }
+                assert!(tokio::time::Instant::now() < deadline, "both pre-cut admin paths answer with a converged view after the heal; last: {last:#?}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            };
             assert_eq!(advertised_primaries(&healed[0]), advertised_primaries(&healed[1]), "healed views agree");
-            steady(&estate, &admin2, "healed", hold).await;
+            let spans = estate.spans();
+            let after = |sp: &&Value| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_ns;
+            // Within every view an observer computed during and after the cut: at most one primary per
+            // (mesh, node type).
+            for sp in named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().filter(after) {
+                let winner = s(&sp["attributes"]["winner_path"]);
+                assert!(!winner.contains(','), "one primary per cohort in every view: {sp}");
+            }
+            // Recovery follows node investigation's verdict: nothing was re-created on `reached`.
+            for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(after) {
+                assert_ne!(s(&sp["attributes"]["verdict"]), "reached", "a reached birth is commanded back, never re-created: {sp}");
+            }
+            for sp in named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(after) {
+                assert_ne!(s(&sp["attributes"]["verdict"]), "reached", "fabric recovery re-creates only a birth node investigation did not reach: {sp}");
+            }
+            steady(&estate, &admin_pp, "healed", hold).await;
         }
     }
 

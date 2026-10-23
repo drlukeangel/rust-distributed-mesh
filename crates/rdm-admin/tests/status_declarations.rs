@@ -153,7 +153,6 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
     let authority = Arc::new(StatusAuthority {
         certs: None,
         app_channels: None,
-        held_takeover: Default::default(),
         declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -172,7 +171,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
-        rounds: Default::default(),
+        rounds: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
         republish: Default::default(), configure: Default::default(),
         before_ready: Default::default(),
@@ -2076,7 +2075,6 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
             let authority = StatusAuthority {
                 certs: None,
                 app_channels: None,
-                held_takeover: Default::default(),
                 declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2095,7 +2093,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 mesh_deleter: Arc::new(std::sync::OnceLock::new()),
                 hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 wake: Default::default(),
-                rounds: Default::default(),
+                rounds: Default::default(), fabric_recovery: Default::default(),
                 configs: Default::default(),
                 republish: Default::default(), configure: Default::default(),
                 before_ready: Default::default(),

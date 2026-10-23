@@ -465,39 +465,15 @@ impl FabricRowsWriter {
     }
 }
 
-/// What the provider's inspection of the exact birth a digest or a durable row names found, when it
-/// is not an exit (node-runtime-inspect.md "Result"): the runtime runs, the operating system holds it
-/// suspended, or nothing can be told (named why).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotProven {
-    /// The provider read the exact runtime `Running`: alive, however silent.
-    Running,
-    /// The operating system holds the exact runtime suspended (deployment-provider.md §2.5).
-    OsStopped,
-    /// No runtime fact, an adoption the provider refused, an unreadable exit record or the
-    /// provider's `Unknown`: nothing is proven, named why.
-    Unavailable(String),
-}
-
-impl std::fmt::Display for NotProven {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Running => write!(f, "its runtime is not proven exited: Running"),
-            Self::OsStopped => write!(f, "its runtime is not proven exited: OsStopped"),
-            Self::Unavailable(why) => write!(f, "{why}"),
-        }
-    }
-}
-
-/// The provider's inspection of the exact birth a digest or a durable row names: the runtime fact
-/// is the digest's (when it is of this birth) or the row's, adopted in this provider's control
-/// domain and inspected, and only the runtime's own terminal status is an exit. `Ok` carries the exit
-/// code and where it came from; `Err` is what the inspection found instead.
+/// The provider's inspection of the exact birth a digest or a durable row names
+/// (node-runtime-inspect.md): the runtime fact is the digest's (when it is of this birth) or the
+/// row's, adopted in this provider's control domain and inspected; its answer is node investigation's
+/// provider step.
 pub async fn inspection_of(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
-) -> Result<(Option<i32>, &'static str), NotProven> {
+) -> Inspected {
     inspection_with_handle(provider, held_row, row).await.0
 }
 
@@ -508,36 +484,18 @@ pub async fn inspection_with_handle(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
-) -> (Result<(Option<i32>, &'static str), NotProven>, Option<DeploymentHandle>) {
+) -> (Inspected, Option<DeploymentHandle>) {
     // The runtime fact one way for every inspect (`node_investigation::runtime_of`).
     let Some(crate::node_investigation::BirthRuntime { fact, data_dir, incarnation: birth }) = crate::node_investigation::runtime_of(held_row.as_ref().map(|(dg, _)| dg), row) else {
-        return (Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))), None);
+        return (Inspected::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })), None);
     };
     // The exact runtime handle the inspect asks about: none when the provider refuses to adopt the
     // fact, which the inspect names as its `unavailable`.
     let handle = crate::deployment::provider::adopt(provider, &fact).ok();
-    // The one inspect (node-runtime-inspect.md; `deployment::provider::inspect_runtime`): its
-    // `Exited` carries the code and where the proof came from, the row's `proof`.
-    let answer = match crate::deployment::provider::inspect_runtime(provider, &fact, data_dir.as_deref(), &birth.as_str()).await {
-        Inspected::Exited(code, proof) => Ok((code, proof)),
-        Inspected::Running => Err(NotProven::Running),
-        Inspected::OsStopped => Err(NotProven::OsStopped),
-        Inspected::Unavailable(reason) => Err(NotProven::Unavailable(reason)),
-    };
-    (answer, handle)
+    (crate::deployment::provider::inspect_runtime(provider, &fact, data_dir.as_deref(), &birth.as_str()).await, handle)
 }
 
-/// The provider's proof that the exact birth a digest or a durable row names exited
-/// ([`inspection_of`]): `Err` names why nothing is proven.
-pub async fn exit_proof_of(
-    provider: &dyn crate::deployment::provider::DeploymentProvider,
-    held_row: &Option<(MeshDigest, Duration)>,
-    row: Option<&crate::storage::RuntimeRow>,
-) -> Result<(Option<i32>, &'static str), String> {
-    inspection_of(provider, held_row, row).await.map_err(|n| n.to_string())
-}
-
-/// The workflow an exited member's removal was announced by ([`RecoverySubmitter::removal_announced`]):
+/// The workflow a member's removal was announced by ([`RecoverySubmitter::removal_announced`]):
 /// which announcement, and the operation, Build and attempt it names (a mesh.delete announced by its
 /// mesh's status names its operation and no Build).
 pub(crate) struct Announced {

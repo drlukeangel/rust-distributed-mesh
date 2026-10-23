@@ -141,19 +141,6 @@ pub struct Node {
     /// Stopped and parked: `Leaving` with a live process, waiting for a start or a delete.
     #[serde(default)]
     pub parked: bool,
-    /// The provider's proof that this exact birth exited is recorded: its exit-proof row was read
-    /// (`Records::read_exits`), so the birth is `Dead` and gone from every seat. `false` for a
-    /// `Dead` the observer inferred (true offline), which proves nothing (elections §4.1: only the
-    /// provider's exit proof vacates a seat).
-    #[serde(default)]
-    pub exit_proven: bool,
-    /// The operating system holds this exact birth's runtime suspended, as its mesh-primary recorded
-    /// it (deployment-provider.md §2.5: the `os-stopped { since }` status-row fact): read for a silent
-    /// birth only, in the view's read phase (`Records::read_os_stopped`), since an os-stopped runtime
-    /// answers nothing. `None` for a birth that is heard. What node.get, node.delete's door and the
-    /// plan read of it: an os-stopped birth may be deleted; a birth that is only silent may not.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub os_stopped: Option<crate::views::OsStopped>,
     /// The node's config as its digest carries it: the application's own key/values, opaque to RDM.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
@@ -188,8 +175,6 @@ impl Node {
             routable: false,
             declared: None,
             parked: false,
-            exit_proven: false,
-            os_stopped: None,
             config: Default::default(),
         }
     }

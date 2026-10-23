@@ -17,7 +17,7 @@ use rdm_transport::membership::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
 use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
 use rdm_admin::build::{BuildId, FabricDesired, MeshDesired};
-use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, InspectionVerdict, StepOutcome, TerminateStage};
+use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
 use rdm_admin::deployment::pipeline::Bound;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, RetireStep, StorageDisposition};
 use rdm_admin::deployment::provider::DeploymentHandle;
@@ -249,24 +249,28 @@ fn facts() -> Vec<BuildFact> {
         output: None,
         executor: None,
     }));
-    // i144 R21: a hold's failed TerminateRuntime carries where it stopped, on the Build topic.
-    for stage in [
-        TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped },
-        TerminateStage::Inspection { verdict: InspectionVerdict::Unknown },
-        TerminateStage::Provider { error: "terminating deployment an16er0436pg failed: the daemon refused".into() },
-        TerminateStage::Unproven,
-    ] {
-        out.push(BuildFact::Step(BuildStepReceipt {
-            mesh: Some("mesh2".into()),
-            build_id: bid("3qcfk1kq47m9"),
-            attempt: 3,
-            operation: "node.delete:mesh2.rpc.1".into(),
-            step: RetireStep::TerminateRuntime.name().into(),
-            outcome: StepOutcome::Failed { reason: format!("the hold's terminate failed at {}", stage.name()), stage: Some(stage) , code: rdm_core::outcome::Code::FailedPrecondition },
-            output: None,
-            executor: Some("key@127.0.0.1:1".into()),
-        }));
-    }
+    // An unreached birth's TerminateRuntime: refused by the provider, then the receipt of what the step
+    // read at its instant (node-recovery.md step 3), on the Build topic.
+    out.push(BuildFact::Step(BuildStepReceipt {
+        mesh: Some("mesh2".into()),
+        build_id: bid("3qcfk1kq47m9"),
+        attempt: 3,
+        operation: "node.delete:mesh2.rpc.1".into(),
+        step: RetireStep::TerminateRuntime.name().into(),
+        outcome: StepOutcome::failed("terminating deployment an16er0436pg failed: the daemon refused"),
+        output: None,
+        executor: Some("key@127.0.0.1:1".into()),
+    }));
+    out.push(BuildFact::Step(BuildStepReceipt {
+        mesh: Some("mesh2".into()),
+        build_id: bid("3qcfk1kq47m9"),
+        attempt: 4,
+        operation: "node.delete:mesh2.rpc.1".into(),
+        step: RetireStep::TerminateRuntime.name().into(),
+        outcome: StepOutcome::Complete,
+        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: "mesh2.rpc.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: IncarnationId::mint().to_string(), runtime: None, exit_code: None, verdict: Some("running".into()) })),
+        executor: Some("key@127.0.0.1:1".into()),
+    }));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "an16er0436pg" }))));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": to_json(&IncarnationId::mint()), "deployment_id": "an16er0436pg" }))));
     out.push(step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![("control".into(), "127.0.0.1:41001".parse().unwrap())] }))));

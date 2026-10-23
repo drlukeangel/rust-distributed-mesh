@@ -188,15 +188,6 @@ pub enum BuildOperation {
         /// The fabric's minted id.
         fabric_id: rdm_core::FabricId,
     },
-    /// node.fabric-primary.update handing the fabric seat back to `to`, the re-created node-admin of the
-    /// mesh a takeover took the seat from, once it is Ready and seated in its mesh (elections §4.3,
-    /// §4.4). The fabric-primary's drive moves the seat as this operation's preceding update, naming
-    /// `to` as the successor ([`crate::executor::seat_move`]); no admin executes it, and once the seat
-    /// is back the plan does not hold it.
-    HandFabricSeat {
-        /// The re-created node-admin the seat is handed to.
-        to: PathName,
-    },
 }
 
 impl BuildOperation {
@@ -205,7 +196,7 @@ impl BuildOperation {
         match self {
             Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
-            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } | Self::HandFabricSeat { .. } => None,
+            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
 
@@ -233,7 +224,6 @@ impl BuildOperation {
             Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("node.delete:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("mesh.delete:{mesh_id}"),
             Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
-            Self::HandFabricSeat { to } => format!("node.fabric-primary.update:{to}"),
         }
     }
 }

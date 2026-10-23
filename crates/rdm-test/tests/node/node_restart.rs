@@ -2,22 +2,18 @@
 //! (MN). The provider is `MESH_SPAWN_TYPE` (process by default); the body is
 //! `rdm_test::canary::restart_canary`.
 
-use rdm_client::{CallEnd, Frame, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes, WorkflowKind};
+use rdm_client::{CallEnd, Frame, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
 use rdm_core::PathName;
 use rdm_test::canary::restart_canary;
 use rdm_test::estate::{named, Estate, Owner};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
-use rdm_test::process_faults::{ExactRuntime, Fault};
+use rdm_test::process_faults::ExactRuntime;
 use serde_json::Value;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// The fabric-primary's reason, on `rdm.node_admin.node.reject.via-not-live`, for a fresh `node.restart`
 /// of a stopped (parked) birth no restart is open on.
 const STOPPED: &str = "a fresh restart of a stopped node is refused: node.start starts it";
-/// Its reason for a fresh `node.restart` of a birth whose own restart is open (an attempt of it ended
-/// before its start completed): the caller resubmits that restart's Build.
-const OPEN_RESTART: &str = "a restart of this birth is open: the caller resubmits its Build, which resumes it from its receipts";
 
 fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "node-lifecycle".into(), subfeature: "node-restart".into(), rung: "MN".into(), provider: "process".into(), test: test.into() }
@@ -29,21 +25,6 @@ fn attr(sp: &Value, k: &str) -> String {
         Value::Null => String::new(),
         other => other.to_string(),
     }
-}
-
-/// Whether span `sp` names Build `bare` (its bare id): step spans carry the `bid_xxxx-xxxx-xxxx`
-/// rendering (`BuildId::log`), command spans the bare id.
-fn same_build(sp: &Value, bare: &str) -> bool {
-    let a = attr(sp, "build_id");
-    a == bare || a.strip_prefix("bid_").is_some_and(|l| l.replace('-', "") == bare)
-}
-
-fn start_ns(sp: &Value) -> u64 {
-    sp["start_unix_nano"].as_u64().unwrap_or(0)
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
 }
 
 /// Every frame of `stream`, in order, up to and including the terminal one.
@@ -72,13 +53,6 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// seat (its stop or restart moves no seat first) and its exact runtime.
 async fn mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    member_of(estate).await
-}
-
-/// [`mesh_with_a_member`] with faulted node-admins: a cell holds the fabric-primary at its fault cuts.
-async fn faulted_mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
-    let sha = candidate_sha();
-    let estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     member_of(estate).await
 }
 
@@ -154,130 +128,6 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
     assert!(restarts.is_empty(), "no attempt ran a restart of {member}: {restarts:#?}");
     let trace = refused[0]["trace_id"].as_str().unwrap_or_default().to_string();
     println!("fresh restart refused: http://192.168.68.99:16687/trace/{trace}");
-    estate.record_trace_url(&trace);
-}
-
-/// CONTRACT (R-PV1: "when the restart's stop was never admitted, the uncompleted stop-then-start
-/// sequence runs again through the caller's resubmit or the lane's next attempt"; node-rpc-envelope.md
-/// build.create: "existing build_id for resubmission"; PRD i144 R11, R12): a member the operating system
-/// holds suspended is restarted; the restart's attempt is dispatched only once the mesh-primary's
-/// offline ladder records the held member os-stopped (its inspection follows its direct probe's
-/// failure, so no connection to the member outlives the idle timeout), so the restart's stop-node is
-/// never sent, never admitted, and the attempt ends `Failed` naming it. The member is continued. Nothing reopens the failed attempt on its own: two
-/// staleness floors later the Build's attempt is the failed one, no step ran for the member, and
-/// `node.get` lists the same birth `restarting` (its restart is open: commanded silence its executor
-/// owns). A fresh `node.restart` of it is refused `node-not-live` naming the open restart; the caller's
-/// resubmit of the same Build opens the next attempt, which runs the whole stop then the whole start:
-/// the stop-node admitted (`stopped`), `node.joined`, `node.started`, `Complete`, the same birth
-/// `ready-for-traffic` on the same process. The node runs its stop once (Q2: a completed stop step never
-/// runs again; a parked node answers a later stop-node with the receipt of the stop it ran). Must NOT
-/// happen: a step for the member between the release and the resubmit, a `node.start` sent without the
-/// resumed stop, a second stop run by the node, or a new birth.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission() {
-    let test = "a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission";
-    let (mut estate, member, rt) = faulted_mesh_with_a_member(test).await;
-    let nodes = estate.nodes_obj().await;
-    let before = view_of(&nodes, &member).await;
-    let fp = estate.node_values().await.into_iter().find(|n| n["is_fabric_primary"] == true).and_then(|n| n["name"].as_str().map(str::to_string)).expect("a fabric-primary");
-    let door = Door::at(&estate, &fp).await;
-    door.arm("claimed", serde_json::json!({"kind": "claimed-attempt"})).await;
-    let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
-    assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
-    let stream = nodes.restart(&member).await.expect("the restart was accepted");
-    let accepted = stream.accepted().clone();
-    door.wait_held("claimed").await;
-    let until = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        // The unheard mark alone proves no connection is gone: the idle timer runs from the member's last
-        // packet, the mark from its last digest. The ladder's os-stopped row follows its direct probe's
-        // failure, past the idle timeout.
-        let v = view_of(&nodes, &member).await;
-        if v.os_stopped.is_some() {
-            break;
-        }
-        assert!(std::time::Instant::now() < until, "the mesh-primary's ladder records the held member os-stopped within 30 s: {v:?}");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    door.release("claimed").await;
-    let failed = frames(stream).await;
-    assert!(matches!(failed.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the restart fails naming the unadmitted stop: {failed:?}");
-    // A queued stop may run before Continue returns; mark the release before sending it.
-    let continued_at = now_ns();
-    rt.apply(Fault::Continue).expect("the runtime is continued");
-
-    // Nothing reopens the failed attempt on its own.
-    tokio::time::sleep(rdm_transport::membership::staleness_floor() * 2).await;
-    let build = estate.builds_obj().await.get(&accepted.build_id).await.unwrap_or_else(|e| panic!("build.get of {}: {e}", accepted.build_id));
-    assert_eq!(build.attempt, accepted.attempt, "no attempt after the failed one: {build:?}");
-    // The held member's unheard marks (PendingReconnect, and Dead with its os-stopped row while the
-    // offline ladder held it) end once its mesh-primary hears it again.
-    let until = std::time::Instant::now() + Duration::from_secs(30);
-    let open = loop {
-        let v = view_of(&nodes, &member).await;
-        if !matches!(v.status, NodeStatus::PendingReconnect | NodeStatus::Dead) {
-            break v;
-        }
-        assert!(std::time::Instant::now() < until, "the continued member is heard again within 30 s: {v:?}");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
-    assert_eq!((open.status, &open.node_id, &open.incarnation_id), (NodeStatus::Restarting, &before.node_id, &before.incarnation_id), "the same birth, its restart open: {open:?}");
-    match nodes.restart(&member).await {
-        Err(CallEnd::Rejected { reason, .. }) => assert_eq!(reason, "node-not-live", "a fresh restart of a birth whose restart is open is refused by name"),
-        Err(other) => panic!("the fresh restart ended {other}, not node-not-live"),
-        Ok(stream) => panic!("a fresh restart of {member} was accepted as attempt {} while its restart is open", stream.accepted().attempt),
-    }
-    let resubmit_at = now_ns();
-
-    // The caller's resubmit: the next attempt runs the whole stop, then the whole start.
-    let resumed = frames(nodes.resume(WorkflowKind::Restart(member.clone()), &accepted).await.expect("the resubmit was accepted")).await;
-    assert!(matches!(resumed.first(), Some(Frame::Started { build_id, .. }) if *build_id == accepted.build_id), "the resubmit drives the same Build: {resumed:?}");
-    assert_eq!(events(&resumed), vec![NodeEvent::Restarting, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted], "the whole stop, then the whole start: {resumed:?}");
-    assert_eq!(resumed.last(), Some(&Frame::Complete), "{resumed:?}");
-    let build_after = estate.builds_obj().await.get(&accepted.build_id).await.unwrap_or_else(|e| panic!("build.get of {}: {e}", accepted.build_id));
-    assert!(build_after.attempt > accepted.attempt, "the resubmit ran the next attempt: {build_after:?}");
-    let back = view_of(&nodes, &member).await;
-    assert_eq!((back.status, &back.node_id, &back.incarnation_id), (NodeStatus::ReadyForTraffic, &before.node_id, &before.incarnation_id), "the same birth runs again: {back:?}");
-    rt.check().expect("the same process runs on");
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let build = accepted.build_id.to_string();
-    let steps = |pick: &dyn Fn(u64) -> bool| -> Vec<(String, String, String)> {
-        named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string() && pick(start_ns(sp))).map(|sp| (attr(sp, "attempt"), attr(sp, "step"), attr(sp, "outcome"))).collect()
-    };
-    let between = steps(&|t| t >= continued_at && t < resubmit_at);
-    assert!(between.is_empty(), "no step ran for {member} between the release and the resubmit: {between:?}");
-    let after: Vec<String> = steps(&|t| t >= resubmit_at).into_iter().map(|(_, step, outcome)| format!("{step}={outcome}")).collect();
-    assert_eq!(after, ["NodeRestarting=complete", "StopNode=complete", "AwaitNodeLeft=complete", "StartNode=complete", "WaitForNodeReady=complete", "Complete=complete"].map(String::from).to_vec(), "the resumed attempt runs the whole restart");
-    let mut sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).collect();
-    sent.sort_by_key(|sp| start_ns(sp));
-    let sent: Vec<String> = sent.into_iter().map(|sp| format!("{}={}", attr(sp, "command"), attr(sp, "admission"))).collect();
-    // Q2 (Luke 2026-10-16): no completed stop step runs again. The node runs one stop for this Build,
-    // only once the runtime is continued (a suspended runtime runs nothing), and the resubmitted
-    // attempt's stop-node is admitted `stopped`: by running that stop, or from the receipt of the one
-    // it already ran. Whose stop it ran follows how the first stop-node ended. Never sent: no connection
-    // carried it to the node, which runs the resubmitted attempt's stop. Indeterminate (sent on a
-    // connection the executor held, its reply lost): the request either waited in the suspended
-    // runtime's socket and ran once it was continued, before the resubmit, or was lost with its
-    // connection, and the node runs the resubmitted attempt's stop.
-    let ran: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).collect();
-    assert_eq!(ran.len(), 1, "the node ran one stop for this Build: {ran:#?}");
-    let (one, first_attempt, resubmitted) = (ran[0], accepted.attempt.to_string(), build_after.attempt.to_string());
-    assert!(start_ns(one) >= continued_at, "the stop ran once the runtime was continued: {one}");
-    let ran_first = attr(one, "attempt") == first_attempt && start_ns(one) < resubmit_at;
-    let ran_resubmitted = attr(one, "attempt") == resubmitted && start_ns(one) >= resubmit_at;
-    match sent.first().map(String::as_str) {
-        Some("stop-node=not-sent") => assert!(ran_resubmitted, "a stop-node never sent changes nothing on the node: the one stop it ran is the resubmitted attempt's: {one}"),
-        Some("stop-node=indeterminate") => assert!(ran_first || ran_resubmitted, "the indeterminate stop-node ran once the runtime was continued, before the resubmit, or the node ran the resubmitted attempt's: {one}"),
-        other => panic!("the first stop-node was never admitted, so it ended not-sent or indeterminate, not {other:?}: {sent:?}"),
-    }
-    let stops: Vec<&str> = sent.iter().map(String::as_str).filter(|c| c.starts_with("stop-node=")).collect();
-    assert_eq!((stops.len(), stops.last().copied()), (2, Some("stop-node=stopped")), "the first attempt's stop-node and the resubmitted attempt's, admitted stopped: {sent:?}");
-    let refused = not_live(&spans, &member);
-    assert_eq!((refused.len(), refused.first().map(|sp| (attr(sp, "status"), attr(sp, "reason")))), (1, Some(("restarting".to_string(), OPEN_RESTART.to_string()))), "{refused:#?}");
-    let trace = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string() && attr(sp, "step") == "StartNode").map(|sp| sp["trace_id"].as_str().unwrap_or_default().to_string()).unwrap_or_default();
-    println!("resumed restart: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }
 

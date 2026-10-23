@@ -142,14 +142,11 @@ impl Topology {
     }
 
     /// Whether the birth `node_id` is the only node of `mesh` (R-MT1: the delete of a mesh's only node
-    /// skips node.primary.update): every other member of the mesh is a birth whose exit is proven
-    /// (`Node::exit_proven`). Such a birth holds its path until its delete or its mesh's end, but it is
-    /// no node of the mesh: mesh.delete's resume records the lost primary's exact Exited before its
-    /// final primary's node.delete (mesh-delete.md "Resume after the primary's loss"). A member that is
-    /// silent, or `Dead` by the true-offline mark alone, is still a node of the mesh. The one place
-    /// that rule lives: the Build door (`http`) and the drive (`executor::seat_move`) read it.
+    /// skips node.primary.update). A member that is silent, or `Dead` by the true-offline mark alone,
+    /// is still a node of the mesh; a deleted one has left the view. The one place that rule lives: the
+    /// Build door (`http`) and the drive (`executor::seat_move`) read it.
     pub fn only_node(&self, mesh: &str, node_id: &NodeId) -> bool {
-        self.members().filter(|n| n.mesh == mesh && !n.exit_proven).all(|n| n.node_id == *node_id)
+        self.members().filter(|n| n.mesh == mesh).all(|n| n.node_id == *node_id)
     }
 
     /// Every node of one cohort, among the members.
@@ -195,8 +192,8 @@ impl Topology {
 
     /// The single primary of a cohort, when exactly one member holds it: the seat the election
     /// resolved from the seat records this view was decided against, whatever the holder's status.
-    /// A holder keeps its seat until its explicit yield or a proven loss is held (R-EL1), so a ConnectionsDeleting, Leaving or silent holder is
-    /// still the one named here. A caller that needs an admin it can reach checks the holder's
+    /// Until the next election over this view, a ConnectionsDeleting, Leaving or silent holder is still
+    /// the one named here. A caller that needs an admin it can reach checks the holder's
     /// status itself.
     pub fn cohort_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {
         let mut p = self.cohort(mesh, kind).filter(|n| n.is_primary);
@@ -457,9 +454,8 @@ mod tests {
         assert!(t.violations().contains(&TopologyViolation::FabricPrimaryCount(0)));
     }
 
-    /// CONTRACT (R-EL1; fabric-node-lifecycle-elections.md §5: silence is not proof, the holder
-    /// keeps the seat): a silent seat holder is a view that has not converged, and it is still the
-    /// holder the view names and advertises. Must NOT happen: the readers dropping a silent holder,
+    /// CONTRACT: a seat holder marked silent after the election that named it is a view that has not
+    /// converged, and until the next election it is still the holder the view names and advertises. Must NOT happen: the readers dropping a silent holder,
     /// so the mesh shows no primary while its seat record names one.
     #[test]
     fn a_silent_holder_is_unconverged_and_still_the_named_holder() {
@@ -468,7 +464,7 @@ mod tests {
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoCohortPrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
-        assert_eq!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder keeps its seat");
+        assert_eq!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder is still the one named");
         assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }
 

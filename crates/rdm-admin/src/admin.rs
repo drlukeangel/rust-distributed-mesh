@@ -47,7 +47,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-
 mod boot;
 mod mesh_delete;
 mod projection;
@@ -76,11 +75,10 @@ mod tests {
     /// reason }` is recorded as that failure on the submit span's outcome, and the submit ends in an
     /// error so the mesh-primary's next tick finds the member still proven exited and submits again.
     /// A Complete terminal is recorded as complete, and a stream that ends with no terminal is named.
-    /// CONTRACT: the mesh primary's per-birth bookkeeping (the TRUE OFFLINE set, the inspection
-    /// verdicts, the silence-status memo) holds only births its view still watches at that exact
-    /// incarnation. A birth deleted by its recovery (a new node.id at its path.name) and a birth
-    /// superseded by a new incarnation of its node are retired; a watched TRUE OFFLINE birth keeps
-    /// all three. Must NOT happen: entries of gone births accumulating, one per recovered birth.
+    /// CONTRACT: the mesh primary's per-birth bookkeeping (the TRUE OFFLINE set, the silence-status
+    /// memo) holds only births its view still watches at that exact incarnation. A birth deleted by
+    /// its recovery (a new node.id at its path.name) and a birth superseded by a new incarnation of its
+    /// node are retired; a watched TRUE OFFLINE birth keeps both. Must NOT happen: entries of gone births accumulating, one per recovered birth.
     #[test]
     fn the_mesh_primarys_offline_bookkeeping_retires_deleted_and_superseded_births() {
         let watched_node = |path: &str| {
@@ -96,12 +94,9 @@ mod tests {
         let kept_birth = (kept.node_id.clone(), kept.incarnation_id.clone().unwrap());
         let watched: BTreeMap<String, Node> = [&kept, &restarted].into_iter().map(|n| (n.node_id.to_string(), n.clone())).collect();
         let mut offline: HashSet<_> = [kept_birth.clone(), superseded.clone(), deleted.clone()].into();
-        let exited = Inspected::Exited(Some(4), "provider");
-        let mut verdicts: HashMap<_, _> = [(kept_birth.clone(), exited.clone()), (superseded.clone(), exited.clone()), (deleted.clone(), exited.clone())].into();
         let mut written: WrittenSilence = [(kept.node_id.clone(), (kept.incarnation_id.clone(), Some(NodeStatus::Dead))), (deleted.0.clone(), (Some(deleted.1.clone()), Some(NodeStatus::Dead)))].into();
-        clear_unwatched(&watched, &mut offline, &mut verdicts, &mut written);
+        clear_unwatched(&watched, &mut offline, &mut written);
         assert_eq!(offline, [kept_birth.clone()].into(), "only the watched TRUE OFFLINE birth stays offline");
-        assert_eq!(verdicts.keys().cloned().collect::<HashSet<_>>(), [kept_birth.clone()].into(), "a verdict lives as long as its birth is TRUE OFFLINE");
         assert_eq!(written.keys().cloned().collect::<HashSet<_>>(), [kept.node_id.clone()].into(), "the silence memo of a deleted node is retired");
     }
 
@@ -783,9 +778,6 @@ mod tests {
         async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
             self.0.mesh_deleted_of(n, i).await
         }
-        async fn terminate_failures_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, crate::build_state::BuildStateError> {
-            self.0.terminate_failures_of(n, i).await
-        }
         async fn exits_owed(&self, id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
             self.0.exits_owed(id, mesh).await
         }
@@ -997,40 +989,6 @@ mod tests {
         }
     }
 
-    /// A provider that answers `status` and, while it inspects, has the tick hear the birth again: it
-    /// drops every TRUE OFFLINE mark of `marks`, as the tick's `offline-returned` does.
-    struct HeardDuringInspection {
-        domain: String,
-        status: crate::deployment::provider::DeploymentStatus,
-        marks: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl DeploymentProvider for HeardDuringInspection {
-        fn kind(&self) -> ProviderKind {
-            ProviderKind::Process
-        }
-        fn control_domain(&self) -> String {
-            self.domain.clone()
-        }
-        async fn spawn(&self, spec: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::DeploymentHandle, crate::deployment::provider::DeployError> {
-            Err(crate::deployment::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
-        }
-        async fn terminate(&self, _: &crate::deployment::provider::DeploymentHandle, _: crate::deployment::provider::TerminationMode) -> Result<(), crate::deployment::provider::DeployError> {
-            Ok(())
-        }
-        async fn inspect(&self, _: &crate::deployment::provider::DeploymentHandle) -> crate::deployment::provider::DeploymentStatus {
-            self.marks.lock().unwrap().clear();
-            self.status.clone()
-        }
-        async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle) -> Result<(), crate::deployment::provider::DeployError> {
-            Ok(())
-        }
-        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::Found, crate::deployment::provider::DeployError> {
-            Ok(crate::deployment::provider::Found::NeverLaunched)
-        }
-    }
-
     /// A nodes store whose reads of runtime rows (the point read and the whole set) are refused; every
     /// other row is the memory store's.
     #[derive(Default)]
@@ -1145,7 +1103,7 @@ mod tests {
     /// happen: a list of every runtime row searched for the one birth, or the two refusals as one.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn the_executor_exit_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
+    async fn the_executor_departure_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
         use crate::build_drive::DepartureProof as _;
         use crate::storage::NodesStorage as _;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-executor")).unwrap();
@@ -1163,14 +1121,7 @@ mod tests {
             book: book.clone(),
             provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
             nodes,
-            records: {
-                // The status store the proven exit is recorded in.
-                let r = Records::default();
-                r.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-                Arc::new(r)
-            },
-            taken_over: Arc::default(),
-            authority: Arc::default(),
+            records: Arc::new(Records::default()),
         };
         let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
         let birth = (executor.node.node_id.to_string(), executor.node.incarnation.to_string());
@@ -1187,7 +1138,6 @@ mod tests {
 
         let lists = |s: &CountsRuntimeLists| s.lists.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!((lists(&held), lists(&unwritten), lists(&refused)), (0, 0, 0), "the proof reads one row by its key, never the list of every row");
-        assert_eq!(capture.named("rdm.node_admin.build.update.via-executor-exit-proof").len(), 1, "the held row proves the exit once");
         assert!(never.contains("no durable runtime row") && !never.contains("could not be read"), "never written is its own refusal: {never}");
         assert!(unread.contains("could not be read") && unread.contains("Input/output error (os error 5)"), "unreadable names the store's cause: {unread}");
         let attrs = |name: &str| {
@@ -1202,46 +1152,6 @@ mod tests {
         let unreadable = attrs("rdm.node_admin.node.reject.via-runtime-row-unreadable");
         assert_eq!((attr(&unreadable, "reader"), attr(&unreadable, "node"), attr(&unreadable, "node_id"), attr(&unreadable, "incarnation_id"), attr(&unreadable, "store")), ("mesh1.admin.1".to_string(), "mesh2.admin.1".to_string(), birth.0, birth.1, "nodes.storage".to_string()), "{unreadable:?}");
         assert!(attr(&unreadable, "error").contains("Input/output error (os error 5)"), "{unreadable:?}");
-    }
-
-    /// CONTRACT (fabric-node-lifecycle: a re-run never calls the lost executor or proves its exit
-    /// again): the fabric-primary's departure proof answers `recorded` from the exit-proof row of
-    /// the EXACT birth the view names for the executor. Must NOT happen: `recorded` false
-    /// for a birth whose exit is recorded (the drive would call the lost executor again and a
-    /// second via-executor-exit-proof would follow), or true for an earlier birth of the same node.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_departure_recorded_for_the_executors_exact_birth_is_answered_without_a_new_proof() {
-        use crate::build_drive::DepartureProof as _;
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-recorded")).unwrap();
-        let executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
-        let book = DigestBook::default();
-        book.record(executor.clone());
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        let records = Arc::new(Records::default());
-        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-        let departure = ProviderDeparture {
-            me: "mesh1.admin.1".parse().unwrap(),
-            topology: Arc::new(RwLock::new(view)),
-            refresh: Arc::new(|| Box::pin(async {})),
-            book,
-            provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
-            nodes: Arc::new(CountsRuntimeLists::default()),
-            records: records.clone(),
-            taken_over: Arc::default(),
-            authority: Arc::default(),
-        };
-        let name: PathName = "mesh2.admin.1".parse().unwrap();
-        assert!(!departure.recorded(&name).await, "nothing is recorded yet");
-        let mut birth = Node::allocated(name.clone());
-        birth.node_id = executor.node.node_id.clone();
-        birth.incarnation_id = Some(IncarnationId::parse(&rdm_core::fixture_crockford60("an-earlier-birth")).unwrap());
-        records.put_exit(&birth, Some(1), "provider").await.unwrap();
-        assert!(!departure.recorded(&name).await, "an earlier birth's exit is not this birth's");
-        birth.incarnation_id = Some(executor.node.incarnation.clone());
-        records.put_exit(&birth, Some(1), "provider").await.unwrap();
-        assert!(departure.recorded(&name).await, "the exact birth's exit is recorded, so the drive takes over without a new proof");
-        assert!(!departure.recorded(&"mesh9.admin.1".parse().unwrap()).await, "a node outside the view names no birth");
     }
 
     /// The mesh primary `mesh2.admin.1`'s recovery of its own mesh's births, over `book`, `provider`
@@ -1259,347 +1169,69 @@ mod tests {
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
-            os_stopped_confirmed: Arc::default(),
-            terminate_refusals_named: Arc::default(),
-            offline: Arc::new(Mutex::new([(member.node_id.clone(), member.incarnation_id.clone().expect("the member's birth"))].into_iter().collect())),
         };
         (recovery, status, member)
     }
 
     /// What the mesh primary's two ticks over one TRUE OFFLINE birth left: the verdict, the
-    /// inspection spans, the submit spans, and the birth's exit-proof row.
-    async fn two_ticks(recovery: &RecoverySubmitter, status: &dyn crate::status_storage::StatusStorage, member: &Node, cell: &str) -> (Inspected, Vec<crate::span_capture::Captured>, usize, Option<crate::status_storage::NodeExitRow>) {
+    /// inspection spans and the submit spans.
+    async fn two_ticks(recovery: &RecoverySubmitter, member: &Node, cell: &str) -> (Inspected, Vec<crate::span_capture::Captured>, Vec<crate::span_capture::Captured>) {
         let capture = crate::span_capture::Capture::new(cell);
-        let verdicts = Mutex::new(HashMap::new());
         let outcome = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            let first = recovery.recover_if_proven(member, &verdicts).await;
-            let second = recovery.recover_if_proven(member, &verdicts).await;
+            let first = recovery.recover(member).await;
+            let second = recovery.recover(member).await;
             assert_eq!(first, second, "the same birth, the same verdict on the next tick");
             first
         };
-        let inspections = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
-        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery").len();
-        let proof = status.node_exit(&member.node_id, member.incarnation_id.as_ref().unwrap()).await.unwrap();
-        (outcome, inspections, submits, proof)
+        (outcome, capture.named("rdm.node_admin.node.resolve.via-provider-inspection"), capture.named("rdm.node_admin.build.update.via-node-recovery"))
     }
 
-    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
-    /// durably. Still running is no proof"; operation summary "Trigger: Exact provider proof only"):
-    /// the mesh primary asks the provider about a TRUE OFFLINE member's exact runtime and the
-    /// provider cannot tell (`Unknown`). That is no proof: the verdict is unavailable with the
-    /// provider's answer as its reason, named once over two ticks, and nothing is recorded or
-    /// submitted. Must NOT happen: an exit-proof row, a recovery submit, a verdict spanned every tick.
+    /// CONTRACT (node-recovery.md step 3: "Any other verdict (`running`, `os-stopped`, `exited`,
+    /// `unproven`): the recovery below, at once. Nothing holds, nothing is inspected again, and nothing
+    /// waits for a proof of termination"; node-runtime-inspect.md "Spans"): the mesh primary asks the
+    /// provider about a TRUE OFFLINE member's exact runtime, and whatever the provider reads, the
+    /// verdict is spanned with its page name and the recovery is submitted on that same tick, keyed on
+    /// the exact birth, and again on the next tick while it is still owed. Must NOT happen: a member
+    /// held because its runtime runs, is suspended or cannot be told; a submit only on an exit.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_true_offline_member_the_provider_cannot_tell_about_is_not_proven_exited_and_never_recovered() {
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unknown")).unwrap();
-        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
-        member.node.runtime = Some(fact.clone());
-        let book = DigestBook::default();
-        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
-            book.record(d);
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() });
-        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
-        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-provider-unknown").await;
-        assert_eq!(outcome, Inspected::Unavailable("its runtime is not proven exited: Unknown".into()), "Unknown is no proof");
-        assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 2, "the provider was asked about the exact runtime on each tick");
-        assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
-        let a = &inspections[0].attributes;
-        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string()), "the exact birth: {a:?}");
-        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("unavailable".to_string(), "none".to_string(), "its runtime is not proven exited: Unknown".to_string()), "{a:?}");
-        assert_eq!(attr("inspector"), "mesh2.admin.1", "{a:?}");
-        assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
-        eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
-    }
-
-    /// A TRUE OFFLINE member `mesh2.rpc.1` whose exact runtime the provider `answers`: its view, its
-    /// book, the provider and a memory status store.
-    fn os_stopped_member(answers: crate::deployment::provider::DeploymentStatus, cell: &str) -> (RecoverySubmitter, Arc<dyn crate::status_storage::StatusStorage>, Node, Arc<Answers>, DigestBook, Topology) {
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60(cell)).unwrap();
-        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
-        member.node.runtime = Some(fact.clone());
-        let book = DigestBook::default();
-        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member] {
-            book.record(d);
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: answers, inspected: Default::default() });
-        let (recovery, status, node) = recovery_of(&view, book.clone(), provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
-        (recovery, status, node, provider, book, view)
-    }
-
-    fn attrs(c: &crate::span_capture::Captured) -> impl Fn(&str) -> String + '_ {
-        move |k: &str| c.attributes.get(k).cloned().unwrap_or_default()
-    }
-
-    /// CONTRACT (deployment-provider.md §2.5; node-recovery.md step 3; R-PV1): the provider reads a
-    /// TRUE OFFLINE member's exact runtime `OsStopped`. The mesh primary names the verdict
-    /// `os-stopped` once, records the birth's `os-stopped` row (`since` kept, its inspections
-    /// counted on every tick) on `rdm.node_admin.node.update.via-os-stopped` (`recorded`, once), and
-    /// that is all: no `held-running` row, no exit proof, no recovery submit. An `OsStopped` verdict
-    /// never counts toward a hung runtime's hold. Must NOT happen: a hold, a terminate, an exit
-    /// proof or a submit from an os-stopped observation.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn an_os_stopped_birth_is_recorded_and_opens_no_hold_and_never_counts_toward_held_running() {
-        let (recovery, status, node, provider, _, _) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-os-stopped");
-        let inc = node.incarnation_id.clone().unwrap();
-        let capture = crate::span_capture::Capture::new("i144-e2-os-stopped-recorded");
-        let verdicts = Mutex::new(HashMap::new());
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            for _ in 0..3 {
-                assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+    async fn a_true_offline_members_recovery_opens_at_once_on_whatever_the_provider_reads() {
+        use crate::deployment::provider::DeploymentStatus;
+        for (status, verdict) in [(DeploymentStatus::Running, "running"), (DeploymentStatus::OsStopped, "os-stopped"), (DeploymentStatus::Exited { code: Some(137) }, "exited"), (DeploymentStatus::Unknown, "unavailable")] {
+            let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60(&format!("dep-{verdict}"))).unwrap();
+            let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+            member.node.runtime = Some(fact.clone());
+            let book = DigestBook::default();
+            for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+                book.record(d);
             }
+            let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: status.clone(), inspected: Default::default() });
+            let (recovery, _, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+            let (_, inspections, submits) = two_ticks(&recovery, &node, &format!("i143-l5-recovery-at-once-{verdict}")).await;
+            assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 2, "{verdict}: the provider is asked on each tick");
+            let verdicts: Vec<String> = inspections.iter().map(|c| c.attributes.get("verdict").cloned().unwrap_or_default()).collect();
+            assert_eq!(verdicts, [verdict, verdict], "{verdict}: each tick's verdict is spanned by its page name: {inspections:?}");
+            assert_eq!(submits.len(), 2, "{verdict}: the recovery is submitted on each tick it is owed, whatever the verdict: {submits:?}");
+            let a = &submits[0].attributes;
+            let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+            assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id"), attr("verdict")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string(), verdict.to_string()), "{verdict}: keyed on the exact birth: {a:?}");
+            eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
         }
-        assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 3, "the exact runtime is inspected on every tick");
-        let row = status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().expect("the os-stopped row stands");
-        assert_eq!((row.inspections, row.name.to_string(), row.incarnation_id.clone()), (3, "mesh2.rpc.1".to_string(), inc.clone()), "{row:?}");
-        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "no hold opens for an os-stopped runtime");
-        assert_eq!(status.node_exit(&node.node_id, &inc).await.unwrap(), None, "os-stopped is never exit proof");
-        let inspections = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
-        assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
-        assert_eq!(attrs(&inspections[0])("verdict"), "os-stopped");
-        let facts = capture.named("rdm.node_admin.node.update.via-os-stopped");
-        assert_eq!(facts.iter().map(|c| attrs(c)("outcome")).collect::<Vec<_>>(), vec!["recorded".to_string()], "recorded once: {facts:?}");
-        assert_eq!(attrs(&facts[0])("since"), row.since.to_string());
-        assert!(capture.named("rdm.node_admin.node.update.via-held-running").is_empty(), "no held-running verdict");
-        assert!(capture.named("rdm.node_admin.build.update.via-node-recovery").is_empty(), "no recovery submit");
-        eprintln!("span rdm.node_admin.node.update.via-os-stopped trace_id={}", facts[0].trace_id);
-    }
-
-    /// CONTRACT (deployment-provider.md §2.5: "Entering it from `Running` cancels an open R-FM1 hold:
-    /// the `held-running` row is removed and its pending `TerminateRuntime` is void"): a member held
-    /// (`held-running` with two verdicts) is then read `OsStopped`. The hold is cancelled on
-    /// `via-held-running` with outcome `cancelled-os-stopped`, naming the voided deadline, its row is
-    /// gone, the `os-stopped` row is recorded, and no recovery is submitted however long past the old
-    /// deadline. Read `Running` again, the os-stopped row clears (`cleared`, `running`) and a fresh
-    /// hold opens with its own `since`.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn an_os_stopped_verdict_cancels_an_open_hold_and_running_again_clears_it_and_opens_a_fresh_one() {
-        let (recovery, status, node, _, book, view) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-hold-cancel");
-        let inc = node.incarnation_id.clone().unwrap();
-        let old = crate::status_storage::NodeHeldRunningRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), since: 1, verdicts: 2 };
-        status.put_node_held_running_of("mesh2", &old).await.unwrap();
-        let capture = crate::span_capture::Capture::new("i144-e2-hold-cancel");
-        let verdicts = Mutex::new(HashMap::new());
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
-            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
-        }
-        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "the hold's row is removed");
-        assert!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some(), "the os-stopped fact is recorded");
-        let cancelled: Vec<_> = capture.named("rdm.node_admin.node.update.via-held-running").into_iter().filter(|c| attrs(c)("outcome") == "cancelled-os-stopped").collect();
-        assert_eq!(cancelled.len(), 1, "the hold is cancelled once: {cancelled:?}");
-        assert_eq!((attrs(&cancelled[0])("since"), attrs(&cancelled[0])("verdicts"), attrs(&cancelled[0])("voided_deadline")), ("1".to_string(), "2".to_string(), (1 + hung_hold_ms()).to_string()), "the voided deadline is named");
-        assert!(capture.named("rdm.node_admin.build.update.via-node-recovery").is_empty(), "no terminate is submitted past the old deadline");
-        // The runtime runs again and stays unreachable: the fact clears and a fresh hold opens.
-        let running = Arc::new(Answers { domain: recovery.provider.control_domain(), status: crate::deployment::provider::DeploymentStatus::Running, inspected: Default::default() });
-        let (resumed, _, _) = recovery_of(&view, book, running, recovery.nodes_storage.clone(), status.clone());
-        let capture = crate::span_capture::Capture::new("i144-e2-hold-fresh");
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            assert_eq!(resumed.recover_if_proven(&node, &verdicts).await, Inspected::Running);
-        }
-        assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "Running again clears the os-stopped fact");
-        let cleared = capture.named("rdm.node_admin.node.update.via-os-stopped");
-        assert_eq!(cleared.iter().map(|c| (attrs(c)("outcome"), attrs(c)("detail"))).collect::<Vec<_>>(), vec![("cleared".to_string(), "running".to_string())]);
-        let fresh = status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap().expect("a fresh hold opens");
-        assert!(fresh.since > 1 && fresh.verdicts == 1, "a fresh hold, its own since: {fresh:?}");
-        eprintln!("span via-held-running cancelled-os-stopped trace_id={}", cancelled[0].trace_id);
-    }
-
-    /// CONTRACT (node-recovery.md step 3: "`Running` clears the fact and, if the birth is still
-    /// unreachable, the rule below opens a fresh hold"; step 4: its returning digest "ends the hold and
-    /// clears `held-running`"): a TRUE OFFLINE member heard again while its inspection is in flight (the
-    /// tick drops its mark) is left no `held-running` row and no `os-stopped` row by that inspection,
-    /// whether the provider reads it `Running` or `OsStopped`, and no `recorded` span names one; the same
-    /// member still TRUE OFFLINE is held or recorded by the ordinary rule. Must NOT happen: the re-born admin cell's run, where a
-    /// follower put `verdicts=2` 12 ms after the tick's `via-offline-returned` had cleared the hold, and
-    /// no later tick cleared it.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_member_heard_again_during_its_inspection_is_left_no_hold_and_no_os_stopped_row() {
-        for status_read in [crate::deployment::provider::DeploymentStatus::Running, crate::deployment::provider::DeploymentStatus::OsStopped] {
-            let (recovery, status, node, provider, _, _) = os_stopped_member(status_read.clone(), "dep-heard-during-inspection");
-            let inc = node.incarnation_id.clone().unwrap();
-            let heard = RecoverySubmitter { provider: Arc::new(HeardDuringInspection { domain: provider.domain.clone(), status: status_read.clone(), marks: recovery.offline.clone() }), ..recovery.clone() };
-            let capture = crate::span_capture::Capture::new("i144-e4-heard-during-inspection");
-            {
-                let _g = tracing::dispatcher::set_default(&capture.dispatch);
-                heard.recover_if_proven(&node, &Mutex::new(HashMap::new())).await;
-            }
-            assert!(heard.offline.lock().unwrap().is_empty(), "{status_read:?}: the tick heard the birth during the inspection");
-            assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "{status_read:?}: no hold for a birth heard again");
-            assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "{status_read:?}: no os-stopped row for a birth heard again");
-            let recorded: Vec<_> = capture.named("rdm.node_admin.node.update.via-held-running").into_iter().chain(capture.named("rdm.node_admin.node.update.via-os-stopped")).filter(|c| attrs(c)("outcome") == "recorded").collect();
-            assert!(recorded.is_empty(), "{status_read:?}: nothing is recorded: {recorded:?}");
-            // The same member still TRUE OFFLINE is held or recorded as before.
-            let (still, status, node, _, _, _) = os_stopped_member(status_read.clone(), "dep-still-offline");
-            still.recover_if_proven(&node, &Mutex::new(HashMap::new())).await;
-            let inc = node.incarnation_id.clone().unwrap();
-            let held = status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap().is_some();
-            let stopped = status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some();
-            assert_eq!((held, stopped), (status_read == crate::deployment::provider::DeploymentStatus::Running, status_read == crate::deployment::provider::DeploymentStatus::OsStopped), "{status_read:?}: a birth still TRUE OFFLINE keeps the ordinary rule");
-        }
-    }
-
-    /// CONTRACT (node-delete.md "OS-suspended target": the `os-stopped` row is removed once, `deleted`, or
-    /// `exited` when the mesh-primary's tick reads the exit first): an os-stopped member whose delete has
-    /// begun (its `NodeDeleting` overlay taken) is read `Running` by the tick, as a terminate's kill wakes
-    /// a suspended runtime before it dies. The fact stands for the delete, and no hold opens. Must NOT
-    /// happen: the fact cleared `running` under the delete that owns the birth (the release gate's
-    /// `provider_state` explicit-delete cell saw it), or a fresh hold on a birth being deleted.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_running_read_under_an_announced_delete_leaves_the_os_stopped_fact_to_the_delete() {
-        let (recovery, status, node, provider, book, view) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-os-stopped-deleting");
-        let inc = node.incarnation_id.clone().unwrap();
-        let verdicts = Mutex::new(HashMap::new());
-        assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
-        assert!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some(), "the os-stopped fact is recorded");
-        let op = rdm_core::LifecycleOp {
-            build_id: "dbs8z9896j0f".into(),
-            attempt: 1,
-            operation: "node.delete:mesh2.rpc.1".into(),
-            node_id: node.node_id.clone(),
-            incarnation: inc.clone(),
-            name: node.name.clone(),
-            event_at_rafka_ms: 1,
-        };
-        assert!(book.deleting(op), "the delete's overlay is taken");
-        // The terminate's kill wakes the suspended runtime: the tick reads it Running.
-        let running = Arc::new(Answers { domain: provider.domain.clone(), status: crate::deployment::provider::DeploymentStatus::Running, inspected: Default::default() });
-        let (ticking, _, _) = recovery_of(&view, book, running, recovery.nodes_storage.clone(), status.clone());
-        let capture = crate::span_capture::Capture::new("i144-e2-os-stopped-deleting");
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            assert_eq!(ticking.recover_if_proven(&node, &verdicts).await, Inspected::Running);
-        }
-        assert!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some(), "the fact stands for the delete that owns the birth");
-        assert!(capture.named("rdm.node_admin.node.update.via-os-stopped").is_empty(), "no clear under the delete");
-        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "no hold on a birth being deleted");
-    }
-
-    /// CONTRACT (deployment-provider.md §2.5: "A new authority revalidates the stored fact with its own
-    /// inspection"; i144 R10): an `os-stopped` row another admin wrote stands when a successor
-    /// mesh-primary first inspects the birth. Its own `OsStopped` verdict confirms it once
-    /// (`revalidated`, the row's `since` kept, its inspections counted on); its own `Exited` verdict
-    /// instead clears it (`cleared`, `exited`) and the exit proof stands. Must NOT happen: the
-    /// predecessor's row taken as the successor's own without an inspection, or a new `since`.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_successor_mesh_primary_revalidates_a_held_os_stopped_fact_with_its_own_inspection() {
-        let (recovery, status, node, _, book, view) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-revalidate");
-        let inc = node.incarnation_id.clone().unwrap();
-        let held = crate::status_storage::NodeOsStoppedRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), since: 7, inspections: 4 };
-        status.put_node_os_stopped_of("mesh2", &held).await.unwrap();
-        let capture = crate::span_capture::Capture::new("i144-e2-revalidate");
-        let verdicts = Mutex::new(HashMap::new());
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
-            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
-        }
-        let row = status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().unwrap();
-        assert_eq!((row.since, row.inspections), (7, 6), "the predecessor's since is kept and the successor's inspections count on");
-        let facts = capture.named("rdm.node_admin.node.update.via-os-stopped");
-        assert_eq!(facts.iter().map(|c| attrs(c)("outcome")).collect::<Vec<_>>(), vec!["revalidated".to_string()], "confirmed once, by its own inspection: {facts:?}");
-        // Another successor whose inspection reads the runtime exited clears the fact.
-        let exited = Arc::new(Answers { domain: recovery.provider.control_domain(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(9) }, inspected: Default::default() });
-        let (next, _, _) = recovery_of(&view, book, exited, recovery.nodes_storage.clone(), status.clone());
-        let capture = crate::span_capture::Capture::new("i144-e2-revalidate-exited");
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            assert_eq!(next.recover_if_proven(&node, &Mutex::new(HashMap::new())).await, Inspected::Exited(Some(9), "provider"));
-        }
-        assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "an exit clears the os-stopped fact");
-        assert_eq!(capture.named("rdm.node_admin.node.update.via-os-stopped").iter().map(|c| (attrs(c)("outcome"), attrs(c)("detail"))).collect::<Vec<_>>(), vec![("cleared".to_string(), "exited".to_string())]);
-        assert!(status.node_exit(&node.node_id, &inc).await.unwrap().is_some(), "the exit proof stands");
-        eprintln!("span via-os-stopped revalidated trace_id={}", facts[0].trace_id);
-    }
-
-    /// CONTRACT (deployment-provider.md §2.5 `Unknown`: "recorded as uncertainty; no hold, no
-    /// terminate, no exit proof is inferred"): a provider that cannot tell leaves an `os-stopped` row
-    /// that stands as it is (no new inspection counted, never cleared), opens no hold and proves no
-    /// exit.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn an_unknown_inspection_records_uncertainty_and_infers_nothing() {
-        let (recovery, status, node, _, _, _) = os_stopped_member(crate::deployment::provider::DeploymentStatus::Unknown, "dep-unknown-os");
-        let inc = node.incarnation_id.clone().unwrap();
-        let held = crate::status_storage::NodeOsStoppedRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), since: 3, inspections: 2 };
-        status.put_node_os_stopped_of("mesh2", &held).await.unwrap();
-        let capture = crate::span_capture::Capture::new("i144-e2-unknown");
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            assert!(matches!(recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await, Inspected::Unavailable(_)));
-        }
-        assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), Some(held), "the fact stands untouched");
-        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None);
-        assert_eq!(status.node_exit(&node.node_id, &inc).await.unwrap(), None);
-        assert_eq!(capture.named("rdm.node_admin.node.resolve.via-provider-inspection").iter().map(|c| attrs(c)("verdict")).collect::<Vec<_>>(), vec!["unavailable".to_string()]);
-        assert!(capture.named("rdm.node_admin.node.update.via-os-stopped").is_empty());
-    }
-
-    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
-    /// durably"; CLAUDE.md: an error state names what failed and where): the provider proves a TRUE
-    /// OFFLINE member exited and status.storage refuses the birth's exit-proof row. The submit ends
-    /// there, on its own `via-node-recovery` span, whose outcome names the row and the store's own
-    /// cause; nothing reaches the fabric-primary (no Build named) and no row stands. Must NOT happen:
-    /// a refused exit-proof write with no span (an info line only), or a submit without its row.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_refused_exit_proof_write_ends_the_recovery_submit_on_its_span_naming_the_stores_cause() {
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-exit-refused")).unwrap();
-        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
-        member.node.runtime = Some(fact.clone());
-        let book = DigestBook::default();
-        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
-            book.record(d);
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
-        let refusing = crate::offline::tests::SilenceRefusing { exit: true, ..Default::default() };
-        let (recovery, status, node) = recovery_of(&view, book, provider, Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(refusing));
-        let capture = crate::span_capture::Capture::new("i143-3051-exit-proof-refused");
-        let outcome = {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
-        };
-        assert_eq!(outcome, Inspected::Exited(Some(1), "provider"), "the provider proved the exit");
-        assert_eq!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap(), None, "no exit-proof row stands");
-        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
-        assert_eq!(submits.len(), 1, "the submit that ended on the refused row is spanned: {submits:?}");
-        let a = &submits[0].attributes;
-        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string()), "the exact birth: {a:?}");
-        assert!(attr("outcome").contains("exit-proof row") && attr("outcome").contains("No space left on device (os error 28)"), "the outcome names the row and the store's cause: {a:?}");
-        assert_eq!(attr("build_id"), "", "nothing reached the fabric-primary: {a:?}");
-        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
     }
 
     /// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
-    /// resubmits by `build_id` ... the mesh-primary's next tick finds the member still proven exited
-    /// and submits"; CLAUDE.md read rule: node-local state that should be the durable answer is
-    /// replaced by the read): a submitter that holds nothing in memory (an admin that just took the
-    /// seat, or restarted) is owed the exited birth mesh2.rpc.1 by the durable facts alone: the
-    /// current Build holds that birth's run, whose attempt ended Failed after its
-    /// delete, and the birth is in no view. Nothing is owed while this admin does not hold the seat or
-    /// a fabric shutdown froze recovery, nor to another mesh. With no exit-proof row the submit is
-    /// refused on `rdm.node_admin.node.reject.via-exit-proof-unread` (reason `missing`) and nothing is
-    /// submitted; once status.storage holds the row, the submit span carries the row's exit code and
-    /// proof and the Failed attempt it follows. Must NOT happen: an owed exit found only in a previous
-    /// submitter's memory, or a submit with no exit proof.
+    /// resubmits by `build_id`"; CLAUDE.md read rule: node-local state that should be the durable
+    /// answer is replaced by the read): a submitter that holds nothing in memory (an admin that just
+    /// took the seat, or restarted) is owed the birth mesh2.rpc.1 by the durable facts alone: the
+    /// current Build holds that birth's run, whose attempt ended Failed after its delete, and the birth
+    /// is in no view. Nothing is owed while this admin does not hold the seat, nor to another mesh. The
+    /// submit span names the Failed attempt it follows, and nothing is inspected again. Must NOT
+    /// happen: an owed recovery found only in a previous submitter's memory.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_submitter_that_holds_nothing_in_memory_reads_the_failed_exit_from_the_durable_facts() {
+    async fn a_submitter_that_holds_nothing_in_memory_reads_the_failed_recovery_from_the_durable_facts() {
         let book = DigestBook::default();
         book.record(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
@@ -1649,9 +1281,6 @@ mod tests {
             builds,
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
-            os_stopped_confirmed: Arc::default(),
-            terminate_refusals_named: Arc::default(),
-            offline: Arc::default(),
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
@@ -1659,33 +1288,17 @@ mod tests {
         assert_eq!(owed, vec![crate::build_state::OwedExit { path: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), attempt: 2, reason: "node.create: PrepareStorage".into() }], "read from the durable facts alone");
 
         let capture = crate::span_capture::Capture::new("i143-3088-owed-exit-from-durable-facts");
-        let (unproven, submitted) = {
+        let submitted = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            let unproven = recovery.submit_owed(&owed[0]).await;
-            crate::offline::put_exit_proof(&*status, &{
-                let mut n = Node::allocated(path.clone());
-                n.node_id = node_id.clone();
-                n.incarnation_id = Some(incarnation.clone());
-                n
-            }, Some(137), "provider", 1)
-            .await
-            .unwrap();
-            (unproven, recovery.submit_owed(&owed[0]).await)
+            recovery.submit_owed(&owed[0]).await
         };
-        let refusals = capture.named("rdm.node_admin.node.reject.via-exit-proof-unread");
-        assert_eq!(refusals.len(), 1, "the submit with no exit-proof row is refused on its span: {refusals:?}");
-        let a = &refusals[0].attributes;
-        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id"), attr("submitter"), attr("failed_attempt"), attr("reason")), (path.to_string(), node_id.to_string(), incarnation.to_string(), "mesh2.admin.1".to_string(), "2".to_string(), "missing".to_string()), "{a:?}");
-        assert!(unproven.as_ref().is_err_and(|e| e.contains("no exit-proof row") && e.contains("missing")), "{unproven:?}");
         let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
-        assert_eq!(submits.len(), 1, "only the submit with its exit proof reached the submit span: {submits:?}");
+        assert_eq!(submits.len(), 1, "the owed recovery reached the submit span: {submits:?}");
         let s = &submits[0].attributes;
         let sattr = |k: &str| s.get(k).cloned().unwrap_or_default();
-        assert_eq!((sattr("node"), sattr("node_id"), sattr("incarnation_id"), sattr("submitter")), (path.to_string(), node_id.to_string(), incarnation.to_string(), "mesh2.admin.1".to_string()), "keyed on the exact exited birth: {s:?}");
-        assert_eq!((sattr("exit_code"), sattr("exit_proof"), sattr("after_failed_attempt")), ("137".to_string(), "provider".to_string(), "2".to_string()), "the row's proof and the Failed attempt it follows: {s:?}");
+        assert_eq!((sattr("node"), sattr("node_id"), sattr("incarnation_id"), sattr("submitter")), (path.to_string(), node_id.to_string(), incarnation.to_string(), "mesh2.admin.1".to_string()), "keyed on the exact birth: {s:?}");
+        assert_eq!(sattr("after_failed_attempt"), "2", "the Failed attempt it follows: {s:?}");
         assert!(submitted.is_err() && !sattr("outcome").is_empty(), "this cell has no fabric-primary door: the submit ends named: {s:?}");
-        eprintln!("span rdm.node_admin.node.reject.via-exit-proof-unread trace_id={} {a:?}", refusals[0].trace_id);
         eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {s:?}", submits[0].trace_id);
     }
 
@@ -1693,16 +1306,15 @@ mod tests {
     /// exits outside any workflow"; "Failure and receipts": "An exit during a workflow belongs to
     /// that workflow"): a birth whose removal the mesh primary's book holds announced (a delete's
     /// `NodeDeleting` overlay naming the exact birth, or its `NodeDeleted` departure) is not a
-    /// member to recover, however exited its exact runtime is proven: its exit recorded as its
-    /// exit-proof row, no recovery submit, one `rdm.node_admin.build.reject.via-exit-inside-workflow`
-    /// span naming the workflow. A recovery's own node.delete of the exited birth (`node.delete:<path>`) is such a
+    /// member to recover, whatever its verdict: no recovery submit, one
+    /// `rdm.node_admin.build.reject.via-removal-announced` span naming the workflow. A recovery's own node.delete of the exited birth (`node.delete:<path>`) is such a
     /// workflow while its overlay stands. Must NOT happen: a recovery submitted for a birth whose
     /// own workflow's delete announced its removal (trace 3b983b72926d8d5e3629d7e3d1f264cf: the
     /// tick's ladder round 2 read the view before the workflow's NodeDeleting, inspected the exit
     /// that workflow's own TerminateRuntime made, and submitted).
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_proven_exit_of_a_birth_whose_removal_was_announced_submits_no_recovery() {
+    async fn an_unheard_birth_whose_removal_was_announced_submits_no_recovery() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-removal-announced")).unwrap();
         for (case, announced, workflow) in [("delete-deleting", "node-deleting", "node.delete"), ("delete-deleted", "node-deleted", "node.delete")] {
             let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
@@ -1727,43 +1339,42 @@ mod tests {
                 assert!(book.depart(op.clone()), "{case}: the departure is taken");
             }
             // The birth's durable runtime row (every admin's blind put on first holding it): the
-            // inspection proves the exit from it once the departure dropped the digest.
+            // inspection reads it once the departure dropped the digest.
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
             crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
             let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
-            let (recovery, status, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+            let (recovery, _, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
             let capture = crate::span_capture::Capture::new(&format!("i143-3068-removal-announced-{case}"));
             let outcome = {
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
-                recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+                recovery.recover(&node).await
             };
-            assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "{case}: the provider proved the exact runtime exited");
-            let proof = status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap();
+            assert_eq!(outcome, Inspected::Exited(Some(137)), "{case}: the provider read the exact runtime exited");
             let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
-            let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
-            assert_eq!((submits.len(), proof.is_some()), (0, true), "{case}: no recovery submit for a birth whose removal was announced, and its proven exit recorded as its exit-proof row (the proven loss every projection reads): {submits:?}");
+            let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
+            assert_eq!(submits.len(), 0, "{case}: no recovery submit for a birth whose removal was announced: {submits:?}");
             assert_eq!(rejects.len(), 1, "{case}: the refusal is spanned once: {rejects:?}");
             let a = &rejects[0].attributes;
             let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
             assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string()), "{case}: the exact birth: {a:?}");
             assert_eq!((attr("announced"), attr("operation"), attr("build_id"), attr("attempt")), (announced.to_string(), format!("{workflow}:mesh2.rpc.1"), "dbs8z9896j0f".to_string(), "2".to_string()), "{case}: the workflow the exit belongs to: {a:?}");
-            assert_eq!(attr("submitter"), "mesh2.admin.1", "{case}: {a:?}");
-            eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {a:?}", rejects[0].trace_id);
+            assert_eq!((attr("submitter"), attr("verdict")), ("mesh2.admin.1".to_string(), "exited".to_string()), "{case}: {a:?}");
+            eprintln!("span rdm.node_admin.build.reject.via-removal-announced trace_id={} {a:?}", rejects[0].trace_id);
         }
     }
 
     /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
     /// workflow"; mesh-delete.md: from mesh.deleting, the mesh's status deleting, to mesh.deleted, every
     /// member's removal is the mesh.delete's): an exited member of a mesh whose status the mesh primary
-    /// holds deleting or deleted is not a member to recover, a primary lost mid-delete included: its
-    /// exit is recorded as its exit-proof row, no recovery is submitted, and one
-    /// `rdm.node_admin.build.reject.via-exit-inside-workflow` span naming the mesh.delete. Must NOT
+    /// holds deleting or deleted is not a member to recover, a primary lost mid-delete included: no
+    /// recovery is submitted, and one `rdm.node_admin.build.reject.via-removal-announced` span names the
+    /// mesh.delete. Must NOT
     /// happen: mesh_lifecycle__mesh_delete_resume on f8001275, where mesh2's surviving admin, seated
     /// after its primary was killed mid-delete, submitted the recovery of that primary 220 times
     /// (trace 8b3d152a6a51c90fc06a4031cd055d37, refused while the Build reconciled).
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_proven_exit_of_a_member_of_a_deleting_or_deleted_mesh_submits_no_recovery() {
+    async fn an_unheard_member_of_a_deleting_or_deleted_mesh_submits_no_recovery() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-mesh-deleting")).unwrap();
         for (status, announced) in [("leaving", "mesh-deleting"), ("dead", "mesh-deleted")] {
             let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
@@ -1777,220 +1388,21 @@ mod tests {
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
             crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
             let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
-            let (recovery, status_rows, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+            let (recovery, _, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
             let capture = crate::span_capture::Capture::new(&format!("i143-3078-mesh-{status}"));
             let outcome = {
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
-                recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+                recovery.recover(&node).await
             };
-            assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "{status}: the provider proved the exact runtime exited");
-            let proof = status_rows.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap();
+            assert_eq!(outcome, Inspected::Exited(Some(137)), "{status}: the provider read the exact runtime exited");
             let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
-            let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
-            assert_eq!((submits.len(), proof.is_some()), (0, true), "{status}: no recovery of a member of a mesh being deleted, its exit recorded: {submits:?}");
+            let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
+            assert_eq!(submits.len(), 0, "{status}: no recovery of a member of a mesh being deleted: {submits:?}");
             assert_eq!(rejects.len(), 1, "{status}: the refusal is spanned once: {rejects:?}");
             let a = &rejects[0].attributes;
             assert_eq!(a.get("announced").map(String::as_str), Some(announced), "{status}: {a:?}");
             assert!(a.get("operation").is_some_and(|o| o.contains("mesh2") || o.starts_with("mesh.delete:")), "{status}: the mesh.delete is named: {a:?}");
-            eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {a:?}", rejects[0].trace_id);
-        }
-    }
-
-    /// A status store counting every exit-proof row it is offered (`put_node_exit`); every row is
-    /// the memory store's.
-    #[derive(Default)]
-    struct CountsExitPuts {
-        inner: crate::status_storage::MemoryStatusStorage,
-        exit_puts: std::sync::atomic::AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::status_storage::StatusStorage for CountsExitPuts {
-        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status(row).await
-        }
-        async fn mesh_statuses(&self) -> Result<HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::storage_error::StorageError> {
-            self.inner.mesh_statuses().await
-        }
-        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_fabric_event(row).await
-        }
-        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events().await
-        }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events_of(mesh).await
-        }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.inner.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
-
-        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(row).await
-        }
-        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(node_id, incarnation_id).await
-        }
-        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared_of(mesh, row).await
-        }
-        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared().await
-        }
-        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(row).await
-        }
-        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences().await
-        }
-        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.put_node_exit(row).await
-        }
-        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit(node_id, incarnation_id).await
-        }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.mesh_status_held_of(mesh, row).await
-        }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status_of(mesh, row).await
-        }
-        async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.put_node_exit_of(mesh, row).await
-        }
-            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
-            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_held_running_of(mesh, row).await
-        }
-        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs_of(mesh).await
-        }
-        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_of(mesh, row).await
-        }
-        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.node_cert_receipts_of(mesh).await
-        }
-        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_receipt_of(mesh, row).await
-        }
-        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuers_of(mesh).await
-        }
-        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_of(mesh, row).await
-        }
-        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuer_receipts_of(mesh).await
-        }
-        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
-            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_os_stopped_of(mesh, row).await
-        }
-        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost_of(mesh, row).await
-        }
-        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
-        }
-}
-
-    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
-    /// durably"; the exit-proof row is a blind put of the birth's own key, offline.rs
-    /// `put_exit_proof`): the mesh primary's tick finds the same exited birth TRUE OFFLINE on three
-    /// ticks, and the birth's exit-proof row is put once, on the tick that proved the exit. Both arms
-    /// of the tick hold it: a birth whose removal was announced (its `retire-node` NodeDeleting
-    /// overlay; `via-exit-inside-workflow` names the row `put` on the first tick and `recorded`
-    /// after), and a member outside any workflow whose recovery submit ends without the recovery
-    /// (here its Build door is not built), submitted again on each tick (node-recovery.md "Failure
-    /// and receipts"). Must NOT happen: the row put again on every tick for an exit already recorded
-    /// (admin.rs `recover_if_proven`, s60 part 15's finding: the refusal arm puts it per tick).
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn the_mesh_primary_records_a_proven_exit_once_over_every_tick_that_finds_it() {
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-exit-once")).unwrap();
-        for case in ["announced", "submitted"] {
-            let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
-            member.node.runtime = Some(fact.clone());
-            let book = DigestBook::default();
-            for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
-                book.record(d);
-            }
-            let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-            if case == "announced" {
-                let op = rdm_core::LifecycleOp {
-                    build_id: "dbs8z9896j0f".into(),
-                    attempt: 2,
-                    operation: "node.delete:mesh2.rpc.1".into(),
-                    node_id: member.node.node_id.clone(),
-                    incarnation: member.node.incarnation.clone(),
-                    name: member.node.name.clone(),
-                    event_at_rafka_ms: 1,
-                };
-                assert!(book.deleting(op), "{case}: the overlay is taken");
-            }
-            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
-            let counting = Arc::new(CountsExitPuts::default());
-            let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), counting.clone());
-            let capture = crate::span_capture::Capture::new(&format!("i143-s78-exit-recorded-once-{case}"));
-            let verdicts = Mutex::new(HashMap::new());
-            {
-                let _g = tracing::dispatcher::set_default(&capture.dispatch);
-                for tick in 1..=3 {
-                    assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::Exited(Some(137), "provider"), "{case}: tick {tick} proves the exit");
-                }
-            }
-            assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 3, "{case}: the provider is asked on every tick");
-            assert!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap().is_some_and(|r| r.exit_code == Some(137) && r.proof == "provider"), "{case}: the birth's exit-proof row stands");
-            assert_eq!(counting.exit_puts.load(std::sync::atomic::Ordering::SeqCst), 1, "{case}: the exit-proof row is put once, on the tick that proved the exit, never per tick");
-            let inspections = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
-            assert_eq!(inspections.len(), 1, "{case}: the verdict is named once: {inspections:?}");
-            if case == "announced" {
-                let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
-                let rows: Vec<String> = rejects.iter().map(|r| r.attributes.get("exit_proof_row").cloned().unwrap_or_default()).collect();
-                assert_eq!(rows, ["put", "recorded", "recorded"], "{case}: each tick's refusal names the row: put when that tick put it, recorded after: {rejects:?}");
-                eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {:?}", rejects[0].trace_id, rejects[0].attributes);
-            } else {
-                let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
-                assert_eq!(submits.len(), 3, "{case}: the recovery is submitted on each tick it is still owed: {submits:?}");
-                eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
-            }
+            eprintln!("span rdm.node_admin.build.reject.via-removal-announced trace_id={} {a:?}", rejects[0].trace_id);
         }
     }
 
@@ -2002,10 +1414,10 @@ mod tests {
     /// and submits the recovery"): a removal's `NodeDeleting` overlay, opened from its attempt's
     /// receipt, closes when that attempt's verdict is `Failed` (one
     /// `rdm.mesh.membership.update.via-deleting-closed-by-facts` span naming the attempt), and the
-    /// mesh primary's next tick then submits the recovery of the member whose exact runtime the
-    /// failed workflow left exited: the exit-proof row is put and one `via-node-recovery` submit is
-    /// made. Must NOT happen: the overlay held after its attempt failed, so the tick refuses the
-    /// member `via-exit-inside-workflow` for a workflow that is over and the member is never put back.
+    /// mesh primary's next tick then submits the recovery of the member the failed workflow left:
+    /// one `via-node-recovery` submit is made. Must NOT happen: the overlay held after its attempt
+    /// failed, so the tick refuses the member `via-removal-announced` for a workflow that is over and
+    /// the member is never put back.
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_failed_removal_attempts_target_is_recovered_by_the_next_tick() {
@@ -2058,15 +1470,14 @@ mod tests {
         let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
         crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
-        let (recovery, status, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let (recovery, _, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
         let outcome = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+            recovery.recover(&node).await
         };
-        assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "the provider proved the exact runtime exited");
-        let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
+        assert_eq!(outcome, Inspected::Exited(Some(137)), "the provider read the exact runtime exited");
+        let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
         assert!(rejects.is_empty(), "no workflow holds the member: its failed attempt is over: {rejects:?}");
-        assert!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap().is_some(), "the exit-proof row is put");
         let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
         assert_eq!(submits.len(), 1, "the recovery is submitted: {submits:?}");
         eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
@@ -2173,16 +1584,15 @@ mod tests {
         eprintln!("span rdm.node_admin.node.reject.via-runtime-rows-unreadable trace_id={} {a:?}", spans[0].trace_id);
     }
 
-    /// CONTRACT (node-recovery.md "Detection and proof" step 3: the provider is asked "about the
-    /// exact runtime recorded at launch"): a TRUE OFFLINE member whose digest carries no runtime is
-    /// inspected through its durable runtime row, and that point read is refused. With no runtime
-    /// fact nothing can be proven, whatever the provider would answer: the verdict is not-exited,
-    /// naming the row and the store's own cause, the provider is not asked, and nothing is recorded
-    /// or submitted. Must NOT happen: the refusal read as "no row", an inspection of a guessed
-    /// runtime, an exit-proof row, a recovery submit.
+    /// CONTRACT (node-recovery.md step 3: the provider is asked "about the exact runtime recorded at
+    /// launch", and any verdict but `reached` opens the recovery at once): a TRUE OFFLINE member whose
+    /// digest carries no runtime is inspected through its durable runtime row, and that point read is
+    /// refused. With no runtime fact the provider is not asked: the verdict is `unavailable`, naming the
+    /// row and the store's own cause, and the recovery is submitted on it. Must NOT happen: the refusal
+    /// read as "no row", an inspection of a guessed runtime, a member held for want of a verdict.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_true_offline_member_whose_runtime_row_cannot_be_read_is_not_proven_exited_and_never_recovered() {
+    async fn a_true_offline_member_whose_runtime_row_cannot_be_read_is_unproven_and_recovered() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unreadable")).unwrap();
         let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
         let book = DigestBook::default();
@@ -2190,18 +1600,17 @@ mod tests {
             book.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        // The provider would prove an exit: it must never be asked without the birth's runtime fact.
+        // The provider would read an exit: it must never be asked without the birth's runtime fact.
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
-        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
-        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-runtime-row-unreadable").await;
+        let (recovery, _, node) = recovery_of(&view, book, provider.clone(), Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let (outcome, inspections, submits) = two_ticks(&recovery, &node, "i143-3051-runtime-row-unreadable").await;
         let why = format!("the durable runtime row of {} at {} could not be read: runtimes/{}--{}.json is not a record this build recognises: format runtime/9 is not one this build reads", node.node_id, member.node.incarnation.as_str(), node.node_id, member.node.incarnation.as_str());
-        assert_eq!(outcome, Inspected::Unavailable(why.clone()), "an unreadable row is no proof, and is named as unreadable");
+        assert_eq!(outcome, Inspected::Unavailable(why.clone()), "an unreadable row is named as unreadable");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 0, "with no runtime fact the provider is not asked");
-        assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
         let a = &inspections[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("unavailable".to_string(), "none".to_string(), why), "{a:?}");
-        assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
+        assert_eq!((attr("verdict"), attr("reason")), ("unavailable".to_string(), why), "{a:?}");
+        assert_eq!(submits.len(), 2, "the recovery is submitted on each tick: {submits:?}");
         eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
     }
 
@@ -2292,12 +1701,12 @@ mod tests {
         assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the holder published degraded and has not published ready");
     }
 
-    /// CONTRACT: a birth the fabric authority proved exited is `Dead` in the view whatever its last
-    /// digest said, so a mesh whose admins were learned from topology alone and are all proven gone
-    /// has no primary admin. Must NOT happen: a dead admin holds its mesh's seat because its digest
-    /// says ready.
+    /// CONTRACT (gossip.md §3.1 `NodeDeleted`: the birth is removed): a birth whose node.delete was
+    /// heard leaves the view whatever its last digest said, so a mesh whose admins are all deleted has
+    /// no primary admin. Must NOT happen: a deleted admin holds its mesh's seat because its digest says
+    /// ready.
     #[tokio::test]
-    async fn a_proven_exited_birth_is_dead_whatever_its_digest_says() {
+    async fn a_deleted_birth_leaves_the_view_whatever_its_digest_says() {
         use MemberStatus::*;
         let book = DigestBook::default();
         let a = with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000");
@@ -2307,9 +1716,9 @@ mod tests {
         let records = Records::default();
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_some());
-        let t = prove_exit(&book, &records, &b).await;
-        assert_eq!(t.node(&"mesh2.admin.1".parse().unwrap()).unwrap().status, NodeStatus::Dead);
-        assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a proven-gone admin holds no seat");
+        let t = depart(&book, &records, &b).await;
+        assert!(t.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the deleted birth left the view");
+        assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a deleted admin holds no seat");
     }
 
     /// CONTRACT (node-recovery.md "The mesh-primary is the reconciler for its own members";
@@ -2500,96 +1909,6 @@ mod tests {
         assert!(opened(), "the first installed view holding its exact birth, the authority filled, opens the door");
     }
 
-    /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
-    /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; node-identity-and-state.md
-    /// §7.3: every admin keeps the silence window, only the seat holder tickles): a mesh primary that
-    /// goes silent keeps its seat in its successor's view until its exact runtime is proven exited
-    /// (its exit-proof row, what seat_watch puts, read by the next install). Until then the successor keeps the window but
-    /// tickles nothing, holds nothing TRUE OFFLINE and has no recovery due, however long the silence
-    /// lasts. Once the exit is proven the seat moves to the successor, which tickles on the window
-    /// already running (round 1 at once) and, one staleness floor later, holds the old primary TRUE
-    /// OFFLINE and due for its recovery. Must NOT happen: a recovery due at the successor while the
-    /// silent primary still holds the seat.
-    #[tokio::test(start_paused = true)]
-    async fn a_successor_has_no_recovery_due_for_a_silent_mesh_primary_until_the_seat_moves() {
-        use crate::offline::{OfflineTickle, ProbeEnd, SilentNode, Tickle, Unreached};
-        use rdm_core::Seat::MeshPrimary;
-        use MemberStatus::*;
-        let book = DigestBook::default();
-        let holder = with_id(digest("mesh2.admin.1", ReadyForTraffic), "200000000000");
-        let successor = with_id(digest("mesh2.admin.2", ReadyForTraffic), "300000000000");
-        let rpc = with_id(digest("mesh2.rpc.1", ReadyForTraffic), "400000000000");
-        for d in [&holder, &successor, &rpc] {
-            book.record((*d).clone());
-        }
-        book.seats.take(MeshPrimary, &holder_of(&holder, 1));
-        let records = Records::default();
-        let me: PathName = "mesh2.admin.2".parse().unwrap();
-        // The successor's view: the holder silent past the floor (its pruner's PendingReconnect, or
-        // Dead once proven exited), the seats by the one election over the holder record.
-        let view_now = || {
-            let mut t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
-            for n in t.nodes.iter_mut().filter(|n| n.node_id == holder.node.node_id && n.status.is_live()) {
-                n.status = NodeStatus::PendingReconnect;
-            }
-            crate::election::resolve_with(&mut t.nodes, &incumbency_of(&book, &records));
-            t
-        };
-        let floor = book.staleness_floor().as_millis() as u64;
-        let mut tickle = OfflineTickle::observed_by(me.to_string(), crate::stop_gate::StopGate::new());
-        let mut offline: HashSet<(NodeId, IncarnationId)> = HashSet::new();
-        let pass = async |now: u64, tickle: &mut OfflineTickle, offline: &mut HashSet<(NodeId, IncarnationId)>| {
-            // The rounds the last pass started run beside the loop until this one (each probe here
-            // answers at once).
-            tokio::task::yield_now().await;
-            let view = view_now();
-            let holds_seat = view.holds_mesh_seat("mesh2", &successor.node.node_id);
-            let watched = watched_births(&view, &successor.node.node_id, "mesh2", &[]);
-            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), incarnation: n.incarnation_id.clone(), marked_at_ms: None }).collect();
-            let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
-            let report = tickle
-                .tick(
-                    now,
-                    holds_seat,
-                    silent,
-                    |id: &str| in_view.contains(id),
-                    floor / 2,
-                    floor,
-                    |id| async move { Ok(Tickle::Unreached(Unreached::of(ProbeEnd::Other { end: "NotSent", detail: format!("{id} did not answer the probe") }, Vec::new()))) },
-                    |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
-                )
-                .await;
-            for id in &report.offline {
-                if let Some(n) = watched.get(id) {
-                    offline.insert((n.node_id.clone(), n.incarnation_id.clone().unwrap()));
-                }
-            }
-            let due: Vec<String> = recovery_due(holds_seat, "mesh2", &watched, offline).iter().map(|n| n.name.to_string()).collect();
-            (holds_seat, report, due)
-        };
-        let t0 = 1_000_000u64;
-        // The holder silent for six floors, its exit not proven: the seat stays, nothing is due.
-        for k in 0..6 {
-            let (holds_seat, report, due) = pass(t0 + k * floor, &mut tickle, &mut offline).await;
-            assert!(!holds_seat, "floor {k}: the silent holder keeps the seat");
-            assert!(report.tickled.is_empty() && report.offline.is_empty(), "floor {k}: no tickle, nothing TRUE OFFLINE: {report:?}");
-            assert!(due.is_empty(), "floor {k}: no recovery due before the seat moves: {due:?}");
-        }
-        // seat_watch proves the exact runtime exited: the seat moves to the successor.
-        prove_exit(&book, &records, &holder).await;
-        let t1 = t0 + 6 * floor;
-        let (holds_seat, report, due) = pass(t1, &mut tickle, &mut offline).await;
-        assert!(holds_seat, "the proven exit moves the seat to the successor");
-        assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 1 at once, on the window kept since the silence began");
-        assert!(report.offline.is_empty() && due.is_empty(), "round 1 opens the hold-down only: {report:?} {due:?}");
-        let (_, report, due) = pass(t1 + floor, &mut tickle, &mut offline).await;
-        assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 2, one floor later");
-        assert!(report.offline.is_empty() && due.is_empty(), "round 2 runs beside the loop: nothing is decided before a tick folds it: {report:?} {due:?}");
-        let (_, report, due) = pass(t1 + floor + 500, &mut tickle, &mut offline).await;
-        assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "the next tick folds round 2: TRUE OFFLINE");
-        assert_eq!(due, vec!["mesh2.admin.1".to_string()], "the old primary is due for recovery at the successor, after the seat moved");
-    }
-
     fn holder_of(d: &MeshDigest, revision: u64) -> rdm_core::Primary {
         rdm_core::Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
@@ -2628,13 +1947,15 @@ mod tests {
         assert!(t.nodes.iter().all(|n| !n.is_primary && !n.is_fabric_primary), "no seat before the entry read");
         records.set_entering(false);
 
-        // Proven exited: the lowest Ready NodeId of ITS mesh fills both seats, not mesh3's lower id.
-        let t = prove_exit(&book, &records, &holder).await;
-        assert_eq!(seat_names(&t), (Some("mesh1.admin.3".into()), Some("mesh1.admin.3".into())));
+        // Departed: fabric recovery restores the fabric-primary (Q122): nobody, not mesh1's lowest Ready
+        // admin and not mesh3's lower id, is fabric-primary or mesh1's primary meanwhile.
+        let t = depart(&book, &records, &holder).await;
+        assert_eq!(seat_names(&t), (None, None));
     }
 
-    /// CONTRACT (R-A2): a later birth that names the recorded holder's incarnation as the one it
-    /// replaced proves that birth gone: the seat goes to the lowest Ready admin of its mesh.
+    /// CONTRACT (R-A2; elections §3, Q122): a later birth that names the recorded holder's incarnation as
+    /// the one it replaced proves that birth gone: the fabric-primary is fabric recovery's to restore, and
+    /// nobody, not the lowest Ready admin of its mesh, holds either role meanwhile.
     #[test]
     fn a_later_birth_that_supersedes_the_holder_proves_it_gone() {
         use MemberStatus::*;
@@ -2650,7 +1971,8 @@ mod tests {
         let ready = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
         book.record(ready);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"));
+        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()), None);
+        assert_eq!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None);
     }
 
     /// The fabric-primary `mesh1.admin.1` (both seats of mesh1) and `mesh2`'s births `mesh2`, the
@@ -2675,108 +1997,19 @@ mod tests {
         (fp, book, records, view, rows)
     }
 
-    /// The provider's exit proof of `d`'s birth recorded as the product records it
-    /// (`Records::put_exit`), in the status store `records` holds (one in memory, set on first use
-    /// under a mesh no view names), then read by an install of the view, as every projection reads
-    /// it; the installed view.
-    async fn prove_exit(book: &DigestBook, records: &Records, d: &MeshDigest) -> Topology {
-        if records.status.get().is_none() {
-            records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "nomesh".into(), "nomesh.admin.1".parse().unwrap(), NodeId::mint());
-        }
+    /// `d`'s birth deleted (its node.delete's `NodeDeleted` heard: gossip.md §3.1, the birth is
+    /// removed), the departure every projection and election reads as the birth gone; the installed
+    /// view.
+    async fn depart(book: &DigestBook, records: &Records, d: &MeshDigest) -> Topology {
         records.set_book(book.clone());
-        let mut n = Node::allocated(d.node.name.clone());
-        n.node_id = d.node.node_id.clone();
-        n.incarnation_id = Some(d.node.incarnation.clone());
-        records.put_exit(&n, Some(0), "provider").await.unwrap();
+        book.depart(rdm_core::LifecycleOp { build_id: "dbs8z9896j0f".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 });
         let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, book, records));
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, book, records)).await
     }
 
     /// The exact Exited receipt of `d`'s birth, as a leave records it.
     fn exited_receipt(d: &MeshDigest) -> crate::deployment::pipeline::TerminalReceipt {
-        crate::deployment::pipeline::TerminalReceipt { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.to_string(), runtime: None, exit_code: Some(0) }
-    }
-
-    /// CONTRACT (mesh-delete.md step 7: the final primary's own node.delete, the fabric-primary its
-    /// executor, "as acting primary of a mesh that has no primary, writes its row deleted"; R-EL1: a
-    /// seat moves only by explicit yield or proven loss): the final primary's exact Exited is that
-    /// proven loss. Recorded as its exit-proof row and read by the install before the view the row is
-    /// written from is projected, the exited holder is no longer seated, mesh2 has no primary in the
-    /// fabric-primary's view, and the fabric-primary writes the final primary's row Deleted (the write
-    /// node.delete's NodeDeleted step makes). Must NOT happen: the refusal of
-    /// mesh_identity::canonical_ids on 8803f84e ("mesh1.admin.1 (40ynvqbyvdhh) is not the writer of
-    /// mesh2's node rows ...: mesh2's primary node-admin mesh2.admin.1 (kz0m1x9y3wcn) writes them"):
-    /// the exit proven, never read as a loss, so the election kept the exited holder.
-    // @feature: mesh-lifecycle
-    #[tokio::test]
-    async fn the_final_primarys_exit_held_as_a_proven_loss_leaves_the_fabric_primary_writing_its_row_deleted() {
-        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
-        let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
-        let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let final_primary = crate::mesh_delete::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.to_string() };
-        // The write node.delete's NodeDeleted step makes (`DeploymentPipeline::deleted_row`): the writer of
-        // the mesh's rows writes the exact record's row Deleted.
-        let write = || async {
-            let record = view.read().await.nodes.iter().find(|n| n.mesh == "mesh2" && n.node_id == last.node.node_id).cloned().expect("the view holds the final primary's record");
-            records.node_rows().expect("a node-row writer").deleted(&record, "node.delete:mesh2.admin.1").await.map_err(|e| e.to_string())
-        };
-        // The exit proven and not held: the election keeps the exited holder seated (R-EL1).
-        let refused = write().await;
-        assert!(refused.as_ref().is_err_and(|e| e.contains("is not the writer of mesh2's node rows")), "unheld, the exited holder still writes mesh2's rows: {refused:?}");
-        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-        records.put_exit(&final_primary.record().unwrap(), Some(0), "provider").await.unwrap();
-        records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
-        assert_eq!(view.read().await.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None, "held, the exited holder holds no seat: mesh2 has no primary");
-        write().await.unwrap_or_else(|e| panic!("the fabric-primary writes the final primary's row Deleted: {e}"));
-        let row = crate::storage::NodesStorage::node_row_at(&*storage, &last.node.name).await.unwrap().expect("the row stays at its path.name");
-        assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node.node_id), "{row:?}");
-        let outcomes: Vec<String> = capture.named("rdm.node_admin.node.delete.via-node-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
-        assert_eq!(outcomes, ["not-mesh-primary", "row-deleted"], "{outcomes:?}");
-        let deleted = capture.named("rdm.node_admin.node.delete.via-node-row").pop().unwrap();
-        eprintln!("span rdm.node_admin.node.delete.via-node-row trace_id={} {:?}", deleted.trace_id, deleted.attributes);
-    }
-
-    /// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "Only the provider's exit proof vacates a
-    /// seat"; node-recovery.md: "Exited is the proof, recorded durably"; CLAUDE.md read rule: a read
-    /// is a point read through the store index, and node-local state that should be the durable
-    /// answer is replaced by that read, never fed from it): the election's lost set is a read of the
-    /// durable exit-proof rows. A fresh fabric-primary (its records hold nothing proven) whose store
-    /// holds the exit-proof row of mesh2's seated final primary, among mesh2's status rows, resolves
-    /// mesh2 with no primary at its first install: the exited birth is shown Dead, holds no seat, and
-    /// the fabric-primary is the writer of mesh2's node rows (mesh-delete.md step 7: acting primary of
-    /// a mesh with none left). Must NOT happen: the exited holder kept seated because no proof was
-    /// fed into this admin's memory (the proof exists only as a durable row: written by another
-    /// admin, or by this one before it restarted).
-    // @feature: mesh-lifecycle
-    #[tokio::test]
-    async fn a_fresh_admin_whose_store_holds_the_final_primarys_exit_proof_resolves_its_mesh_with_no_primary() {
-        use crate::status_storage::StatusStorage;
-        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
-        let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage).await;
-        assert_eq!(view.read().await.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh2.admin.1"), "seated before any proof is read");
-        // The proof as the store holds it: mesh2's status rows, written by whoever proved the exit.
-        let status = Arc::new(crate::status_storage::MemoryStatusStorage::default());
-        let proof = crate::status_storage::NodeExitRow { node_id: last.node.node_id.clone(), name: last.node.name.clone(), incarnation_id: last.node.incarnation.clone(), exit_code: Some(0), proof: "provider".into(), observed_at_ms: 1 };
-        status.put_node_exit_of("mesh2", &proof).await.unwrap();
-        records.set_status(status.clone(), "mesh1".into(), fp.node.name.clone(), fp.node.node_id.clone());
-        let capture = crate::span_capture::Capture::new("i143-3068-fresh-admin-reads-exit-row");
-        let installed = {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await
-        };
-        let read = capture.named("rdm.node_admin.node.resolve.via-exit-proof-row");
-        assert_eq!(read.len(), 1, "the install reads the final primary's exit-proof row once: {read:?}");
-        let a = &read[0].attributes;
-        assert_eq!((a.get("node").cloned(), a.get("node_id").cloned(), a.get("mesh").cloned()), (Some("mesh2.admin.1".to_string()), Some(last.node.node_id.to_string()), Some("mesh2".to_string())), "{a:?}");
-        eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {a:?}", read[0].trace_id);
-        let held = installed.node(&last.node.name).map(|n| (n.status, n.is_primary));
-        assert_eq!(held, Some((NodeStatus::Dead, false)), "the proven-exited holder is Dead and holds no seat");
-        assert_eq!(installed.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None, "mesh2 has no primary");
-        assert!(crate::node_rows::writes_for(&installed, &fp.node.node_id, "mesh2"), "the fabric-primary writes mesh2's rows as acting primary");
+        crate::deployment::pipeline::TerminalReceipt { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.to_string(), runtime: None, exit_code: Some(0) , verdict: None}
     }
 
     /// CONTRACT (R-MD1 = A, i143-rulings-2026-10-11-dev.md: "The mesh-primary commits the mesh row
@@ -2805,7 +2038,7 @@ mod tests {
             let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
             let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
             crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
-            prove_exit(&book, &records, &last).await;
+            depart(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let status = crate::status_storage::MemoryStatusStorage::default();
             let meshes = crate::storage::MemoryMeshStorage::default();
@@ -2860,7 +2093,7 @@ mod tests {
         for d in [&last, &member, &fp] {
             storage.put_contact(&contact(d)).await.unwrap();
         }
-        prove_exit(&book, &records, &last).await;
+        depart(&book, &records, &last).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: format!("mesh.delete:{}", mesh_id("mesh2")) };
         let status = crate::status_storage::MemoryStatusStorage::default();
@@ -2897,7 +2130,7 @@ mod tests {
         let created: PathName = "mesh2.admin.2".parse().unwrap();
         let refused = rows.claim(&created, &NodeId::mint(), "node.create:mesh2.admin.2", None, crate::node_rows::ClaimFor::Create).await;
         assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost holder still writes mesh2's rows: {refused:?}");
-        prove_exit(&book, &records, &lost).await;
+        depart(&book, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         let born = NodeId::mint();
         match rows.claim(&created, &born, "node.create:mesh2.admin.2", None, crate::node_rows::ClaimFor::Create).await {
@@ -2911,17 +2144,16 @@ mod tests {
         eprintln!("span rdm.node_admin.node.create.via-node-row trace_id={} {:?}", written.trace_id, written.attributes);
     }
 
-    /// CONTRACT (R-EL1: a seat moves only by explicit yield or proven loss; seat_watch.rs: "Only a
-    /// runtime found exited is a verified loss"; mesh-delete.md, "Resume after the primary's loss":
-    /// the workflow goes to the admin seated): mesh2's primary `mesh2.admin.1` is lost and
-    /// `mesh2.admin.2` is live. Once the lost holder's exact Exited is proven and its exit-proof row
-    /// put, the seat is `mesh2.admin.2`'s in the fabric-primary's view (the leave a later attempt
-    /// resumes hands it the workflow) and in its own, which reads the same row and announces the
-    /// seat at the next epoch. Must NOT happen: the no_survivor attempts refused "mesh2.admin.2 is live and
-    /// holds no seat yet" after mesh2.admin.1's exit was proven (trace 5bc960a3e759a77cfb42ae6e9bc687d0).
+    /// CONTRACT (mesh-delete.md, "Resume after the primary's loss": the workflow goes to the admin
+    /// seated; gossip.md §3.1 `NodeDeleted`): mesh2's primary `mesh2.admin.1` is lost and
+    /// `mesh2.admin.2` is live. Once the lost holder's node.delete is heard, the seat is
+    /// `mesh2.admin.2`'s in the fabric-primary's view (the leave a later attempt resumes hands it the
+    /// workflow) and in its own, which hears the same departure and announces the seat at the next
+    /// revision. Must NOT happen: the no_survivor attempts refused "mesh2.admin.2 is live and holds no
+    /// seat yet" after mesh2.admin.1 was deleted (trace 5bc960a3e759a77cfb42ae6e9bc687d0).
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn the_lost_primarys_exit_held_seats_the_live_admin_in_the_fabric_primarys_view_and_its_own() {
+    async fn the_lost_primarys_departure_makes_the_live_admin_primary_in_the_fabric_primarys_view_and_its_own() {
         use rdm_core::Seat::MeshPrimary;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let lost = with_id(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), "200000000000");
@@ -2929,12 +2161,11 @@ mod tests {
         let (_fp, book, records, view, _rows) = fabric_primary_over(&[lost.clone(), live.clone()], storage).await;
         let primary = |t: &Topology| t.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string());
         assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.1"), "unheld, the lost holder keeps its seat (R-EL1)");
-        prove_exit(&book, &records, &lost).await;
+        depart(&book, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.2"), "held, the fabric-primary reads the live admin seated");
-        // mesh2.admin.2's own view: its investigation's exit proof, read from the same row.
+        // mesh2.admin.2's own view: the same departure, heard by its own book.
         let own = Records::default();
-        own.set_status(records.status.get().unwrap().storage().clone(), "mesh2".into(), live.node.name.clone(), live.node.node_id.clone());
         own.set_book(book.clone());
         let view2 = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &own));
         own.install_projected(&view2, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &own)).await;
@@ -3014,22 +2245,25 @@ mod tests {
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
 
-        // A legitimate succession is still announced: the recorded holder's birth proven exited,
-        // the election seats its own mesh's next admin, at the next revision over that record.
+        // A legitimate succession is still announced: the recorded mesh-primary's birth departed (the
+        // fabric-primary, heard in another mesh, is not it), the election names its own mesh's next admin,
+        // at the next revision over that record.
         let book = DigestBook::default();
         let records = Records::default();
         let gone = with_id(digest("mesh1.admin.2", ReadyForTraffic), "100000000000");
-        for d in [&me, &gone] {
+        let fabric = with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000");
+        for d in [&me, &gone, &fabric] {
             book.record((*d).clone());
         }
         book.seats.take(MeshPrimary, &holder_of(&gone, 5));
-        book.seats.take(FabricPrimary, &holder_of(&gone, 5));
-        prove_exit(&book, &records, &gone).await;
+        book.seats.take(MeshPrimary, &holder_of(&fabric, 1));
+        book.seats.take(FabricPrimary, &holder_of(&fabric, 1));
+        depart(&book, &records, &gone).await;
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         let revisions: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.revision)).collect();
-        assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next revision (decided against {:?})", decided.fabric);
+        assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6)], "the successor of a departed mesh-primary is its mesh's primary at the next revision (decided against {:?})", decided.meshes);
     }
 
     /// CONTRACT (lifecycles/node-primary-update.md "Writer": "for every other type the mesh-primary
@@ -3069,7 +2303,7 @@ mod tests {
         assert_eq!(t.cohort_primary("mesh1", NodeKind::RpcNode).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
         assert!(cohort_said(&seat_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
         // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next revision.
-        prove_exit(&book, &records, &rpc2).await;
+        depart(&book, &records, &rpc2).await;
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
@@ -3235,7 +2469,6 @@ mod tests {
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
-            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3254,7 +2487,7 @@ mod tests {
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
-            rounds: Default::default(),
+            rounds: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -3923,285 +3156,6 @@ mod tests {
         drop(held);
         waiting.await.unwrap();
         assert!(topology.read().await.node(&old.node.name).is_none(), "the view holds the removed node: a projection taken before the lock was installed after the removal");
-    }
-
-    /// A status store whose exit-proof row read, while `latch` is set, takes its answer and then
-    /// waits on a latch: it says it is inside the read, then holds until released. While `refuse` is
-    /// set the read fails. Every other row is the memory store's.
-    struct LatchedExits {
-        inner: crate::status_storage::MemoryStatusStorage,
-        entered: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-        latch: std::sync::atomic::AtomicBool,
-        refuse: std::sync::atomic::AtomicBool,
-    }
-
-    impl LatchedExits {
-        fn new(latch: bool) -> Self {
-            Self { inner: Default::default(), entered: tokio::sync::Notify::new(), release: tokio::sync::Notify::new(), latch: latch.into(), refuse: false.into() }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::status_storage::StatusStorage for LatchedExits {
-        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status(row).await
-        }
-        async fn mesh_statuses(&self) -> Result<HashMap<MeshId, rdm_core::status::MeshState>, crate::storage_error::StorageError> {
-            self.inner.mesh_statuses().await
-        }
-        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_fabric_event(row).await
-        }
-        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events().await
-        }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events_of(mesh).await
-        }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.inner.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
-
-        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(row).await
-        }
-        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(node_id, incarnation_id).await
-        }
-        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared_of(mesh, row).await
-        }
-        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared().await
-        }
-        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(row).await
-        }
-        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences().await
-        }
-        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit(row).await
-        }
-        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            self.inner.node_exit(node_id, incarnation_id).await
-        }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.mesh_status_held_of(mesh, row).await
-        }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status_of(mesh, row).await
-        }
-        async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
-            let answer = self.inner.node_exit_of(mesh, node_id, incarnation_id).await;
-            if self.latch.load(std::sync::atomic::Ordering::SeqCst) {
-                self.entered.notify_one();
-                self.release.notified().await;
-            }
-            if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(crate::storage_error::StorageError::Io { file: format!("status/{mesh}/exits"), reason: "the cell refuses the read".into() });
-            }
-            answer
-        }
-        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_exit_of(mesh, row).await
-        }
-            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
-            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_held_running_of(mesh, row).await
-        }
-        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs_of(mesh).await
-        }
-        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_of(mesh, row).await
-        }
-        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.node_cert_receipts_of(mesh).await
-        }
-        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_receipt_of(mesh, row).await
-        }
-        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuers_of(mesh).await
-        }
-        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_of(mesh, row).await
-        }
-        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuer_receipts_of(mesh).await
-        }
-        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
-            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_os_stopped_of(mesh, row).await
-        }
-        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost_of(mesh, row).await
-        }
-        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
-        }
-}
-
-    /// CONTRACT (s41 land 4: no disk read under the view's write lock): an install reads the
-    /// exit-proof rows of the births it projects before it takes the view's write lock, so a reader of
-    /// the view (a handler, the status authority) is served while an exit-row read is slow, and the
-    /// projection installed under the lock holds what the read found. Must NOT happen: the view's
-    /// write lock held across a point read of the store.
-    #[tokio::test]
-    async fn a_reader_of_the_view_is_served_while_an_installs_exit_row_read_is_slow() {
-        use crate::status_storage::StatusStorage as _;
-        let book = Arc::new(DigestBook::default());
-        let lost = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
-        book.record(lost.clone());
-        let store = Arc::new(LatchedExits::new(true));
-        let row = crate::status_storage::NodeExitRow { node_id: lost.node.node_id.clone(), name: lost.node.name.clone(), incarnation_id: lost.node.incarnation.clone(), exit_code: Some(9), proof: "provider".into(), observed_at_ms: 1 };
-        store.inner.put_node_exit_of("mesh1", &row).await.unwrap();
-        let records = Arc::new(Records::default());
-        records.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-        records.set_book((*book).clone());
-        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
-        let capture = crate::span_capture::Capture::new("i143-3068-exit-rows-read-before-the-view-lock");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let install = {
-            let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
-            tokio::spawn(async move { records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await })
-        };
-        store.entered.notified().await;
-        let served = topology.try_read().map(|t| t.nodes.len());
-        store.release.notify_one();
-        let installed = install.await.unwrap();
-        assert!(served.is_ok(), "the view's write lock is held while the install waits on an exit-proof row read");
-        let listed = installed.node(&lost.node.name).map(|n| n.status);
-        assert_eq!(listed, Some(NodeStatus::Dead), "the projection installed under the lock holds the exit the read found");
-        assert_eq!(topology.read().await.node(&lost.node.name).map(|n| n.status), Some(NodeStatus::Dead));
-        let read = capture.named("rdm.node_admin.node.resolve.via-exit-proof-row");
-        assert_eq!(read.len(), 1, "the read phase reads the birth's exit-proof row once: {read:?}");
-        eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read[0].trace_id, read[0].attributes);
-    }
-
-    /// CONTRACT (s41 land 4; node-recovery.md: "Exited is the proof, recorded durably"; the status
-    /// store puts and point-reads an exit-proof row and nothing removes it): with the reads outside
-    /// the view's lock two installs interleave, and a proof once read stays held while its birth is
-    /// named: an install whose read was taken before the row was put, and stored after a later
-    /// install read the row, takes nothing away; nor does a read that fails. Must NOT happen: a
-    /// proven-exited birth read live again (and so seated again) by a stale or failed read.
-    #[tokio::test]
-    async fn an_exit_proof_once_read_is_never_withdrawn_by_an_older_or_failed_read() {
-        use crate::status_storage::StatusStorage as _;
-        use std::sync::atomic::Ordering::SeqCst;
-        let book = Arc::new(DigestBook::default());
-        let lost = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
-        book.record(lost.clone());
-        let store = Arc::new(LatchedExits::new(true));
-        let records = Arc::new(Records::default());
-        records.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-        records.set_book((*book).clone());
-        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
-        let status = |t: &Topology| t.node(&lost.node.name).map(|n| n.status);
-        let capture = crate::span_capture::Capture::new("i143-3068-exit-proof-never-withdrawn");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        // The older install: its read finds no row, and it is held before it stores.
-        let older = {
-            let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
-            tokio::spawn(async move { records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await })
-        };
-        store.entered.notified().await;
-        store.latch.store(false, SeqCst);
-        // The exit is proven and its row put; a later install reads it.
-        let row = crate::status_storage::NodeExitRow { node_id: lost.node.node_id.clone(), name: lost.node.name.clone(), incarnation_id: lost.node.incarnation.clone(), exit_code: Some(9), proof: "provider".into(), observed_at_ms: 1 };
-        store.inner.put_node_exit_of("mesh1", &row).await.unwrap();
-        let later = records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
-        assert_eq!(status(&later), Some(NodeStatus::Dead), "the later install reads the proof");
-        store.release.notify_one();
-        let after_older = older.await.unwrap();
-        assert_eq!(status(&after_older), Some(NodeStatus::Dead), "the older read, stored after the later one, withdrew the proof");
-        // A read that fails proves nothing new and takes nothing away.
-        store.refuse.store(true, SeqCst);
-        let failed = records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
-        assert_eq!(status(&failed), Some(NodeStatus::Dead), "a failed read withdrew the proof");
-        assert_eq!(status(&*topology.read().await), Some(NodeStatus::Dead));
-        let (read, unreadable) = (capture.named("rdm.node_admin.node.resolve.via-exit-proof-row"), capture.named("rdm.node_admin.node.reject.via-exit-row-unreadable"));
-        assert_eq!((read.len(), unreadable.len()), (1, 1), "the proof enters once, and the failed read is named once: {read:?} {unreadable:?}");
-        eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read[0].trace_id, read[0].attributes);
-        eprintln!("span rdm.node_admin.node.reject.via-exit-row-unreadable trace_id={} {:?}", unreadable[0].trace_id, unreadable[0].attributes);
-    }
-
-    /// CONTRACT (node-recovery.md: "Exited is the proof, recorded durably"; the projection reads
-    /// every birth's exit-proof row): a birth this admin's book never held, listed from the record
-    /// this admin published of it (a mesh leave's member run from the accepted roster, a launch not
-    /// yet heard), is listed `Dead` once its exit-proof row is read, as a birth listed from a digest
-    /// or a stop is. Must NOT happen: a proven-exited birth listed in the state its record last held.
-    #[tokio::test]
-    async fn a_birth_listed_from_its_record_alone_is_dead_once_its_exit_proof_is_read() {
-        let book = DigestBook::default();
-        let records = Records::default();
-        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh2".into(), "mesh2.admin.2".parse().unwrap(), NodeId::mint());
-        records.set_book(book.clone());
-        let mut n = Node::allocated("mesh2.rpc.1".parse().unwrap());
-        n.incarnation_id = Some(IncarnationId::mint());
-        n.status = NodeStatus::Leaving;
-        records.publish(n.clone());
-        let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records));
-        assert_eq!(view.read().await.node(&n.name).map(|v| v.status), Some(NodeStatus::Leaving), "listed from its record");
-        records.put_exit(&n, Some(0), "terminate-runtime").await.unwrap();
-        let t = records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
-        assert_eq!(t.node(&n.name).map(|v| v.status), Some(NodeStatus::Dead), "the proven exit of a birth listed from its record alone");
-    }
-
-    /// CONTRACT (node-runtime-inspect.md step 5: "`exit-proven { code }`: the caller writes the
-    /// birth's exit-proof row"; node-delete.md "Exact runtime exit evidence": "require the provider's
-    /// matching Exited observation ... or the committed takeover that superseded it"; fabric-recovery.md
-    /// step 3, `takeover { revision }`): the exit-proof row is put through `Records::put_exit`, and
-    /// its `proof` names what proved the exit: the inspect's `provider`, `exit-record` or `none`,
-    /// node.delete's own `terminate-runtime`, or the committed takeover. A proof that names none of
-    /// them (a receipt copied by hand, `terminal-receipt`) is refused by name and writes no row.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn an_exit_proof_row_is_put_only_from_an_inspects_exited_or_a_takeover() {
-        let records = Records::default();
-        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh2".into(), "mesh2.admin.1".parse().unwrap(), NodeId::mint());
-        let mut n = Node::allocated("mesh2.rpc.1".parse().unwrap());
-        n.incarnation_id = Some(IncarnationId::mint());
-        let refused = records.put_exit(&n, Some(0), "terminal-receipt").await.expect_err("a receipt copied by hand proves nothing: no row");
-        assert!(refused.contains("terminal-receipt") && refused.contains("proof"), "the refusal names the proof kind: {refused}");
-        assert_eq!(records.exit_row_of(&n).await.unwrap(), None, "nothing was written");
-        for proof in ["provider", "exit-record", "none", "terminate-runtime", "takeover { revision: 3 }"] {
-            let row = records.put_exit(&n, Some(0), proof).await.unwrap_or_else(|e| panic!("{proof} is a proof kind the inspect, node.delete or a takeover writes: {e}"));
-            assert!((row.proof.as_str(), row.observed_at_ms > 0) == (proof, true), "the row names its proof at the instant it was observed: {row:?}");
-        }
     }
 
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";

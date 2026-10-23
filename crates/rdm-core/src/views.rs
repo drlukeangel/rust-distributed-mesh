@@ -64,46 +64,6 @@ pub enum ProviderKind {
     Container,
 }
 
-/// The durable `held-running` fact on a birth's status row (R-FM1): the provider reported its
-/// exact runtime `Running` while the birth is silent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeldRunning {
-    /// When the first `Running` verdict was observed, ms since the Unix epoch.
-    pub since: u64,
-    /// How many `Running` verdicts have been observed for this birth during the hold.
-    pub verdicts: u64,
-}
-
-/// A fabric-seat takeover held because the store could not commit it (fabric-node-lifecycle-elections.md
-/// §5): surfaced on `fabric.get` until it commits or the holder is proven gone and the ordinary rule
-/// fills the seat.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeldTakeover {
-    /// The fabric-primary's exact birth held lost.
-    pub lost: crate::handover::HandoverBirth,
-    /// The fabric seat's revision the lost birth is held at.
-    pub expected_revision: u64,
-    /// The winner the backbone rule names.
-    pub winner: crate::handover::HandoverBirth,
-    /// The mesh-primary that proposed it (the winner itself when it noticed).
-    pub proposer: crate::handover::HandoverBirth,
-    /// When the takeover was first held, ms since the Unix epoch.
-    pub since: u64,
-    /// Why the store could not commit it.
-    pub reason: String,
-}
-
-/// The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provider.md §2.5): the
-/// provider inspected the exact runtime and the operating system holds it suspended. An observation,
-/// never a hold: it proves neither a hung nor a gone runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OsStopped {
-    /// When the first `OsStopped` verdict was observed, ms since the Unix epoch.
-    pub since: u64,
-    /// How many inspections have read the runtime `OsStopped` since.
-    pub inspections: u64,
-}
-
 /// The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
 /// absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth
 /// `Exited`.
@@ -180,10 +140,6 @@ pub struct NodeView {
     /// the live copy. RDM never reads it.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
-    /// The durable `held-running` fact on this birth's status row (R-FM1), when the provider
-    /// reported its exact runtime `Running` while silent.
-    #[serde(default)]
-    pub held_running: Option<HeldRunning>,
     /// The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited
     /// data dir was absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while `Exited`.
     #[serde(default)]
@@ -192,10 +148,6 @@ pub struct NodeView {
     /// inherited data dir exists on disk with a missing, unreadable, or corrupt `node-key`.
     #[serde(default)]
     pub data_dir_unreadable: Option<DataDirUnreadable>,
-    /// The durable `os-stopped` fact on this birth's status row (R-PV1), when the provider inspected
-    /// its exact runtime and the operating system holds it suspended.
-    #[serde(default)]
-    pub os_stopped: Option<OsStopped>,
     /// This exact birth's immutable app declaration.
     #[serde(default)]
     pub types: std::collections::BTreeSet<String>,
@@ -293,13 +245,6 @@ pub struct FabricView {
     /// fabric-primary): the Build whose topology the fabric accepted, as the answering node-admin's
     /// fabric record holds it; `None` while it holds no accepted Build.
     pub build_id: Option<String>,
-    /// The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching
-    /// admins observed its exact runtime `Running` while silent.
-    #[serde(default)]
-    pub held_running: Option<HeldRunning>,
-    /// A fabric-seat takeover the store could not commit, while it is held (elections §5).
-    #[serde(default)]
-    pub takeover: Option<HeldTakeover>,
     /// The next member cert expiry across the fabric's cert rows, rafka-time ms (fabric-certs.md
     /// §Tracking); `None` while no row names one.
     #[serde(default)]

@@ -138,7 +138,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), exit: None };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
     let out = pipeline.retire(&req).await;
     // The trace first: a red below still names the steps the delete ran, with their trace id.
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));

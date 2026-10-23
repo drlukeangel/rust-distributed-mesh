@@ -241,7 +241,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 1a: initial plan orders leaf-inward: non-FP mesh (mesh2) first, FP's own mesh (mesh1)
     // after, and DeleteFabric at the end.
     let proj = builds.read_build(&build_id).await.unwrap();
-    let initial_ops = plan_for_build(&proj, &*observed.read().await, None).operations;
+    let initial_ops = plan_for_build(&proj, &*observed.read().await).operations;
     assert_eq!(
         initial_ops,
         vec![
@@ -283,7 +283,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
             let name = n.name.to_string();
-            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -298,7 +298,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 2: after mesh2's MeshDeleted, re-planning the SAME Build plans RetireNode(mesh2.admin.1)
     // before ShutdownMesh(mesh1) and DeleteFabric!
     let proj = builds.read_build(&build_id).await.unwrap();
-    let after_m2_deleted = plan_for_build(&proj, &*observed.read().await, None).operations;
+    let after_m2_deleted = plan_for_build(&proj, &*observed.read().await).operations;
     assert_eq!(
         after_m2_deleted,
         vec![
@@ -312,7 +312,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 
     // Execute RetireNode(mesh2.admin.1) as fabric-primary: mesh2.admin.1 stops, its row is written
     // Deleted by FP as acting primary, and MeshLeft + mesh_left_rows write mesh2 Dead.
-    let term_m2_a1 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), exit: None }).await.unwrap();
+    let term_m2_a1 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.parked = true;
@@ -338,7 +338,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 1b: now only mesh1 (the FP's own mesh) and DeleteFabric remain. On mesh1, seat_move is
     // None (the fabric seat stays on mesh1.admin.1) and executor_for is mesh1.admin.1.
     let proj = builds.read_build(&build_id).await.unwrap();
-    let after_m2_left = plan_for_build(&proj, &*observed.read().await, None).operations;
+    let after_m2_left = plan_for_build(&proj, &*observed.read().await).operations;
     assert_eq!(
         after_m2_left,
         vec![
@@ -364,7 +364,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
             let name = n.name.to_string();
-            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -381,7 +381,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 3: after mesh1's MeshDeleted, re-planning plans ONLY DeleteFabric (mesh1.admin.1 is NOT
     // retired inside fabric.delete!).
     let proj = builds.read_build(&build_id).await.unwrap();
-    let before_complete = plan_for_build(&proj, &*observed.read().await, None).operations;
+    let before_complete = plan_for_build(&proj, &*observed.read().await).operations;
     assert_eq!(
         before_complete,
         vec![BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() }],
@@ -396,7 +396,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // - The fabric-primary `mesh1.admin.1` is STILL ALIVE (`ReadyForTraffic` row in nodes.storage,
     //   runtime not terminated).
     let proj = builds.read_build(&build_id).await.unwrap();
-    assert!(plan_for_build(&proj, &*observed.read().await, None).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
+    assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
     assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric identity row is released at fabric.deleted");
     assert!(!fleet.terminated.lock().unwrap().contains(&"mesh1.admin.1".to_string()), "fabric-primary is still alive at fabric.deleted");
     assert_eq!(nodes_storage.node_row_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "fabric-primary's node row is still live at fabric.deleted");
@@ -409,12 +409,12 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         .expect("the separate node.delete of the fabric-primary is admitted");
     assert_eq!(fp_delete.attempt, 2);
     let proj2 = builds.read_build(&build_id).await.unwrap();
-    let fp_ops = plan_for_build(&proj2, &*observed.read().await, None).operations;
+    let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
     assert_eq!(fp_ops, vec![BuildOperation::RetireNode { node: m1_a1.name.clone(), exited: None }], "attempt 2 plans only the fabric-primary's own node.delete");
     assert_eq!(seat_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no seat on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
 
-    let term_m1_a1 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), exit: None }).await.unwrap();
+    let term_m1_a1 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.parked = true;
@@ -439,18 +439,18 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let _ = std::fs::remove_dir_all(&data_root);
 }
 
-/// crit:e12.s59.2 — An unanswered mesh during `fabric.delete` (R-FS1 revised):
-/// 1. Held (unproven runtime) is refused by name (`Err`), writing no `Deleted` or `Dead` row.
-/// 2. Fully crashed (every node proven exited by the provider) writes every member's node row
-///    `Deleted` on that proof, writes the mesh row `Dead` as acting primary with no survivor, and
-///    records `MeshDeleted` and `MeshLeft` without commanding anything or creating a `node-admin`.
-/// 3. Members live (`carrier-edge-lost`: all `node-admin`s proven exited while ordinary members
-///    live) records `AcceptedRoster` + predecessor exit, selects `mesh2.admin.2` via
+/// crit:e12.s59.2 — An unanswered mesh during `fabric.delete` (R-FS1 revised; node-recovery.md step 3:
+/// any verdict but `reached` re-creates or deletes, nothing waits for a proof):
+/// 1. No member answers and none runs: every member is deleted by its node.delete (its node row
+///    `Deleted`), the mesh row is written `Dead` as acting primary with no survivor, and `MeshDeleted`
+///    and `MeshLeft` are recorded without commanding anything or creating a `node-admin`.
+/// 2. Members live (`carrier-edge-lost`: the `node-admin`s unreached while ordinary members live)
+///    deletes the node-admins, records `AcceptedRoster` + predecessor, selects `mesh2.admin.2` via
 ///    `leaving_mesh_admin_path`, and once `mesh2.admin.2` is created into `mesh2` under its own
 ///    `MeshId` on the same Build, amends the roster (`RosterAmended`), adopts held state, runs
 ///    `mesh.delete`, and is removed last by the fabric-primary's `node.delete`.
 #[tokio::test]
-async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_live_or_deletes_rows_on_crash_proof_and_refuses_unproven() {
+async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_live_or_deletes_every_member_when_none_runs() {
     let data_root = std::env::temp_dir().join(format!("fabric-delete-unanswered-{}", NodeId::mint()));
     let fabric_id = FabricId::mint();
     let (id1, id2) = (MeshId::mint(), MeshId::mint());
@@ -516,49 +516,39 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let delete = |b: RosterBirth, exit: rdm_admin::status_storage::NodeExitRow| {
+        let delete = |b: RosterBirth| {
             let (pipeline, handles, build_id, m2_nodes) = (&pipeline, &handles, &build_id, &m2_nodes);
             async move {
                 let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), exit: Some(exit) }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
 
-        // Arm 1: mesh2.admin.1's runtime is still running -> unproven -> Err naming mesh2.admin.1.
-        let unproven = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete).await;
-        let err = unproven.expect_err("unproven node-admin runtime refuses unanswered mesh delete");
-        assert!(err.contains("mesh2.admin.1") && err.contains("not proven exited"), "refusal names the unproven birth: {err}");
-        assert_eq!(nodes_storage.node_row_at(&m2_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "no row is written Deleted when unproven");
-        assert!(!status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap(), "mesh row is not Dead when unproven");
-
-        // Arm 2: now every node of mesh2 (mesh2.admin.1 and mesh2.rpc.1) has crashed (proven exited
-        // by the provider). Nothing is commanded and no node-admin is created; rows are written
-        // Deleted on that proof and mesh2 is written Dead as acting primary.
+        // Every node of mesh2 (mesh2.admin.1 and mesh2.rpc.1) has crashed. Nothing is commanded and no
+        // node-admin is created; rows are written Deleted by each node.delete and mesh2 is written Dead
+        // as acting primary.
         fleet.running_pids.lock().unwrap().clear();
         let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
             .await
-            .expect("fully crashed mesh resolves on provider exit proof");
+            .expect("a mesh none of whose members runs resolves on its members' deletes");
         let UnansweredMeshOutcome::FullyCrashed(manifest) = crashed else { panic!("expected FullyCrashed, got {crashed:?}") };
         assert_eq!(manifest.receipts.len(), 2, "every birth of mesh2 has an exit receipt");
         for n in &m2_nodes {
             let row = nodes_storage.node_row_at(&n.name).await.unwrap().unwrap();
-            assert_eq!(row.status, NodeStatus::Deleted, "{}'s row is written Deleted on provider exit proof", n.name);
+            assert_eq!(row.status, NodeStatus::Deleted, "{}'s row is written Deleted by its node.delete", n.name);
         }
         assert!(status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap(), "mesh2 status row is written Dead by acting primary");
         assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.dead), "mesh2 row in mesh.storage is Dead");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         assert_eq!(owner_resume(&steps, &op_m2), Ok(OwnerResume::Left), "MeshLeft is recorded so no separate RetireNode is planned for the crashed primary");
-        // Each roster birth's exit is node.delete's own (mesh-delete.md step 3, "each member's step is
-        // its own `node.delete:<path.name>`"; node-delete.md "Crashed target"): its TerminateRuntime,
-        // NodeDeleted and Complete receipts under its own key, and its exit-proof row the inspect's
-        // (node-runtime-inspect.md step 5), never a receipt copied by hand.
+        // Each roster birth's end is node.delete's own (mesh-delete.md step 3, "each member's step is
+        // its own `node.delete:<path.name>`"): its TerminateRuntime, NodeDeleted and Complete receipts
+        // under its own key, never a receipt copied by hand.
         for n in &m2_nodes {
             let op = format!("node.delete:{}", n.name);
             for step in ["TerminateRuntime", "NodeDeleted", "Complete"] {
                 assert!(steps.iter().any(|r| r.operation == op && r.step == step && r.outcome == StepOutcome::Complete), "{}'s {step} receipt under {op}: {:?}", n.name, steps.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
             }
-            let exit = status_storage.node_exit_of("mesh2", &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().unwrap_or_else(|| panic!("{}'s exit-proof row", n.name));
-            assert!(["provider", "exit-record", "none"].contains(&exit.proof.as_str()) && exit.observed_at_ms > 0, "{}'s exit-proof row is the inspect's, at the instant it was observed: {exit:?}", n.name);
         }
         assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
     }
@@ -621,17 +611,17 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
-        // The exited admin's node.delete as a crashed target, the fabric-primary its executor.
-        let delete = |b: RosterBirth, exit: rdm_admin::status_storage::NodeExitRow| {
+        // The unreached admin's node.delete, the fabric-primary its executor.
+        let delete = |b: RosterBirth| {
             let (pipeline, handles, build_id, m2_nodes) = (&fp_pipeline, &handles, &build_id, &m2_nodes);
             async move {
                 let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), exit: Some(exit) }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
         let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
             .await
-            .expect("members live with admin proven exited resolves to CreateAdmin");
+            .expect("members live with the admin unreached resolves to CreateAdmin");
         let UnansweredMeshOutcome::CreateAdmin { path, predecessor } = outcome else { panic!("expected CreateAdmin, got {outcome:?}") };
         assert_eq!(path, "mesh2.admin.2".parse::<PathName>().unwrap(), "creates one node-admin at the next free ordinal above mesh2.admin.1");
         assert_eq!(predecessor, RosterBirth::of(&m2_a1).unwrap());
@@ -640,8 +630,6 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         assert!(steps.iter().any(|r| r.operation == format!("node.delete:{}", m2_a1.name) && r.step == "TerminateRuntime" && r.outcome == StepOutcome::Complete), "mesh2.admin.1's exit is its node.delete's receipt: {:?}", steps.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
         assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
-        let exit = status_storage.node_exit_of("mesh2", &m2_a1.node_id, m2_a1.incarnation_id.as_ref().unwrap()).await.unwrap().expect("mesh2.admin.1's exit-proof row");
-        assert!(["provider", "exit-record", "none"].contains(&exit.proof.as_str()) && exit.observed_at_ms > 0, "the exit-proof row is the inspect's: {exit:?}");
 
         // The one node-admin `mesh2.admin.2` is created into `mesh2` under `id2` on the same Build,
         // becomes mesh-primary, amends the roster, adopts held state (`roster_rows_read`), and runs
@@ -689,14 +677,14 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
         .expect("created admin mesh2.admin.2 completes mesh.delete of mesh2");
 
         record_completion(&builds, &key_m2, "mesh1.admin.1", &manifest).await.unwrap();
-        let term_a2 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, exit: None }).await.unwrap();
+        let term_a2 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
         view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.parked = true;

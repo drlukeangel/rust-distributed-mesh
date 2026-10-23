@@ -2,13 +2,12 @@
 
 use super::*;
 
-/// What an election takes beside the nodes: the seat records this admin holds, and the births
-/// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
-/// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
-/// unreachable path and the observer-inferred `Dead` prove nothing.
-pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::election::Incumbency {
-    let mut lost = records.exited_incarnations();
-    lost.extend(book.departed().into_iter().map(|op| op.incarnation));
+/// What an election takes beside the nodes: the seat records this admin holds, and the births gone. A
+/// birth is gone when its departure was heard (its node.delete), when a later birth announced that it
+/// replaced it (`supersedes`), or when the seats hold it gone. Silence, an unreachable path and the
+/// observer-inferred `Dead` are not.
+pub(crate) fn incumbency_of(book: &DigestBook, _records: &Records) -> crate::election::Incumbency {
+    let mut lost: std::collections::HashSet<IncarnationId> = book.departed().into_iter().map(|op| op.incarnation).collect();
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
     crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost }
@@ -17,12 +16,21 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
 /// What this birth's Build log reads its fence from: the fabric-primary record `book` holds, the
 /// election's result this admin installed, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
-pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName) -> crate::fabric_builds::SeatSource {
+///
+/// While the fabric-primary is unavailable, the fabric recovery workflow's executor writes that attempt's
+/// Build records (build.md §5.3, Q122): for it, the record naming the lost birth is open, naming no
+/// holder. `view` is this admin's view once it is built.
+pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
     let changed = Some(book.seats.subscribe());
     let (book, records, me_name) = (book.clone(), records.clone(), me_name.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&book, &records);
-        let name_of = |id: &NodeId| if *id == me.0 { Some(book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone())) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        let held_name = book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
+        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &book))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
+        if executes {
+            return crate::fabric_builds::SeatRecord::Open { holder: None };
+        }
+        let name_of = |id: &NodeId| if *id == me.0 { Some(held_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
         crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
@@ -31,11 +39,20 @@ pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: 
 /// Where this birth's drift-lane opens and claims read their fence (R-BI7): the mesh-primary record
 /// of its own mesh `book` holds, judged as [`fabric_seat_record`] judges the fabric
 /// seat's.
-pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, mesh: &str) -> crate::fabric_builds::SeatSource {
+///
+/// While fabric recovery restores the fabric-primary of `mesh`, its executor of that mesh writes the
+/// attempt's Build records in the mesh's lane (build.md §5.3, Q122): for it, the record naming the lost
+/// birth is open, naming no holder. `view` is this admin's view once it is built.
+pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, mesh: &str, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
     let changed = Some(book.seats.subscribe());
     let (book, records, me_name, mesh) = (book.clone(), records.clone(), me_name.to_string(), mesh.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&book, &records);
+        let held_name = book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
+        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &book))).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.meshes.get(&mesh).is_some_and(|r| r.node_id == fr.target.node_id));
+        if executes {
+            return crate::fabric_builds::SeatRecord::Open { holder: None };
+        }
         let name_of = |id: &NodeId| if *id == me.0 { Some(book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone())) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
         crate::seat_watch::mesh_seat_record(&mesh, incumbency.meshes.get(&mesh), &me, &incumbency.lost, name_of)
     });
@@ -110,16 +127,12 @@ impl ViewReads {
     }
 
     /// The read phase of the admin `me`'s rebuild over `book`'s births of `fabric_id`, as of now: first
-    /// each birth `book` holds deleted leaves `records` ([`Records::remove_deleted`]), then the
-    /// exit-proof rows of the births `book` and `records` name ([`Records::read_exits`]), then the
-    /// row of every birth that does not publish its own name, from `records`' nodes store (no store:
-    /// nothing is read). The exits are read first: a birth proven exited does not publish its name, so
-    /// its row is read with the rest.
+    /// each birth `book` holds deleted leaves `records` ([`Records::remove_deleted`]), then the row of
+    /// every birth that does not publish its own name, from `records`' nodes store (no store: nothing
+    /// is read).
     pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId) -> Self {
         let me = book.held_path_name().unwrap_or_else(|| me.clone());
         records.remove_deleted(book);
-        records.read_exits(book).await;
-        records.read_os_stopped(book).await;
         let at = std::time::Instant::now();
         Self { at, rows: RowNames::read(&me, book, records, fabric_id, at).await }
     }
@@ -131,7 +144,7 @@ impl ViewReads {
 /// node id, so it is the row's id index, `NodesStorage::node_row_name`: one read per birth). A birth
 /// that publishes names itself: its digest carries its row's name (R12: it publishes only the row's
 /// name, a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
-/// staleness floor, proven exited, held true offline) may have had its row moved while it said
+/// staleness floor, held true offline) may have had its row moved while it said
 /// nothing: a stopped node's `node.name.update` (R13: it is told nothing and reads the name at its next
 /// join), the replace recipe's renames included.
 #[derive(Default)]
@@ -192,10 +205,10 @@ impl RowNames {
     }
 }
 
-/// The birth speaks for its own name: it published within the staleness floor and is neither proven
-/// exited nor held true offline.
+/// The birth speaks for its own name: it published within the staleness floor and is not held true
+/// offline.
 pub(crate) fn publishes(book: &DigestBook, records: &Records, node_id: &NodeId, incarnation: &IncarnationId, age: Duration) -> bool {
-    age <= book.staleness_floor() && !records.is_exited(node_id, incarnation) && !records.offline.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
+    age <= book.staleness_floor() && !records.offline.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
 }
 
 /// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands, as
@@ -330,8 +343,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // `Dead` only while the mesh primary's offline tickle holds this exact birth true offline.
         n.status = if restarting {
             NodeStatus::Restarting
-        } else if records.is_exited(&d.node.node_id, &d.node.incarnation) {
-            NodeStatus::Dead
         } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
         } else if !silent {
@@ -341,11 +352,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         };
         // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the book
         // holds it and its mesh ready-for-traffic. Anything else is a routing stop.
-        // A birth its mesh-primary recorded os-stopped carries the fact until the mesh-primary removes
-        // it (deployment-provider.md §2.5).
-        if !restarting {
-            n.os_stopped = records.os_stopped_of(&d.node.node_id, &d.node.incarnation);
-        }
         n.routable = n.status == NodeStatus::ReadyForTraffic && book.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
@@ -388,8 +394,8 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(provider);
-        n.status = if records.is_exited(&d.node.node_id, &d.node.incarnation) { NodeStatus::Dead } else { NodeStatus::Leaving };
-        n.parked = n.status == NodeStatus::Leaving;
+        n.status = NodeStatus::Leaving;
+        n.parked = true;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
@@ -418,8 +424,8 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.node_id = op.node_id.clone();
         n.incarnation_id = Some(op.incarnation.clone());
         n.provider = Some(provider);
-        n.status = if records.is_exited(&op.node_id, &op.incarnation) { NodeStatus::Dead } else { NodeStatus::Leaving };
-        n.parked = n.status == NodeStatus::Leaving;
+        n.status = NodeStatus::Leaving;
+        n.parked = true;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
@@ -451,9 +457,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(provider);
-        n.status = if records.is_exited(&d.node.node_id, &d.node.incarnation) {
-            NodeStatus::Dead
-        } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
+        n.status = if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
         } else if age <= book.staleness_floor() {
             node_status(d.status)
@@ -480,21 +484,11 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     for op in book.departed() {
         heard.insert(op.incarnation.clone());
     }
-    for (name, mut r) in recorded {
+    for (name, r) in recorded {
         if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || book.is_departed(r.node_id.as_str()) {
             continue;
         }
-        // Its exit-proof row read: the birth is Dead, whatever its record last held.
-        if r.incarnation_id.as_ref().is_some_and(|i| records.is_exited(&r.node_id, i)) {
-            r.status = NodeStatus::Dead;
-            r.routable = false;
-        }
         nodes.entry(name).or_insert(r);
-    }
-    // Each birth whose exit-proof row was read carries the proof, beside the `Dead` it shows: a
-    // decision that needs the proof never reads it from the status, which the true-offline mark sets too.
-    for n in nodes.values_mut() {
-        n.exit_proven = n.incarnation_id.as_ref().is_some_and(|i| records.is_exited(&n.node_id, i));
     }
     let mut topology = Topology {
         fabric: Fabric { id: fabric_id.clone(), name: fabric.into(), status: ScopeStatus::Pending, provider },

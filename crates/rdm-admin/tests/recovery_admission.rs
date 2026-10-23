@@ -63,6 +63,22 @@ fn opened(facts: &[BuildFact]) -> usize {
     facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count()
 }
 
+/// The drift lane's departure proof a cell flips (build.md: "after exact departure proof"): the
+/// claimant's exact runtime reads exited once it is set.
+#[derive(Default)]
+struct Departure(std::sync::atomic::AtomicBool);
+
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::DepartureProof for Departure {
+    async fn proven(&self, executor: &PathName) -> Result<(), String> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(format!("{executor}'s exact runtime does not read exited"))
+        }
+    }
+}
+
 /// CONTRACT (#3051 acceptance 4, node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat
 /// submit answers AlreadyApplied or BuildInProgress, never a second recovery"; R-BI7): mesh1's
 /// mesh-primary opens the first recovery of `mesh1.rpc.2`'s exited birth as attempt 1 of mesh1's
@@ -650,7 +666,7 @@ fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
 #[tokio::test]
 async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh_primary_on_its_exit_proof() {
     use rdm_admin::build_state::BuildState;
-    use rdm_admin::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
+    use rdm_admin::status_storage::MemoryStatusStorage;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -695,17 +711,20 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
             .with_claims(claims.clone())
             .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
     );
+    let departure = Arc::new(Departure::default());
+    let _ = heir.departure.set(departure.clone());
     let incarnation = departed_birth.incarnation_id.clone().unwrap();
 
-    // Silence is never departure: no exit of the lost primary's exact birth is recorded.
+    // Silence is never departure: the lost primary's departure is not proven.
     let silent = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while the lost primary is only silent, mesh2 stays held by its attempt: {other:?}"),
     };
     assert_eq!((silent["current_build_id"].as_str(), silent["mesh"].as_str(), silent["held_by"].as_str()), (Some(b0.as_str()), Some("mesh2"), Some("mesh2.admin.1")), "named by the Build, the mesh and the claimant: {silent}");
 
-    // The new primary proves the lost primary's exit and records it, then submits its recovery.
-    rows.put_node_exit(&NodeExitRow { node_id: departed_birth.node_id.clone(), name: departed.clone(), incarnation_id: incarnation.clone(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 }).await.unwrap();
+    // The lost primary's departure is proven (its exact runtime reads exited), then the new primary
+    // submits its recovery.
+    departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let second = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("on the lost claimant's recorded exit, the new primary takes mesh2's lane over: {other:?}"),
@@ -749,7 +768,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 /// by a row whose attempt ended, or the row released on silence alone.
 #[tokio::test]
 async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_on_its_exit_proof() {
-    use rdm_admin::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
+    use rdm_admin::status_storage::MemoryStatusStorage;
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
@@ -781,6 +800,8 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
             .with_claims(claims.clone())
             .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
     );
+    let departure = Arc::new(Departure::default());
+    let _ = heir.departure.set(departure.clone());
     let incarnation = departed_birth.incarnation_id.clone().unwrap();
     let silent = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
@@ -788,7 +809,7 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
     };
     assert_eq!((silent["mesh"].as_str(), silent["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.1")), "{silent}");
 
-    rows.put_node_exit(&NodeExitRow { node_id: departed_birth.node_id.clone(), name: departed.clone(), incarnation_id: incarnation.clone(), exit_code: Some(137), proof: "provider".into(), observed_at_ms: 1 }).await.unwrap();
+    departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let second = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("on the lost claimant's recorded exit, the row it left is released and mesh2 admits the next attempt: {other:?}"),
@@ -863,6 +884,8 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
             .with_claims(claims.clone())
             .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
     );
+    let departure = Arc::new(Departure::default());
+    let _ = heir.departure.set(departure.clone());
     let departed_incarnation = departed_birth.incarnation_id.clone().unwrap();
 
     // Another birth's recovery waits for the open attempt: one attempt in flight per mesh.
@@ -938,7 +961,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     use rdm_admin::accepted::AttemptAction;
     use rdm_admin::build_state::{AttemptOpened, BuildState};
     use rdm_admin::mesh_claims::InFlight;
-    use rdm_admin::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
+    use rdm_admin::status_storage::MemoryStatusStorage;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-unclaimed-resubmit", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -998,7 +1021,9 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
             .with_claims(claims.clone())
             .with_first_ready(rdm_admin::fabric_state::FirstReady::new(), rows.clone()),
     );
-    rows.put_node_exit(&NodeExitRow { node_id: departed_birth.node_id.clone(), name: departed.clone(), incarnation_id: departed_incarnation.clone(), exit_code: None, proof: "provider".into(), observed_at_ms: 3 }).await.unwrap();
+    let departure = Arc::new(Departure::default());
+    let _ = heir.departure.set(departure.clone());
+    departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // The lost primary's own recovery waits for the open attempt: one attempt in flight per mesh.
     let refused = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation.clone()).await {

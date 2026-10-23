@@ -331,6 +331,9 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .await;
     assert_eq!(estate.mesh_view(&lost).await.id.expect("the lost mesh still has its id").to_string(), mesh_id, "the lost mesh recovered under its own MeshId");
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build");
+    // The successor primary reports its round; on that report the fabric-primary clears degraded: the
+    // fabric is ready-for-traffic again before the estate stops.
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     estate.stop().await;
     let spans = estate.spans();
 

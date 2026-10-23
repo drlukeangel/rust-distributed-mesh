@@ -86,7 +86,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
 
         let leave_build = publish_build(&builds, add_node()).await;
         let terminal = pipeline
-            .retire(&RetireRequest { build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), exit: None })
+            .retire(&RetireRequest { build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");

@@ -156,9 +156,6 @@ impl BuildStateAdapter for WireBuilds {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.0.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
-        self.0.terminate_failures_of(node_id, incarnation).await
-    }
     async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.0.exits_owed(build_id, mesh).await
     }
@@ -389,7 +386,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             move |n: Node| async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((attempt, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-delete-resume", build_id = %build_id.log(), operation = %outer);
@@ -445,7 +442,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     // MeshLeft: with the final primary's own exit, the proof set covers every accepted birth.
     let mut all = manifest.clone();
     all.final_runtime = None;
-    all.receipts.push(TerminalReceipt { node: me.node.clone(), node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone(), runtime: Some(final_runtime.clone()), exit_code: Some(0) });
+    all.receipts.push(TerminalReceipt { node: me.node.clone(), node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone(), runtime: Some(final_runtime.clone()), exit_code: Some(0) , verdict: None});
     assert_eq!(first_mismatch(&all, &fp2, &me, true), None, "MeshLeft covers the whole accepted roster");
 
     // The trace: both attempts' tiers and the retained receipt, under the cell's one trace.
@@ -538,7 +535,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await;
@@ -628,7 +625,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
@@ -646,7 +643,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let completions = steps.iter().filter(|r| r.step == STEP_MESH_DELETED).count();
         let indexed = builds.mesh_deleted_of(&last_record.node_id, last_record.incarnation_id.as_ref().unwrap()).await.unwrap();
         // The final primary's own node.delete, a separate Build: the ordinary workflow, live target.
-        let req = rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build.clone(), attempt: 1, node: last_record.clone(), handle: handles[FINAL].clone(), exit: None };
+        let req = rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build.clone(), attempt: 1, node: last_record.clone(), handle: handles[FINAL].clone(), unreached: false };
         pipeline.retire(&req).await.expect("the final primary's node.delete completes");
         let terminal: TerminalReceipt = builds
             .read_build(&delete_build)
@@ -737,7 +734,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
             n.parked = true;
         });
         let stopped = rows.deleted(&last, &deleting).await;
-        let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) };
+        let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None};
         let after = mesh_left_rows(Some(&rows), &status, &rdm_admin::storage::MemoryMeshStorage::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = storage.node_row_at(&last.name).await.unwrap();
         let statuses = status.mesh_statuses().await.unwrap();
@@ -783,7 +780,7 @@ const NEW_ADMIN: &str = "mesh2.admin.3";
 
 /// The exact Exited receipt the provider's inspection of `b`'s runtime `runtime` proves.
 fn exited(b: &RosterBirth, runtime: &RuntimeProof) -> TerminalReceipt {
-    TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) }
+    TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) , verdict: None}
 }
 
 fn step_facts(facts: &[BuildFact]) -> Vec<BuildStepReceipt> {
@@ -847,7 +844,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             move |n: Node| async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((attempt, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-amended", build_id = %build_id.log(), operation = %outer);
@@ -896,7 +893,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             .await
             .unwrap();
         let last = records2.iter().find(|n| n.name.to_string() == OTHER_ADMIN).cloned().unwrap();
-        let terminal = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build, attempt: 1, node: last, handle: handles[OTHER_ADMIN].clone(), exit: None }).await.expect("the amended primary's node.delete proves its exit");
+        let terminal = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build, attempt: 1, node: last, handle: handles[OTHER_ADMIN].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         let mesh_left = completion_of(&steps, &outer).expect("a completion is recorded").map_err(|e| e.to_string()).and_then(|c| mesh_left_proof(&c, &terminal));
         (applied, replayed, second_amendment, admitted, verdict, stale, (owner_resume(&steps, &outer), mesh_left), steps, trace_id)
@@ -999,7 +996,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((1, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let shutdown_2 = |n: Node| {
@@ -1007,7 +1004,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((2, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-finished-under-lost", build_id = %build_id.log(), operation = %outer);
@@ -1257,14 +1254,14 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
     assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["remaining"] == "0"));
 }
 
-/// CONTRACT: the fabric-primary's own resume branch proves the lost final primary's exit from its
+/// CONTRACT: the fabric-primary's own resume branch reads the lost final primary's runtime from its
 /// durable runtime row, never from the view (R11 steps 2-3; mesh-delete.md, "Resume after the
 /// primary's loss", steps 1-2). No topology view is consulted: the lost `mesh2.admin.1` has left
 /// every projection. With no runtime row of that birth the resume is refused by name and nothing is
-/// amended (R-D1); with the row every admin stored the moment it first held the birth, the provider's
-/// exact Exited is recorded as its roster receipt and `RosterAmended` admits `mesh2.admin.2`.
+/// amended; with the row every admin stored the moment it first held the birth, its node.delete's
+/// `TerminateRuntime` receipt is its roster receipt and `RosterAmended` admits `mesh2.admin.2`.
 #[test]
-fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_and_amends() {
+fn the_fabric_primary_reads_a_lost_primarys_runtime_from_its_durable_runtime_row_and_amends() {
     let cap = capture();
     let records: Vec<Node> = [OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
     let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 47_000 + i as u32))).collect();
@@ -1274,10 +1271,7 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[FINAL].fact().unwrap()), RuntimeProof::of(&handles[OTHER_ADMIN].fact().unwrap()));
     let lost_node = records.iter().find(|n| n.name.to_string() == FINAL).unwrap();
     let row = rdm_admin::storage::RuntimeRow { node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[FINAL].fact().unwrap(), data_dir: None };
-    // Where the proven exit is recorded: the fabric-primary's status store, held in memory.
-    let exit_records = rdm_admin::admin::Records::default();
-    exit_records.set_status(Arc::new(MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
-    let (without_row, with_row, before, after, steps_after, exit_row, trace_id) = cap.run(async {
+    let (without_row, with_row, before, after, steps_after, trace_id) = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
@@ -1290,15 +1284,14 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
         let _in_root = root.enter();
         let admitted = |steps: &[BuildStepReceipt]| admitted_of(steps, &outer).unwrap().unwrap();
         let adm = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        // The lost birth's node.delete as a crashed target: what the fabric-primary runs on the row.
-        let delete = |_exit: rdm_admin::status_storage::NodeExitRow| async { node_delete_receipts(&builds, &key(2), "mesh1.admin.1", &exited(&lost, &lost_runtime)).await; Ok(()) };
-        let without_row = resume_after_loss(&builds, &fleet, &exit_records, None, &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime, delete).await;
+        // The lost birth's node.delete as an unreached birth: what the fabric-primary runs on the row.
+        let delete = || async { node_delete_receipts(&builds, &key(2), "mesh1.admin.1", &exited(&lost, &lost_runtime)).await; Ok(()) };
+        let without_row = resume_after_loss(&builds, &fleet, None, &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime, delete).await;
         let before = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let with_row = resume_after_loss(&builds, &fleet, &exit_records, Some(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime, delete).await;
+        let with_row = resume_after_loss(&builds, &fleet, Some(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime, delete).await;
         let steps_after = builds.read_build(&build_id).await.unwrap().steps;
         let after = admitted(&steps_after);
-        let exit_row = exit_records.exit_row_of(&lost.record().unwrap()).await.unwrap();
-        (without_row, with_row, before, after, steps_after, exit_row, trace_id)
+        (without_row, with_row, before, after, steps_after, trace_id)
     });
     let spans = cap.spans();
     let dir = artifact_dir().join("fp_resume");
@@ -1306,18 +1299,15 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let refusal = without_row.expect_err("no runtime row of the lost birth: the resume is refused");
-    let rdm_admin::executor::RunEnd::Incomplete(refusal) = refusal else { panic!("an unproven lost primary leaves the leave incomplete, not failed: {refusal:?}") };
-    assert!(refusal.contains("not proven exited") && refusal.contains(FINAL) && refusal.contains("no durable runtime row"), "the refusal names the lost birth and the missing row: {refusal}");
-    assert_eq!(before.final_primary, lost, "nothing is amended while the lost primary is unproven");
-    assert_eq!(with_row, Ok(Amended::Applied), "with the durable runtime row the exit is proven and the amendment recorded");
+    let rdm_admin::executor::RunEnd::Incomplete(refusal) = refusal else { panic!("a lost primary whose runtime is unknown leaves the leave incomplete, not failed: {refusal:?}") };
+    assert!(refusal.contains("not known here") && refusal.contains(FINAL) && refusal.contains("no durable runtime row"), "the refusal names the lost birth and the missing row: {refusal}");
+    assert_eq!(before.final_primary, lost, "nothing is amended while the lost primary's runtime is unknown");
+    assert_eq!(with_row, Ok(Amended::Applied), "with the durable runtime row the lost primary is deleted and the amendment recorded");
     assert_eq!(after.final_primary, survivor, "the amendment admits the surviving admin");
     assert_eq!(after.final_runtime, survivor_runtime);
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert!(named("rdm.node_admin.mesh.reject.via-unproven-primary").iter().any(|s| s["attributes"]["reason"].as_str().is_some_and(|r| r.contains("no durable runtime row"))));
-    // The exit-proof row is the inspect's (node-runtime-inspect.md step 5), through the one writer,
-    // and the roster receipt is node.delete's own TerminateRuntime under `node.delete:<path>`.
-    let exit_row = exit_row.expect("the lost primary's exit-proof row is put");
-    assert_eq!((exit_row.proof.as_str(), exit_row.exit_code, exit_row.observed_at_ms > 0), ("provider", Some(0), true), "{exit_row:?}");
+    // The roster receipt is node.delete's own TerminateRuntime under `node.delete:<path>`.
     assert!(steps_after.iter().any(|r| r.operation == format!("node.delete:{FINAL}") && r.step == "TerminateRuntime"), "the lost primary's roster receipt is its node.delete's: {:?}", steps_after.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
     assert!(steps_after.iter().all(|r| !r.operation.contains('/')), "no receipt is recorded under a key outside node.delete's and the leave's: {:?}", steps_after.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
     assert!(named("rdm.node_admin.mesh.update.via-roster-amended").iter().any(|s| s["attributes"]["outcome"] == "applied" && s["attributes"]["final_primary"].as_str().is_some_and(|p| p.contains(OTHER_ADMIN))));
@@ -1403,11 +1393,11 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
 /// a silent seat holder (seat watch) runs this same ladder", then "the provider about the exact
 /// runtime recorded at launch"): the node-admin the fabric-primary created for a leaving mesh holds
 /// the lost primary's seat record but never heard its digest (the primary was gone before the admin
-/// was born). Its seat watch proves the holder's exit from the runtime row handed into its
-/// nodes.storage at its create, the exact runtime recorded at launch, so the seat yields to it. With
-/// no digest and no row the finding stays unproven: silence is not death.
+/// was born). Its seat watch reads the holder's runtime from the runtime row handed into its
+/// nodes.storage at its create, the exact runtime recorded at launch. With no digest and no row the
+/// finding is unproven.
 #[test]
-fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row() {
+fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row() {
     use rdm_admin::seat_watch::{inspect_birth, Finding};
     use rdm_admin::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
     let lost = node(FINAL);
@@ -1422,7 +1412,7 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
         (without_row, with_row)
     });
     assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
-    assert_eq!(with_row, Finding::Exited { code: Some(0), proof: "provider" }, "the runtime row recorded at launch is what the provider inspects, its proof the provider's own");
+    assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
 }
 
 /// CONTRACT (R11, the leave acts on the immutable accepted roster's exact births; mesh-delete.md
@@ -1722,9 +1712,6 @@ impl BuildStateAdapter for CutBuilds<'_> {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
-        self.inner.terminate_failures_of(node_id, incarnation).await
-    }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
     }
@@ -1812,7 +1799,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((1, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let shutdown_2 = |n: Node| {
@@ -1820,7 +1807,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((2, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-cut-delete", build_id = %build_id.log(), operation = %outer);
@@ -1900,15 +1887,13 @@ fn run_paused<F: std::future::Future>(cap: &Capture, f: F) -> F::Output {
 }
 
 /// CONTRACT: the owner's wait for the leaving mesh's handoff ends the moment its view holds the
-/// final primary proven exited (mesh-delete.md, "Resume after the primary's loss": the resume is
-/// ordered by the lost primary's exact provider Exited, step 1; "Forbidden proof: ... a timeout never
-/// proves a member exited"): the attempt ends incomplete, naming the final primary and the proof,
-/// its receipts standing for the next attempt, which resumes. A view change that proves nothing
-/// keeps the wait open: silence is not death. Must NOT happen: the wait running on to a timer
-/// (`MESH_DELETED_WAIT`) after the proof is in, the 120 s attempt 1 of the leave stems (trace
-/// b84c9abc66ec8a8cee045c1e871514cb).
+/// final primary lost (mesh-delete.md, "Resume after the primary's loss"): the attempt ends
+/// incomplete, naming the lost final primary, its receipts standing for the next attempt, which
+/// resumes. A view change that names no loss keeps the wait open. Must NOT happen: the wait running on
+/// to a timer (`MESH_DELETED_WAIT`) after the loss is in, the 120 s attempt 1 of the leave stems
+/// (trace b84c9abc66ec8a8cee045c1e871514cb).
 #[test]
-fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer() {
+fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
     let cap = capture();
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
     let book = MeshDeleteBook::default();
@@ -1930,9 +1915,9 @@ fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer
             tokio::task::yield_now().await;
         }
         let open_after_silence = !wait.is_finished();
-        // Its exit-proof row enters the owner's view.
+        // The owner's view holds it unheard, its runtime read exited.
         let began = tokio::time::Instant::now();
-        *proven.lock().unwrap() = Some(format!("its exit-proof row is read: {} {} exited", final_primary.node, final_primary.incarnation_id));
+        *proven.lock().unwrap() = Some(format!("the final primary is unheard; its runtime reads exited: {} {}", final_primary.node, final_primary.incarnation_id));
         view_tx.send_modify(|t| *t += 1);
         let end = wait.await.unwrap();
         (end, open_after_silence, began.elapsed(), trace_id)
@@ -1947,15 +1932,15 @@ fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer
     assert!(waited < MESH_DELETED_WAIT, "the wait ended on the proof, not on the {MESH_DELETED_WAIT:?} timer: it ended after {waited:?} with {end:?}");
     match &end {
         Err(rdm_admin::executor::RunEnd::Incomplete(reason)) => {
-            assert!(reason.contains(FINAL) && reason.contains("proven exited") && reason.contains("exit-proof row"), "the incomplete end names the final primary and its proof: {reason}");
+            assert!(reason.contains(FINAL) && reason.contains("is lost"), "the incomplete end names the lost final primary: {reason}");
         }
-        other => panic!("the attempt ends incomplete on the final primary's proven exit: {other:?}"),
+        other => panic!("the attempt ends incomplete on the final primary's loss: {other:?}"),
     }
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
-    let ended = named("rdm.node_admin.mesh.update.via-final-primary-exited");
-    assert_eq!(ended.len(), 1, "one span names the wait's end on the proof: {spans:?}");
+    let ended = named("rdm.node_admin.mesh.update.via-final-primary-lost");
+    assert_eq!(ended.len(), 1, "one span names the wait's end on the loss: {spans:?}");
     assert_eq!(ended[0]["attributes"]["final_primary"], json!(format!("{} {}", final_primary.node, final_primary.incarnation_id)), "{}", ended[0]);
-    assert!(ended[0]["attributes"]["proof"].as_str().is_some_and(|p| p.contains("exit-proof row")), "{}", ended[0]);
+    assert!(ended[0]["attributes"]["verdict"].as_str().is_some_and(|p| p.contains("exited")), "{}", ended[0]);
 }
 
 /// CONTRACT: a handoff that arrives ends the owner's wait with its validated manifest, even when the

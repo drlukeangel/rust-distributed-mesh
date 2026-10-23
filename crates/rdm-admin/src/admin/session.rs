@@ -193,6 +193,12 @@ impl NodeObserver for MembershipObserver {
         if d.status == MemberStatus::ReadyForTraffic {
             return Ok(());
         }
+        // This admin's status authority took the birth's node.started: fabric recovery's executor, of
+        // another mesh, writes the records of the node it re-creates there while that mesh has no
+        // mesh-primary (build.md §5.3, Q122), and its book holds no member status of another mesh.
+        if self.authority.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::ReadyForTraffic)) {
+            return Ok(());
+        }
         let member = match self.book.member_status(&node.node_id, &d.node.incarnation) {
             Some(s) => format!("the member status held for the birth is {s:?}"),
             None => "no member status is held for the birth (a birth of another mesh, or no node.joined taken here)".to_string(),

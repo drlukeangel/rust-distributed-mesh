@@ -65,6 +65,9 @@ pub struct NodeRows {
     /// holding at a claim. A later row of the node takes its config from here, never from a record
     /// that does not carry it.
     written: Arc<WrittenRows>,
+    /// Fabric recovery in a view: its executor writes the rows its own attempt's operations require
+    /// while the target mesh has no mesh-primary (build.md §5.3, Q122).
+    fabric_recovery: Option<crate::fabric_recovery::Reader>,
 }
 
 /// A writer's record of the rows it holds authoritatively (node-identity-and-state.md "A rewrite is
@@ -217,7 +220,14 @@ impl NodeRows {
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()) }
+        Self { me, me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()), fabric_recovery: None }
+    }
+
+    /// Read fabric recovery through `read`: while this admin runs it, it writes the target mesh's rows its
+    /// own operations require (build.md §5.3, Q122).
+    pub fn with_fabric_recovery(mut self, read: crate::fabric_recovery::Reader) -> Self {
+        self.fabric_recovery = Some(read);
+        self
     }
 
     /// Share `written`, the record the config door holds its puts in, as this writer's record.
@@ -265,7 +275,7 @@ impl NodeRows {
     /// Why this admin does not write `mesh`'s rows in view `t` (the row at `subject`), naming the
     /// writer the view holds; `None` when it is the writer.
     fn not_writer(&self, t: &Topology, mesh: &str, subject: &PathName) -> Option<String> {
-        if writes_for(t, &self.me_id, mesh) {
+        if writes_for(t, &self.me_id, mesh) || crate::fabric_recovery::executes_for(self.fabric_recovery.as_ref(), t, &self.held_name_in(t), mesh) {
             return None;
         }
         let me = self.held_name_in(t);
@@ -501,7 +511,17 @@ impl NodeRows {
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
-        let fabric_recovery = record.kind == NodeKind::NodeAdmin && record.exit_proven;
+        self.deleted_as(record, operation, false).await
+    }
+
+    /// [`Self::deleted`] of an unreached birth (node-recovery.md step 3): a node-admin's row the
+    /// fabric-primary writes when it executes the delete (R-OW1: the writer of a mesh whose unheard
+    /// primary it deletes).
+    pub async fn deleted_unreached(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
+        self.deleted_as(record, operation, record.kind == NodeKind::NodeAdmin).await
+    }
+
+    async fn deleted_as(&self, record: &Node, operation: &str, fabric_recovery: bool) -> Result<(), RowRefused> {
         if self.written.row_of(&record.node_id).is_some_and(|r| r.config.is_empty() && r.tags.is_empty()) {
             if let Ok(Some(stored)) = self.storage.node_row_at(&record.name).await {
                 if stored.node_id == record.node_id && (!stored.config.is_empty() || !stored.tags.is_empty()) {

@@ -9,7 +9,7 @@
 //! `mesh | node_id | incarnation`.
 
 use rdm_core::framing::Birth;
-use rdm_core::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
+use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
 use rdm_core::{IncarnationId, NodeId};
@@ -27,10 +27,6 @@ fn successor() -> Birth {
     Birth { node_id: NodeId::parse("0123456789cd").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("j")).unwrap() }
 }
 
-fn handover(b: Birth) -> HandoverBirth {
-    HandoverBirth { mesh: "m".into(), node_id: b.node_id, incarnation: b.incarnation }
-}
-
 /// The fabric-primary's entry: the primary's and the successor's exact births at revision 8.
 fn fabric_entry() -> (String, Birth, Birth, u64) {
     ("fabric".into(), primary(), successor(), 8)
@@ -41,17 +37,14 @@ const PRIMARY: &str = "0c 303132333435363738396162  0c 79727a34396a333033796834"
 /// `0123456789cd`, `j`.
 const SUCCESSOR: &str = "0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
-/// CONTRACT: the family's three requests. `PrimaryUpdate` (variant 0) is the primary's call on its
+/// CONTRACT: the family's two requests. `PrimaryUpdate` (variant 0) is the primary's call on its
 /// successor carrying the election's result: one entry per primary that moves, `(node_type, primary,
 /// successor, revision)`, the fabric-primary an entry of node type `fabric`, then the Build, its run and
 /// the operation. `UpdatePrimary` (variant 1) is the command from above: the node type whose primary
-/// moves, the Build, its run and the operation. `TakeOverFabricPrimary` (variant 2) is a take-over's
-/// call on the winner: the lost fabric-primary's birth, the revision it is held at, the winner and the
-/// proposer. What must NOT happen: a name in place of a birth, a field moved, a variant inserted before
+/// moves, the Build, its run and the operation. There is no take-over call (Q122). What must NOT happen: a name in place of a birth, a field moved, a variant inserted before
 /// the end.
 #[test]
-fn requests_match_the_frozen_three_variant_wire_schema() {
-    let m = "01 6d";
+fn requests_match_the_frozen_two_variant_wire_schema() {
     let fixtures = [
         // variant 0 | primaries (len 2: "node-admin" primary successor 4, "fabric" primary successor 8) | build_id | run | operation
         (
@@ -60,18 +53,13 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
         ),
         // variant 1 | node_type "rpc-node" | build_id | run | operation
         (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into() }, "01 08 7270632d6e6f6465 0162 02 016f".to_string()),
-        // variant 2 | fabric | lost | expected_revision 7 | successor | proposer
-        (
-            NodePrimaryUpdateRequest::TakeOverFabricPrimary { fabric: "f".into(), lost: handover(primary()), expected_revision: 7, successor: handover(successor()), proposer: handover(primary()) },
-            format!("02 0166 {m} {PRIMARY} 07 {m} {SUCCESSOR} {m} {PRIMARY}"),
-        ),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
         assert_eq!(NodePrimaryUpdate::decode_request(&bytes(&hex)).unwrap(), q);
     }
-    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 3);
-    assert_eq!(NodePrimaryUpdate::decode_request(&[3]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 2);
+    assert_eq!(NodePrimaryUpdate::decode_request(&[2]), Err(DecodeFailure::UnknownVariant));
 }
 
 /// CONTRACT: the family's thirteen replies. `PrimaryUpdated` (node.primary.updated) first, then the
@@ -139,9 +127,6 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let b = || Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
     let primaries = vec![(long.clone(), b(), b(), u64::MAX), (long.clone(), b(), b(), u64::MAX)];
     let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), run: u32::MAX, operation: long.clone() };
-    assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
-    let hb = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
-    let q = NodePrimaryUpdateRequest::TakeOverFabricPrimary { fabric: long.clone(), lost: hb(), expected_revision: u64::MAX, successor: hb(), proposer: hb() };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
     let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: primaries };
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);

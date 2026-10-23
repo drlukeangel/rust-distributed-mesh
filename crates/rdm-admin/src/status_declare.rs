@@ -179,6 +179,11 @@ pub(crate) struct Declarer {
     own_operations: Mutex<BTreeMap<NodeState, DeclaredOperation>>,
     /// The Owed call in flight for each key sent and not yet answered.
     inflight: Mutex<BTreeMap<Key, Inflight>>,
+    /// Fabric recovery in a view (Q122): the node it re-creates at the target's path.name reports to its
+    /// executor while its mesh has no mesh-primary (build.md §5.3).
+    pub(crate) fabric_recovery: crate::fabric_recovery::ReaderSlot,
+    /// The admin that made this node (its maker, node-mesh-join.md "Report"), when one did.
+    pub(crate) maker: std::sync::OnceLock<NodeId>,
 }
 
 impl Declarer {
@@ -325,6 +330,18 @@ impl Declarer {
         }
     }
 
+    /// While fabric recovery runs for `mesh` and the mesh has no mesh-primary, the node it re-created at the
+    /// target's path.name reports to its maker, the executor that made it (node-mesh-join.md "Report"; build.md
+    /// §5.3, Q122): a node just born may not yet hold the executor ReadyForTraffic in its own view.
+    fn recovery_executor<'a>(&self, me_id: &NodeId, view: &'a Topology, mesh: &str) -> Option<&'a crate::model::Node> {
+        let fr = self.fabric_recovery.get().and_then(|read| read(view)).filter(|fr| fr.target.mesh == mesh)?;
+        if fr.at.as_ref().and_then(|at| view.node(at)).is_some_and(|n| &n.node_id != me_id) {
+            return None;
+        }
+        let maker = self.maker.get()?;
+        view.members().find(|n| &n.node_id == maker)
+    }
+
     /// The declarations due now, each with the authority the view names for it. Pure over the
     /// declarer's state and the view: a send is due only on an eligible event ([`eligible`]).
     /// The reachability a failed delivery waits on is observed here, every round, for every key.
@@ -334,7 +351,7 @@ impl Declarer {
         for p in pending.values_mut() {
             let target = match &p.to {
                 Authority::FabricPrimary => view.fabric_primary(),
-                Authority::MeshPrimaryOf(mesh) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
+                Authority::MeshPrimaryOf(mesh) => view.cohort_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
             };
             let Some(target) = target else {
                 p.last = Some("no authority in view".into());

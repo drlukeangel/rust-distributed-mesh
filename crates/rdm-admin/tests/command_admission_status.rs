@@ -128,7 +128,6 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     let authority = StatusAuthority {
         certs: None,
         app_channels: None,
-        held_takeover: Default::default(),
         declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -147,7 +146,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
-        rounds: Default::default(),
+        rounds: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
         republish: Default::default(), configure: Default::default(),
         before_ready: Default::default(),

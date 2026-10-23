@@ -276,12 +276,25 @@ pub enum TerminationMode {
     Immediate,
 }
 
+/// `TerminateRuntime` of a runtime read at its own instant (node-runtime-inspect.md: node recovery's
+/// `TerminateRuntime` asks "at the step's own instant, before it asks the provider to terminate";
+/// node-recovery.md step 3: `TerminateRuntime` first when the runtime runs): the provider's
+/// `terminate(mode)` when it reads `handle` running, nothing otherwise. The answer is what the read at
+/// the step's instant found; a terminate the provider refuses is the error, by name.
+pub async fn terminate_when_running(provider: &dyn DeploymentProvider, handle: &DeploymentHandle, mode: TerminationMode) -> Result<DeploymentStatus, String> {
+    let found = provider.inspect(handle).await;
+    if found == DeploymentStatus::Running {
+        provider.terminate(handle, mode).await.map_err(|e| e.to_string())?;
+    }
+    Ok(found)
+}
+
 /// `status` of `fact`'s runtime with the exit code its own record proves. A process this admin did
 /// not launch and found dead reads `Exited { code: None }`: the process runtime recorded a
 /// deliberate exit in its data dir, keyed to its deployment and incarnation, and only that exact
 /// record turns the unknown code into the recorded one. A container's code is Docker's own.
 /// `Err` names the exit record that could not be read.
-pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: Option<&std::path::Path>, incarnation: &str) -> Result<DeploymentStatus, String> {
+pub async fn with_exit_code(status: DeploymentStatus, fact: &RuntimeFact, data_dir: Option<&std::path::Path>, incarnation: &str) -> Result<DeploymentStatus, String> {
     match (status, fact.provider, data_dir) {
         (DeploymentStatus::Exited { code: None }, RuntimeProvider::Process, Some(dir)) => {
             // Read on the blocking pool (`blocking::blocking_io`).
@@ -297,37 +310,25 @@ pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: 
 /// three answers and `unavailable { reason }`, which is neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inspected {
-    /// `exit-proven { code }`: the exit code, when one is provable, and where the proof came from,
-    /// the `proof` of the exit-proof row the caller writes (node-runtime-inspect.md step 5):
-    /// `provider` (the provider's own terminal status), `exit-record` (the runtime's exit record in
-    /// its data dir) or `none` (exited with no code).
-    Exited(Option<i32>, &'static str),
-    /// The exact runtime runs, however silent (`R-FM1`'s hold).
+    /// `exited { code }`: the exit code, when the provider's terminal status or the runtime's own exit
+    /// record carries one (node-runtime-inspect.md "Result").
+    Exited(Option<i32>),
+    /// The exact runtime runs, however silent.
     Running,
-    /// The operating system holds the exact runtime suspended (R-PV1): an observation, never a hold.
+    /// The operating system holds the exact runtime suspended (deployment-provider.md §2.5).
     OsStopped,
     /// Nothing proven (no runtime fact, an adoption the provider refused, an unreadable row or exit
     /// record, the provider's `Unknown`): why.
     Unavailable(String),
 }
 
-impl Inspected {
-    /// True when the provider inspection explicitly reported the runtime `Running` (`R-FM1`).
-    pub fn is_running(&self) -> bool {
-        matches!(self, Self::Running)
-    }
-}
-
 /// node.runtime.inspect of the exact runtime `fact` names, the birth `incarnation`'s, by `provider`
 /// (node-runtime-inspect.md steps 2 and 5): the fact adopted in this provider's control domain
 /// ([`adopt`]) and inspected, the code the runtime's own exit record proves read from `data_dir`
-/// ([`exit_proof`]), and only the runtime's own terminal status an exit. The one inspect every
+/// ([`with_exit_code`]), and only the runtime's own terminal status an exit. The one inspect every
 /// caller runs: the seat watch's ladder, the mesh primary's recovery tick, the fabric authority's
-/// drift pass, the create's read of the path's previous birth, a mesh delete's proof of a lost
-/// member. A fact the provider refuses to adopt, an unreadable exit record and the provider's
-/// `Unknown` are each `Unavailable`, named why. The proof of an exit names where its code came
-/// from: `provider` when the provider's own inspection carried it, `exit-record` when only the
-/// runtime's record did, `none` when neither proves a code.
+/// drift pass, the create's read of the path's previous birth. A fact the provider refuses to adopt,
+/// an unreadable exit record and the provider's `Unknown` are each `Unavailable`, named why.
 pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
     use DeploymentStatus as S;
     let handle = match adopt(provider, fact) {
@@ -335,18 +336,11 @@ pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFa
         Err(e) => return Inspected::Unavailable(format!("the provider refused to adopt its runtime: {e}")),
     };
     let inspected = provider.inspect(&handle).await;
-    match exit_proof(inspected.clone(), fact, data_dir.map(std::path::Path::new), incarnation).await {
-        Ok(S::Exited { code }) => {
-            let proof = match (&inspected, code) {
-                (_, None) => "none",
-                (S::Exited { code: Some(_) }, Some(_)) => "provider",
-                (S::Exited { code: None } | S::Running | S::OsStopped | S::Unknown, Some(_)) => "exit-record",
-            };
-            Inspected::Exited(code, proof)
-        }
+    match with_exit_code(inspected, fact, data_dir.map(std::path::Path::new), incarnation).await {
+        Ok(S::Exited { code }) => Inspected::Exited(code),
         Ok(S::Running) => Inspected::Running,
         Ok(S::OsStopped) => Inspected::OsStopped,
-        Ok(S::Unknown) => Inspected::Unavailable("its runtime is not proven exited: Unknown".into()),
+        Ok(S::Unknown) => Inspected::Unavailable("the provider cannot tell its runtime's state: Unknown".into()),
         Err(e) => Inspected::Unavailable(format!("its exit record cannot be read: {e}")),
     }
 }
@@ -661,7 +655,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod exit_proof_tests {
+mod exit_code_tests {
     use super::*;
     use rdm_core::runtime::{ExitRecord, TRANSPORT_STOPPED_EXIT_CODE};
 
@@ -677,14 +671,14 @@ mod exit_proof_tests {
         let dir = std::env::temp_dir().join(format!("rafka-exit-proof-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let unknown = || DeploymentStatus::Exited { code: None };
-        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), unknown(), "no record proves nothing");
+        assert_eq!(with_exit_code(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), unknown(), "no record proves nothing");
         ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "gossip refused".into() }.write(&dir).unwrap();
-        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), DeploymentStatus::Exited { code: Some(4) });
-        assert_eq!(exit_proof(unknown(), &process_fact("dep-b"), Some(&dir), "inc-a").await.unwrap(), unknown(), "another deployment's record");
-        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), Some(&dir), "inc-b").await.unwrap(), unknown(), "another incarnation's record");
-        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), None, "inc-a").await.unwrap(), unknown(), "no data dir known");
-        assert_eq!(exit_proof(DeploymentStatus::Exited { code: Some(137) }, &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), DeploymentStatus::Exited { code: Some(137) }, "a code the provider saw stands");
-        assert_eq!(exit_proof(DeploymentStatus::Running, &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), DeploymentStatus::Running);
+        assert_eq!(with_exit_code(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), DeploymentStatus::Exited { code: Some(4) });
+        assert_eq!(with_exit_code(unknown(), &process_fact("dep-b"), Some(&dir), "inc-a").await.unwrap(), unknown(), "another deployment's record");
+        assert_eq!(with_exit_code(unknown(), &process_fact("dep-a"), Some(&dir), "inc-b").await.unwrap(), unknown(), "another incarnation's record");
+        assert_eq!(with_exit_code(unknown(), &process_fact("dep-a"), None, "inc-a").await.unwrap(), unknown(), "no data dir known");
+        assert_eq!(with_exit_code(DeploymentStatus::Exited { code: Some(137) }, &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), DeploymentStatus::Exited { code: Some(137) }, "a code the provider saw stands");
+        assert_eq!(with_exit_code(DeploymentStatus::Running, &process_fact("dep-a"), Some(&dir), "inc-a").await.unwrap(), DeploymentStatus::Running);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -694,7 +688,7 @@ mod exit_proof_tests {
         let dir = crate::test_support::tempdir("exit-proof-fifo");
         let bytes = serde_json::to_vec(&ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "r".into() }).unwrap();
         let fifo = dir.join("exit.json");
-        let (heard, proof) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { exit_proof(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await }));
+        let (heard, proof) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { with_exit_code(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await }));
         assert!(heard, "the runtime stopped while the exit record was read");
         assert_eq!(proof.unwrap(), DeploymentStatus::Exited { code: Some(4) });
     }
@@ -705,7 +699,7 @@ mod exit_proof_tests {
     async fn an_unreadable_exit_record_is_an_error_naming_the_file() {
         let dir = crate::test_support::tempdir("exit-proof-unreadable");
         std::fs::create_dir_all(dir.join("exit.json")).unwrap();
-        let err = exit_proof(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await.expect_err("an unreadable record is not an absent one");
+        let err = with_exit_code(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await.expect_err("an unreadable record is not an absent one");
         assert!(err.contains("exit.json"), "{err}");
     }
 }

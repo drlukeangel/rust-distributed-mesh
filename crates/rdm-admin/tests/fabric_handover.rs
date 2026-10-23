@@ -257,8 +257,6 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
     let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
     let looker = rdm_admin::seat_watch::Looker { me: path.parse().unwrap(), me_id: node_id.clone(), membership: membership.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None };
     let door = Arc::new(HandoverDoor {
-        provider,
-        nodes: Some(nodes),
         fabric: "fabric1".into(),
         me: path.parse().unwrap(),
         node_id: node_id.clone(),
@@ -284,8 +282,6 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
             })
         },
         looker,
-        held_takeover: Default::default(),
-        taken_over: Default::default(),
     });
     if fill_slot {
         let _ = slot.set(door.clone());
@@ -649,7 +645,6 @@ async fn type_fabric(with_b2: bool) -> TypeFabric {
     TypeFabric { p, x, b1, b2 }
 }
 
-
 /// The node at `name` in `a`'s view.
 async fn node_at(a: &Admin, name: &str) -> Node {
     a.door.topology.read().await.members().find(|n| n.name.to_string() == name).cloned().unwrap_or_else(|| panic!("{name} is in the view"))
@@ -914,65 +909,6 @@ fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_
         rows.put_fabric_event(&FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
         assert_eq!(send(&f.x, &f.p, command()).await, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] }, "decided on the root's ready row");
         let _ = &f.m;
-    });
-}
-
-/// CONTRACT (fabric-recovery.md step 2, its own mesh: "the successor is mesh-primary and fabric-primary";
-/// node-rpc-envelope.md 0x21: "The winner, when its own view names it, is fabric-primary (with the
-/// mesh-primary in the lost mesh's own arm) and answers `PrimaryUpdated { revisions }` ... A repeat for the
-/// same takeover and successor answers `AlreadyApplied { revisions }`; a proposal naming another winner is
-/// `RejectedNotPrimary`, one at a revision the recorded primary no longer holds `RejectedStaleRevision`"):
-/// P, the fabric-primary and mesh1's mesh-primary, is unheard; M proposes the take-over to N, the election's
-/// winner in mesh1 with P excluded. N is fabric-primary at 8 and mesh-primary at 4 and answers so; the
-/// repeat answers AlreadyApplied; a proposal at revision 6 is stale; M, told it is the winner, refuses: its
-/// own view names N.
-#[test]
-fn a_take_over_in_the_lost_fabric_primarys_own_mesh_makes_the_winner_both_and_a_repeat_answers_already_applied() {
-    let cap = trace_capture("fabric-handover");
-    cap.run(async {
-        let f = seats_fabric(FabricPrimary::P).await;
-        let propose = |successor: &Admin, expected| Request::TakeOverFabricPrimary { fabric: "fabric1".into(), lost: birth(&f.p), expected_revision: expected, successor: birth(successor), proposer: birth(&f.m) };
-        let r = send(&f.m, &f.n, propose(&f.n, 7)).await;
-        assert_eq!(r, Reply::PrimaryUpdated { revisions: vec![entry("fabric", &f.p.resolved, &f.n.resolved, 8), entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
-        assert_eq!((f.n.door.membership.seats().fabric(), f.n.door.membership.seats().mesh("mesh1")), (Some(holder_of(&f.n, 8)), Some(holder_of(&f.n, 4))));
-        assert_eq!(send(&f.m, &f.n, propose(&f.n, 7)).await, Reply::AlreadyApplied { revisions: vec![entry("fabric", &f.p.resolved, &f.n.resolved, 8)] });
-        assert_eq!(send(&f.m, &f.n, propose(&f.n, 6)).await, Reply::RejectedStaleRevision { node_type: "fabric".into(), expected: 6, current: 8 });
-        let other = send(&f.n, &f.m, propose(&f.m, 7)).await;
-        assert!(matches!(&other, Reply::RejectedNotPrimary { reason } if reason.contains("mesh1.admin.2")), "{other:?}");
-        let _ = &f.x;
-    });
-}
-
-/// CONTRACT (fabric-recovery.md step 2, outside its mesh: "the lowest ReadyForTraffic mesh-primary is
-/// fabric-primary and records it on its own row"; step 4: "the temporary fabric-primary's hand-back,
-/// `node.fabric-primary.update` to it, makes it fabric-primary ... The fabric-primary returns only that
-/// way"): P, mesh1's only node-admin and the fabric-primary, is unheard; X, mesh2's mesh-primary, takes the
-/// fabric-primary over at 8 and stays mesh2's mesh-primary, mesh1's record untouched. Once P is back, X
-/// hands the fabric-primary back to the node at P's path.name: P is fabric-primary at 9 in both views and
-/// the take-over is owed no more; a repeat of the hand-back answers AlreadyApplied and moves nothing.
-#[test]
-fn the_fabric_primary_taken_over_from_the_backbone_is_handed_back_to_the_node_at_its_path_name_once() {
-    let cap = trace_capture("fabric-handover");
-    let spans = cap.spans.clone();
-    let _file = SpanFile(spans.clone());
-    cap.run(async {
-        let (p, x) = lone_fabric(NodeStatus::ReadyForTraffic).await;
-        let r = x.door.propose_take_over(&holder_of(&p, 7)).await.expect("X's view names a winner");
-        assert_eq!(r, Reply::PrimaryUpdated { revisions: vec![entry("fabric", &p.resolved, &x.resolved, 8)] });
-        assert_eq!(x.door.membership.seats().fabric(), Some(holder_of(&x, 8)));
-        assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "mesh1's record is untouched");
-        assert_eq!(x.door.taken_over.lock().unwrap().clone().map(|(t, lost, by)| (t, lost.node_id, by.node_id)), Some((8, p.resolved.node_id.clone(), x.resolved.node_id.clone())), "the hand-back is owed");
-        let named: rdm_admin::model::PathName = "mesh1.admin.1".parse().unwrap();
-        let op = update_operation(Seat::FabricPrimary, "b1", 1, "handback:mesh1.admin.1@8");
-        let back = x.door.move_own_seats(Moving::FabricSeatOutside, "b1", 1, &op, Some(&named)).await.expect("the fabric-primary is handed back");
-        assert_eq!(back, vec![entry("fabric", &x.resolved, &p.resolved, 9)]);
-        for a in [&p, &x] {
-            assert_eq!(a.door.membership.seats().fabric(), Some(holder_of(&p, 9)), "{}", a.resolved.name);
-        }
-        assert!(x.door.taken_over.lock().unwrap().is_none(), "the hand-back is owed no more");
-        let again = x.door.update_primary(Moving::FabricSeatOutside, None, "b1", 2, &update_operation(Seat::FabricPrimary, "b1", 2, "handback:mesh1.admin.1@8"), Some(&named)).await;
-        assert!(matches!(&again, Err(Reply::AlreadyApplied { .. })), "{again:?}");
-        assert_eq!(spans.named(UPDATED).len(), 1, "one install at P");
     });
 }
 

@@ -147,7 +147,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: created.node.clone(),
                 handle: created.handle.clone(),
-                exit: None,
+                unreached: false,
             })
             .await;
         let terminal = retired.unwrap_or_else(|e| panic!("the retired runtime exited: its commands were completed and its exit proven, whatever the fabric last heard: {e:?}"));
@@ -224,7 +224,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
                 attempt: 1,
                 node: b.node.clone(),
                 handle: b.handle.clone(),
-                exit: None,
+                unreached: false,
             })
             .await;
         // B is live and admits its node-admin: its stop-node answered `stopped`, the completion the

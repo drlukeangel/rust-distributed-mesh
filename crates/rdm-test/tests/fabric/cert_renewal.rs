@@ -459,7 +459,7 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
         assert!(renewals_of(&spans, "mesh1.rpc.1").iter().all(|f| f["outcome"] == "not-sent"), "nothing reached it, nothing was installed");
         let view = node_get(&root, &b.digest.node.node_id).await.expect("mesh1.rpc.1 in the view");
         assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::ReadyForTraffic, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
-        assert!(view.held_running.is_none() && view.os_stopped.is_none() && view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
+        assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
         let receipts = root.runner.status_storage.node_cert_receipts_of("mesh1").await.unwrap();
         assert!(!receipts.iter().any(|r| r.node_id == b.digest.node.node_id && r.issued_at > num(&join_issue(&spans, "mesh1.rpc.1"), "issued_at_rafka_ms")), "no receipt for a renewal not sent: {receipts:?} after {tries:?}");
 

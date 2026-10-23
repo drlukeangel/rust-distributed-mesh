@@ -9,8 +9,7 @@
 //! installs it in its own view and answers [`NodePrimaryUpdateReply::PrimaryUpdated`]
 //! (node.primary.updated); the primary hands that answer up to its commander. The receiver refuses
 //! only a conflicting payload for the same operation and a fabric not first ready-for-traffic; it never
-//! refuses a call for the birth it names (R-UC1a, R-RX5). The takeover rides the same op
-//! ([`NodePrimaryUpdateRequest::TakeOverFabricPrimary`]). No row and no frame of its own record the
+//! refuses a call for the birth it names (R-UC1a, R-RX5). No row and no frame of its own record the
 //! change: the successor's digest carries it and the mesh-primary records it on the node's row. The
 //! family's outcomes sit on the framework's six: `NotReady`, `Malformed`, `PeerUnresolved`, `Busy`,
 //! `ConnectionsDeleting` and `Unauthorized`.
@@ -57,20 +56,6 @@ pub enum NodePrimaryUpdateRequest {
         /// The update's operation identity.
         operation: String,
     },
-    /// node.fabric-primary.update of a take-over (fabric-recovery.md step 2): an admin that holds the
-    /// fabric-primary unheard past the staleness floor calls the winner the election names.
-    TakeOverFabricPrimary {
-        /// The fabric.
-        fabric: String,
-        /// The fabric-primary's exact birth the proposer holds as unheard.
-        lost: HandoverBirth,
-        /// The fabric-primary's revision the proposer holds the lost birth at.
-        expected_revision: u64,
-        /// The winner the election names in the proposer's view: the receiver.
-        successor: HandoverBirth,
-        /// The admin that proposes it.
-        proposer: HandoverBirth,
-    },
 }
 
 impl NodePrimaryUpdateRequest {
@@ -79,7 +64,6 @@ impl NodePrimaryUpdateRequest {
         match self {
             Self::PrimaryUpdate { .. } => "primary-update",
             Self::UpdatePrimary { .. } => "update-primary",
-            Self::TakeOverFabricPrimary { .. } => "take-over-fabric-primary",
         }
     }
 }
@@ -224,7 +208,7 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// A successor keeps serving PrimaryUpdate, and a primary UpdatePrimary, while it refuses new
     /// calls (node.connections.delete): a lost reply's identical retry is answered as the first was.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 3;
+    const REQUEST_VARIANTS: u32 = 2;
     const REPLY_VARIANTS: u32 = 13;
 
     type Request = NodePrimaryUpdateRequest;

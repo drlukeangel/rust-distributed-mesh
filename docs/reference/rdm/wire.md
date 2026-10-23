@@ -925,7 +925,7 @@ One frame of a Build stream.
 | `NAME` | `"node-primary-update"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `3` |
+| `REQUEST_VARIANTS` | `2` |
 | `REPLY_VARIANTS` | `13` |
 | `MAX_REQUEST_FRAME_BYTES` | `2048` |
 | `MAX_REPLY_FRAME_BYTES` | `1024` |
@@ -934,7 +934,7 @@ One frame of a Build stream.
 
 ### `NodePrimaryUpdateRequest`
 
-`crates/rdm-core/src/handover.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/handover.rs` · enum · 2 variants · rdm-core
 
 The directed calls of node.primary.update.
 
@@ -950,12 +950,6 @@ The directed calls of node.primary.update.
 | 1.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
 | 1.2 | `run` | `u32` |  |  | The run of that Build. |
 | 1.3 | `operation` | `String` |  |  | The update's operation identity. |
-| 2 | **`TakeOverFabricPrimary`** |  |  | `op() = "take-over-fabric-primary"` | node.fabric-primary.update of a take-over (fabric-recovery.md step 2): an admin that holds the |
-| 2.0 | `fabric` | `String` |  |  | The fabric. |
-| 2.1 | `lost` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The fabric-primary's exact birth the proposer holds as unheard. |
-| 2.2 | `expected_revision` | `u64` |  |  | The fabric-primary's revision the proposer holds the lost birth at. |
-| 2.3 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The winner the election names in the proposer's view: the receiver. |
-| 2.4 | `proposer` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The admin that proposes it. |
 
 <a id="t-rdm_core-handover-NodePrimaryUpdateReply"></a>
 
@@ -2032,7 +2026,7 @@ The logical Fabric's identity, kept for the Fabric's lifetime.
 
 ### `FabricView`
 
-`crates/rdm-core/src/views.rs` · struct · 11 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 9 fields · rdm-core
 
 The fabric as the answering node-admin's view holds it (`fabric.get`).
 
@@ -2046,9 +2040,7 @@ The fabric as the answering node-admin's view holds it (`fabric.get`).
 | 5 | `admin_api_base` | `Option<String>` |  | The control API base of the fabric primary. |
 | 6 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rdm_core-views-MeshView) |  | The fabric's meshes. |
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
-| 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
-| 9 | `takeover` | `Option<HeldTakeover>` → [`HeldTakeover`](#t-rdm_core-views-HeldTakeover) | `default` | A fabric-seat takeover the store could not commit, while it is held (elections §5). |
-| 10 | `next_expiry` | `Option<u64>` | `default` | The next member cert expiry across the fabric's cert rows, rafka-time ms (fabric-certs.md |
+| 8 | `next_expiry` | `Option<u64>` | `default` | The next member cert expiry across the fabric's cert rows, rafka-time ms (fabric-certs.md |
 
 <a id="t-rdm_test-fault_door-FaultState"></a>
 
@@ -2078,50 +2070,6 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 | 1 | `neighbours` | `u32` |  | The active gossip neighbours on its mesh channel (NeighborUp minus NeighborDown), never |
 | 2 | `frames_sent` | `u64` |  | Membership frames this birth broadcast on its mesh channel since it started. |
 | 3 | `frames_received` | `u64` |  | Membership frames this birth decoded from its mesh channel since it started. |
-
-<a id="t-rdm_core-seat-transfer-HandoverBirth"></a>
-
-### `HandoverBirth`
-
-`crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
-
-An exact birth: its mesh, node and incarnation.
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `mesh` | `String` |  | The mesh the birth belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The birth's node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The birth's incarnation. |
-
-<a id="t-rdm_core-views-HeldRunning"></a>
-
-### `HeldRunning`
-
-`crates/rdm-core/src/views.rs` · struct · 2 fields · rdm-core
-
-The durable `held-running` fact on a birth's status row (R-FM1): the provider reported its
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `since` | `u64` |  | When the first `Running` verdict was observed, ms since the Unix epoch. |
-| 1 | `verdicts` | `u64` |  | How many `Running` verdicts have been observed for this birth during the hold. |
-
-<a id="t-rdm_core-views-HeldTakeover"></a>
-
-### `HeldTakeover`
-
-`crates/rdm-core/src/views.rs` · struct · 6 fields · rdm-core
-
-A fabric-seat takeover held because the store could not commit it (fabric-node-lifecycle-elections.md
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `lost` | `crate::handover::HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The fabric-primary's exact birth held lost. |
-| 1 | `expected_revision` | `u64` |  | The fabric seat's revision the lost birth is held at. |
-| 2 | `winner` | `crate::handover::HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The winner the backbone rule names. |
-| 3 | `proposer` | `crate::handover::HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The mesh-primary that proposed it (the winner itself when it noticed). |
-| 4 | `since` | `u64` |  | When the takeover was first held, ms since the Unix epoch. |
-| 5 | `reason` | `String` |  | Why the store could not commit it. |
 
 <a id="t-rdm_test-fault_door-Hit"></a>
 
@@ -2502,7 +2450,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rdm-core/src/views.rs` · struct · 29 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 27 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2529,14 +2477,12 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 18 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) | `default` | The node's mesh-channel counts from its latest digest: heard, neighbours, frames. |
 | 19 | `tags` | `std::collections::BTreeSet<String>` | `default` | The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the |
 | 20 | `config` | `std::collections::BTreeMap<String, String>` | `default` | The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property |
-| 21 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on this birth's status row (R-FM1), when the provider |
-| 22 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rdm_core-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
-| 23 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rdm_core-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
-| 24 | `os_stopped` | `Option<OsStopped>` → [`OsStopped`](#t-rdm_core-views-OsStopped) | `default` | The durable `os-stopped` fact on this birth's status row (R-PV1), when the provider inspected |
-| 25 | `types` | `std::collections::BTreeSet<String>` | `default` | This exact birth's immutable app declaration. |
-| 26 | `held` | `std::collections::BTreeSet<String>` | `default` | Types this birth joined, including members and peers on a node-admin. |
-| 27 | `held_hash` | `[u8; 32]` | `default` | Canonical held-set hash carried by this birth's digest. |
-| 28 | `cert` | `Option<NodeCertView>` → [`NodeCertView`](#t-rdm_core-views-NodeCertView) | `default` | The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None` |
+| 21 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rdm_core-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
+| 22 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rdm_core-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
+| 23 | `types` | `std::collections::BTreeSet<String>` | `default` | This exact birth's immutable app declaration. |
+| 24 | `held` | `std::collections::BTreeSet<String>` | `default` | Types this birth joined, including members and peers on a node-admin. |
+| 25 | `held_hash` | `[u8; 32]` | `default` | Canonical held-set hash carried by this birth's digest. |
+| 26 | `cert` | `Option<NodeCertView>` → [`NodeCertView`](#t-rdm_core-views-NodeCertView) | `default` | The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None` |
 
 <a id="t-rdm_core-status-NotPrimary"></a>
 
@@ -2579,19 +2525,6 @@ The typed reason an inner invocation did not reach its commit cut.
 | 8.0 | `op` | `u8` |  | The inner op. |
 | 9 | **`NoActiveRoute`** |  |  | No active route was selected. |
 | 10 | **`AdmissionBlocked`** |  |  | The source admits no new connection. |
-
-<a id="t-rdm_core-views-OsStopped"></a>
-
-### `OsStopped`
-
-`crates/rdm-core/src/views.rs` · struct · 2 fields · rdm-core
-
-The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provider.md §2.5): the
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `since` | `u64` |  | When the first `OsStopped` verdict was observed, ms since the Unix epoch. |
-| 1 | `inspections` | `u64` |  | How many inspections have read the runtime `OsStopped` since. |
 
 <a id="t-rdm_core-forward-OwedDelivery"></a>
 

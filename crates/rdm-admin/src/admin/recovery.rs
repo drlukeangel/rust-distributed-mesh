@@ -1,4 +1,4 @@
-//! Node recovery submitter, exit verdicts, and recovery due checks.
+//! Node recovery submitter and recovery due checks.
 
 use super::*;
 
@@ -17,114 +17,31 @@ pub(crate) struct RecoverySubmitter {
     /// attempts, and its own executor, which runs them.
     pub door: crate::build_op::BuildSlot,
     /// This admin's Build state: the fabric's Build facts as its own log holds them. The tick reads
-    /// from it which exited births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
+    /// from it which births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
     /// Parent directory under which birth data directories are allocated (`<data_root>/<name>-<node_id>`).
     pub data_root: PathBuf,
     /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
     /// `(first_seen_ms, consecutive_rounds)`.
     pub gone_dirs: Arc<Mutex<HashMap<(NodeId, IncarnationId), (u64, u64)>>>,
-    /// The births whose `os-stopped` row this admin's own inspection has confirmed (R-PV1): a row
-    /// another admin wrote is folded only after this admin's inspection reads `OsStopped` too.
-    pub os_stopped_confirmed: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
-    /// The refused terminates this admin has named (i144 R21), by birth and the receipt's Build,
-    /// lane and attempt: each is named once, on the first expired hold that reads it. The refusal
-    /// itself is the durable receipt; this only keeps its span from repeating every tick.
-    pub terminate_refusals_named: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId, crate::build::BuildId, Option<String>, u32)>>>,
-    /// The exact births this admin's tick holds TRUE OFFLINE (`Records::offline`, the same set): a
-    /// follower's verdict row (`held-running`, `os-stopped`) stands only for a birth still in it
-    /// (node-recovery.md step 3), read before the row is written and again after it.
-    pub offline: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
-}
-
-/// What a hold of a birth may do this tick, read from the birth's durable Failed `TerminateRuntime`
-/// receipts (node-recovery.md step 4's end, i144 R21).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HoldGate {
-    /// No receipt forbids it: an expired hold submits the birth's terminate.
-    Open,
-    /// The latest failed terminate failed at its own inspection, after this hold began: it asked
-    /// the provider nothing and the hold is void; a fresh one begins.
-    Void(crate::build_state::FailedTerminate),
-    /// A terminate the provider refused or could not prove: no hold submits the birth's terminate
-    /// again; a person decides.
-    Refused(crate::build_state::FailedTerminate),
-    /// The receipts could not be read: nothing is submitted this tick.
-    Unreadable(String),
-}
-
-/// The gate of a hold that began at `since` (none held yet), from the birth's failed terminates
-/// `failures`, oldest first: any terminate the provider refused or could not prove forbids every
-/// later one; else the latest, when it failed at its own inspection after the hold began (or its
-/// opening is not held yet), voids the hold.
-pub(crate) fn hold_gate(failures: &[crate::build_state::FailedTerminate], since: Option<u64>) -> HoldGate {
-    if let Some(f) = failures.iter().rev().find(|f| f.stage.stops_resubmission()) {
-        return HoldGate::Refused(f.clone());
-    }
-    match (failures.last(), since) {
-        (Some(f), Some(since)) if matches!(f.stage, crate::build_state::TerminateStage::Inspection { .. }) && f.opened_at_ms.is_none_or(|opened| since <= opened) => HoldGate::Void(f.clone()),
-        _ => HoldGate::Open,
-    }
-}
-
-/// What a loop that proves exits last recorded per birth `(node_id, incarnation)`: the mesh primary's
-/// tick ([`RecoverySubmitter::record_verdict`]) and the fabric primary's drift pass
-/// ([`reconcile_drift`]) each hold one, and record through [`record_verdict_once`].
-pub type ExitVerdicts = Mutex<HashMap<(NodeId, IncarnationId), Inspected>>;
-
-/// Remove the `os-stopped` row of `n`'s exact birth from `storage` (deployment-provider.md §2.5: the
-/// mesh-primary removes it on `Running` or `Exited`), `verdict` naming what ended it (`running`,
-/// `exited`, `returned`, `reached`, `deleted`). Spanned `cleared` when this call's removal took the row
-/// (the removal decides it, so a row two removers race for is cleared once), `refused` when the row
-/// could not be read or its removal was refused; nothing when no row stood or another remover took it
-/// first.
-pub(crate) async fn remove_os_stopped(storage: &dyn crate::status_storage::StatusStorage, n: &Node, verdict: &str) -> bool {
-    let Some(inc) = n.incarnation_id.as_ref() else { return false };
-    let (since, outcome, detail) = match storage.node_os_stopped_of(&n.mesh, &n.node_id, inc).await {
-        Ok(None) => return false,
-        Err(e) => (0, "refused", format!("{verdict}: the os-stopped row could not be read: {e}")),
-        Ok(Some(row)) => match storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, inc).await {
-            Ok(true) => (row.since, "cleared", verdict.to_string()),
-            Ok(false) => return false,
-            Err(e) => (row.since, "refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
-        },
-    };
-    tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = since as i64, outcome, detail = %detail, "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("the os-stopped fact is cleared"));
-    outcome == "cleared"
-}
-
-/// The verdict rule of a loop that proves exits (node-recovery.md "Exited is the proof, recorded
-/// durably"): `outcome` of `birth` is recorded when it differs from what `verdicts` holds for that
-/// birth, by `record` (its span, and for an exit the birth's exit-proof row, a blind put of its own
-/// key); a verdict that stands is neither named nor put again by a later pass. A record that fails
-/// (the store refused the put) leaves `verdicts` as it was, so the next pass that proves the exit
-/// records it. The answer is where an exit's row stands: `put` by this call, `recorded` by an earlier
-/// one, or the refusal.
-pub(crate) async fn record_verdict_once<F>(verdicts: &ExitVerdicts, birth: (NodeId, IncarnationId), outcome: &Inspected, record: impl FnOnce() -> F) -> Result<&'static str, String>
-where
-    F: std::future::Future<Output = Result<(), String>>,
-{
-    if verdicts.lock().unwrap().get(&birth) == Some(outcome) {
-        return Ok("recorded");
-    }
-    record().await?;
-    verdicts.lock().unwrap().insert(birth, outcome.clone());
-    Ok("put")
 }
 
 /// What the provider's inspection of a TRUE OFFLINE member found: node.runtime.inspect's own answer
 /// ([`crate::deployment::provider::inspect_runtime`]).
 pub use crate::deployment::provider::Inspected;
 
-impl RecoverySubmitter {
-    /// Whether this admin's tick still holds `n`'s exact birth TRUE OFFLINE. The tick drops a birth
-    /// heard again from the set before it clears the birth's rows, so a follower that reads the birth
-    /// still in the set after its own write leaves that write to the tick's clear, and one that reads
-    /// it gone removes the row it wrote: no order leaves a row of a birth heard again standing.
-    fn still_offline(&self, n: &Node) -> bool {
-        n.incarnation_id.as_ref().is_some_and(|inc| self.offline.lock().unwrap().contains(&(n.node_id.clone(), inc.clone())))
+/// node.runtime.inspect's answer as its span names it (node-runtime-inspect.md "Spans"): `running`,
+/// `os-stopped`, `exited` or `unavailable`.
+pub(crate) fn verdict_name(outcome: &Inspected) -> &'static str {
+    match outcome {
+        Inspected::Running => "running",
+        Inspected::OsStopped => "os-stopped",
+        Inspected::Exited(..) => "exited",
+        Inspected::Unavailable(_) => "unavailable",
     }
+}
+
+impl RecoverySubmitter {
 
     /// The name this admin currently holds in its membership digest book, or its boot name before its
     /// birth is in the book.
@@ -174,334 +91,87 @@ impl RecoverySubmitter {
         }
     }
 
-    /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md "Detection and proof"
-    /// step 3, sequence step 1): the provider's inspection, its verdict recorded when it changes for
-    /// the birth ([`Self::record_verdict`]: named, and an exit put as the birth's exit-proof row once,
-    /// on the tick that proved it), and the recovery submitted only on an exit proof of a member that
-    /// exited outside any workflow. Any other verdict ends here, and so does the exit of a birth whose
-    /// removal this admin's book holds announced, read after the inspection (the tick's view predates
-    /// it).
-    pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &ExitVerdicts) -> Inspected {
+    /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md step 3, sequence step 1):
+    /// its ladder ended unreached, so the provider's inspection is the investigation's last step, and
+    /// its verdict, whatever it is, opens the recovery at once (Q110, Q111): nothing holds, nothing is
+    /// inspected again, nothing waits for a proof of termination. The recovery's node.delete runs
+    /// `TerminateRuntime` first when the runtime runs ([`crate::deployment::pipeline`]). A birth whose
+    /// removal this admin's book holds announced is that workflow's, read after the inspection (the
+    /// tick's view predates it); an `exited` birth whose inherited data dir is absent waits out
+    /// `RDM_DATA_DIR_GONE_FLOORS` before its loss is recorded (`R-FM2` arm A).
+    pub(crate) async fn recover(&self, n: &Node) -> Inspected {
         let (outcome, handle) = self.inspect(n).await;
-        let row = self.record_verdict(n, &outcome, handle.as_ref(), verdicts).await;
-        match &outcome {
-            Inspected::Exited(code, source) => {
-                if let Some(inc) = n.incarnation_id.as_ref() {
-                    let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, inc).await;
-                }
-                self.clear_os_stopped(n, "exited").await;
-                if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
-                    let exit_proof_row = match &row {
-                        Ok(stands) => stands.to_string(),
-                        Err(e) => e.clone(),
-                    };
-                    let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-                    tracing::info_span!(
-                        "rdm.node_admin.build.reject.via-exit-inside-workflow",
-                        node = %n.name,
-                        node_id = %n.node_id,
-                        incarnation_id = %incarnation,
-                        submitter = %self.held_name(),
-                        announced,
-                        operation = %operation,
-                        build_id = %build_id,
-                        attempt,
-                        exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
-                        exit_proof = *source,
-                        exit_proof_row = %exit_proof_row,
-                    )
-                    .in_scope(|| tracing::info!("the birth's exit belongs to the workflow that announced its removal: it is no drift, and no recovery is submitted"));
-                } else {
-                    if let (Some(inc), Some(dir)) = (n.incarnation_id.clone(), self.birth_data_dir(n).await) {
-                        if let Some(unreadable) = self.status_storage.node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await.ok().flatten() {
-                            match crate::deployment::pipeline::inspect_transport_key(&dir) {
-                                Ok(_) => {
-                                    let _ = self.status_storage.remove_node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc, &n.name).await;
-                                    tracing::info_span!(
-                                        "rdm.node_admin.node.resolve.via-data-dir-repaired",
-                                        node = %n.name,
-                                        node_id = %n.node_id,
-                                        incarnation_id = %inc.as_str(),
-                                        path = %unreadable.path,
-                                        "otel.kind" = "internal",
-                                    )
-                                    .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
-                                }
-                                Err(_) => return outcome,
-                            }
-                        } else if self.status_storage.node_data_dir_lost_of(&n.mesh, &n.node_id, &inc).await.ok().flatten().is_none() {
-                            match crate::deployment::pipeline::inspect_transport_key(&dir) {
-                                Err(crate::deployment::pipeline::InheritedDirError::Gone(_)) => {
-                                    let now_ms = local_now_ms();
-                                    let (since, count) = {
-                                        let mut gone = self.gone_dirs.lock().unwrap();
-                                        let entry = gone.entry((n.node_id.clone(), inc.clone())).or_insert((now_ms, 0));
-                                        entry.1 = entry.1.saturating_add(1);
-                                        *entry
-                                    };
-                                    let hold_ms = data_dir_gone_hold_ms();
-                                    if count < 2 || now_ms.saturating_sub(since) < hold_ms {
-                                        return outcome;
-                                    }
-                                    let lost_row = crate::status_storage::NodeDataDirLostRow {
-                                        node_id: n.node_id.clone(),
-                                        name: n.name.clone(),
-                                        incarnation_id: inc.clone(),
-                                        path: dir.display().to_string(),
-                                        since,
-                                    };
-                                    let _ = self.status_storage.put_node_data_dir_lost_of(&n.mesh, &lost_row).await;
-                                    tracing::info_span!(
-                                        "rdm.node_admin.node.update.via-data-dir-lost",
-                                        node = %n.name,
-                                        node_id = %n.node_id,
-                                        incarnation_id = %inc.as_str(),
-                                        path = %dir.display(),
-                                        since = since as i64,
-                                        "otel.kind" = "internal",
-                                    )
-                                    .in_scope(|| tracing::info!("inherited data dir absent past gone-floors hold; recovering over a fresh data dir"));
-                                }
-                                Ok(_) | Err(crate::deployment::pipeline::InheritedDirError::Broken(_)) => {
-                                    self.gone_dirs.lock().unwrap().remove(&(n.node_id.clone(), inc));
-                                }
-                            }
-                        }
-                    }
-                    if let Err(e) = self.submit(n, *code, source, row).await {
-                        tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
-                    }
-                }
-            }
-            Inspected::Running => {
-                // Running again: the os-stopped fact clears and the hold rule applies (a runtime that
-                // resumed but stays unreachable opens a fresh hold, deployment-provider.md §2.5). A
-                // birth whose removal a workflow owns is that workflow's: its os-stopped row is removed
-                // once, by the delete or the exit it proves (node-delete.md "OS-suspended target"), and
-                // `Running` read while its terminate kills a suspended runtime is the kill waking it.
-                let removal = self.removal_announced(n).await;
-                if removal.is_none() {
-                    self.clear_os_stopped(n, "running").await;
-                }
-                // node-recovery.md step 3: the hold opens only "if the birth is still unreachable". A
-                // birth heard again while this inspection was in flight has had its hold ended by the
-                // tick (step 4): nothing is written for it.
-                if removal.is_none() && self.still_offline(n) {
-                    if let Some(inc) = n.incarnation_id.clone() {
-                        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-                        let prev = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await.ok().flatten();
-                        // node-recovery.md step 4's end: the birth's failed terminates gate the hold.
-                        let gate = self.hold_gate_of(n, prev.as_ref().map(|r| r.since)).await;
-                        let prev = match &gate {
-                            HoldGate::Void(f) => {
-                                let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, &inc).await;
-                                self.span_hold_voided(n, f);
-                                None
-                            }
-                            _ => prev,
-                        };
-                        let (since, count) = match prev {
-                            Some(r) => (r.since, r.verdicts.saturating_add(1)),
-                            None => (now_ms, 1),
-                        };
-                        let held_row = crate::status_storage::NodeHeldRunningRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), since, verdicts: count };
-                        let _ = self.status_storage.put_node_held_running_of(&n.mesh, &held_row).await;
-                        // Heard again between the read above and this put: the tick's clear may have run
-                        // before the put, so the row this follower wrote is removed here.
-                        if !self.still_offline(n) {
-                            let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, &inc).await;
-                            tracing::info!(node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), "the birth was heard again during its inspection: the held-running row this inspection wrote is removed");
-                            return outcome;
-                        }
+        self.span_inspection(n, &outcome, handle.as_ref());
+        if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
+            let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+            tracing::info_span!(
+                "rdm.node_admin.build.reject.via-removal-announced",
+                node = %n.name,
+                node_id = %n.node_id,
+                incarnation_id = %incarnation,
+                submitter = %self.held_name(),
+                announced,
+                operation = %operation,
+                build_id = %build_id,
+                attempt,
+                verdict = verdict_name(&outcome),
+            )
+            .in_scope(|| tracing::info!("the birth's removal belongs to the workflow that announced it: no recovery is submitted"));
+            return outcome;
+        }
+        if let (Inspected::Exited(..), Some(inc), Some(dir)) = (&outcome, n.incarnation_id.clone(), self.birth_data_dir(n).await) {
+            if let Some(unreadable) = self.status_storage.node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await.ok().flatten() {
+                match crate::deployment::pipeline::inspect_transport_key(&dir) {
+                    Ok(_) => {
+                        let _ = self.status_storage.remove_node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc, &n.name).await;
                         tracing::info_span!(
-                            "rdm.node_admin.node.update.via-held-running",
+                            "rdm.node_admin.node.resolve.via-data-dir-repaired",
                             node = %n.name,
                             node_id = %n.node_id,
                             incarnation_id = %inc.as_str(),
-                            recorder = %self.held_name(),
-                            since = since as i64,
-                            verdicts = count as i64,
-                            outcome = "recorded",
+                            path = %unreadable.path,
                             "otel.kind" = "internal",
                         )
-                        .in_scope(|| tracing::info!("recorded held-running verdict"));
-                        let hold_ms = hung_hold_ms();
-                        if count > 1 && now_ms.saturating_sub(since) >= hold_ms {
-                            self.submit_hold_terminate(n, gate).await;
+                        .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
+                    }
+                    Err(_) => return outcome,
+                }
+            } else if self.status_storage.node_data_dir_lost_of(&n.mesh, &n.node_id, &inc).await.ok().flatten().is_none() {
+                match crate::deployment::pipeline::inspect_transport_key(&dir) {
+                    Err(crate::deployment::pipeline::InheritedDirError::Gone(_)) => {
+                        let now_ms = local_now_ms();
+                        let (since, count) = {
+                            let mut gone = self.gone_dirs.lock().unwrap();
+                            let entry = gone.entry((n.node_id.clone(), inc.clone())).or_insert((now_ms, 0));
+                            entry.1 = entry.1.saturating_add(1);
+                            *entry
+                        };
+                        if count < 2 || now_ms.saturating_sub(since) < data_dir_gone_hold_ms() {
+                            return outcome;
                         }
+                        let lost_row = crate::status_storage::NodeDataDirLostRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), path: dir.display().to_string(), since };
+                        let _ = self.status_storage.put_node_data_dir_lost_of(&n.mesh, &lost_row).await;
+                        tracing::info_span!(
+                            "rdm.node_admin.node.update.via-data-dir-lost",
+                            node = %n.name,
+                            node_id = %n.node_id,
+                            incarnation_id = %inc.as_str(),
+                            path = %dir.display(),
+                            since = since as i64,
+                            "otel.kind" = "internal",
+                        )
+                        .in_scope(|| tracing::info!("inherited data dir absent past gone-floors hold; recovering over a fresh data dir"));
+                    }
+                    Ok(_) | Err(crate::deployment::pipeline::InheritedDirError::Broken(_)) => {
+                        self.gone_dirs.lock().unwrap().remove(&(n.node_id.clone(), inc));
                     }
                 }
             }
-            Inspected::OsStopped => self.record_os_stopped(n).await,
-            // Nothing proven: the span names the uncertainty; no hold, no exit proof, the next tick asks again.
-            Inspected::Unavailable(_) => {}
+        }
+        if let Err(e) = self.submit(n, &outcome).await {
+            tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
         }
         outcome
-    }
-
-    /// The gate of `n`'s hold that began at `since` (none held yet): the birth's failed terminates as
-    /// this admin's Build log holds them, in every Build ([`hold_gate`]).
-    pub(crate) async fn hold_gate_of(&self, n: &Node, since: Option<u64>) -> HoldGate {
-        let Some(inc) = n.incarnation_id.as_ref() else { return HoldGate::Open };
-        match self.builds.terminate_failures_of(&n.node_id, inc).await {
-            Ok(failures) => hold_gate(&failures, since),
-            Err(e) => HoldGate::Unreadable(format!("{}: the failed terminates of {} ({}) at {} could not be read from its Build log: {e}", self.held_name(), n.name, n.node_id, inc.as_str())),
-        }
-    }
-
-    /// `n`'s hold expired: its terminate is submitted unless `gate` forbids it (node-recovery.md step
-    /// 4's end). A refused terminate is named once per receipt; an unreadable Build log is named and
-    /// submits nothing this tick.
-    pub(crate) async fn submit_hold_terminate(&self, n: &Node, gate: HoldGate) {
-        let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
-        match gate {
-            HoldGate::Open | HoldGate::Void(_) => {
-                if let Err(e) = self.submit(n, None, "held-running-expired", Ok("held-running")).await {
-                    tracing::info!(node = %n.name, error = %e, "the held-running recovery submit ended without the recovery; the next tick submits again");
-                }
-            }
-            HoldGate::Refused(f) => {
-                let Some(inc) = n.incarnation_id.clone() else { return };
-                if !self.terminate_refusals_named.lock().unwrap().insert((n.node_id.clone(), inc, f.build_id.clone(), f.mesh.clone(), f.attempt)) {
-                    return;
-                }
-                let error = match &f.stage {
-                    crate::build_state::TerminateStage::Provider { error } => error.clone(),
-                    _ => String::new(),
-                };
-                tracing::info_span!(
-                    "rdm.node_admin.build.reject.via-terminate-refused",
-                    node = %n.name,
-                    node_id = %n.node_id,
-                    incarnation_id = %incarnation,
-                    submitter = %self.held_name(),
-                    build_id = %f.build_id,
-                    lane = f.mesh.as_deref().unwrap_or("fabric"),
-                    attempt = f.attempt,
-                    stage = f.stage.name(),
-                    error = %error,
-                    "otel.kind" = "internal",
-                )
-                .in_scope(|| tracing::info!("a terminate of this birth the provider refused or could not prove: no hold submits its terminate again; a person decides"));
-            }
-            HoldGate::Unreadable(why) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-terminate-receipts-unreadable", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation, submitter = %self.held_name(), error = %why, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the birth's failed terminates could not be read: no terminate is submitted this tick"));
-            }
-        }
-    }
-
-    /// `n`'s hold voided by the terminate `f` that failed at its own inspection: its `held-running` row
-    /// is removed and a fresh hold begins (node-recovery.md step 4's end).
-    pub(crate) fn span_hold_voided(&self, n: &Node, f: &crate::build_state::FailedTerminate) {
-        let verdict = match &f.stage {
-            crate::build_state::TerminateStage::Inspection { verdict: crate::build_state::InspectionVerdict::OsStopped } => "os-stopped",
-            crate::build_state::TerminateStage::Inspection { verdict: crate::build_state::InspectionVerdict::Unknown } => "unavailable",
-            _ => "",
-        };
-        tracing::info_span!(
-            "rdm.node_admin.node.update.via-held-running",
-            node = %n.name,
-            node_id = %n.node_id,
-            incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(),
-            recorder = %self.held_name(),
-            outcome = "voided",
-            build_id = %f.build_id,
-            attempt = f.attempt,
-            verdict,
-            "otel.kind" = "internal",
-        )
-        .in_scope(|| tracing::info!("the hold's terminate failed at its own inspection and asked the provider nothing: the hold is void and a fresh one begins"));
-    }
-
-    /// The verdict `outcome` of `n`'s birth, recorded by the tick once per change: the inspection's
-    /// span, and for an exit the birth's exit-proof row in status.storage (node-recovery.md "Exited
-    /// is the proof, recorded durably"; [`crate::offline::put_exit_proof`], a blind put of the birth's
-    /// own key). `verdicts` holds what this loop last recorded per birth, so a verdict that stands is
-    /// neither named nor put again by a later tick; a put the store refused records nothing, so the
-    /// next tick that proves the exit puts the row. For an exit, the answer is where its row stands:
-    /// `put` by this tick, `recorded` by an earlier one, or the store's refusal of this tick's put.
-    pub(crate) async fn record_verdict(&self, n: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>, verdicts: &ExitVerdicts) -> Result<&'static str, String> {
-        let incarnation = n.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its verdict by", n.name, n.node_id))?;
-        record_verdict_once(verdicts, (n.node_id.clone(), incarnation), outcome, || async {
-            self.span_inspection(n, outcome, handle);
-            if let Inspected::Exited(code, source) = outcome {
-                crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await?;
-            }
-            Ok(())
-        })
-        .await
-    }
-
-    /// The `os-stopped` fact of `n`'s exact birth (R-PV1; deployment-provider.md §2.5): this
-    /// mesh-primary puts the birth's own row, its `since` kept and its inspections counted, opens no
-    /// hold and terminates nothing; a `held-running` hold already open on the birth is cancelled (its
-    /// row removed: the pending terminate it would submit is void). Spanned when the fact is first
-    /// recorded, or first confirmed by this admin over a row another admin wrote (`revalidated`).
-    pub(crate) async fn record_os_stopped(&self, n: &Node) {
-        let Some(inc) = n.incarnation_id.clone() else { return };
-        // node-recovery.md step 3 speaks for a TRUE OFFLINE birth: one heard again while this
-        // inspection was in flight has had its fact cleared by the tick, and nothing is written for it.
-        if !self.still_offline(n) {
-            return;
-        }
-        let birth = (n.node_id.clone(), inc.clone());
-        let span = |outcome: &str, since: u64, detail: &str| {
-            tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = since as i64, outcome, detail, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the operating system holds the birth's exact runtime suspended: a recorded fact, no hold and no terminate"));
-        };
-        let prev = match self.status_storage.node_os_stopped_of(&n.mesh, &n.node_id, &inc).await {
-            Ok(prev) => prev,
-            Err(e) => return span("refused", 0, &format!("the os-stopped row could not be read: {e}")),
-        };
-        let first_here = !self.os_stopped_confirmed.lock().unwrap().contains(&birth);
-        let (since, inspections, outcome) = match &prev {
-            None => (local_now_ms(), 1, Some("recorded")),
-            Some(r) => (r.since, r.inspections.saturating_add(1), first_here.then_some("revalidated")),
-        };
-        let row = crate::status_storage::NodeOsStoppedRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), since, inspections };
-        match self.status_storage.put_node_os_stopped_of(&n.mesh, &row).await {
-            // A refused put confirms nothing: the next tick records or revalidates it again.
-            Err(e) => span("refused", since, &format!("the os-stopped row could not be written: {e}")),
-            // Heard again between the read above and this put: the tick's clear may have run before
-            // the put, so the row this inspection wrote is removed here, spanned `cleared` when this
-            // removal took the row.
-            Ok(()) if !self.still_offline(n) => {
-                remove_os_stopped(&*self.status_storage, n, "returned").await;
-                return;
-            }
-            Ok(()) => {
-                self.os_stopped_confirmed.lock().unwrap().insert(birth);
-                if let Some(outcome) = outcome {
-                    span(outcome, since, "");
-                }
-            }
-        }
-        if let Ok(Some(held)) = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await {
-            let removed = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, &inc).await;
-            tracing::info_span!(
-                "rdm.node_admin.node.update.via-held-running",
-                node = %n.name,
-                node_id = %n.node_id,
-                incarnation_id = %inc.as_str(),
-                since = held.since as i64,
-                verdicts = held.verdicts as i64,
-                outcome = "cancelled-os-stopped",
-                voided_deadline = held.since.saturating_add(hung_hold_ms()) as i64,
-                removed = %removed.as_ref().map(|_| "removed".to_string()).unwrap_or_else(|e| e.to_string()),
-                "otel.kind" = "internal",
-            )
-            .in_scope(|| tracing::info!("the hung-runtime hold is cancelled: the runtime is suspended by the operating system, and the terminate it would submit is void"));
-        }
-    }
-
-    /// Remove the `os-stopped` fact of `n`'s exact birth when an inspection reads its runtime
-    /// `verdict` (`running`, `exited`) or its digest returns (`returned`): spanned `cleared` when a row
-    /// stood.
-    pub(crate) async fn clear_os_stopped(&self, n: &Node, verdict: &str) {
-        let Some(inc) = n.incarnation_id.clone() else { return };
-        self.os_stopped_confirmed.lock().unwrap().remove(&(n.node_id.clone(), inc));
-        remove_os_stopped(&*self.status_storage, n, verdict).await;
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
@@ -534,42 +204,40 @@ impl RecoverySubmitter {
         Some(Announced { announced, operation, build_id: String::new(), attempt: 0 })
     }
 
-    /// The inspection's span, named when its verdict for the birth changes (a hung member is
-    /// inspected every tick and named once), with `handle` the exact runtime handle the provider was
-    /// asked about (none when nothing was asked).
+    /// The inspection's span (node-runtime-inspect.md "Spans"), with `handle` the exact runtime handle
+    /// the provider was asked about (none when nothing was asked).
     pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>) {
-        let (verdict, exit_code, exit_proof, reason) = match outcome {
-            Inspected::Exited(code, source) => ("exited", code.map(|c| c.to_string()).unwrap_or_default(), *source, String::new()),
-            Inspected::Running => ("running", String::new(), "none", NotProven::Running.to_string()),
-            Inspected::OsStopped => ("os-stopped", String::new(), "none", NotProven::OsStopped.to_string()),
-            Inspected::Unavailable(why) => ("unavailable", String::new(), "none", why.clone()),
+        let (exit_code, reason) = match outcome {
+            Inspected::Exited(code) => (code.map(|c| c.to_string()).unwrap_or_default(), String::new()),
+            Inspected::Running | Inspected::OsStopped => (String::new(), String::new()),
+            Inspected::Unavailable(why) => (String::new(), why.clone()),
         };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
         let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), handle = %handle, verdict, exit_code, exit_proof, reason = %reason)
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), handle = %handle, verdict = verdict_name(outcome), exit_code, reason = %reason)
             .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
     }
 
-    /// The recovery of `node`'s exited birth on its exit-proof row, `row` as the tick recorded it
-    /// ([`Self::record_verdict`]): a row the store refused ends the submit here, named on its own
-    /// span; on a row that stands this mesh primary opens and runs the recovery itself, keyed on the
-    /// exited birth ([`Self::submit_in`], R-BI7). The run is followed to its end, so the caller holds
-    /// the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
-    pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str, row: Result<&'static str, String>) -> Result<(), String> {
-        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
-        let me = self.held_name();
-        let span = submit_span(&me, node, &incarnation, code, source);
-        let end = match row {
-            Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
-            Err(e) => Err(e),
-        };
+    /// The recovery of `node`'s unreached birth on its verdict `outcome`: this mesh primary opens and
+    /// runs it itself, keyed on the birth ([`Self::submit_in`], R-BI7). The run is followed to its
+    /// end, so the caller holds the birth as submitted until then. A repeat answers AlreadyApplied or
+    /// BuildInProgress.
+    pub(crate) async fn submit(&self, node: &Node, outcome: &Inspected) -> Result<(), String> {
+        self.submit_route(node, outcome, "node-recovery").await
+    }
+
+    /// [`Self::submit`] on `route`: `node-recovery`, or `fabric-recovery` for the re-create fabric recovery
+    /// runs of the node-admin at the fabric-primary's path.name (fabric-recovery.md step 3, Q122).
+    pub async fn submit_route(&self, node: &Node, outcome: &Inspected, route: &'static str) -> Result<(), String> {
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no birth to key a recovery on", node.name))?;
+        let span = submit_span(&self.held_name(), node, &incarnation, verdict_name(outcome));
+        let end = self.submit_in(&span, node, &incarnation, route).instrument(span.clone()).await;
         settled(&span, end)
     }
 
-    /// The exited births the tick submits again (node-recovery.md "Failure and receipts": "the
-    /// mesh-primary is the submitter that resubmits by `build_id` ... the mesh-primary's next tick
-    /// finds the member still proven exited and submits"): none unless this admin holds its mesh's
-    /// primary seat (as [`recovery_due`]); else every exited
+    /// The births the tick submits again (node-recovery.md "Failure and receipts": "the mesh-primary
+    /// is the submitter that resubmits by `build_id`"): none unless this admin holds its mesh's
+    /// primary seat (as [`recovery_due`]); else every
     /// birth of its own mesh whose node workflow in the accepted Build stopped at a Failed attempt and
     /// is not done, read from the durable facts on every tick (the current Build, then the
     /// Build log's index by that Build, `BuildStateAdapter::exits_owed`), whether or not the view still
@@ -629,41 +297,19 @@ impl RecoverySubmitter {
         ready
     }
 
-    /// The submit of an exited birth whose node workflow stopped at a Failed attempt (node-recovery.md
-    /// "Failure and receipts"), on the tick: the birth's exit-proof row is point-read (the provider's
-    /// proof the first submit recorded; nothing is inspected or written again), then the same submit,
-    /// keyed on the exited birth. A missing or unreadable row is no proof: named on its own span, and
-    /// nothing is submitted. The fabric-primary answers the submit as any repeat: AlreadyApplied once a
-    /// workflow completed for the birth, BuildInProgress while an attempt runs, else the next attempt
-    /// of the Build with this birth's action, whose plan runs only what the receipts leave (a delete
-    /// that completed is never run again).
+    /// The submit of a birth whose recovery stopped at a Failed attempt (node-recovery.md "Failure and
+    /// receipts"), on the tick: the same submit, keyed on the birth; nothing is inspected again. The
+    /// fabric-primary answers the submit as any repeat: AlreadyApplied once a workflow completed for
+    /// the birth, BuildInProgress while an attempt runs, else the next attempt of the Build with this
+    /// birth's action, whose plan runs only what the receipts leave (a delete that completed is never
+    /// run again).
     pub(crate) async fn submit_owed(&self, owed: &crate::build_state::OwedExit) -> Result<(), String> {
-        let me = self.held_name();
-        let refused = |reason: &str, error: String| {
-            tracing::info_span!(
-                "rdm.node_admin.node.reject.via-exit-proof-unread",
-                node = %owed.path,
-                node_id = %owed.node_id,
-                incarnation_id = %owed.incarnation.as_str(),
-                submitter = %me,
-                failed_attempt = owed.attempt,
-                reason,
-                error = %error,
-            )
-            .in_scope(|| tracing::info!("an exit owed a submit has no readable exit-proof row: nothing is submitted"));
-            format!("{me}: no exit-proof row of {} at {} to submit on ({reason}{})", owed.node_id, owed.incarnation.as_str(), if error.is_empty() { String::new() } else { format!(": {error}") })
-        };
-        let row = match self.status_storage.node_exit(&owed.node_id, &owed.incarnation).await {
-            Ok(Some(row)) => row,
-            Ok(None) => return Err(refused("missing", String::new())),
-            Err(e) => return Err(refused("unreadable", e.to_string())),
-        };
         let mut node = Node::allocated(owed.path.clone());
         node.node_id = owed.node_id.clone();
         node.incarnation_id = Some(owed.incarnation.clone());
-        let span = submit_span(&me, &node, &owed.incarnation, row.exit_code, &row.proof);
+        let span = submit_span(&self.held_name(), &node, &owed.incarnation, "");
         span.record("after_failed_attempt", owed.attempt);
-        let end = self.submit_in(&span, &node, &owed.incarnation).instrument(span.clone()).await;
+        let end = self.submit_in(&span, &node, &owed.incarnation, "node-recovery").instrument(span.clone()).await;
         settled(&span, end)
     }
 
@@ -672,7 +318,7 @@ impl RecoverySubmitter {
     /// current Build itself: claim on its mesh's rows, then run; no call to the fabric-primary"):
     /// opened and claimed at its own door, run through its own executor in its mesh's lane and
     /// followed to the terminal ([`crate::build_run::run_recovery`]).
-    pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, String> {
+    pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
         use crate::build_run::{Recovered, RecoveryNotRun};
         use rdm_core::build::BuildReply;
         let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary seat but its Build door is not built yet", self.held_name()))?;
@@ -682,7 +328,7 @@ impl RecoverySubmitter {
             span.record("attempt", o.attempt);
             span.record("disposition", disposition);
         };
-        match crate::build_run::run_recovery(&door.control, &door.run, "node-recovery", node.name.clone(), node.node_id.clone(), incarnation.clone()).await {
+        match crate::build_run::run_recovery(&door.control, &door.run, route, node.name.clone(), node.node_id.clone(), incarnation.clone()).await {
             Ok(Recovered::Ran { opened: o, terminal }) => {
                 opened(&o, "created");
                 match terminal {
@@ -715,22 +361,22 @@ impl RecoverySubmitter {
 pub(crate) fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) -> Result<(), String> {
     let (outcome, r) = settle(end);
     span.record("outcome", outcome.as_str());
-    span.in_scope(|| tracing::info!("the mesh primary opens and runs the recovery of its proven-exited member itself"));
+    span.in_scope(|| tracing::info!("the mesh primary opens and runs the recovery of its unreached member itself"));
     r
 }
 
-/// The span of one submit of the exited birth `node` at `incarnation` by the mesh primary `me`
-/// (node-recovery.md "Observability contract": the submit has a span on the mesh-primary).
-/// `after_failed_attempt` is recorded on a submit that follows a Failed one of the same birth.
-pub(crate) fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationId, code: Option<i32>, source: &str) -> tracing::Span {
+/// The span of one submit of the unreached birth `node` at `incarnation` by the mesh primary `me` on
+/// the investigation's `verdict` (node-recovery.md "Observability contract": the submit has a span on
+/// the mesh-primary). `after_failed_attempt` is recorded on a submit that follows a Failed one of the
+/// same birth, whose verdict is not read again.
+pub(crate) fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationId, verdict: &str) -> tracing::Span {
     tracing::info_span!(
         "rdm.node_admin.build.update.via-node-recovery",
         node = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         submitter = %me,
-        exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
-        exit_proof = source,
+        verdict,
         mesh = tracing::field::Empty,
         build_id = tracing::field::Empty,
         attempt = tracing::field::Empty,
@@ -776,27 +422,7 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
         .collect()
 }
 
-/// The node-admins, held off ready-for-traffic, of `taken_from`, the mesh other than `me_mesh` whose
-/// fabric-primary this admin took over (`crate::fabric_handover::TakenOver`), while it has no
-/// ReadyForTraffic node-admin: nobody in that mesh can tickle them or command them back, so the
-/// fabric-primary above the lost birth does (fabric-recovery.md step 3: "The successor is
-/// fabric-primary above the lost one, and the standing playbook runs downward from it"; Q89). A peer
-/// mesh whose fabric-primary this admin did not take over, its members silent, is mesh investigation's
-/// alone: no other mesh tickles its node-admins beside it (node-identity-and-state.md §7.3, R-CK1).
-pub fn admins_of_meshes_without_a_ready_admin<'a>(view: &'a Topology, me_mesh: &str, taken_from: Option<String>) -> impl Iterator<Item = &'a Node> + 'a {
-    let me_mesh = me_mesh.to_string();
-    view.members().filter(move |n| {
-        n.kind == NodeKind::NodeAdmin
-            && n.mesh != me_mesh
-            && taken_from.as_deref() == Some(n.mesh.as_str())
-            && !view.meshes.iter().any(|m| m.name == n.mesh && matches!(m.status, crate::model::ScopeStatus::Leaving | crate::model::ScopeStatus::Dead))
-            && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)
-            && !view.members().any(|o| o.mesh == n.mesh && o.kind == NodeKind::NodeAdmin && o.status == NodeStatus::ReadyForTraffic)
-    })
-}
-
-/// What the mesh primary's tick hears a member again against (R-FM1: "an answer from the exact birth
-/// or its returning digest ends the hold and clears the fact", `offline-returned`): the node ids of
+/// What the mesh primary's tick hears a member again against (`offline-returned`): the node ids of
 /// `view`'s members and of every birth the tick watches (`watched_births`), the births only durable rows
 /// name included, none whose departure the book holds. A birth this admin knew only from durable rows
 /// (one born while it was silent) enters the view once its digest is installed, after the tick's
@@ -817,12 +443,11 @@ pub fn recovery_due(holds_seat: bool, mesh: &str, watched: &BTreeMap<String, Nod
 
 /// The mesh primary's per-birth bookkeeping speaks only for the births it still watches: a birth
 /// whose node left the view (deleted, or recovered under a new node.id at its path.name) or whose
-/// node the view now holds at another incarnation (superseded) leaves the TRUE OFFLINE set; a
-/// verdict lives only while its birth is TRUE OFFLINE; the silence memo only while its node is
-/// watched. Run every tick, after the tick's writes, so nothing of a gone birth outlives one tick.
-pub(crate) fn clear_unwatched(watched: &BTreeMap<String, Node>, offline: &mut HashSet<(NodeId, IncarnationId)>, verdicts: &mut HashMap<(NodeId, IncarnationId), Inspected>, written: &mut WrittenSilence) {
+/// node the view now holds at another incarnation (superseded) leaves the TRUE OFFLINE set; the
+/// silence memo lives only while its node is watched. Run every tick, after the tick's writes, so
+/// nothing of a gone birth outlives one tick.
+pub(crate) fn clear_unwatched(watched: &BTreeMap<String, Node>, offline: &mut HashSet<(NodeId, IncarnationId)>, written: &mut WrittenSilence) {
     offline.retain(|(node_id, incarnation)| watched.get(node_id.as_str()).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)));
-    verdicts.retain(|birth, _| offline.contains(birth));
     written.retain(|node_id, _| watched.contains_key(node_id.as_str()));
 }
 
@@ -850,200 +475,3 @@ pub(crate) fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), St
     }
 }
 
-#[cfg(test)]
-mod hold_gate_tests {
-    use super::*;
-    use crate::build_state::{FailedTerminate, InspectionVerdict, TerminateStage};
-
-    /// CONTRACT (i144 R21; node-recovery.md step 4's end: "A terminate the provider refuses or cannot
-    /// prove ... no hold submits that birth's terminate again: a person decides ... A
-    /// `TerminateRuntime` that failed at its own inspection (`OsStopped` or `Unknown`) asked the
-    /// provider nothing: it voids the hold, and a birth that reads `Running` and stays unreachable
-    /// opens a fresh hold under the ordinary rule"): any failed terminate of the birth whose stage is
-    /// `provider` or `unproven` refuses every later hold, whatever came after it; else the latest, when
-    /// it failed at its own inspection after the hold began (or its opening is not held yet), voids
-    /// the hold; a hold that began after that failure, or no failure at all, is open. Must NOT happen:
-    /// a refused birth resubmitted after a later inspection failure, a hold carried across the
-    /// failure it submitted, or a fresh hold voided again.
-    // @feature: node-lifecycle
-    #[test]
-    fn a_hold_is_refused_by_any_provider_or_unproven_terminate_and_voided_by_a_later_inspection_failure() {
-        let failed = |attempt: u32, opened_at_ms: Option<u64>, stage: TerminateStage| FailedTerminate { build_id: crate::build::BuildId::mint(), mesh: Some("mesh2".into()), attempt, opened_at_ms, stage };
-        let inspection = || TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped };
-        let provider = || TerminateStage::Provider { error: "refused".into() };
-        assert_eq!(hold_gate(&[], Some(5)), HoldGate::Open, "no failed terminate");
-        let void = failed(1, Some(10), inspection());
-        assert_eq!(hold_gate(std::slice::from_ref(&void), Some(5)), HoldGate::Void(void.clone()), "the hold that submitted the failed terminate is void");
-        assert_eq!(hold_gate(std::slice::from_ref(&void), Some(10)), HoldGate::Void(void.clone()), "begun in the same millisecond: void");
-        assert_eq!(hold_gate(std::slice::from_ref(&void), Some(15)), HoldGate::Open, "a fresh hold, begun after the failure, runs");
-        assert_eq!(hold_gate(std::slice::from_ref(&void), None), HoldGate::Open, "no hold held: nothing to void");
-        let unopened = failed(1, None, TerminateStage::Inspection { verdict: InspectionVerdict::Unknown });
-        assert_eq!(hold_gate(std::slice::from_ref(&unopened), Some(15)), HoldGate::Void(unopened.clone()), "the failure's opening not held yet: the hold restarts rather than terminate early");
-        let refused = failed(1, Some(10), provider());
-        assert_eq!(hold_gate(std::slice::from_ref(&refused), Some(50)), HoldGate::Refused(refused.clone()), "a provider refusal forbids every later hold");
-        let after = failed(2, Some(20), inspection());
-        assert_eq!(hold_gate(&[refused.clone(), after], Some(5)), HoldGate::Refused(refused), "a later inspection failure never lifts a refusal");
-        let unproven = failed(1, Some(10), TerminateStage::Unproven);
-        assert_eq!(hold_gate(std::slice::from_ref(&unproven), Some(50)), HoldGate::Refused(unproven.clone()), "an unproven exit forbids every later hold");
-    }
-}
-
-#[cfg(test)]
-mod os_stopped_clear_tests {
-    use super::*;
-    use crate::model::{IncarnationId, MeshId, NodeId};
-    use crate::storage_error::StorageError;
-    use crate::status_storage::*;
-    use rdm_core::status::MeshState;
-    use std::collections::HashMap;
-
-    /// The memory store, its os-stopped read yielding once: a second remover reads the row before the
-    /// first removes it, as two admins' tasks do on one store.
-    struct Yielding(MemoryStatusStorage);
-
-    #[async_trait::async_trait]
-    impl StatusStorage for Yielding {
-        async fn put_mesh_status(&self, row: &MeshStatusRow) -> Result<(), StorageError> {
-            self.0.put_mesh_status(row).await
-        }
-        async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError> {
-            self.0.mesh_statuses().await
-        }
-        async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError> {
-            self.0.put_fabric_event(row).await
-        }
-        async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
-            self.0.fabric_events().await
-        }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
-            self.0.fabric_events_of(mesh).await
-        }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.0.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.0.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.0.remove_node_operation(row).await }
-
-        async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
-            self.0.put_node_declared(row).await
-        }
-        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-            self.0.remove_node_declared(node_id, incarnation_id).await
-        }
-        async fn put_node_declared_of(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError> {
-            self.0.put_node_declared_of(mesh, row).await
-        }
-        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-            self.0.remove_node_declared_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
-            self.0.node_declared().await
-        }
-        async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
-            self.0.put_node_silence(row).await
-        }
-        async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
-            self.0.node_silences().await
-        }
-        async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
-            self.0.put_node_exit(row).await
-        }
-        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
-            self.0.node_exit(node_id, incarnation_id).await
-        }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError> {
-            self.0.mesh_status_held_of(mesh, row).await
-        }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
-            self.0.put_mesh_status_of(mesh, row).await
-        }
-        async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
-            self.0.node_exit_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
-            self.0.put_node_exit_of(mesh, row).await
-        }
-        async fn node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
-            self.0.node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
-            self.0.put_node_held_running_of(mesh, row).await
-        }
-        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, StorageError> {
-            self.0.node_certs_of(mesh).await
-        }
-        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), StorageError> {
-            self.0.put_node_cert_of(mesh, row).await
-        }
-        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, StorageError> {
-            self.0.node_cert_receipts_of(mesh).await
-        }
-        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), StorageError> {
-            self.0.put_node_cert_receipt_of(mesh, row).await
-        }
-        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, StorageError> {
-            self.0.mesh_issuers_of(mesh).await
-        }
-        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), StorageError> {
-            self.0.put_mesh_issuer_of(mesh, row).await
-        }
-        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, StorageError> {
-            self.0.mesh_issuer_receipts_of(mesh).await
-        }
-        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), StorageError> {
-            self.0.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-            self.0.remove_node_held_running_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
-            self.0.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
-            self.0.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
-            self.0.put_node_data_dir_lost_of(mesh, row).await
-        }
-        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
-            self.0.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
-            self.0.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
-            self.0.put_node_data_dir_unreadable_of(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &crate::model::PathName) -> Result<(), StorageError> {
-            self.0.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
-        }
-        async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
-            let row = self.0.node_os_stopped_of(mesh, node_id, incarnation_id).await;
-            tokio::task::yield_now().await;
-            row
-        }
-        async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError> {
-            self.0.put_node_os_stopped_of(mesh, row).await
-        }
-        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
-            self.0.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
-        }
-    }
-
-    /// CONTRACT (deployment-provider.md §2.5: the `os-stopped` row "removed on `Running` or `Exited`";
-    /// the explicit delete's cell: "the `os-stopped` row is removed once"): the delete and the recovery
-    /// tick's exit verdict both remove an os-stopped birth's row, and exactly one of them clears it; the
-    /// other finds it gone and names nothing. Must NOT happen: two `cleared` for one row (R24's
-    /// relanding gate on `ac22b6b1`: `cleared` `deleted`, then `cleared` `exited`).
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn two_removers_of_one_os_stopped_row_clear_it_once() {
-        let store = Yielding(MemoryStatusStorage::default());
-        let mut n = Node::allocated("mesh1.rpc.1".parse().unwrap());
-        n.node_id = NodeId::mint();
-        n.incarnation_id = Some(IncarnationId::mint());
-        let row = NodeOsStoppedRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), since: 1, inspections: 1 };
-        store.put_node_os_stopped_of(&n.mesh, &row).await.unwrap();
-        let (deleted, exited) = tokio::join!(remove_os_stopped(&store, &n, "deleted"), remove_os_stopped(&store, &n, "exited"));
-        assert_eq!([deleted, exited].iter().filter(|c| **c).count(), 1, "exactly one remover clears the row: deleted {deleted}, exited {exited}");
-        assert!(store.node_os_stopped_of(&n.mesh, &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().is_none(), "the row is gone");
-    }
-}

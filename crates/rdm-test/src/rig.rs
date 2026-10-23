@@ -108,7 +108,6 @@ impl NodeObserver for LiveMesh {
             let authority = rdm_admin::status_rpc::StatusAuthority {
                 certs: None,
                 app_channels: None,
-                held_takeover: Default::default(),
                 me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
                 declaration_seam: None, command_frame_seam: None, operation_effects: Default::default(), stopped: Default::default(),
                 topology: Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
@@ -118,7 +117,7 @@ impl NodeObserver for LiveMesh {
                 declared: Default::default(), status_storage: Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()),
                 nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
-                hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), configs: Default::default(),
+                hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
                 republish: Default::default(), configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 book: Some(self.membership.book.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };

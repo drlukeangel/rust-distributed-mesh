@@ -2,12 +2,12 @@
 //! §7.3). `{node_admin: 1, broker: 2, gateway: 1}`; a broker is frozen in place (SIGSTOP).
 //! - Born, the broker declared `ReadyForTraffic` to its mesh primary over the status op: the
 //!   view shows it `declared` before anything asks.
-//! - Silent, it is marked `pending-reconnect` at the staleness floor, tickled by its mesh's
-//!   primary (the one ladder: direct, then via up to two peers at once), the hold-down opens, and a
-//!   floor later it is `dead` (`via-true-offline`).
-//! - Its runtime still exists (the operating system holds it suspended: `os-stopped`, never exit
-//!   proof), so it is held, never replaced: no Build removes it and no other birth
-//!   takes its path. Thawed, the same birth is back `ready-for-traffic` (`via-offline-returned`).
+//! - Silent, it is marked `pending-reconnect` at the staleness floor, and its mesh's primary runs node
+//!   investigation on it: unreached, the provider reads its runtime suspended (`os-stopped`), and node
+//!   recovery re-creates it at once at the same path.name with a new node id, over a newly allocated
+//!   data dir (`inherited = false`, R-FM2; node-recovery.md step 3, Q111). Nothing holds and nothing waits
+//!   for a proof of termination.
+//! - The broker primary is heard throughout and stays primary (elections §5).
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
@@ -21,7 +21,7 @@ fn owner() -> Owner {
         subfeature: "role-wedge".into(),
         rung: "SN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth".into(),
+        test: "a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_fresh_data_dir".into(),
     }
 }
 
@@ -30,7 +30,7 @@ fn s(v: &Value) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth() {
+async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_fresh_data_dir() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1)])] }).await.build_id.to_string();
     let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
@@ -41,33 +41,36 @@ async fn a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth() 
     // announces it: the admin's view carries it (`declared`).
     estate.until_node(&path, &format!("{path}'s own ReadyForTraffic declared at the authority"), Duration::from_secs(20), |n| n.filter(|n| n.declared.as_deref() == Some("ReadyForTraffic")).map(|_| ())).await;
 
-    // Frozen: pending-reconnect at the floor, then dead after the tickle and the hold-down. The unheard state is
-    // the admin's own detection: no call is held open to wait on, so the view is read until it holds it.
+    // Frozen: pending-reconnect at the floor, then re-created at its path.name.
     let floor = rdm_transport::membership::staleness_floor();
+    let primary_before = nodes.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("a broker primary");
     let pid = estate.pid_of(&path).await;
     assert!(std::process::Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success(), "SIGSTOP {pid} ({path})");
-    estate.until_node(&path, &format!("{path} marked pending-reconnect"), floor * 2 + Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::PendingReconnect).map(|_| ())).await;
-    estate.until_node(&path, &format!("{path} marked dead"), floor * 3 + Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Dead).map(|_| ())).await;
-    let held = estate.node_values().await;
-    assert_eq!(held.iter().filter(|n| n["name"] == path.as_str()).count(), 1, "the path is held by its one birth: {held:#?}");
-    assert_eq!(s(&held.iter().find(|n| n["name"] == path.as_str()).unwrap()["incarnation_id"]), birth, "silence replaced nothing");
-    assert_eq!(estate.accepted_build_id().await, build_id, "the accepted Build is unchanged");
-
-    // Thawed: the same birth is back.
-    let _ = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status();
+    let old_id = s(&target["node_id"]);
+    let primary_now = || {
+        let primary_before = primary_before.clone();
+        move |views: &[rdm_client::NodeView]| {
+            let ns = Estate::values(views);
+            let primary = ns.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == true).map(|n| s(&n["name"]));
+            assert_eq!(primary.as_deref(), Some(primary_before.as_str()), "the heard broker primary stays primary: {ns:#?}");
+            ns
+        }
+    };
+    let mut check = primary_now();
     let back = estate
-        .until_node(&path, &format!("{path} back as {birth}"), floor * 2 + Duration::from_secs(30), |n| {
-            n.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == birth) && n.status == NodeStatus::ReadyForTraffic).map(|n| serde_json::to_value(n).expect("a view serializes"))
+        .until_view(&format!("{path} re-created with a new node id and ready-for-traffic"), floor * 6 + Duration::from_secs(60), |views| {
+            let ns = check(views);
+            ns.into_iter().find(|n| n["name"] == path.as_str() && s(&n["node_id"]) != old_id && n["status"] == "ready-for-traffic")
         })
         .await;
-    estate.artifact("held.json", &json!({"target": target, "held": held, "back": back}));
+    let _ = std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+    estate.artifact("recreated.json", &json!({"target": target, "back": back}));
+    assert_eq!(estate.accepted_build_id().await, build_id, "the accepted Build is unchanged: recovery is an attempt of it");
     estate.stop().await;
 
     let spans = estate.spans();
-    let node_id = s(&target["node_id"]);
-    let tickled = named(&spans, "rdm.node_admin.node.update.via-true-offline").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id.as_str()).cloned().unwrap_or_else(|| panic!("{path} was never TRUE OFFLINE"));
-    assert!(named(&spans, "rdm.node_admin.node.update.via-offline-hold-down-opened").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "the hold-down opened for {path}");
-    assert!(named(&spans, "rdm.node_admin.node.update.via-offline-returned").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "{path} returned");
-    assert!(!named(&spans, "rdm.node_admin.node.delete.via-build").iter().any(|sp| sp["attributes"]["node"] == path.as_str()), "silence removed nothing");
-    estate.record_trace_url(tickled["trace_id"].as_str().unwrap_or(""));
+    let submit = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).cloned().unwrap_or_else(|| panic!("{path}'s recovery was never submitted"));
+    assert_eq!(s(&submit["attributes"]["verdict"]), "os-stopped", "the provider read the wedged runtime suspended: {submit}");
+    assert_ne!(s(&back["data_dir"]), s(&target["data_dir"]), "an os-stopped runtime's re-create runs over a newly allocated data dir (R-FM2): {back}");
+    estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
 }

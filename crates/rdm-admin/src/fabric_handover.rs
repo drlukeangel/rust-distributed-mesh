@@ -96,13 +96,8 @@ impl UpdateMemo {
 }
 
 /// Every side of node.primary.update on one node-admin: the primary's update, the successor's
-/// install, the commander's command and its resume, the take-over.
+/// install, the commander's command and its resume.
 pub struct HandoverDoor {
-    /// This admin's deployment provider: a take-over asks it about the lost birth before releasing its
-    /// name (fabric-recovery.md step 3).
-    pub provider: Arc<dyn crate::deployment::provider::DeploymentProvider>,
-    /// This admin's nodes.storage, the runtime row of each birth, for that inspection.
-    pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
     /// The fabric's name.
     pub fabric: String,
     /// This admin's path.
@@ -140,10 +135,6 @@ pub struct HandoverDoor {
     /// node investigation on one exact birth (node-investigation.md), run on a successor that did not
     /// answer the call.
     pub looker: crate::seat_watch::Looker,
-    /// What `fabric.get` surfaces of a take-over this admin holds.
-    pub held_takeover: HeldTakeovers,
-    /// The take-over this admin made, while its hand-back is owed (fabric-recovery.md step 4).
-    pub taken_over: TakenOver,
 }
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
@@ -152,19 +143,6 @@ fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
 
 fn exact(b: &HandoverBirth) -> Birth {
     Birth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }
-}
-
-/// node investigation's verdict as node-investigation.md names it: `reached`, `running`, `os-stopped`,
-/// `exited` or `unproven`.
-fn verdict_of(f: &crate::seat_watch::Finding) -> &'static str {
-    use crate::seat_watch::Finding;
-    match f {
-        Finding::Reached { .. } => "reached",
-        Finding::Running => "running",
-        Finding::OsStopped => "os-stopped",
-        Finding::Exited { .. } => "exited",
-        Finding::Unproven { .. } => "unproven",
-    }
 }
 
 fn births(b: &HandoverBirth) -> String {
@@ -432,10 +410,6 @@ impl HandoverDoor {
         // Step 4: the call on the successor's exact birth.
         let revisions = self.call_and_look(&to_node, &entries, build_id, run, operation).await?;
         self.take(&revisions).await;
-        if moving.fabric_seat() {
-            // The fabric-primary moved: a take-over this admin made is handed back.
-            *self.taken_over.lock().unwrap() = None;
-        }
         Ok(revisions)
     }
 
@@ -449,7 +423,7 @@ impl HandoverDoor {
         };
         let view = self.topology.read().await.clone();
         let finding = self.looker.look(&view, successor).await;
-        let verdict = verdict_of(&finding);
+        let verdict = finding.name();
         let span = tracing::info_span!("rdm.node_admin.primary.resolve.via-successor-investigation", node = %self.held_name(), operation, successor = %successor.name, call = %how, verdict, detail = %finding.detail(), retry = tracing::field::Empty);
         if matches!(finding, crate::seat_watch::Finding::Reached { .. }) {
             match call_successor(&self.client, &successor.node_id, entries, build_id, run, operation).await {
@@ -469,6 +443,45 @@ impl HandoverDoor {
         };
         refused("primary", "successor-unheard", &reason, operation);
         Err(rdm_core::reply::handover::bounded_failed(STEP, &reason, rdm_core::outcome::Code::Unavailable))
+    }
+
+    // ---- fabric recovery's restore (fabric-recovery.md step 4, Q122) ----
+
+    /// Fabric recovery's restore of `to`, the node-admin ReadyForTraffic at the lost fabric-primary's
+    /// path.name, as mesh-primary and fabric-primary: node.primary.update's call on it carrying both
+    /// records at their next revisions, from `target` (the fabric record) and `mesh` (its mesh's record),
+    /// installed here on its answer. The executor takes neither role: the node installs both,
+    /// acknowledges, and records them on its own row as the mesh's writer.
+    pub async fn restore(&self, target: &rdm_core::Primary, mesh: Option<&rdm_core::Primary>, to: &crate::model::Node) -> Result<Vec<Entry>, Reply> {
+        let me = self.held_name();
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-fabric-recovery", node = %me, target = %target, to = %to.name, to_node_id = %to.node_id, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let Some(incarnation) = to.incarnation_id.clone() else {
+            return Err(rdm_core::reply::handover::not_ready(format!("{} holds no incarnation: no birth to restore", to.name)));
+        };
+        let to_birth = Birth { node_id: to.node_id.clone(), incarnation };
+        let from = |h: &rdm_core::Primary| Birth { node_id: h.node_id.clone(), incarnation: h.incarnation.clone() };
+        let mesh_entry = match mesh {
+            Some(m) => (from(m), m.revision + 1),
+            None => (from(target), 1),
+        };
+        let entries = vec![
+            (crate::model::NodeKind::NodeAdmin.node_type().to_string(), mesh_entry.0, to_birth.clone(), mesh_entry.1),
+            (FABRIC.to_string(), from(target), to_birth, target.revision + 1),
+        ];
+        let operation = update_operation(Seat::FabricPrimary, "fabric-recovery", 0, &format!("node.create:{}", to.name));
+        let r: Result<Vec<Entry>, Reply> = async {
+            let revisions = self.call_and_look(to, &entries, "fabric-recovery", 0, &operation).await?;
+            self.take(&revisions).await;
+            Ok(revisions)
+        }
+        .instrument(span.clone())
+        .await;
+        match &r {
+            Ok(revisions) => span.record("outcome", "restored").record("detail", entries_named(revisions).as_str()),
+            Err(other) => span.record("outcome", other.name()).record("detail", format!("{other:?}").as_str()),
+        };
+        span.in_scope(|| tracing::info!("fabric recovery restored the node at the fabric-primary's path.name as mesh-primary and fabric-primary"));
+        r
     }
 
     // ---- the commander ----
@@ -623,159 +636,6 @@ impl HandoverDoor {
         match req {
             Request::PrimaryUpdate { primaries, build_id, run, operation } => self.serve_primary_update(primaries, build_id, run, operation).await,
             Request::UpdatePrimary { node_type, build_id, run, operation } => self.serve_update_primary(node_type, build_id, run, operation).await,
-            Request::TakeOverFabricPrimary { lost, expected_revision, successor, proposer, .. } => self.take_over(lost, expected_revision, successor, Some(proposer)).await,
-        }
-    }
-
-    // ---- the take-over of the fabric-primary (fabric-recovery.md step 2) ----
-
-    /// The winner's side of a take-over: an admin that holds the fabric-primary `lost` unheard past the
-    /// staleness floor proposes it (`proposer`; `None`: this admin found it itself). When its own view
-    /// names this admin the winner (the lost fabric-primary's own mesh first, else the lowest Ready
-    /// mesh-primary on the backbone), it is fabric-primary at the next revision, and mesh-primary of the
-    /// lost mesh with it when it is of that mesh, and answers `PrimaryUpdated`; its digest carries the
-    /// change and it records its own row (the rows writer follows its view). A repeat for the same
-    /// take-over answers `AlreadyApplied`; another winner is `RejectedNotPrimary`; a revision the record
-    /// no longer holds is `RejectedStaleRevision`.
-    pub async fn take_over(self: &Arc<Self>, lost: HandoverBirth, expected: u64, successor: HandoverBirth, proposer: Option<HandoverBirth>) -> Reply {
-        let _one_at_a_time = self.locks.updating.lock().await;
-        let me_name = self.held_name();
-        let me = self.me_birth();
-        let span = tracing::info_span!(
-            "rdm.node_admin.primary.update.via-take-over",
-            node = %me_name,
-            lost = %births(&lost),
-            expected_revision = expected,
-            successor = %births(&successor),
-            proposer = %proposer.as_ref().map(births).unwrap_or_else(|| "itself".into()),
-            outcome = tracing::field::Empty,
-            detail = tracing::field::Empty,
-        );
-        let reply = self.take_over_decided(&me_name, &me, &lost, expected, &successor).instrument(span.clone()).await;
-        span.record("outcome", reply.name()).record("detail", format!("{reply:?}").as_str());
-        span.in_scope(|| tracing::info!("a take-over of the fabric-primary was decided by the winner"));
-        reply
-    }
-
-    async fn take_over_decided(self: &Arc<Self>, me_name: &PathName, me: &HandoverBirth, lost: &HandoverBirth, expected: u64, successor: &HandoverBirth) -> Reply {
-        let operation = format!("take-over of {} at revision {expected}", births(lost));
-        if successor != me {
-            return rdm_core::reply::handover::bounded_not_primary(&format!("{me_name} is not the winner the proposal names ({})", births(successor)));
-        }
-        let entry = |revision: u64| vec![(FABRIC.to_string(), exact(lost), exact(me), revision)];
-        let book = self.membership.seats();
-        match book.fabric() {
-            // This take-over applied already: this admin is the fabric-primary at the revision after it.
-            Some(h) if h.is_birth(&me.node_id, &me.incarnation) && h.revision == expected + 1 => return rdm_core::reply::handover::already_applied(entry(h.revision)),
-            Some(h) if h.is_birth(&lost.node_id, &lost.incarnation) && h.revision == expected => {}
-            Some(h) => return rdm_core::reply::handover::rejected_stale_revision(FABRIC.to_string(), expected, h.revision),
-            None => return rdm_core::reply::handover::bounded_not_primary(&format!("{me_name} holds no fabric-primary record: no take-over of {} is decided against it", births(lost))),
-        }
-        if let Some(refusal) = self.refused_before_first_ready("winner", &operation).await {
-            return refusal;
-        }
-        // The winner, from this admin's own view: the lost fabric-primary's own mesh first, else the
-        // lowest Ready mesh-primary on the backbone (Q89, elections §4.3).
-        let view = self.topology.read().await.clone();
-        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
-        match crate::election::fabric_successor_after(&nodes, &self.incumbency(), lost) {
-            Some(w) if w.node_id == self.node_id => {}
-            other => return rdm_core::reply::handover::bounded_not_primary(&format!("in {me_name}'s view the election after the loss of {} names {}", births(lost), other.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin".into()))),
-        }
-        // The whole-mesh arm (Q24): no Ready node-admin of the lost mesh is left to look at the lost birth.
-        let whole_mesh_lost = !nodes.iter().any(|n| n.mesh == lost.mesh && n.kind == crate::model::NodeKind::NodeAdmin && n.node_id != lost.node_id && n.status == crate::model::NodeStatus::ReadyForTraffic);
-        let uninspectable = whole_mesh_lost
-            && match nodes.iter().find(|n| n.node_id == lost.node_id) {
-                Some(n) => {
-                    let finding = crate::seat_watch::inspect_birth(&*self.provider, &self.book, self.nodes.as_deref(), n).await;
-                    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %me_name, subject = %n.name, node_id = %n.node_id, inspector = %me_name, verdict = finding.name(), route = "take-over")
-                        .in_scope(|| tracing::info!("the lost fabric-primary's runtime, asked of the provider at the take-over"));
-                    matches!(finding, crate::seat_watch::Finding::Unproven { .. })
-                }
-                None => true,
-            };
-        let mut entries = entry(expected + 1);
-        // The mesh-primary moves with the fabric-primary in the lost mesh's own arm.
-        if me.mesh == lost.mesh {
-            if let Some(h) = book.mesh(&lost.mesh).filter(|h| h.is_birth(&lost.node_id, &lost.incarnation)) {
-                entries.push((crate::model::NodeKind::NodeAdmin.node_type().to_string(), exact(lost), exact(me), h.revision + 1));
-            }
-        }
-        self.take(&entries).await;
-        *self.taken_over.lock().unwrap() = Some((expected + 1, lost.clone(), me.clone()));
-        if uninspectable {
-            self.release_lost_admin(me_name, lost, expected + 1).await;
-        }
-        Reply::PrimaryUpdated { revisions: entries }
-    }
-
-    /// The lost birth a take-over at fabric-primary revision `t` superseded: its exit-proof row written
-    /// `takeover { revision: t }` and its row at its `path.name` written `Deleted` (record, config and tags
-    /// kept), releasing the name its mesh's re-created node-admin takes. Each write that cannot be made is
-    /// named on its own span.
-    async fn release_lost_admin(&self, me_name: &PathName, lost: &HandoverBirth, t: u64) {
-        let view = self.topology.read().await.clone();
-        let Some(node) = view.births().find(|n| n.node_id == lost.node_id && n.incarnation_id.as_ref() == Some(&lost.incarnation)).cloned() else {
-            tracing::info_span!("rdm.node_admin.node.reject.via-takeover-release", node = %me_name, lost = %births(lost), t, reason = "the lost birth is not in this admin's view: its name is released by no row here")
-                .in_scope(|| tracing::info!("the lost birth's name is not released"));
-            return;
-        };
-        let proof = format!("takeover {{ revision: {t} }}");
-        let exit = self.records.put_exit(&node, None, &proof).await;
-        // The view the row's writer is judged on names the lost birth gone from here on: its mesh has no
-        // live primary, and the fabric-primary writes its rows (node-mesh-join.md step 10).
-        if exit.is_ok() {
-            (self.project_view)().await;
-        }
-        let deleted = match (&exit, self.records.rows.get()) {
-            (Ok(_), Some(rows)) => rows.deleted(&node, &format!("takeover:{t}")).await.map_err(|e| e.to_string()),
-            (Ok(_), None) => Err("this admin holds no node-row writer yet".into()),
-            (Err(e), _) => Err(format!("its exit-proof row is not written, so its row is not deleted: {e}")),
-        };
-        tracing::info_span!(
-            "rdm.node_admin.node.delete.via-takeover-release",
-            node = %me_name,
-            subject = %node.name,
-            lost = %births(lost),
-            t,
-            exit_proof = %proof,
-            exit_proof_row = %exit.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()),
-            row = %deleted.as_ref().map(|_| "deleted".to_string()).unwrap_or_else(|e| e.clone()),
-        )
-        .in_scope(|| tracing::info!("the birth the take-over superseded holds nothing any more: its name is released for its mesh's re-created node-admin"));
-        (self.project_view)().await;
-    }
-
-    /// An admin's side of a take-over: `lost`, the fabric-primary's record, names a birth unheard past the
-    /// staleness floor. The winner is the election's in this admin's view: this admin itself becomes
-    /// fabric-primary; any other is told (`TakeOverFabricPrimary`). `None` when the election names no admin.
-    pub async fn propose_take_over(self: &Arc<Self>, lost: &rdm_core::Primary) -> Option<Reply> {
-        let view = self.topology.read().await.clone();
-        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
-        let lost_birth = HandoverBirth { mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), incarnation: lost.incarnation.clone() };
-        let winner = crate::election::fabric_successor_after(&nodes, &self.incumbency(), &lost_birth)?;
-        let to = birth_of(&winner)?;
-        if winner.node_id == self.node_id {
-            return Some(self.take_over(lost_birth, lost.revision, to, None).await);
-        }
-        let req = Request::TakeOverFabricPrimary { fabric: self.fabric.clone(), lost: lost_birth.clone(), expected_revision: lost.revision, successor: to.clone(), proposer: self.me_birth() };
-        let reply = match self.call_once(&winner.node_id, &req, &CallOptions::default()).await {
-            Ok(r) => r,
-            Err(why) => rdm_core::reply::handover::not_ready(why),
-        };
-        tracing::info_span!("rdm.node_admin.primary.update.via-take-over-proposed", node = %self.held_name(), lost = %births(&lost_birth), expected_revision = lost.revision, winner = %births(&to), outcome = reply.name())
-            .in_scope(|| tracing::info!("the fabric-primary is unheard past the staleness floor: the winner is told"));
-        Some(reply)
-    }
-
-    /// End what `fabric.get` surfaces of a take-over once the fabric-primary's record no longer names its
-    /// lost birth at its revision.
-    pub fn release_held_takeover(&self) {
-        let mut held = self.held_takeover.lock().unwrap();
-        let Some(h) = held.as_ref() else { return };
-        let record = self.membership.seats().fabric();
-        if !record.as_ref().is_some_and(|r| r.is_birth(&h.lost.node_id, &h.lost.incarnation) && r.revision == h.expected_revision) {
-            *held = None;
         }
     }
 
@@ -842,15 +702,6 @@ pub use rdm_node::member_handover::{serve_member, MemberDoor, MemberSlot};
 
 /// The door a running admin fills once it holds a view.
 pub type HandoverSlot = Arc<OnceLock<Arc<HandoverDoor>>>;
-
-/// What `fabric.get` surfaces of a take-over (elections §5).
-pub type HeldTakeovers = Arc<std::sync::Mutex<Option<rdm_core::views::HeldTakeover>>>;
-
-/// The take-over an admin made of the fabric-primary, while the fabric-primary is handed back to no one
-/// yet (fabric-recovery.md step 4: "Once the node at the lost fabric-primary's path.name ... has been
-/// ReadyForTraffic for one staleness floor, it is handed back"): the revision it took the fabric-primary
-/// at, the lost birth and itself. The hand-back's key is `handback:<path.name>@<revision>`.
-pub type TakenOver = Arc<std::sync::Mutex<Option<(u64, HandoverBirth, HandoverBirth)>>>;
 
 /// Serve node.primary.update on this admin. Until `slot` is filled a call is `NotReady`.
 pub fn serve(b: ServerBuilder, slot: HandoverSlot) -> ServerBuilder {
