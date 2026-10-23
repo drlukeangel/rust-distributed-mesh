@@ -464,10 +464,18 @@ impl AfterTheHook {
                 };
                 step.record("served_by", tracing::field::display(&who));
                 step.record("unchanged", !read.unchanged.is_empty());
-                if let Err(e) = step.in_scope(|| read.adopt_rafka_time(&rafka_time, &membership, &name, &path.mesh, &node_id, &who)) {
-                    return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not adopt rafka-time from {who}: {e}") }, after));
+                match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &membership, &name, &path.mesh, &node_id, &who)) {
+                    Ok(_) => {
+                        step.record("outcome", "adopted");
+                    }
+                    // A primary takes rafka-time only from the fabric-primary (node-identity-and-state.md
+                    // §2.5): any other answer is refused by name and the primary keeps the rafka-time it
+                    // holds (`crate::rafka_time`). A re-entering fabric-primary holds the fabric's time.
+                    Err(crate::topology_read::TimeNotAdopted::Refused(refusal)) => {
+                        step.record("outcome", format!("kept: {refusal}").as_str());
+                    }
+                    Err(e) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not adopt rafka-time from {who}: {e}") }, after)),
                 }
-                step.record("outcome", "adopted");
             }
             None => {
                 step.record("outcome", "no authority: the rafka-time this start adopted is kept");
