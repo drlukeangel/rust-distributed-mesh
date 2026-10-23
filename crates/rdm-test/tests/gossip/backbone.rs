@@ -399,11 +399,19 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // build.create at the isolated admin is refused: while the fabric-primary's record names a holder it
     // does not hear, its view names no fabric-primary (Q122, fabric-node-lifecycle-elections.md: "no
     // node-admin is elected"), so it accepts nothing and names nobody.
+    // The carrier follows a refusal that names a fabric-primary (its view may still name the one it no
+    // longer hears): what is asserted is the isolated admin's own refusal, never where the call ended.
     let lone_path: PathName = lone_name.parse().unwrap();
-    match Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await {
-        Err(e) => assert!(e.to_string().contains("not-fabric-primary"), "the isolated {lone_name} refuses build.create as not the fabric-primary: {e}"),
-        Ok(stream) => panic!("the isolated {lone_name} accepted build.create {}", stream.build_id()),
-    }
+    let asked_at = now_ns();
+    let _ = Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await;
+    wait_for(&format!("the isolated {lone_name} refuses build.create as not the fabric-primary"), Duration::from_secs(15), || {
+        let spans = estate.spans();
+        let lone_name = lone_name.clone();
+        async move { named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().any(|sp| attr(sp, "node") == lone_name && start(sp) >= asked_at).then_some(()) }
+    })
+    .await;
+    let accepted_by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| attr(sp, "node") == lone_name && start(sp) >= asked_at).map(|sp| attr(sp, "build_id")).collect();
+    assert!(accepted_by_lone.is_empty(), "the isolated {lone_name} accepted no Build: {accepted_by_lone:?}");
     // Held past the decision: every view an admin answers holds at most one primary per cohort.
     let until = std::time::Instant::now() + rdm_transport::membership::staleness_floor() * 2;
     while std::time::Instant::now() < until {
