@@ -23,8 +23,16 @@ RDM holds every object it writes, whole, in its cache. A write is:
 4. once storage answers, replace the cached object with the updated one.
 
 No write reads storage first: no read-modify-write and no version check. Storage stores and returns
-whole objects and decides nothing (Q109). Storage is read only to fill a cache: at boot, and when an
-admin becomes its mesh's primary and folds its mesh's records.
+whole objects and decides nothing (Q109). Storage is read only to fill a cache, and the cache is filled
+whenever write ownership of an object is acquired, before any mutation of it is accepted: at boot; when an
+admin becomes its mesh's primary and folds its mesh's records; when the fabric-primary becomes a mesh's
+writer because its last node-admin is gone, loading that mesh's records then and never from its boot-time
+copy; when a node-admin becomes fabric-primary, loading the Fabric record.
+
+One writer per object does not serialize two tasks inside that writer: a declaration handler and a
+renewal task can both take the cached record, and the second write would erase the first. Every mutation
+of an object holds that object's own lock from the cache read through the mutation, the store's
+acknowledgment and the cache replacement; two updates of one object never overlap.
 
 Because the cache is the copy a write starts from, each object has exactly one writer, the writer map's:
 the fabric-primary writes the fabric record and its own mesh's records; each mesh-primary writes its own
@@ -36,13 +44,16 @@ writes only the records its own attempt's operations require (Q122), as today.
 
 | Object | Key | What it holds | Writer | Cache that holds it |
 |---|---|---|---|---|
-| Fabric record | `fabric_id` | identity (id, name); the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
+| Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
 | Mesh record | mesh id | id, name, dead; the states entered (Pending, ReadyForTraffic, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
-| Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
+| Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates; `predecessor`, the exact birth this node replaced, written at its create from the recovery attempt that named it (`inherited_by` points the other way and is not followed backwards). The record keeps the facts of its current incarnation and its predecessor's, nothing older: the Build journal keeps the history, and a record rewritten on every silence mark stays small | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
 
-Outside the records, unchanged: the fabric name's claim and each mesh's in-flight row are claims, an
-insert that fails when the key is held, raced by design and never updated; the Build journal; a node's
-connections log; an admin's own row, contacts and launch handles in its data dir.
+Outside the records, unchanged: the fabric name's claim, each mesh's in-flight row and each node's name
+claim (`NameHeld { by: node.id }`, node-name-update.md) are claims, an insert that fails when the key is
+held, raced by design and never updated; the node's name claim is the path.name-to-node-id lookup a rename
+moves and recovery uses to find the record at a path.name, so a rename is a claim move plus one record
+write; the Build journal; a node's connections log; an admin's own row, contacts and launch handles in its
+data dir.
 
 A record's facts stay independent inside it, keyed by their full identity: one declared entry per state
 (a late Pending never removes ReadyForTraffic; the reader takes the greatest), one effect per
@@ -62,7 +73,9 @@ on the cached record and keeps its effects; the record is then written whole.
   own (issued by the fabric-primary): the mesh-primary, on its own record, when it installs the cert.
 - **Signing cert dates.** A node-admin's: its mesh-primary, on that admin's record: its own at its
   install; another admin's when that admin's `IssuerUpdated` returns through it as the carrier. The
-  fabric-primary reads the records to schedule renewals and writes none of another mesh's.
+  fabric-primary schedules renewals from the dates it issued and the expiry the reply confirmed, kept in
+  its own cache, never by reading storage; a successor fabric-primary reads the records when it acquires
+  ownership. It writes none of another mesh's.
 
 ### Durability
 
@@ -91,10 +104,9 @@ and is read by id.
 
 ### Open in this proposal
 
-- **A predecessor's facts by path.name.** A birth recovered over a fresh data dir answers its
-  predecessor's `data-dir-lost` today through a path.name index of the fact. With the fact on the
-  predecessor's record, the new record names the record it replaced (the existing `inherited_by` link,
-  read the other way); the read follows it. To be confirmed against node-recovery.md before building.
+- None. A birth recovered over a fresh data dir reads its predecessor's `data-dir-lost` through the
+  `predecessor` reference on its own record (The objects), written at its create; `inherited_by` points
+  from predecessor to successor and is not followed backwards.
 
 ### Page lines, old to new (for Luke's yes)
 
@@ -136,6 +148,14 @@ and is read by id.
 - step 4, old: "4. The fabric-primary writes the signing cert's issue date and expiry on that admin's node row."
 - step 4, new: "4. The admin's mesh-primary writes the signing cert's issue date and expiry on the admin's record: its own at its install, another admin's when its `IssuerUpdated` returns through the mesh-primary as the carrier."
 
+`lifecycles/node-name-update.md`, Claim and move
+- old: "The move is two writes: the row is put at the new key carrying `renamed_from: <old path.name>`, then the old key is released."
+- new: "The move is the name claim at the new path.name, then one write of the node's record carrying `renamed_from: <old path.name>`, then the old claim's release."
+
+`node-identity-and-state.md` §2.8, "It is written at Day 0 and at state-commit"
+- old: "Nothing writes the row again until [fabric.delete](lifecycles/fabric-delete.md)."
+- new: "The identity is never written again; the record's events are appended as they happen, by the fabric-primary, and the record is written whole."
+
 `storage-by-object.md` "Keys, writers, fold" (36-48): replaced by this proposal's "The rule", "The
 objects" and "Durability" sections; its map's rafka topics stand.
 
@@ -147,48 +167,11 @@ objects" and "Durability" sections; its map's rafka topics stand.
   ReadyForTraffic; two attempts' effects; lost and unreadable), on the memory and file backends;
 - the writers: the mesh-primary writes its nodes' and its mesh's records; the fabric-primary writes a
   mesh's records only while it has no primary; a mesh-primary writes its own cert and signing cert dates;
+- two different updates to one node overlapped in time (a declaration and a renewal), both present on the
+  record afterwards; sequential updates do not show this;
+- a fabric-primary that becomes a mesh's writer after its last node-admin is gone writes `Dead` from the
+  records it loaded then, not from its boot-time copy;
 - Q54: Applied answered, the writer killed before state-commit, the declared state read back from the
   Node record by its successor;
 - a renewal answered, unanswered, and answered but lost before the write;
 - mesh ReadyForTraffic recorded by the mesh-primary on the fabric-primary's `Applied`.
-
-## Corrections before building (the lead and A1, 2026-10-23)
-
-1. **One mutation at a time per object, inside the writer.** One writer per object does not serialize two
-   tasks in that one process: a declaration handler and a renewal task can both take the cached record,
-   and the second write erases the first. Every mutation of an object holds that object's own lock from
-   the cache read through the mutation, the store's acknowledgment and the cache replacement. Cell, RED
-   first: two different updates to one node overlapped in time, both present afterwards.
-2. **The cache is filled whenever write ownership is acquired, not only at boot and mesh-primary
-   acquisition.** The fabric-primary that becomes a mesh's writer because its last node-admin is gone
-   loads that mesh's records then, never from its boot-time copy; a node-admin that becomes
-   fabric-primary loads the Fabric record then. No mutation is accepted on an object until its latest
-   record is in the cache.
-3. **The issuer schedules renewals from what it issued and what the reply confirmed, not from storage.**
-   The fabric-primary issued a mesh-primary's cert and received `CertRenewed` with the installed expiry;
-   it keeps those dates in its own cache for scheduling. The mesh-primary's record is the durable copy, read
-   by a successor fabric-primary when it acquires ownership (point 2). No read of storage before a write,
-   and no refresh loop.
-4. **The record is bounded.** A node record keeps the facts of its current incarnation and its
-   predecessor's, nothing older; the Build journal keeps the history. Every silence mark rewrites the
-   whole record, so the record stays small.
-5. **The node's name claim stays a claim, keyed by path.name.** The record is keyed by node id; the name
-   claim (`NameHeld { by: node.id }`, node-name-update.md) is the path.name-to-id lookup that a rename
-   moves and that recovery uses to find the row at a path.name. node-name-update.md's rename becomes a claim
-   move plus one record write: a page line to list.
-6. **The predecessor is a reference on the successor's record.** `inherited_by` points from the
-   predecessor to the successor and cannot be followed backwards. The recovery attempt names the lost
-   birth, so the create writes `predecessor: (node_id, incarnation)` on the new record, and the data-dir and
-   other predecessor facts are read from the predecessor's record by that reference, after a restart too.
-7. **Q141's lines change and are Luke's to approve.** The installer writes its own cert and signing-cert
-   dates on its own record; the issuer only reads them (point 3). That is one writer per record with no
-   exception, but it replaces text Luke approved on node-cert-renew.md, mesh-issuer-renew.md and
-   node-issuer-update.md.
-8. **The Fabric record's identity stays immutable inside a record that is now written on every fabric
-   event**; node-identity-and-state.md §2.8's "written at Day 0 and state-commit" becomes "the identity is
-   written then and never again; the record's events are appended as they happen".
-
-Decision for Luke, once: whole records (this proposal, with the eight corrections) replace the per-fact
-keys of storage-by-object's "Keys, writers, fold" and item 8's interface in one landing by i141, or the
-per-fact keys stand. The lead recommends whole records: they are what rafka's entity store is.
-
