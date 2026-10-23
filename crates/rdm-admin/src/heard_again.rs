@@ -160,9 +160,8 @@ async fn command_mesh_join(
         if let Err(why) = runner.stopped_birth_or_live("node.mesh.join", &node.name).await.map(|(_, _, deployed)| runner.joins.expect(deployed)) {
             return format!("join-not-registered: {why}");
         }
-        // The command back is this authority's command to the birth, open in its command book from the
-        // send to the answer as every command of the authority is: the birth's lifecycle is the
-        // command's until then, and a hand-back to it waits for the answer (fabric-recovery.md step 4).
+        // The command back is this authority's command to the birth, open from the send to the answer
+        // as every command of the authority is: the birth's lifecycle is the command's until then.
         let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let _ = authority.commands.open(command.clone());
         let req = StatusRequest::JoinMesh {
