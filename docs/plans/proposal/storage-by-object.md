@@ -21,21 +21,40 @@ nodes). A store keeps no row about another object. Every RDM store maps onto a t
 |---|---|---|---|
 | Fabric | `fabric.storage` | `<system_org>.ops.fabrics` | the Fabric record (id, name) and its name's claim; the primary records; the fabric's status and its fabric events; the fabric root's issue date and the fabric CA's issue date and expiry (the root has no TTL: it changes only on `fabric.root.update`; the root and the CA stay local to each node-admin, fabric-certs.md §Custody; no receipts); the fabric's state, shutdown among its states (no topic of its own) |
 | Mesh | `mesh.storage` | `<system_org>.ops.meshes` | the mesh row (MeshId, name, dead); the mesh's status; its in-flight row |
-| Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert's expiry, its silence (`PendingReconnect`, `Dead`, none once heard), a lost or unreadable data dir, and its runtime's end (exit code, where its logs were kept); a node-admin's contacts (the births it heard), on its own node (no topic of its own); a node-admin birth's signing cert issue date and expiry. Only the dates are stored; every cert stays local to its node, like the root, and the mesh has no issuer (Luke, 2026-10-23) |
+| Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert's expiry, its silence (`PendingReconnect`, `Dead`, none once heard), a lost or unreadable data dir; a node-admin's contacts (the births it heard), on its own node (no topic of its own); a node-admin birth's signing cert issue date and expiry. Only the dates are stored; every cert stays local to its node, like the root, and the mesh has no issuer (Luke, 2026-10-23) |
 | Node connections | `connections.storage` | `<system_org>.ops.nodes.connections` | the connections log (unchanged) |
-| Build | `builds.storage` | `<system_org>.ops.builds` | the Build facts and each attempt's context; the births a Build made, as the Build's state (no topic of its own) |
+| Build | `builds.storage` | `<system_org>.ops.builds` | the Build facts and each attempt's context; the attempt's receipts name the births it made, and that is the only sense in which a birth is the Build's state: never a second copy of a node row (one writer per item) |
 
 Ruled by Luke, 2026-10-23: the rule; `ops.admin-rows` dead; shutdown is a state of the fabric; the births are
 the Build's state; the contacts are on the node; the mesh has no issuer, a node-admin's signing cert dates
-are on its node row; only cert dates are stored; Q141 A (below).
+are on its node row; only cert dates are stored; Q141 A (below). None of Q139, Q140 or Q141 is in
+`docs/plans/rulings/INDEX.md` yet: they are recorded there before any page text below lands.
+
+### Keys, writers, fold
+
+"A row lives on the object" is not one compacted record per object. Every fact is its own row, keyed under
+the object it describes: a node's facts under its path.name and, where the fact is a birth's, its exact
+birth `(node_id, incarnation)`, then the fact's name (`declared`, `operation/<op>`, `silence`, `cert`,
+`data-dir`); the mesh's and the fabric's likewise. Each key has one writer and no write replaces another
+writer's row (Q109: the storage decides nothing, the writer decides before it writes, every reader folds).
+A reader folds the rows of one object into its view; a cycle reset deletes the birth's declared facts and
+keeps its operation effects, as today. A tombstone removes one key, never an object's other facts. The
+object's topics are compacted by key (Q140, below), so the newest row of each key is what survives.
+
+**The writer of a mesh's and its nodes' facts** is that mesh's mesh-primary; while the mesh has no
+primary it is the fabric-primary ([node-mesh-join.md](../../architecture/lifecycles/node-mesh-join.md) names it the
+accepting primary then; [mesh-create.md](../../architecture/lifecycles/mesh-create.md) has it set the first node-admin's
+ReadyForTraffic; [mesh.delete](../../architecture/lifecycles/mesh-delete.md) has it act for the last admin), and
+ownership passes to the mesh-primary when there is one. This is the one acting case; fabric recovery's
+executor is not it (Q122: it takes no role; it writes only its own attempt's operations' rows).
 
 ### What moves, row by row (`crates/rdm-admin/src/status_storage.rs`)
 
 | Row today | Goes to | Writer |
 |---|---|---|
-| `MeshStatusRow` | the mesh's status, `mesh.storage` / `ops.meshes` | the mesh-primary of that mesh; the fabric-primary for a mesh it acts for |
+| `MeshStatusRow` | the mesh's status, `mesh.storage` / `ops.meshes` | the mesh-primary of that mesh; the fabric-primary while the mesh has no primary (Keys, writers, fold) |
 | `FabricEventRow` | the fabric's events, `fabric.storage` / `ops.fabrics` | the fabric-primary |
-| `NodeDeclaredRow` | the birth's declared state, `nodes.storage` / `ops.nodes` | the node's mesh-primary |
+| `NodeDeclaredRow` | the birth's declared state, `nodes.storage` / `ops.nodes` | the node's mesh-primary; the fabric-primary while the mesh has no primary (the joining birth's Pending, `put_node_declared_of` today) |
 | `NodeOperationRow` | the birth's operation effects, `nodes.storage` / `ops.nodes` | the node's mesh-primary |
 | `NodeSilenceRow` | the birth's silence, `nodes.storage` / `ops.nodes` | the node's mesh-primary (its tickle loop, as today: `status_storage.rs:136`) |
 | `NodeDataDirLostRow`, `NodeDataDirUnreadableRow` | the birth, `nodes.storage` / `ops.nodes` | the node's mesh-primary |
@@ -43,14 +62,15 @@ are on its node row; only cert dates are stored; Q141 A (below).
 | `NodeCertReceiptRow` | gone (Q141) | |
 | `MeshIssuerRow` | the node-admin birth's signing cert issue date and expiry, `ops.nodes` | written on that admin's `IssuerUpdated` (Q141) |
 | `MeshIssuerReceiptRow` | gone (Q141) | |
-| new: the runtime's end | the birth, `ops.nodes`: exit code, where its logs were kept | the delete; then the provider removes the exited runtime |
+| a dead runtime's end (the problem's two exited containers) | not in this proposal: Q111 removed the exit rows and no page names such a row; it needs one page sentence on node-delete first, and no field nothing reads | |
 
 `StatusStorage` and `MemoryStatusStorage` go; their methods move to the object stores' interfaces
 (`fabric_storage`, `storage::{MeshStorage, NodesStorage}`). Callers today: `admin/{boot,mesh_delete,records,recovery,runner}.rs`,
 `admin.rs`, `cert_renewal.rs`, `control_plane.rs`, `fabric_state.rs`, `join.rs`, `mesh_delete.rs`,
 `node_properties.rs`, `offline.rs`, `status_declare.rs`, `status_rpc.rs`, `storage_backend.rs`, `views.rs`,
-`rdm-test/src/rig.rs` and 16 test files. Old `status.storage` records are read once on upgrade and written
-to their object (durable format moved).
+`rdm-test/src/rig.rs` and 16 test files. No migration: this moves durable formats, and the canon's marker
+(`durable format moved`) routes such a landing to a rebirth, never a restage, so no old `status.storage`
+record is ever read, and no issue is ever confused with a receipt by a copy.
 
 ### Q141 A: the date on the node row is the receipt (Luke, 2026-10-23)
 A renewal writes the cert's dates once, when the node answers, from what it answered. An unanswered renewal
@@ -71,12 +91,16 @@ Step 5: old "The issuer records the receipt on the row. The old cert expires on 
 
 Step 4: old "The row records the last receipt. The old issuer expires on its own." new "Each admin's node row holds the dates it answered. The old issuer expires on its own."
 
+### Before any row moves
+- **Retention first (Q140).** `ops.nodes` and `ops.builds` are delete, 7 days, and not compacted (rafka-v2
+  `gateway/tests/functional/store_plane_policy_at_birth.rs:120-128` asserts exactly that, and that only
+  fabrics and meshes override). A node row or Build record moved there today expires a week after its last
+  write. Both planes become compacted by key, in rafka-v2, with a cell that proves it, before any row moves.
+- **The rulings recorded.** Q139 (withdrawn), Q140 and Q141 go into the rulings index with Luke's words.
+
 ### Open
 - `ops.nodes.offline` is rafka's own (`NodeOfflineRecord`: one observer's offline episode of one node, with a
   broker's refill; `rafka-entity-topology/src/offline.rs:147`). No RDM row maps to it, so Q139 is withdrawn.
-- Q140: `ops.nodes` and `ops.builds` compacted like `ops.fabrics` and `ops.meshes`. Today they are delete,
-  7 days (rafka-v2 `gateway/tests/functional/store_plane_policy_at_birth.rs:126`), so every node row and
-  Build record expires 7 days after its last write.
 - Page text, for Luke's yes before the build: a storage-provider page with this map; fabric-certs.md:104
   ("a status-row kind") to "a row on the birth in `nodes.storage`"; the "mesh issuer" / "issuer row"
   wording in `mesh-issuer-renew.md` and `node-issuer-update.md` (step 1, Steps) to the node-admin's signing
