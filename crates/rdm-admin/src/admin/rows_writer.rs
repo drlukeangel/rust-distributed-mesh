@@ -131,6 +131,8 @@ impl MeshRowsWriter {
             }
             match self.nodes.put_contact(&r).await {
                 Ok(()) => {
+                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %r.name, node_id = %r.node_id, is_primary = ?r.is_primary, is_fabric_primary = ?r.is_fabric_primary, outcome = "written")
+                        .in_scope(|| tracing::info!("the node's row is put whole, the primaries the book holds recorded on it"));
                     written.insert(r.node_id.clone(), r);
                 }
                 Err(e) => {

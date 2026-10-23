@@ -426,12 +426,15 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     drop(isolation);
     // The estate was entered at the fabric-primary's first birth, which the isolated admin's fabric
     // recovery may have re-created: it is entered again through a node-admin the cut never touched.
-    estate.enter(&"mesh2.admin.1".parse().unwrap()).await;
+    let entry: PathName = "mesh2.admin.1".parse().unwrap();
+    estate.enter(&entry).await;
     // Healed: every pre-cut path.name holds exactly one live ReadyForTraffic birth, the same in every
-    // admin's view (a new NodeId where its recovery re-created it).
+    // admin's view (a new NodeId where its recovery re-created it). The untouched admin is read first:
+    // its view names the birth a re-created admin holds now, which is how that admin is reached.
+    let in_order: Vec<PathName> = std::iter::once(entry.clone()).chain(admins.iter().filter(|a| **a != entry).cloned()).collect();
     let converged = wait_for("every admin holds one live birth per pre-cut path, the same in each", Duration::from_secs(180), || async {
         let mut want: Option<BTreeMap<String, String>> = None;
-        for admin in &admins {
+        for admin in &in_order {
             let view: Vec<Value> = estate.node_views_at(admin).await?.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
             one_primary(&view).ok()?;
             let mut at = BTreeMap::new();
