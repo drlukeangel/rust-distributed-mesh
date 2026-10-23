@@ -21,7 +21,7 @@ node.create of a node-admin into the live mesh.)
 | Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on a proof of termination |
 | Execution | The mesh-primary runs the recovery as the next attempt of the current Build and reports its receipts up the attempt's stream; the fabric-primary writes the Build records ([build.md](../build.md)) |
 | Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
-| Retained | path.name, placement, config (seeded from the deleted row); the inherited data dir and endpoint key when the verdict is `exited` |
+| Retained | path.name, placement, config and the executable (both seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's); the inherited data dir and endpoint key when the verdict is `exited` |
 | New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
 | App part | The new node's start runs `before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated one |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |

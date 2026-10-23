@@ -34,7 +34,9 @@ is connected to it and nothing routes to it; it is stopped after. A stopped node
    `<name>.old`, with its incarnation and data retained. If no rollback is wanted, node[1].delete
    releases the identity instead of the rename and the stop.
 3. [node.create](node-create.md) of node[2] at `<name>`, free only because the row above moved the
-   key: a re-birth with a new node.id, incarnation and the specified bin. Its row inherits config and
+   key: a re-birth with a new node.id, incarnation and the specified bin. The Build fixes the bin on the
+   recipe's Create step, so every admin that runs or resumes the step launches that one, and the row
+   records it beside `config`. Its row inherits config and
    tags from the predecessor row (the retained `<name>.old` row, or the Deleted row at `<name>`),
    whose labels leave the active tags index. Its ready-for-traffic is the cutover: `path.name` now
    resolves to the successor. A claim that finds `<name>` held is refused `NameHeld { by: node[1] }`

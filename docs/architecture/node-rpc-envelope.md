@@ -1403,7 +1403,9 @@ pub enum BuildChange {
     CreateMesh { mesh: MeshCounts },
     RemoveMesh { mesh: String },
     Restart { node: PathName },
-    // RecipeStep = Create | Stop | Update | Start | Delete: one node primitive per step.
+    // RecipeStep = Create | Stop | Update | Start | Delete: one node primitive per step. Create names
+    // the node and the executable binding the Build fixes for it (launch id, hash); the executing
+    // admin launches that binding, verified at launch, whichever admin runs or resumes the step.
     // A recipe is one Build of node primitives (lifecycles/node-replace.md).
     Recipe { steps: Vec<RecipeStep> },
     ConnectionsDelete { node: PathName },
