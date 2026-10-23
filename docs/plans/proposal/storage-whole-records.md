@@ -153,8 +153,10 @@ and is read by id.
 - new: "The move is the name claim at the new path.name (`NameHeld { by: node.id }` names the node it is for), then one write of the node's record carrying `renamed_from: <old path.name>`, then the old claim's release. The step is resumed from its receipts like every Build step: a retry, or a successor writer resuming it, finds the new name claimed by this node and continues from the record write; a claim held by this node whose record does not carry the name is that unfinished step, never `NameHeld` against itself. A name claim is abandoned only by the step's named failure, which releases it."
 
 `lifecycles/node-name-update.md`, the failure line
-- old: "the put at the new key fails: nothing written, the row stands at the old key"
-- new: "the record write after the claim fails: the claim stands, named by this node; the resumed step writes the record, or the step's named failure releases the claim; the record stands under the old name until then"
+- old (line 83): "**The put at the new key fails**: a named storage error, nothing written, the old name stands."
+- new: "**The record write after the claim fails**: a named storage error; the claim stands, named by this node, and the record stands under the old name; the resumed step writes the record, or the step's named failure releases the claim."
+- old (line 84): "**The put succeeded and the release of the old key fails or is interrupted**: the node holds both"
+- new: "**The record is written and the release of the old claim fails or is interrupted**: the node holds both"
 
 `node-identity-and-state.md` §2.8, "It is written at Day 0 and at state-commit"
 - old: "Nothing writes the row again until [fabric.delete](lifecycles/fabric-delete.md)."
