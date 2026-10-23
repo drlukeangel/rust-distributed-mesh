@@ -35,10 +35,9 @@ impl StorageBackend for ConsumerBackend {
     }
 
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
-        let opened = self.0.open(scope, embedding).await;
-        tracing::info_span!(target: "rshape", "rafka.storage.create.via-consumer-backend", fabric_id = %scope.fabric_id, mesh = %scope.own_mesh, outcome = if opened.is_ok() { "opened" } else { "refused" })
-            .in_scope(|| tracing::info!("the consumer's backend opened the node-admin's boundaries"));
-        opened
+        // Where the boundaries write, as the boot's storage span records it: this backend, over the file
+        // backend's own answer.
+        self.0.open(scope, embedding).await.map(|b| StorageBoundaries { writes_to: format!("rshape-backend:{}", b.writes_to), ..b })
     }
 }
 
@@ -48,8 +47,8 @@ struct ReadyHook;
 #[async_trait]
 impl LifecycleHook for ReadyHook {
     async fn run(&self, ctx: &HookContext) -> Result<(), String> {
-        tracing::info_span!(target: "rshape", "rafka.node.update.via-ready-hook", node = %ctx.target, transition_id = %ctx.transition_id, attempt = ctx.attempt)
-            .in_scope(|| tracing::info!("the consumer's hook ran before the node's ReadyForTraffic commit"));
+        // RDM spans each hook run (`rdm.node_admin.lifecycle_hook.update.via-transition`, its `hook_id`).
+        tracing::info!(target: "rshape", node = %ctx.target, "the consumer's hook ran before the node's ReadyForTraffic commit");
         Ok(())
     }
 }
