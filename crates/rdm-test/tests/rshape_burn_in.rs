@@ -3920,7 +3920,8 @@ const STOP_NODE_SEND_BOUND: Duration = Duration::from_secs(5);
 /// call to it ends in a typed uncertain outcome (never a reply); unheard past the staleness floor, its
 /// mesh-primary's node investigation reads it held (`os-stopped`) and re-creates it at the same path.name
 /// with a new NodeId under the current Build, which then serves; the held birth's NodeId is listed in no
-/// view again, and no Build is minted.
+/// view again, and no Build is minted. Released, the held birth comes back and is refused, reported and
+/// terminated (Q128).
 async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
@@ -3960,6 +3961,19 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
     assert_eq!(after_call["reply"]["result"], json!({"stored": true}), "{node}: the re-created node serves: {after_call}");
     assert_eq!(after_call["reply"]["incarnation_id"], ready["incarnation_id"], "{node}: served by the re-created birth: {after_call}");
     let release_ack = held.release();
+    // The released birth comes back: refused by every book, reported by its mesh-primary, and its runtime
+    // terminated by the fabric-primary's TerminateRuntime, an attempt of the current Build
+    // (node-investigation.md, Q128). The run waits for both, so its next write is the Build's next attempt.
+    let t = Instant::now();
+    loop {
+        let b = a.build(f, &fabric_build).await.unwrap_or(Value::Null);
+        a.observe_build(&b);
+        if !rt_alive(&rt) && b["state"] == "complete" {
+            break;
+        }
+        assert!(t.elapsed() < bound, "{node}: the released held birth was not terminated with the Build complete within {bound:?}: alive={} build {b}", rt_alive(&rt));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     let rec = json!({
         "node": node, "node_id": node_id, "incarnation_id": inc, "hold_ack": hold_ack, "hold_ns": hold_ns, "release_ack": release_ack,
         "call_to_held_node": {"bucket": format!("{held_bucket:?}"), "reason": held_call["reason"], "outcome": held_call["outcome"]},
