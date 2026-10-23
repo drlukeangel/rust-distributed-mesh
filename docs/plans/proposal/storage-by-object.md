@@ -76,8 +76,9 @@ dir, beside `node-key`, `ca-secret` and `fabric-ca`: a restarting admin reads th
 store, to learn which fabric and mesh it belongs to, and cannot read a topic whose fabric it does not yet
 know. They are a bootstrap seed, not a record of the fabric; what the fabric needs to know of a birth's
 runtime is on the node in `nodes.storage`. Every record RDM keeps of the fabric is in one of the five
-stores above, and each store is one rafka topic. `ops.nodes.offline` is rafka's own and `topology-nodes`
-is the nodes projection, neither a store.
+stores above, and each store is one rafka topic. `ops.nodes.offline` is folded into `ops.nodes` (Luke,
+2026-10-23): a node's offline episodes are facts on the node, like its silence; `topology-nodes` is the
+nodes projection, not a store.
 
 ### What moves, row by row (`crates/rdm-admin/src/status_storage.rs`)
 
@@ -177,6 +178,8 @@ Step 4: old "The row records the last receipt. The old issuer expires on its own
   write. Both planes become compacted by key, in rafka-v2, with a cell that proves it, before any row moves.
 
 ### Open
-- `ops.nodes.offline` is rafka's own (`NodeOfflineRecord`: one observer's offline episode of one node, with a
-  broker's refill; `rafka-entity-topology/src/offline.rs:147`). No RDM row maps to it, so Q139 is withdrawn.
+- `ops.nodes.offline` is folded into `ops.nodes` (Luke, 2026-10-23): rafka's `NodeOfflineRecord` (one observer's
+  offline episode of one node, with a broker's refill; `rafka-entity-topology/src/offline.rs:147`) becomes a
+  fact on the node, keyed under it like every other, written by the observer that owns the episode. No RDM
+  row maps to it, so Q139 stays withdrawn; the fold is i141's.
 - A storage-provider page with this map (i141, with the rafka mapping).
