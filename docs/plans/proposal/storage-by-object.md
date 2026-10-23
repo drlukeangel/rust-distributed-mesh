@@ -17,10 +17,10 @@ nodes). A store keeps no row about another object. `status.storage` goes.
 |---|---|---|---|
 | Fabric | `fabric.storage` | `<system_org>.ops.fabrics` | the Fabric record (id, name) and its name's claim; the primary records; the fabric's status and its fabric events; the fabric root, CA and their receipts; the fabric's state, shutdown among its states (no topic of its own) |
 | Mesh | `mesh.storage` | `<system_org>.ops.meshes` | the mesh row (MeshId, name, dead); the mesh's status; its in-flight row; its issuer and the issuer's receipts |
-| Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert and the cert's receipts, a lost or unreadable data dir, and its runtime's end (exit code, where its logs were kept) |
+| Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert and the cert's receipts, a lost or unreadable data dir, and its runtime's end (exit code, where its logs were kept); a node-admin's contacts (the births it heard), on its own node (no topic of its own) |
 | Node offline | `nodes.storage` | `<system_org>.ops.nodes.offline` | a node's silence: each observer's offline verdict about it |
 | Node connections | `connections.storage` | `<system_org>.ops.nodes.connections` | the connections log (unchanged) |
-| Build | `builds.storage` | `<system_org>.ops.builds`, `<system_org>.ops.builds.births` | the Build facts and each attempt's context; the births index (unchanged) |
+| Build | `builds.storage` | `<system_org>.ops.builds` | the Build facts and each attempt's context; the births a Build made, as the Build's state (no topic of its own) |
 
 ### What moves
 - `status.storage` rows: a Mesh status to `ops.meshes`; a fabric event to `ops.fabrics`; a birth's declared
@@ -32,7 +32,5 @@ nodes). A store keeps no row about another object. `status.storage` goes.
   their object (durable format moved).
 
 ### Open
-- `ops.nodes.contacts` (a node-admin's restart hints: the births it heard). Keep it as the node object's
-  contact list in `ops.nodes`, or keep the topic.
 - Pages: a storage-provider page with this map; fabric-certs.md:104 ("a status-row kind") changes to "a row
   on the birth in `nodes.storage`".
