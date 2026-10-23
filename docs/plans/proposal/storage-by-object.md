@@ -33,9 +33,14 @@ are on its node row; only cert dates are stored; Q141 A (below). None of Q139, Q
 ### Keys, writers, fold
 
 "A row lives on the object" is not one compacted record per object. Every fact is its own row, keyed under
-the object it describes: a node's facts under its path.name and, where the fact is a birth's, its exact
-birth `(node_id, incarnation)`, then the fact's name (`declared`, `operation/<op>`, `silence`, `cert`,
-`data-dir`); the mesh's and the fabric's likewise. Each key has one writer and no write replaces another
+the object it describes, with the complete identity today's status rows carry, so that no later or
+delayed write can erase an independent fact: a node's facts under its path.name and, where the fact is a
+birth's, its exact birth `(node_id, incarnation)`, then the fact's full name:
+`declared/<state>` (one row per state, as `NodeDeclaredRow::key` is today, so a delayed `Pending` never
+replaces `ReadyForTraffic`; the fold reads them in lifecycle order), `operation/<build_id>/<attempt>/<operation>`
+(one row per effect, so a later attempt never erases an earlier attempt's), `silence`, `cert`,
+`signing-cert` (a node-admin's), `data-dir-lost`, `data-dir-unreadable`, `runtime`; the mesh's and the
+fabric's likewise. Each key has one writer and no write replaces another
 writer's row (Q109: the storage decides nothing, the writer decides before it writes, every reader folds).
 A reader folds the rows of one object into its view; a cycle reset deletes the birth's declared facts and
 keeps its operation effects, as today. A tombstone removes one key, never an object's other facts. The
@@ -54,6 +59,14 @@ accepting primary then; [mesh-create.md](../../architecture/lifecycles/mesh-crea
 ReadyForTraffic; [mesh.delete](../../architecture/lifecycles/mesh-delete.md) has it act for the last admin), and
 ownership passes to the mesh-primary when there is one. This is the one acting case; fabric recovery's
 executor is not it (Q122: it takes no role; it writes only its own attempt's operations' rows).
+
+**The writer, per fact kind.** `declared`, `operation`, `silence`, `data-dir-lost`, `data-dir-unreadable`
+and `runtime`: the node's mesh-primary (the fabric-primary while the mesh has no primary). `cert` and
+`signing-cert`: the issuer, which is not always the mesh-primary ([fabric-certs.md](../../architecture/fabric-certs.md)):
+a member's cert is issued and its dates written by its mesh-primary; a mesh-primary's own cert and a
+node-admin's signing cert are issued and their dates written by the fabric-primary, while that mesh's
+primary exists (`cert_renewal.rs::renewed_by` today). One writer per key still holds: each key has
+exactly one, named here; an implementation refuses nothing a named writer writes.
 
 ### What moves, row by row (`crates/rdm-admin/src/status_storage.rs`)
 
