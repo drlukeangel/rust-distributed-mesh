@@ -140,7 +140,7 @@ and is read by id.
 - Receipt, old: "On each admin's `IssuerUpdated` its node row takes its signing cert issue date and expiry;"
 - Receipt, new: "On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install);"
 - step 1, old: "The fabric-primary's tick reads the signing cert dates on each mesh's node-admin rows;"
-- step 1, new: "The fabric-primary's tick reads the signing cert dates on each mesh's node-admin records;"
+- step 1, new: "The fabric-primary's tick reads the signing cert dates it holds in its cache, the dates it issued and each admin's `IssuerUpdated` confirmed;"
 - step 4, old: "4. Each admin's node row holds the dates it answered."
 - step 4, new: "4. Each admin's record holds the dates it answered, written by its mesh-primary."
 
@@ -150,7 +150,11 @@ and is read by id.
 
 `lifecycles/node-name-update.md`, Claim and move
 - old: "The move is two writes: the row is put at the new key carrying `renamed_from: <old path.name>`, then the old key is released."
-- new: "The move is the name claim at the new path.name, then one write of the node's record carrying `renamed_from: <old path.name>`, then the old claim's release."
+- new: "The move is the name claim at the new path.name (`NameHeld { by: node.id }` names the node it is for), then one write of the node's record carrying `renamed_from: <old path.name>`, then the old claim's release. The step is resumed from its receipts like every Build step: a retry, or a successor writer resuming it, finds the new name claimed by this node and continues from the record write; a claim held by this node whose record does not carry the name is that unfinished step, never `NameHeld` against itself. A name claim is abandoned only by the step's named failure, which releases it."
+
+`lifecycles/node-name-update.md`, the failure line
+- old: "the put at the new key fails: nothing written, the row stands at the old key"
+- new: "the record write after the claim fails: the claim stands, named by this node; the resumed step writes the record, or the step's named failure releases the claim; the record stands under the old name until then"
 
 `node-identity-and-state.md` §2.8, "It is written at Day 0 and at state-commit"
 - old: "Nothing writes the row again until [fabric.delete](lifecycles/fabric-delete.md)."
@@ -169,6 +173,8 @@ objects" and "Durability" sections; its map's rafka topics stand.
   mesh's records only while it has no primary; a mesh-primary writes its own cert and signing cert dates;
 - two different updates to one node overlapped in time (a declaration and a renewal), both present on the
   record afterwards; sequential updates do not show this;
+- a rename's writer killed after the new name claim and before the record write: the resumed step finds
+  its own claim and completes the rename; a second rename to that name by another node is `NameHeld`;
 - a fabric-primary that becomes a mesh's writer after its last node-admin is gone writes `Dead` from the
   records it loaded then, not from its boot-time copy;
 - Q54: Applied answered, the writer killed before state-commit, the declared state read back from the
