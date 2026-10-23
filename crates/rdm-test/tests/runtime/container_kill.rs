@@ -30,8 +30,9 @@ fn docker_state(id: &str) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// CONTRACT: a killed container is proven terminal by the provider inspecting its exact immutable
-/// id, and that proof alone opens the recovery attempt of the accepted Build, which re-creates the node
+/// CONTRACT (node-recovery.md step 3, Q111): a killed container is read exited by node investigation's
+/// provider step on its exact immutable id, and that verdict opens the recovery attempt of the accepted
+/// Build, which re-creates the node
 /// at the same path in a new container under a new node id and incarnation; the
 /// container id never stands for the new runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -79,10 +80,10 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let recreated = estate.container_of(NODE).await.expect("the re-created node runs in a container");
     assert_ne!(recreated, killed, "a new container, never the killed one restarted");
     assert_ne!(after["node_id"], before["node_id"], "node-recovery.md: recovery creates a new node id at the retained path");
-    // The provider's inspection of the killed container's exact id is the proof (exit 137, SIGKILL); the
-    // replace that follows stops the exited container, keeps its logs beside the node's data and removes it,
-    // so the proof is read from the drift attempt's span, never from a container the replace has removed.
-    assert_eq!(docker_state(&killed), "", "the replace removed the killed container after the provider's proof");
+    // The recovery's delete reads the killed container exited (exit 137, SIGKILL) and acts on nothing
+    // (node-recovery.md step 3: `TerminateRuntime` only for a running runtime, Q111): the killed
+    // container never runs again.
+    assert!(!docker_state(&killed).starts_with("running"), "the killed container never runs again: {}", docker_state(&killed));
     assert_eq!(estate.container_of("mesh1.rpc.2").await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
     assert_eq!(after["provider"], "container");
 
@@ -102,7 +103,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     })
     .await;
     let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| is_recovery(sp)).unwrap();
-    assert_eq!((s(&recovery["attributes"]["exit_code"]).as_str(), s(&recovery["attributes"]["exit_proof"]).as_str()), ("137", "provider"), "the killed container is proven terminal by SIGKILL, by the provider's inspection of its exact id: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["verdict"]), "exited", "node investigation's provider step read the killed container's exact id exited: {recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];

@@ -1027,6 +1027,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             }
                             let _ = view_slot.set(control.topology.clone());
                             let _ = control.fabric_recovery.set(crate::fabric_recovery::reader(book.clone(), records.clone()));
+                            let _ = control.seats.set(book.seats.clone());
                             {
                                 let (me, book, records, fabric, fabric_id, provider) = (name.clone(), book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
                                 let _ = control.view_now.set(Arc::new(move || {
@@ -2036,6 +2037,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                                         recovery.clone(),
                                         handover_slot.clone(),
+                                        cfg.fabric_primary,
                                     ));
                                     {
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
@@ -2068,6 +2070,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
+                                                // A node-admin the election replaced as this mesh's primary is the fabric-primary's to
+                                                // investigate and recover (node-recovery.md step 2), never this tick's.
+                                                watched.retain(|_, n| !(n.kind == NodeKind::NodeAdmin && n.incarnation_id.as_ref().is_some_and(|i| recovery.book.seats.replaced(rdm_core::Seat::MeshPrimary, &mesh, i))));
                                                 // One reading of the clocks for the tick: each birth's mark is read from the book at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason is

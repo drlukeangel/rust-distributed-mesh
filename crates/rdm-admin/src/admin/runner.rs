@@ -361,6 +361,29 @@ impl AdminRunner {
     /// Build history is read: whoever launched it, and however long ago, the
     /// birth itself says where its runtime is. A fact from another provider
     /// or control domain is refused by name, never acted on.
+    /// The runtime fact `node`'s exact birth published, the data dir it named, and whether it was read
+    /// from its digest (`true`) or from the durable runtime row its maker handed over: the birth says
+    /// where its runtime is. A birth in neither is refused by name.
+    async fn published_runtime(&self, node: &Node, incarnation: &IncarnationId) -> Result<(Option<rdm_core::runtime::RuntimeFact>, Option<String>, bool), String> {
+        let me = self.held_name();
+        let held = self
+            .book
+            .get(node.node_id.as_str())
+            .or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now()))
+            .map(|(d, _)| d)
+            .or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id == node.node_id))
+            .filter(|d| d.node.incarnation == *incarnation);
+        let row = match (&held, self.records.contacts.get()) {
+            (None, Some(store)) => birth_runtime_row(&**store, &me, &node.name, &node.node_id, incarnation).await?,
+            _ => None,
+        };
+        match (&held, &row) {
+            (Some(d), _) => Ok((d.node.runtime.clone(), d.data_dir.clone(), true)),
+            (None, Some(r)) => Ok((Some(r.runtime.clone()), r.data_dir.clone(), false)),
+            (None, None) => Err(format!("{} (birth {}) is not held in this admin's membership or its durable runtime rows; its runtime is unknown", node.name, incarnation.as_str())),
+        }
+    }
+
     pub(crate) async fn handle_for(&self, node: &Node) -> Result<(Node, DeploymentHandle), String> {
         if let Some((rec, h)) = self.handles.lock().unwrap().get(&node.name).cloned() {
             if node.incarnation_id.is_none() || rec.incarnation_id == node.incarnation_id {
@@ -369,24 +392,7 @@ impl AdminRunner {
         }
         let me = self.held_name();
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?;
-        // The birth says where its runtime is: its digest, or (a birth this admin never heard) the
-        // durable runtime row its maker handed over.
-        let held = self
-            .book
-            .get(node.node_id.as_str())
-            .or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now()))
-            .map(|(d, _)| d)
-            .or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id == node.node_id))
-            .filter(|d| d.node.incarnation == incarnation);
-        let row = match (&held, self.records.contacts.get()) {
-            (None, Some(store)) => birth_runtime_row(&**store, &me, &node.name, &node.node_id, &incarnation).await?,
-            _ => None,
-        };
-        let (published, data_dir) = match (&held, &row) {
-            (Some(d), _) => (d.node.runtime.clone(), d.data_dir.clone()),
-            (None, Some(r)) => (Some(r.runtime.clone()), r.data_dir.clone()),
-            (None, None) => return Err(format!("{} (birth {}) is not held in this admin's membership or its durable runtime rows; its runtime is unknown", node.name, incarnation.as_str())),
-        };
+        let (published, data_dir, held) = self.published_runtime(node, &incarnation).await?;
         let refuse = |reason: &str, detail: String| {
             let span = match reason {
                 "unpublished" => tracing::info_span!("rdm.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %me, detail = %detail),
@@ -414,7 +420,7 @@ impl AdminRunner {
             provider_control_domain_fingerprint = %fact.domain_fingerprint(),
             runtime_locator_kind = fact.locator.kind(),
             runtime_locator_fingerprint = %fact.locator_fingerprint(),
-            source = if held.is_some() { "self-published-membership" } else { "durable-runtime-row" },
+            source = if held { "self-published-membership" } else { "durable-runtime-row" },
             adopter = %me,
             adopter_node_id = %self.node_id,
             execution_node_id = %self.node_id,
@@ -561,11 +567,41 @@ impl AdminRunner {
             n.incarnation_id = Some(from.incarnation.clone());
             n
         });
-        let (exited, handle) = self.handle_for(&exact).await.map_err(|e| format!("{op}:{node}: the exited birth's runtime is not resolved: {e}"))?;
+        let (exited, handle) = match self.handle_for(&exact).await {
+            Ok(adopted) => adopted,
+            Err(e) => self.unadoptable(&exact).await.ok_or_else(|| format!("{op}:{node}: the exited birth's runtime is not resolved: {e}"))?,
+        };
         if exited.node_id != from.node_id || exited.incarnation_id.as_ref() != Some(&from.incarnation) {
             return Err(format!("{op}:{node}: resolved birth {} at {:?}, the recovery is of {} at {}", exited.node_id, exited.incarnation_id.as_ref().map(|i| i.as_str()), from.node_id, from.incarnation.as_str()));
         }
         Ok((exited, handle))
+    }
+
+    /// The exact unreached birth `exact` whose published runtime this admin's provider may not act on
+    /// (another provider, or another control domain): its record, and a handle that locates nothing.
+    /// Node recovery acts on an unreached birth's runtime only when it reads `running`
+    /// (node-recovery.md step 3, Q111); a runtime this provider cannot read is read by nothing here, so
+    /// the delete's `TerminateRuntime` reads it `unavailable`, terminates nothing, and the create
+    /// that follows is over a newly allocated data dir. The provider's refusal to act on the locator
+    /// stands. `None` when the birth published no runtime fact.
+    async fn unadoptable(&self, exact: &Node) -> Option<(Node, DeploymentHandle)> {
+        let incarnation = exact.incarnation_id.clone()?;
+        let (Some(fact), data_dir, _) = self.published_runtime(exact, &incarnation).await.ok()? else { return None };
+        let foreign = matches!(crate::deployment::provider::adopt(&*self.provider, &fact), Err(crate::deployment::provider::AdoptRefusal::ForeignControlDomain { .. } | crate::deployment::provider::AdoptRefusal::OtherProvider { .. }));
+        if !foreign {
+            return None;
+        }
+        let deployment_id = rdm_core::DeploymentId::parse(&fact.deployment_id).ok()?;
+        let provider = match fact.provider {
+            rdm_core::runtime::RuntimeProvider::Process => crate::model::ProviderKind::Process,
+            rdm_core::runtime::RuntimeProvider::Container => crate::model::ProviderKind::Container,
+        };
+        let mut record = exact.clone();
+        record.deployment_id = Some(deployment_id.clone());
+        if record.data_dir.is_none() {
+            record.data_dir = data_dir;
+        }
+        Some((record, DeploymentHandle { deployment_id, provider, pid: None, start: None, container: None, domain: Some(fact.control_domain.clone()) }))
     }
 
     /// Node recovery's node.delete (node-recovery.md sequence step 3): the exact unreached birth `from`

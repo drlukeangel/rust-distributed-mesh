@@ -119,13 +119,14 @@ async fn pull_from_fabric_primary(
     (format!("kept: {last}"), SEAT_MOVE_ATTEMPTS, None)
 }
 
-/// A node-admin with no launcher and no `JoinNode` to make whose store names live nodes takes
-/// rafka-time from the first node it reaches that holds one, with no wait (fabric-recovery.md: when
-/// every node the store names is confirmed gone by the provider, [`OWN_CLOCK_NOTHING_ALIVE`] is the
-/// case and this is not called). It judges nothing and publishes nothing until it has: `contacts`
-/// are the births its durable map names (own mesh first), and the book of the membership it joined
-/// adds whoever it hears. A member adopts from whoever answers, so the first reachable node serves
-/// it; the lineage descends from the fabric-primary whichever node that is.
+/// A node-admin with no launcher and no `JoinNode` to make whose store names other nodes takes
+/// rafka-time from the first of them that answers holding one (fabric-recovery.md "Nothing alive": "If
+/// any node answers, it is not this case"); when none does, the caller adopts its own clock
+/// ([`OWN_CLOCK_NOTHING_ALIVE`]). Every node is asked at once, so the answer comes within one read's
+/// budget however many the store names. It judges nothing and publishes nothing until it has:
+/// `contacts` are the births its durable map names, and the book of the membership it joined adds
+/// whoever it hears. A member adopts from whoever answers; the lineage descends from the
+/// fabric-primary whichever node that is.
 ///
 /// Returns the `path.name` of the node it adopted from, or a named refusal listing each node
 /// tried with the outcome of its read.
@@ -165,11 +166,21 @@ pub(crate) async fn adopt_from_reachable(
             if let Some(r) = c.resolved() {
                 resolver.apply(r, None);
             }
+        }
+        let me_s = me.to_string();
+        let mut reads: futures_util::stream::FuturesUnordered<_> = candidates
+            .iter()
+            .map(|c| {
+                let me_s = me_s.clone();
+                async move { (c, crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me_s, Some(&c.name.mesh), None).await) }
+            })
+            .collect();
+        while let Some((c, read)) = futures_util::StreamExt::next(&mut reads).await {
             attempts += 1;
-            match crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me.to_string(), Some(&c.name.mesh), None).await {
+            match read {
                 Ok(read) => match read.rafka_time {
                     Some(t) => {
-                        adopt_pulled(time, Puller::Member, &me.to_string(), Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, kind: t.kind }).expect("a member adopts from whoever answers");
+                        adopt_pulled(time, Puller::Member, &me_s, Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, kind: t.kind }).expect("a member adopts from whoever answers");
                         span.record("attempts", attempts);
                         return Ok(c.name.to_string());
                     }

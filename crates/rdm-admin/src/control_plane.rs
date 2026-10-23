@@ -42,6 +42,9 @@ pub struct ControlPlane {
     /// Fabric recovery in a view (Q122): its executor opens the re-create of the node-admin at the
     /// fabric-primary's path.name, in the fabric lane.
     pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
+    /// This admin's seat book: a node-admin it holds as its mesh's primary replaced by the election is
+    /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
+    pub seats: std::sync::OnceLock<rdm_transport::membership::SeatBook>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
@@ -103,6 +106,7 @@ impl ControlPlane {
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
             fabric_recovery: std::sync::OnceLock::new(),
+            seats: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
             time,
@@ -761,8 +765,12 @@ impl ControlPlane {
             // Fabric recovery's re-create of the node-admin at the fabric-primary's path.name is its
             // executor's, in the fabric lane (fabric-recovery.md step 3, Q122): nobody is fabric-primary.
             let fabric_recovery = self.fabric_recovery.get().and_then(|read| read(&t)).filter(|fr| path.kind == NodeKind::NodeAdmin && fr.target.node_id == node_id && fr.target.incarnation == incarnation);
+            // Unheard as the primary: the view still names it, or the election has replaced it and the
+            // fabric-primary runs its recovery "after the election has named the new mesh-primary"
+            // (node-recovery.md step 2).
+            let replaced = self.seats.get().is_some_and(|seats| seats.replaced(rdm_core::Seat::MeshPrimary, &path.mesh, &incarnation));
             let unheard_mesh_primary = fabric_recovery.is_some()
-                || (path.kind == crate::model::NodeKind::NodeAdmin && t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live()));
+                || (path.kind == crate::model::NodeKind::NodeAdmin && (replaced || t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live())));
             let recoverer = if let Some(fr) = &fabric_recovery {
                 fr.executor.clone()
             } else if unheard_mesh_primary {

@@ -310,6 +310,16 @@ impl AdminRunner {
         if crate::mesh_delete::exit_receipts(steps, outer, std::slice::from_ref(b)).contains_key(&(b.node_id.clone(), b.incarnation_id.clone())) {
             return Ok(());
         }
+        // An admin that answers is reached, not lost (Q111): silent in this view only for a moment (the
+        // lost primary published the mesh's aggregate), it is the surviving admin the election names
+        // (mesh-delete.md "Resume after the primary's loss" step 2), and the next attempt hands it the
+        // workflow. Nothing is deleted or created for the mesh.
+        let held = self.topology.read().await.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
+        if let Some(n) = held {
+            if self.answers(&n).await {
+                return Err(RunEnd::Incomplete(format!("{outer}: {mesh}'s node-admin {} {} answers, so it survives; the next attempt hands the workflow to the admin the election names", b.node, b.incarnation_id)));
+            }
+        }
         let refused = |reason: String| {
             tracing::info_span!("rdm.node_admin.mesh.reject.via-unknown-admin-runtime", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %outer, admin = %format!("{} {}", b.node, b.incarnation_id), reason = %reason)
                 .in_scope(|| tracing::info!("a node-admin of the leaving mesh is silent and its runtime is not known here: no admin is created for the mesh"));

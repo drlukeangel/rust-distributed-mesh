@@ -222,6 +222,15 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         .await;
     }
 
+    // The killed primary is recovered at its path by the fabric-primary (node-recovery.md step 3, Q111),
+    // an attempt that holds the fabric's lane until it completes: step 4 starts once it has.
+    estate
+        .until_view(&format!("{old_name} is recovered as a new node"), rdm_transport::membership::staleness_floor() * 4 + Duration::from_secs(60), |views| {
+            Estate::values(views).iter().any(|n| s(&n["name"]) == old_name && s(&n["node_id"]) != old_id && n["status"] == "ready-for-traffic").then_some(())
+        })
+        .await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+
     // 4. Lose the fabric primary: status publication moves, never doubled. The seat moved in
     // step 3; the primary is lost only once it alone publishes the fabric's status.
     let fabric_id = estate.fabric_view().await.id.to_string();
@@ -351,9 +360,9 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
         .collect();
     assert!(lost.is_empty(), "with {p1} and {p2} cut apart, mesh2's rpc nodes kept mesh1: {lost:?}");
 
-    // 7. Isolate mesh1's non-primary admin past the silence window and ask it
-    // for a Build: it executes nothing; healed, the rightful
-    // executor runs it and no live node is created again.
+    // 7. Isolate mesh1's non-primary admin past the silence window and ask it for a Build: it refuses
+    // it and executes nothing; the Build submitted at the fabric-primary completes once healed, and no
+    // other live node is created again.
     let nodes = estate.node_values().await;
     let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] != true).cloned().unwrap();
     let lone_name = s(&lone["name"]);
@@ -368,9 +377,16 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
         }
     })
     .await;
-    // build.create starts at the isolated admin: it names the fabric-primary it sees, and the call goes there.
+    // build.create at the isolated admin is refused: while the fabric-primary's record names a holder it
+    // does not hear, its view names no fabric-primary (Q122, fabric-node-lifecycle-elections.md: "no
+    // node-admin is elected"), so it accepts nothing and names nobody. The Build goes to the fabric-primary.
     let lone_path: PathName = lone_name.parse().unwrap();
-    let mut grow = Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create through the isolated {lone_name} was refused: {e}"));
+    match Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await {
+        Err(e) => assert!(e.to_string().contains("not-fabric-primary"), "the isolated {lone_name} refuses build.create as not the fabric-primary: {e}"),
+        Ok(stream) => panic!("the isolated {lone_name} accepted build.create {}", stream.build_id()),
+    }
+    let fp_path: PathName = s(&primary(&nodes, "mesh1")["name"]).parse().unwrap();
+    let mut grow = Builds::new(estate.carrier_at(&fp_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create at the fabric-primary {fp_path} was refused: {e}"));
     let b = grow.build_id().to_string();
     tokio::time::sleep(Duration::from_secs(5)).await;
     let by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.update.via-reconcile")
@@ -389,8 +405,11 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
     for n in &after {
         assert!(n["data_dir"].as_str().is_some_and(|d| !d.is_empty()), "{} carries its data dir after the heal: {n}", n["name"]);
     }
+    // The isolated admin, unreached by its mesh-primary and inspected running, may be terminated and
+    // re-created at its path (node-recovery.md step 3, Q111: any verdict but `reached` recovers at once);
+    // every other birth is never created again.
     for n in &after {
-        if let Some(inc) = before.get(&s(&n["name"])) {
+        if let Some(inc) = before.get(&s(&n["name"])).filter(|_| n["name"] != lone_name.as_str()) {
             assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);
         }
     }

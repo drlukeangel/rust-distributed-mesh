@@ -539,14 +539,16 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
 }
 
-/// CONTRACT (#2803 detection): no member answers, so no node-admin is created. Every runtime of the peer
-/// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the
-/// frozen processes answer nothing and are not exited): both probes find no member that answers
-/// the Ping, the verdict at the decision's rung is `unreachable`, and the fabric primary holds. No node.create,
-/// no degraded fabric. After the mesh is continued it is heard again.
+/// CONTRACT (mesh-investigation.md step 5, "No member answers"; Q111; R-DG1): every runtime of the peer
+/// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the frozen
+/// processes answer nothing and are not exited): both probes find no member that answers the Ping and the
+/// verdict at the decision's rung is `unreachable`. The fabric-primary runs node investigation on the
+/// mesh's node-admins, none is reached, and it creates the mesh's node-admin in process on that verdict;
+/// the fabric is marked degraded. Must NOT happen: a node.create before the decision, a third probe, or
+/// another mesh tickling the peer mesh's node-admins beside the investigation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created() {
-    let cell = "a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created";
+async fn a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict() {
+    let cell = "a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -562,31 +564,43 @@ async fn a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_
         async move { found }
     })
     .await;
-    let fabric = f.fabric_status().await;
+    let created = wait_for("the fabric-primary creates the mesh's node-admin on the investigation's verdict", Duration::from_secs(60), || {
+        let spans = f.estate.spans();
+        let found = f.admin_creates(&spans).first().map(|sp| (*sp).clone());
+        async move { found }
+    })
+    .await;
+    let mut degraded = false;
+    for _ in 0..60 {
+        if f.fabric_status().await == "degraded" {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     for (_, pid) in &all {
         signal(*pid, "-CONT");
     }
     let fp = f.fabric_primary.clone();
-    let story_end = f.stop().await;
+    f.stop().await;
     let spans = f.estate.spans();
     // The investigation the verdict closed made two probes (mesh-investigation.md: probe 1 "At 20 s",
     // probe 2 "At 40 s", the decision "At 60 s").
-    let probes = f.probes_before(&spans, story_end);
-    assert_eq!(probes.len(), 2, "two probes: {probes:#?}");
+    let probes: Vec<&Value> = f.probes_before(&spans, at_ns(&verdict) + 1);
+    assert_eq!(probes.len(), 2, "two probes before the verdict: {probes:#?}");
     for p in &probes {
         assert_eq!(attr(p, "outcome"), "unreachable", "{p:#?}");
     }
-    assert!(f.admin_creates(&spans).is_empty(), "timeout or unreachable alone grants no node.create");
-    assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
+    assert!(at_ns(&created) >= at_ns(&verdict), "no node.create before the decision: {created:#?}");
+    assert!(degraded, "the fabric is marked degraded on the verdict (R-DG1)");
     // One investigation reaches the peer mesh's node-admins: no other mesh's primary tickles them on a
-    // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1). The peer mesh's own primary
-    // tickling its own node-admin once continued is its node recovery, untouched.
+    // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1).
     let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.update.via-true-offline")
         .into_iter()
         .filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost)) && !attr(sp, "observer").starts_with(&format!("{}.", f.lost)))
         .collect();
     assert!(tickled.is_empty(), "no other mesh tickles {}'s node-admins beside the investigation: {tickled:#?}", f.lost);
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"]}));
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"], "created": created["attributes"]}));
 }
 
 /// CONTRACT (#2803 detection): a probe that finds the node-admin cut off from its members and a later

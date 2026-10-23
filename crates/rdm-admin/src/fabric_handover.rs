@@ -470,6 +470,13 @@ impl HandoverDoor {
         ];
         let operation = update_operation(Seat::FabricPrimary, "fabric-recovery", 0, &format!("node.create:{}", to.name));
         let r: Result<Vec<Entry>, Reply> = async {
+            // The node restoring itself (the admin a person launched at the path.name) installs the records
+            // as node.primary.update's receiver does, with no call.
+            if to.node_id == self.node_id {
+                self.take(&entries).await;
+                self.memo.acknowledge(&operation, true);
+                return Ok(entries.clone());
+            }
             let revisions = self.call_and_look(to, &entries, "fabric-recovery", 0, &operation).await?;
             self.take(&revisions).await;
             Ok(revisions)

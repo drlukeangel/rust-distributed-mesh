@@ -111,6 +111,11 @@ pub struct FabricRecoveryDoor {
     pub recovery: crate::admin::RecoverySubmitter,
     /// node.primary.update's door: the restore's call.
     pub handover: crate::fabric_handover::HandoverSlot,
+    /// Whether a person launched this admin on the fabric-primary's data dir to recover the fabric
+    /// (`RDM_FABRIC_PRIMARY`; fabric-recovery.md: "It starts when a person or a script launches one
+    /// node-admin on the fabric-primary's data dir"): at the fabric-primary's path.name with no admin to
+    /// run the workflow ("Nothing alive": "It is the only node, the fabric-primary"), it restores itself.
+    launched_to_recover: bool,
     /// The birth whose workflow runs here now.
     running: Mutex<Option<crate::model::IncarnationId>>,
 }
@@ -118,8 +123,17 @@ pub struct FabricRecoveryDoor {
 impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, book: DigestBook, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot) -> Self {
-        Self { me, me_id, topology, book, records, looker, recovery, handover, running: Mutex::new(None) }
+    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, book: DigestBook, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool) -> Self {
+        Self { me, me_id, topology, book, records, looker, recovery, handover, launched_to_recover, running: Mutex::new(None) }
+    }
+
+    /// Whether this admin runs the workflow `fr`: its executor, or the admin a person launched at the
+    /// fabric-primary's path.name when no admin runs it.
+    fn runs(&self, fr: &FabricRecovery) -> bool {
+        let me = self.held_name();
+        // Launched on the fabric-primary's own data dir, its path.name is the fabric-primary's, whether or
+        // not this admin knows the lost birth's.
+        fr.executor.as_ref() == Some(&me) || (self.launched_to_recover && fr.executor.is_none() && fr.at.as_ref().is_none_or(|at| *at == me) && self.me_id != fr.target.node_id)
     }
 
     fn held_name(&self) -> PathName {
@@ -137,7 +151,8 @@ impl FabricRecoveryDoor {
     /// mesh investigation's decision step (`decided`). Once per lost birth while it runs here.
     pub async fn start_if_mine(self: &Arc<Self>, held_a_floor: bool, decided: bool) {
         let Some(fr) = self.read().await else { return };
-        if fr.executor.as_ref() != Some(&self.held_name()) || !(if fr.own_mesh { held_a_floor } else { decided }) {
+        let launched = fr.executor.is_none() && self.runs(&fr);
+        if !self.runs(&fr) || !(launched || if fr.own_mesh { held_a_floor } else { decided }) {
             return;
         }
         {
@@ -189,10 +204,10 @@ impl FabricRecoveryDoor {
             let Some(fr) = self.read().await.filter(|fr| fr.target == *target) else {
                 return "the fabric-primary record names a heard holder".into();
             };
-            if fr.executor.as_ref() != Some(&me) {
+            if !self.runs(&fr) {
                 return format!("{me} no longer runs it: {}", fr.executor.map(|e| e.to_string()).unwrap_or_else(|| "nobody does".into()));
             }
-            let Some(at) = fr.at.clone() else {
+            let Some(at) = fr.at.clone().or_else(|| self.launched_to_recover.then(|| me.clone())) else {
                 return "the lost birth's path.name is not known here".into();
             };
             span.record("at", at.to_string().as_str()).record("arm", if fr.own_mesh { "own-mesh" } else { "backbone" });

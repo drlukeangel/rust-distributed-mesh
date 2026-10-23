@@ -1294,20 +1294,18 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
     estate.stop().await;
 }
 
-/// CONTRACT (Q89; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" steps 1-4;
+/// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" steps 1-4;
 /// node-recovery.md step 3): `mesh1.admin.1`, the fabric-primary and mesh1's primary, is hung (every task
 /// but the leader held by a tracer: the operating system shows it running). Unheard past the staleness
-/// floor it is superseded: within a floor of the mark `mesh1.admin.2`, the standby of its own mesh, is
-/// mesh-primary and fabric-primary by the election. As mesh1's mesh-primary it investigates the hung
-/// birth, the verdict `running`, and submits its recovery at once: the first step `TerminateRuntime`, then
-/// `mesh1.admin.1` re-created as a new birth at the same path.name; one floor after the new birth is
-/// ready-for-traffic the standby hands both seats back to it. Must NOT happen: the hung birth held, the
-/// hung birth recovered by anyone but the standby, a second recovery of it, the seats left with the
-/// standby.
+/// floor, `mesh1.admin.2`, the lowest ReadyForTraffic node-admin of its mesh, takes no primary role: it
+/// runs fabric recovery. Node investigation reads the hung birth `running`; the recovery's first step is
+/// `TerminateRuntime`, then `mesh1.admin.1` is re-created as a new birth at the same path.name, and the
+/// workflow restores that node as mesh-primary and fabric-primary. Must NOT happen: the hung birth held,
+/// `mesh1.admin.2` named mesh-primary or fabric-primary, the hung birth recovered by anyone else or twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_and_recovered_at_once() {
-    let (mut estate, birth_build) = born_at(
-        Estate::bootstrap_with_env(owner("a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_and_recovered_at_once"), "fabric1", "mesh1", &[]).await,
+async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_from_its_own_mesh() {
+    let (mut estate, _birth_build) = born_at(
+        Estate::bootstrap_with_env(owner("a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_from_its_own_mesh"), "fabric1", "mesh1", &[]).await,
         &[("mesh1", 2, 1), ("mesh2", 1, 1)],
         Duration::from_secs(90),
     )
@@ -1315,64 +1313,41 @@ async fn a_hung_fabric_primary_is_superseded_at_the_floor_and_terminated_and_rec
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     let fp_name = s(&fp["name"]);
-    assert_eq!((fp["mesh"].as_str(), fp["is_primary"].as_bool()), (Some("mesh1"), Some(true)), "the Day-0 admin holds both seats: {fp}");
-    let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp["name"]).expect("mesh1's standby admin")["name"]);
-    let standby_path = Estate::path(&standby);
-    // Control is read through the standby from here: a hung admin answers nothing.
-    estate.enter(&standby_path).await;
+    assert_eq!((fp["mesh"].as_str(), fp["is_primary"].as_bool()), (Some("mesh1"), Some(true)), "the Day-0 admin is mesh-primary and fabric-primary: {fp}");
+    let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp["name"]).expect("mesh1's other admin")["name"]);
+    // Control is read through the other admin from here: a hung admin answers nothing.
+    estate.enter(&Estate::path(&standby)).await;
 
     let rt = exact_runtime(&estate, &fp_name).await;
     let held = rt.hang().expect("the fabric-primary runtime is hung");
     assert!(!held.held.is_empty(), "every task of the fabric-primary but the leader is held: the provider sees it running");
-    let floor = rdm_transport::membership::staleness_floor();
+    let hung_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
-    // Superseded at the floor: the election names the standby mesh-primary and fabric-primary.
-    let taken = wait_for(&format!("{standby} holds both seats within a floor of the mark"), floor * 3 + Duration::from_secs(30), || async {
-        let n = estate.node_value(&standby).await;
-        (n["is_fabric_primary"] == true && n["is_primary"] == true).then_some(n)
+    // Only the node at the fabric-primary's path.name is ever mesh1's primary or the fabric-primary.
+    let after = until_node_where(&estate, &fp_name, &format!("{fp_name} re-created and restored as mesh-primary and fabric-primary"), SETTLE, |n| {
+        ready(n) && n["node_id"] != fp["node_id"] && n["is_fabric_primary"] == true && n["is_primary"] == true
     })
     .await;
-    // The standby, mesh1's mesh-primary now, terminates the exact runtime and re-creates the path.
-    let after = until_node_where(&estate, &fp_name, &format!("{fp_name} recovered as a new birth"), SETTLE, |n| ready(n) && n["node_id"] != fp["node_id"]).await;
-    let recovery = recovery_span(&estate, &fp_name, &fp["node_id"]).await;
-    assert_eq!(s(&recovery["attributes"]["submitter"]), standby, "the standby, the authority above the hung birth, submits its recovery: {recovery}");
-    let attempt = s(&recovery["attributes"]["attempt"]);
-    // The recovery's first step is TerminateRuntime of the hung birth, spanned by the executor.
-    let _ = (&birth_build, &standby_path);
-    let terminate = wait_for(&format!("the TerminateRuntime step of {fp_name}'s recovery is exported"), Duration::from_secs(30), || async {
-        named(&estate.spans(), "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| sp["attributes"]["node"] == fp_name.as_str() && sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete").cloned()
-    })
-    .await;
-    // The seats go home one floor after the new birth is ready.
-    let home = wait_for(&format!("{standby} hands both seats back to the new birth at {fp_name}"), floor * 4 + Duration::from_secs(60), || async {
-        let n = estate.node_value(&fp_name).await;
-        (n["is_fabric_primary"] == true && n["is_primary"] == true && n["node_id"] == after["node_id"]).then_some(n)
-    })
-    .await;
+    let other = estate.node_value(&standby).await;
+    assert!(other["is_fabric_primary"] != true && other["is_primary"] != true, "{standby} took no primary role: {other}");
     drop(held);
-    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(30)).await;
     estate.stop().await;
 
     let spans = estate.spans();
+    let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let ran: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= hung_ns).collect();
+    let run = ran.iter().find(|sp| s(&sp["attributes"]["node"]) == standby && sp["attributes"]["arm"] == "own-mesh" && s(&sp["attributes"]["outcome"]).starts_with("restored")).unwrap_or_else(|| panic!("{standby} ran fabric recovery from its own mesh and restored {fp_name}: {ran:#?}"));
+    assert_eq!(s(&run["attributes"]["verdict"]), "running", "node investigation read the hung birth running: {run}");
+    assert!(ran.iter().all(|sp| s(&sp["attributes"]["node"]) == standby), "nobody else ran it: {ran:#?}");
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == fp["node_id"]).collect();
-    assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == standby), "the hung birth is recovered once, by {standby}: {recoveries:#?}");
-    // fabric-recovery.md step 2: the successor, the standby of the fabric-primary's own mesh, is
-    // mesh-primary and fabric-primary; "Any other admin that notices tells the successor; the successor
-    // acts only when its own view agrees; repeats answer `AlreadyApplied`": one take-over changed the
-    // primary, the standby's.
-    let takeovers: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-take-over").into_iter().filter(|sp| sp["attributes"]["outcome"] == "primary-updated").collect();
-    assert_eq!(takeovers.len(), 1, "one take-over changed the primary: {takeovers:#?}");
-    assert_eq!(s(&takeovers[0]["attributes"]["node"]), standby, "{takeovers:#?}");
-    eprintln!(
-        "Q89 hung fabric-primary cell: {fp_name} (birth {}) superseded by {standby} (seat {}), then terminated and recovered at attempt {attempt}: trace {} | TerminateRuntime {:?} | new birth {} | seats home {}",
-        s(&fp["node_id"]),
-        taken["is_fabric_primary"],
-        s(&recovery["trace_id"]),
-        terminate["attributes"]["step"],
-        s(&after["node_id"]),
-        home["is_fabric_primary"],
-    );
+    assert!(!recoveries.is_empty() && recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == standby), "the hung birth is recovered by {standby} alone: {recoveries:#?}");
+    let terminate = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| sp["attributes"]["node"] == fp_name.as_str() && sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete").cloned();
+    assert!(terminate.is_some(), "the recovery's TerminateRuntime of the hung birth completed");
+    let elected: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary").into_iter().filter(|sp| at(sp) >= hung_ns && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["winner_path"] == standby.as_str()).collect();
+    assert!(elected.is_empty(), "mesh1 elected no node-admin while fabric recovery ran: {elected:#?}");
+    estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));
+    eprintln!("Q122 hung fabric-primary: {fp_name} (birth {}) re-created as {} by {standby}'s fabric recovery", s(&fp["node_id"]), s(&after["node_id"]));
 }
 
 /// CONTRACT (node-recovery.md sequence step 1: "A repeat submit answers AlreadyApplied or
