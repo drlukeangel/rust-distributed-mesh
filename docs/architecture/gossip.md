@@ -152,7 +152,6 @@ local Instant         silence and elapsed time                    (receiver-loca
 | `Digest { node, incarnation, endpoints with freshness, node_state, runtime, digest_seq, emitted_at_rafka_ms }` | own mesh channel | every node, on its heartbeat timer | nobody | same exact birth: higher `digest_seq` is newer, equal or lower is not taken; a new incarnation is taken only along its lineage and only for a NodeId not accepted as `NodeDeleted`; its `digest_seq` starts again at 1 | until silent for the silence window, or until `NodeDeleted` | that node's current identity, endpoints, liveness and runtime fact. `node_state` (Joining / Alive / Overloaded / Degraded, node-identity-and-state.md §4) is liveness only: a heartbeat never carries or moves a status, and a member's status comes only from its mesh-primary |
 | `Members { mesh, publisher (exact identity), forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }` | backbone; and the source Mesh's primary's own mesh channel (its own member projection) | the source Mesh's current primary; after mesh.deleted its last node-admin, still its primary, until it is stopped or deleted; nobody else, ever: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's `Members` projection (the fabric-primary never publishes a mesh as its acting primary, R-RX4) | nobody as is; a receiving primary derives the two frames below from it | `(mesh, publisher, topology_version, snapshot_id)`; a receiving admin installs the snapshot atomically once it holds every chunk, and only then advances the held source version or derives a delta; the version bumps on a material change of the normalized projection below and not on an unchanged republish; the publisher's exact identity is the version's revision | `digests`: as held; `in_flight`: while the operation is claimed and has no completed receipt (derived from Build facts each round, never stored), and NodeStopped until the next lifecycle op on that exact birth; `deleted`: local age since accepted, up to the deleted retention | the complete Mesh with loads: what every node-admin holds of every Mesh for routing and control decisions. In `digests`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's versioned member projection. One mesh has one publisher on the backbone, its mesh-primary, and none while it has no primary (R-RX4), so a receiver takes its Members and MembersDelta as they arrive. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events. |
 | `MembersDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted }` | the forwarding primary's own mesh channel | the local mesh primary, when a source Mesh it holds moved from one version to another; and the source Mesh's primary, for its own Mesh, on its own mesh channel | nobody | `(mesh, source_publisher, base_version, topology_version)`; applied only when the receiver holds exactly `base_version` of that source and publisher | not retained as a frame | transforms the held remote projection from `base_version` into `topology_version`: births added or changed, identities removed, overlay and deleted changes, loads omitted. In `changed`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's versioned member projection. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). A delta whose base version the receiver does not hold triggers GetTopology repair. Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events. |
-| `Members` forwarded full `{ …, snapshot_id, chunk_index, chunk_count }` | the forwarding primary's own mesh channel | the local mesh primary: every `FULL_EVERY` rounds as passive anti-entropy | nobody | `(mesh, source_publisher, topology_version, snapshot_id)`; applied atomically once every chunk is held | the held remote projection, until the next full or top-up | the complete remote Mesh without loads |
 | [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone Members.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped; none for a mesh's last admin after mesh.deleted ([Mesh delete](#mesh-delete)) | peer mesh primaries preserve op | `(kind, build_id, attempt, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not runtime-exit proof. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `Members` and `MembersDelta` rows above); node.connections.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
@@ -535,7 +534,6 @@ PERPETUAL TIMERS
     Digest heartbeat         every node; configurable cadence; never slower than 2 s
     Members anti-entropy     the mesh primary on the backbone; a few seconds; also sent
                              at once on a material change
-    forwarded full           the forwarding primary inside its Mesh; every FULL_EVERY rounds
 
 EVENT / BURST DRIVEN
     MembersDelta             on a remote Mesh version change
@@ -569,8 +567,8 @@ hundred.
 NODE -> OWN MESH            Digest heartbeat, full local facts, <= 2 s
 MESH PRIMARY -> BACKBONE    Members, the complete Mesh with loads, versioned, anti-entropy + change
 PEER PRIMARY -> OWN MESH    MembersDelta, base_version -> topology_version, no loads, on change
-                            forwarded full, no loads, every FULL_EVERY rounds (passive anti-entropy)
 ORDINARY NODE -> OWN PRIMARY   top-up: pull the current full fabric topology it holds
+MESH PRIMARY -> SOURCE PRIMARY top-up: pull that Mesh's current projection on a gap in it
 ```
 
 **Forwarded topology carries topology, never liveness.** An ordinary node retains
@@ -602,15 +600,18 @@ over gossip. The same top-up serves a join, a restart, a detected gap, a source 
 lost local state. The ordinary node never contacts the remote Mesh; its primary already holds the
 whole fabric from the backbone.
 
-**A chunked full applies atomically.** A forwarded full larger than one message travels as chunks
-under one `snapshot_id` with `chunk_index` and `chunk_count`. The receiver replaces the remote
+**A chunked full applies atomically.** A `Members` full on the backbone larger than one message travels
+as chunks under one `snapshot_id` with `chunk_index` and `chunk_count`. The receiver replaces the remote
 projection only when it holds every chunk of that snapshot; a snapshot missing a chunk is never
 applied and the held projection stays.
 
-**`FULL_EVERY` is a bounded, configurable number of aggregate rounds.** With the top-up, it bounds
-only how long a node that noticed nothing wrong holds a stale projection, so it is passive
-anti-entropy. Its default is chosen from measured stripped-full sizes under the scale and chaos
-proofs.
+**Nothing is pushed periodically to repair a stale copy; a node that notices a gap pulls.** An
+ordinary node pulls the current fabric topology from its own mesh-primary, as above. A mesh-primary
+that notices a gap in a source Mesh's projection (a `Members` or `MembersDelta` whose base it does not
+hold) pulls that Mesh's current projection from that Mesh's primary over Node RPC, installs it
+atomically and resumes. A node that installs a pulled copy older than a delta it dropped while the pull
+was in flight pulls again (Q130). A node that noticed nothing wrong keeps what it holds until the
+source's next change shows it a gap; no forwarded full and no cadence exists for that.
 
 **Loads are omitted from the ordinary-node cross-Mesh projection, not from the protocol.** They
 remain on the backbone. If ordinary nodes are ever made responsible for load-aware remote target
@@ -1013,7 +1014,7 @@ At minimum:
 25. a delta whose `base_version` the receiver does not hold desynchronizes that source's projection, and the node tops up from its own mesh-primary; nothing is requested over gossip;
 26. a forwarder that becomes the primary publishes a full before any delta; a new source primary is a new revision and its first delta is never applied before its full;
 27. a full missing a chunk is never applied, on the backbone or inside a Mesh; the held projection and the held source version survive until a complete snapshot or a top-up, and no delta is derived from an incomplete one;
-28. a node that noticed nothing wrong holds stale remote topology for at most `FULL_EVERY` rounds;
+28. a stale copy is repaired by the holder's own pull on a noticed gap, never by a periodic push; a mesh-primary pulls a source Mesh's projection from that Mesh's primary;
 29. the forwarded cross-Mesh projection carries no loads while the backbone aggregate does;
 30. two heartbeats of one birth are ordered by `digest_seq` alone: a stalled or repeated Rafka-time never makes a newer heartbeat look older;
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
