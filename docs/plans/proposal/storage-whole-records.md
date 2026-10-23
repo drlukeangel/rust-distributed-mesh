@@ -151,3 +151,44 @@ objects" and "Durability" sections; its map's rafka topics stand.
   Node record by its successor;
 - a renewal answered, unanswered, and answered but lost before the write;
 - mesh ReadyForTraffic recorded by the mesh-primary on the fabric-primary's `Applied`.
+
+## Corrections before building (the lead and A1, 2026-10-23)
+
+1. **One mutation at a time per object, inside the writer.** One writer per object does not serialize two
+   tasks in that one process: a declaration handler and a renewal task can both take the cached record,
+   and the second write erases the first. Every mutation of an object holds that object's own lock from
+   the cache read through the mutation, the store's acknowledgment and the cache replacement. Cell, RED
+   first: two different updates to one node overlapped in time, both present afterwards.
+2. **The cache is filled whenever write ownership is acquired, not only at boot and mesh-primary
+   acquisition.** The fabric-primary that becomes a mesh's writer because its last node-admin is gone
+   loads that mesh's records then, never from its boot-time copy; a node-admin that becomes
+   fabric-primary loads the Fabric record then. No mutation is accepted on an object until its latest
+   record is in the cache.
+3. **The issuer schedules renewals from what it issued and what the reply confirmed, not from storage.**
+   The fabric-primary issued a mesh-primary's cert and received `CertRenewed` with the installed expiry;
+   it keeps those dates in its own cache for scheduling. The mesh-primary's record is the durable copy, read
+   by a successor fabric-primary when it acquires ownership (point 2). No read of storage before a write,
+   and no refresh loop.
+4. **The record is bounded.** A node record keeps the facts of its current incarnation and its
+   predecessor's, nothing older; the Build journal keeps the history. Every silence mark rewrites the
+   whole record, so the record stays small.
+5. **The node's name claim stays a claim, keyed by path.name.** The record is keyed by node id; the name
+   claim (`NameHeld { by: node.id }`, node-name-update.md) is the path.name-to-id lookup that a rename
+   moves and that recovery uses to find the row at a path.name. node-name-update.md's rename becomes a claim
+   move plus one record write: a page line to list.
+6. **The predecessor is a reference on the successor's record.** `inherited_by` points from the
+   predecessor to the successor and cannot be followed backwards. The recovery attempt names the lost
+   birth, so the create writes `predecessor: (node_id, incarnation)` on the new record, and the data-dir and
+   other predecessor facts are read from the predecessor's record by that reference, after a restart too.
+7. **Q141's lines change and are Luke's to approve.** The installer writes its own cert and signing-cert
+   dates on its own record; the issuer only reads them (point 3). That is one writer per record with no
+   exception, but it replaces text Luke approved on node-cert-renew.md, mesh-issuer-renew.md and
+   node-issuer-update.md.
+8. **The Fabric record's identity stays immutable inside a record that is now written on every fabric
+   event**; node-identity-and-state.md §2.8's "written at Day 0 and state-commit" becomes "the identity is
+   written then and never again; the record's events are appended as they happen".
+
+Decision for Luke, once: whole records (this proposal, with the eight corrections) replace the per-fact
+keys of storage-by-object's "Keys, writers, fold" and item 8's interface in one landing by i141, or the
+per-fact keys stand. The lead recommends whole records: they are what rafka's entity store is.
+
