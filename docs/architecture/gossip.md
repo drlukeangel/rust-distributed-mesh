@@ -609,7 +609,8 @@ applied and the held projection stays.
 ordinary node pulls the current fabric topology from its own mesh-primary, as above. A mesh-primary
 that notices a gap in a source Mesh's projection (a `Members` or `MembersDelta` whose base it does not
 hold) pulls that Mesh's current projection from that Mesh's primary over Node RPC, installs it
-atomically and resumes. A node that installs a pulled copy older than a delta it dropped while the pull
+atomically, forwards the correction onto its own mesh channel as the ordinary `MembersDelta` from the
+version it last forwarded (the row above), and resumes. A node that installs a pulled copy older than a delta it dropped while the pull
 was in flight pulls again (Q130). A node that noticed nothing wrong keeps what it holds until the
 source's next change shows it a gap; no forwarded full and no cadence exists for that.
 
