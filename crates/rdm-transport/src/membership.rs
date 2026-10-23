@@ -3970,6 +3970,9 @@ pub struct DigestBook {
     refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, String)>>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
+    /// The deleted births heard again on this node's mesh channel by their own digest, by (NodeId,
+    /// incarnation): each refused, each owed a report to the fabric-primary (Q128).
+    returned: Arc<Mutex<BTreeMap<(String, String), MeshDigest>>>,
     /// When this node's own loop last ran ([`Self::mark_awake`]); `None` for a book no loop reads. A gap
     /// between two of its runs longer than the staleness floor is time this process was not running.
     awake: Arc<Mutex<Option<Instant>>>,
@@ -4169,6 +4172,7 @@ impl DigestBook {
             refused_departures: Arc::default(),
             in_flight: Arc::default(),
             awake: Arc::default(),
+            returned: Arc::default(),
             stopped_marks: Arc::default(),
             restarts_carried: Arc::default(),
             primary: Arc::default(),
@@ -5258,6 +5262,9 @@ impl DigestBook {
     fn record_with(&self, d: MeshDigest, now: Instant, node: &str, channel: &str) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "mesh-channel");
+            // Its own word on its mesh's channel: the deleted birth runs. The node that refused it reports
+            // it to the fabric-primary, which terminates its runtime (node-investigation.md, Q110, Q128).
+            self.returned.lock().unwrap().entry((d.node.node_id.to_string(), d.node.incarnation.to_string())).or_insert_with(|| d.clone());
             return false;
         }
         if self.stopped_refuses(&d, "heartbeat", now) {
@@ -5510,6 +5517,16 @@ impl DigestBook {
         for (_, at) in self.projected.lock().unwrap().values_mut() {
             *at = now;
         }
+    }
+
+    /// The deleted births heard again by their own digest and not yet reported ([`Self::returned_reported`]).
+    pub fn returned_births(&self) -> Vec<MeshDigest> {
+        self.returned.lock().unwrap().values().cloned().collect()
+    }
+
+    /// The returned birth `(node_id, incarnation)` was reported to the fabric-primary: it is owed nothing more.
+    pub fn returned_reported(&self, node_id: &str, incarnation: &str) {
+        self.returned.lock().unwrap().remove(&(node_id.to_string(), incarnation.to_string()));
     }
 
     /// This node's own loop ran at `now` ([`Self::woken`] first): what a gap is measured from.

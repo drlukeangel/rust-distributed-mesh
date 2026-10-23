@@ -141,6 +141,18 @@ pub enum BuildChange {
     /// delete each other mesh's final mesh-primary, release the fabric name and report
     /// `fabric.deleted` while the fabric-primary remains alive for its separate `node.delete`.
     DeleteFabric,
+    /// A deleted birth heard again (node-investigation.md: "A node that comes back after it was
+    /// re-created is refused ... The node that refused it reports it to the fabric-primary, which
+    /// terminates its runtime"): the report, keyed on the exact birth; the fabric-primary runs the
+    /// existing `TerminateRuntime` on its runtime (Q110, Q128).
+    Terminate {
+        /// The `path.name` the birth held.
+        node: PathName,
+        /// The deleted birth's node.id.
+        node_id: NodeId,
+        /// The deleted birth's incarnation.
+        incarnation: IncarnationId,
+    },
 }
 
 /// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names

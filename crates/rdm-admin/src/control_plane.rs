@@ -708,6 +708,33 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Open the termination of the deleted birth `(node_id, incarnation)` at `path`, heard again and
+    /// reported (node-investigation.md: "The node that refused it reports it to the fabric-primary, which
+    /// terminates its runtime"; Q110, Q128), as the next attempt of the current Build, executed by this
+    /// fabric-primary. Only a birth a node workflow deleted is terminated this way (any other is not
+    /// known here: `UnknownNode`); one whose termination completed answers `AlreadyApplied`.
+    pub async fn open_terminate(&self, span: tracing::Span, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
+        let outer = tracing::Span::current();
+        async {
+            self.authority(route).await?;
+            if self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
+                let reject = BuildReject::UnknownNode { node: path.to_string() };
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
+            }
+            let (_admitted, current) = self.current_settled().await?;
+            let operation = format!("node.terminate:{path}@{}", incarnation.as_str());
+            if let Some(done) = current.steps.iter().find(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete) {
+                return Ok(Recovery::AlreadyApplied(Opened { build_id: current.build_id.clone(), attempt: done.attempt, mesh: None }));
+            }
+            let node_name = path.to_string();
+            let action = AttemptAction::Terminate { path, node_id, from_incarnation: incarnation };
+            self.open_with(&current, None, AttemptReason::Delete, action, route, &outer, &node_name, span.clone()).await.map(Recovery::Opened)
+        }
+        .instrument(span.clone())
+        .await
+    }
+
     /// Whether `path` is a birth of a mesh deleted at mesh.deleted, as the live view holds it: the
     /// mesh's status is deleted (its row Dead), and its last admin lives on until its own node.delete
     /// (mesh-delete.md steps 6-7).
@@ -1009,6 +1036,7 @@ pub(crate) fn open_restart(current: &crate::build_state::BuildProjection, path: 
     let acts_on = |a: &AttemptAction| match a {
         AttemptAction::Restart { path: p, .. } | AttemptAction::DeleteConnections { path: p, .. } | AttemptAction::Stop { path: p, .. } | AttemptAction::Start { path: p, .. } | AttemptAction::Recover { path: p, .. } | AttemptAction::Delete { path: p, .. } => p == path,
         AttemptAction::Recipe { steps, .. } => steps.iter().any(|s| s.node() == path),
+        AttemptAction::Terminate { .. } => false,
     };
     let (attempt, action) = current.attempt_actions.iter().rev().find(|(_, a)| acts_on(a))?;
     let AttemptAction::Restart { from_incarnation, .. } = action else { return None };

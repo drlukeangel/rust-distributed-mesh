@@ -165,6 +165,7 @@ enum WireAction {
     Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
     Delete { path: PathName, from_incarnation: IncarnationId },
     Recipe { steps: Vec<rdm_core::build::RecipeStep>, pinned: Vec<(PathName, crate::build::PinnedBirth)> },
+    Terminate { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -223,6 +224,7 @@ impl From<&AttemptAction> for WireAction {
             AttemptAction::Recover { path, node_id, from_incarnation } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Delete { path, from_incarnation } => Self::Delete { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recipe { steps, pinned } => Self::Recipe { steps: steps.clone(), pinned: pinned.clone() },
+            AttemptAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -236,6 +238,7 @@ impl From<WireAction> for AttemptAction {
             WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation },
             WireAction::Delete { path, from_incarnation } => Self::Delete { path, from_incarnation },
             WireAction::Recipe { steps, pinned } => Self::Recipe { steps, pinned },
+            WireAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path, node_id, from_incarnation },
         }
     }
 }

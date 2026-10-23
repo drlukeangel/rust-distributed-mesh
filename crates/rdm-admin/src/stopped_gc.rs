@@ -174,6 +174,7 @@ fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
         | AttemptAction::Recover { from_incarnation, .. }
         | AttemptAction::Delete { from_incarnation, .. } => from_incarnation == incarnation,
         AttemptAction::Recipe { pinned, .. } => pinned.iter().any(|(_, b)| b.incarnation == *incarnation),
+        AttemptAction::Terminate { from_incarnation, .. } => from_incarnation == incarnation,
     }
 }
 

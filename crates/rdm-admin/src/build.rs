@@ -188,6 +188,15 @@ pub enum BuildOperation {
         /// The fabric's minted id.
         fabric_id: rdm_core::FabricId,
     },
+    /// `TerminateRuntime` of a deleted birth heard again, on its exact runtime (Q128).
+    TerminateNode {
+        /// The path.name the birth held.
+        node: PathName,
+        /// The birth's node.id.
+        node_id: rdm_core::NodeId,
+        /// The birth.
+        from_incarnation: rdm_core::IncarnationId,
+    },
 }
 
 impl BuildOperation {
@@ -196,6 +205,7 @@ impl BuildOperation {
         match self {
             Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
+            Self::TerminateNode { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
@@ -224,6 +234,8 @@ impl BuildOperation {
             Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("node.delete:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("mesh.delete:{mesh_id}"),
             Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
+            // One key per birth: a birth heard again after another termination is a new run of it.
+            Self::TerminateNode { node, from_incarnation, .. } => format!("node.terminate:{node}@{}", from_incarnation.as_str()),
         }
     }
 }

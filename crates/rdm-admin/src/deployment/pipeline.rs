@@ -2134,6 +2134,25 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
+    /// Terminate the runtime of a deleted birth heard again (node-investigation.md: "The node that refused
+    /// it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): the existing
+    /// `TerminateRuntime` step on its exact runtime, under `node.terminate:<path>@<incarnation>`. Its
+    /// departure and Deleted row stand: nothing else is written.
+    pub async fn terminate_returned(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("terminate", &req.build_id, &req.node.name, req.attempt);
+        async {
+            let name = &req.node.name;
+            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.terminate:{name}@{}", birth.as_str())).await?;
+            let receipt = self.terminate_step_when(&mut run, &req.node, &req.handle, Terminate::Unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
+            self.complete(&mut run).await?;
+            Ok(receipt)
+        }
+        .instrument(span)
+        .await
+    }
+
     /// Retire `req.node` through every step (node.delete): the provider's exact terminal receipt of
     /// the birth's runtime, the proof its NodeDeleted was published from.
     pub async fn retire(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {

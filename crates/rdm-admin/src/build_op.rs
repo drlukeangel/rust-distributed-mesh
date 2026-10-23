@@ -137,6 +137,14 @@ impl BuildDoor {
                 );
                 cp.open_recipe_in(span, "build.create", steps.clone()).await
             }
+            BuildChange::Terminate { node, node_id, incarnation } => {
+                let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "build.create", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = tracing::field::Empty, attempt = tracing::field::Empty);
+                return match cp.open_terminate(span, "build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
+                    Ok(crate::control_plane::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),
+                    Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Admitted::AlreadyApplied(o)),
+                    Err(r) => Err(refusal_reply(r)),
+                };
+            }
             BuildChange::Recover { node, node_id, incarnation } => {
                 return match cp.open_recovery("build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
                     Ok(crate::control_plane::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),

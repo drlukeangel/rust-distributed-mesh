@@ -109,6 +109,8 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // the new fabric-primary, outside the leaving mesh, drives the rest (mesh-delete.md step 1).
         BuildOperation::ShutdownMesh { .. } if seat_move(op, t).is_some() => None,
         BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
+        // The fabric-primary terminates a deleted birth heard again (node-investigation.md, Q128).
+        BuildOperation::TerminateNode { .. } => fabric(),
     }
 }
 

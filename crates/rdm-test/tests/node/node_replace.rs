@@ -2348,16 +2348,16 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     estate.shutdown().await;
 }
 
-/// OBSERVATION (task #34; node-recovery.md step 3 and node-investigation.md: "A node that comes back
-/// after it was re-created is refused ... (`superseded-birth`)"): a member is held (SIGSTOP) until its
-/// mesh-primary recovers it as a new birth at its path, then the held birth is continued. For two
-/// staleness floors the cell records what the returning birth does and what refuses it: whether any
-/// view lists its old node id again, whether its process still runs, and which spans name it. The
-/// facts are written to the artifact `superseded.json`; the cell asserts only that the path keeps one
-/// live birth, the re-created one.
+/// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is refused ... The
+/// node that refused it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): a
+/// member is held (SIGSTOP) until its mesh-primary recovers it as a new birth at its path, then the held
+/// birth is continued. Its digest is refused (no view lists its old node id), its mesh-primary reports it
+/// (`via-returned-reported`), the fabric-primary runs `TerminateRuntime` on its exact runtime under
+/// `node.terminate:<path>@<incarnation>`, and its process is gone; the path keeps one live birth, the
+/// re-created one. What must NOT happen: the old process left running, or the old node id in a view.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_superseded_birth_that_comes_back_is_observed() {
-    let (mut estate, _build) = estate("a_superseded_birth_that_comes_back_is_observed").await;
+async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
+    let (mut estate, _build) = estate("a_superseded_birth_that_comes_back_is_refused_reported_and_killed").await;
     const NODE: &str = "mesh1.rpc.2";
     let before = estate.node_value(NODE).await;
     let old_id = s(&before["node_id"]);
@@ -2369,8 +2369,8 @@ async fn a_superseded_birth_that_comes_back_is_observed() {
     let cont = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
     let floor = rdm_transport::membership::staleness_floor();
     let mut samples = Vec::new();
-    let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(5);
-    while std::time::Instant::now() < until {
+    let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(30);
+    while std::time::Instant::now() < until && alive(pid as u64) {
         let views = estate.node_values().await;
         let old_listed: Vec<String> = views.iter().filter(|n| s(&n["node_id"]) == old_id).map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
         let live_at_path: Vec<String> = views.iter().filter(|n| n["name"] == NODE && live(n)).map(|n| s(&n["node_id"])).collect();
@@ -2392,5 +2392,14 @@ async fn a_superseded_birth_that_comes_back_is_observed() {
     estate.artifact("superseded.json", &facts);
     eprintln!("superseded birth facts: {}", serde_json::to_string_pretty(&facts).unwrap());
     let last = samples.last().cloned().unwrap_or(Value::Null);
+    assert!(cont, "the held birth was continued: {facts}");
+    assert!(samples.iter().all(|x| x["old_listed"] == json!([])), "no view lists the old node id again: {facts}");
+    assert!(!alive(pid as u64), "the returning birth's process was terminated: {facts}");
+    let reported = spans.iter().any(|sp| sp["name"] == "rdm.node_admin.node.update.via-returned-reported" && sp["attributes"]["node_id"] == old_id.as_str());
+    assert!(reported, "its mesh-primary reported it to the fabric-primary: {facts}");
+    let operation = format!("node.terminate:{NODE}@{}", s(&before["incarnation_id"]));
+    let terminated = spans.iter().any(|sp| sp["name"] == "rdm.node_admin.deployment.update.via-step" && sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete" && sp.to_string().contains(&operation));
+    let receipted = spans.iter().any(|sp| sp.to_string().contains(&operation));
+    assert!(terminated || receipted, "the fabric-primary ran TerminateRuntime under {operation}: {facts}");
     assert_eq!(last["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
 }

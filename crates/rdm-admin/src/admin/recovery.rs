@@ -475,3 +475,43 @@ pub(crate) fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), St
     }
 }
 
+
+impl RecoverySubmitter {
+    /// Report the deleted birth `d`, heard again by its own digest, to the fabric-primary
+    /// (node-investigation.md: "The node that refused it reports it to the fabric-primary, which
+    /// terminates its runtime"; Q110, Q128): `build.create { Change(Terminate) }`, opened here when this
+    /// admin is the fabric-primary. `Ok` once the fabric-primary answered (opened, or already applied).
+    pub(crate) async fn report_returned(&self, client: &Arc<rdm_transport::NodeRpcClient>, d: &rdm_core::MeshDigest) -> Result<(), String> {
+        let (path, node_id, incarnation) = (d.node.name.clone(), d.node.node_id.clone(), d.node.incarnation.clone());
+        let me = self.held_name();
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-returned-reported", node = %me, returned = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome = tracing::field::Empty);
+        let fabric_primary = self.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
+        let Some((fp_name, fp_id)) = fabric_primary else {
+            span.record("outcome", "no-fabric-primary");
+            return Err(format!("{me}: no fabric-primary in this view to report {path} ({node_id}) to"));
+        };
+        let r = if fp_name == me {
+            let door = self.door.get().cloned().ok_or_else(|| format!("{me}: its Build door is not built yet"))?;
+            let opened = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str());
+            match door.control.open_terminate(opened, "returned-birth", path.clone(), node_id.clone(), incarnation.clone()).await {
+                Ok(crate::control_plane::Recovery::Opened(o)) => {
+                    door.drives.ensure(&door.env, &o.build_id, o.attempt);
+                    Ok("opened")
+                }
+                Ok(crate::control_plane::Recovery::AlreadyApplied(_)) => Ok("already-applied"),
+                Err(r) => Err(format!("{me}: the termination of {path} ({node_id}) was refused: {:?}", crate::build_op::refusal_reply(r))),
+            }
+        } else {
+            use rdm_core::build::{Build, BuildChange, BuildRequest, BuildSubmit};
+            let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
+            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Stream { send: std::time::Duration::from_secs(10) }, ..rdm_transport::CallOptions::default() };
+            match client.call_stream::<Build>(&rdm_transport::NodeTarget::ExactNode(fp_id), &req, &opts).await {
+                Ok(_) => Ok("sent"),
+                Err((outcome, _)) => Err(format!("{me}: the report of {path} ({node_id}) to {fp_name} ended {}", outcome.name())),
+            }
+        };
+        span.record("outcome", r.as_ref().map(|o| *o).unwrap_or("failed"));
+        span.in_scope(|| tracing::info!("a deleted birth heard again, reported to the fabric-primary"));
+        r.map(|_| ())
+    }
+}

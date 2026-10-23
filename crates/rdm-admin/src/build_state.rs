@@ -1179,6 +1179,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Delete { path, from_incarnation }) => format!("delete of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recipe { steps, .. }) => format!("recipe of {} step(s): {}", steps.len(), steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(", ")),
+        Some(crate::accepted::AttemptAction::Terminate { path, node_id, from_incarnation }) => format!("termination of the deleted birth {node_id} at {from_incarnation} of {path}"),
         None => "no fenced action".to_string(),
     };
     let lane = o.mesh.as_ref().map(|m| format!(", in {m}'s drift lane")).unwrap_or_default();

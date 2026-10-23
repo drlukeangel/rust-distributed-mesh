@@ -614,6 +614,20 @@ impl AdminRunner {
         Ok(terminal)
     }
 
+    /// The termination of the deleted birth `(node_id, from_incarnation)` at `node`, heard again (Q128): its
+    /// runtime adopted from its durable runtime row (its digest is refused), then the pipeline's
+    /// `TerminateRuntime` on it.
+    async fn terminate_returned(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, node_id: &crate::model::NodeId, from_incarnation: &IncarnationId) -> Result<(), crate::executor::RunEnd> {
+        let mut birth = Node::allocated(node.clone());
+        birth.node_id = node_id.clone();
+        birth.incarnation_id = Some(from_incarnation.clone());
+        let (birth, handle) = self.handle_for(&birth).await.map_err(|e| crate::executor::RunEnd::from(format!("node.terminate:{node}: {e}")))?;
+        let template = self.template_for(node.kind, &node.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: birth, handle, unreached: true };
+        self.pipeline_with(&template, builds).terminate_returned(&req).await.map_err(crate::executor::RunEnd::from)?;
+        Ok(())
+    }
+
     /// Whether node recovery's node.delete of `from` at `node` in `build_id` read the old runtime exited at
     /// its `TerminateRuntime` (node-recovery.md step 4: the create's spec names the old data dir "when the
     /// verdict was `exited`"; `R-FM2`), from that step's receipt for the birth: this attempt's, or the
@@ -1048,6 +1062,10 @@ impl AdminRunner {
             BuildOperation::RetireNode { node, exited: Some(from) } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
                 self.delete_unreached(&*builds, build_id, attempt, node, from).instrument(span).await.map(|_| ())
+            }
+            BuildOperation::TerminateNode { node, node_id, from_incarnation } => {
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-terminate-returned", build_id = %build_id.log(), node = %node, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
+                self.terminate_returned(&*builds, build_id, attempt, node, node_id, from_incarnation).instrument(span).await
             }
             BuildOperation::DeleteNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt);

@@ -276,6 +276,16 @@ pub enum AttemptAction {
         /// The birth each path a step acts on held at acceptance.
         pinned: Vec<(PathName, PinnedBirth)>,
     },
+    /// Terminate the runtime of a deleted birth heard again (node-investigation.md, Q110, Q128): the
+    /// existing `TerminateRuntime` on its exact runtime; its row and departure stand.
+    Terminate {
+        /// The path.name the birth held.
+        path: PathName,
+        /// The birth's node.id.
+        node_id: NodeId,
+        /// The birth.
+        from_incarnation: IncarnationId,
+    },
 }
 
 /// A recipe accepted against `observed` (the fabric-primary's view): refused by name when it has no
@@ -521,6 +531,13 @@ impl ActionProgress {
             let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
             return Self { started: done(first), finished: done("Complete"), ..Self::default() };
         }
+        // A termination of a deleted birth heard again: its one operation's receipts in an attempt that
+        // carried it (Q128).
+        if let Some(action @ AttemptAction::Terminate { path, from_incarnation, .. }) = &build.action {
+            let operation = format!("node.terminate:{path}@{}", from_incarnation.as_str());
+            let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
+            return Self { started: done("TerminateRuntime"), finished: done("Complete"), ..Self::default() };
+        }
         // A recovery: how far its two operations got for the exited birth.
         if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = &build.action {
             let recovery = recovery_progress(build, path, node_id, from_incarnation).0;
@@ -616,6 +633,14 @@ fn plan_with(
     steps: &[crate::build_state::BuildStepReceipt],
 ) -> BuildPlan {
     let mut ops = Vec::new();
+    // A termination of a deleted birth heard again is its one operation, the topology unchanged, until
+    // its `Complete` is receipted for the birth (Q128).
+    if let Some(AttemptAction::Terminate { path, node_id, from_incarnation }) = action {
+        if !progress.finished {
+            ops.push(BuildOperation::TerminateNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() });
+        }
+        return BuildPlan { operations: ops };
+    }
     // A standalone drain or stop is its one operation and nothing else: the topology is unchanged,
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
     // the view holds the exact birth, or while its receipts say it began (a stop's view drops the

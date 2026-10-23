@@ -2256,6 +2256,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             }
                                                         });
                                                     }
+                                                    // A deleted birth of this mesh heard again by its own digest: refused by every
+                                                    // book, and reported to the fabric-primary, which terminates its runtime
+                                                    // (node-investigation.md, Q110, Q128).
+                                                    if holds_seat {
+                                                        for d in recovery.book.returned_births().into_iter().filter(|d| d.node.name.mesh == mesh) {
+                                                            let (recovery, client) = (recovery.clone(), runner.node_rpc.client.clone());
+                                                            tokio::spawn(async move {
+                                                                if recovery.report_returned(&client, &d).await.is_ok() {
+                                                                    recovery.book.returned_reported(d.node.node_id.as_str(), d.node.incarnation.as_str());
+                                                                }
+                                                            });
+                                                        }
+                                                    }
                                                 }
                                                 drop(turn);
                                                 tokio::select! {
