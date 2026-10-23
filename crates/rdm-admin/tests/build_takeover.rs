@@ -128,7 +128,21 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
         me: me.parse().unwrap(),
         topology: topology.clone(),
         builds: a.builds.clone(),
-        door: Arc::new(rdm_admin::build_claim::ClaimDoor { me: me.parse().unwrap(), node_id: topology.try_read().expect("the view is free").node(&me.parse().unwrap()).expect("the fabric-primary is in the view").node_id.clone(), topology: topology.clone(), builds: a.builds.clone(), contexts: Arc::new(rdm_admin::build_claim::AttemptContexts::in_memory()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }),
+        door: Arc::new(rdm_admin::build_claim::ClaimDoor {
+            me: me.parse().unwrap(),
+            node_id: topology
+                .try_read()
+                .expect("the view is free")
+                .node(&me.parse().unwrap())
+                .expect("the fabric-primary is in the view")
+                .node_id
+                .clone(),
+            topology: topology.clone(),
+            builds: a.builds.clone(),
+            contexts: Arc::new(rdm_admin::build_claim::AttemptContexts::in_memory()),
+            claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+            claimed: Default::default(),
+        }),
         dispatcher: dispatch,
         gate: Arc::new(OpenGate),
         departure: proofs,

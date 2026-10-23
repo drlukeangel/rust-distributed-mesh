@@ -158,37 +158,156 @@ fn calls_op(sp: &Value, op: u8) -> bool {
     sp["attributes"]["op"] == op.to_string().as_str() || sp["attributes"]["op"] == json!(op)
 }
 
-/// The completed recovery of `before` at `attempt` of `mesh`'s drift lane of `build` ran on its
-/// mesh-primary `mp` alone, in the submit's own trace `run` (R-BI7: "the mesh-primary opens the
-/// recovery attempt of the current Build itself: claim on its mesh's rows, then run; no call to the
-/// fabric-primary"; node-recovery.md "Observability contract"): the open at `mp`'s own door
-/// (`via-recovery`, route `node-recovery`, a child of the submit), the claim decided by `mp` on the
-/// mesh's rows (`via-claim-decision`, lane `mesh`, won), the attempt's run (`via-attempt-run`, lane
-/// `mesh`, executor `mp`) and its reconcile (`via-reconcile`, lane `mesh`, converged). No Build call
-/// (op 0x20), no claim call (op 0x1C) and no fabric-primary dispatch is in the run.
-fn assert_mesh_primary_ran_the_recovery(run: &[Value], mp: &str, mesh: &str, build: &str, attempt: &str, before: &Value) {
+/// The completed recovery of `before` at `attempt` of `mesh`'s drift lane of `build`, in the submit's
+/// own trace `run` (node-recovery.md "Execution", Q118; "Observability contract"). Its mesh-primary
+/// `mp` submits it (`via-node-recovery`, the root). When `mp` is not the fabric-primary `fp`, `mp`
+/// reports the drift up as `build.create` (op 0x20) and `fp` opens it (`via-recovery`, route
+/// `build.create`, outcome `reported`, under `fp`'s serve of the call); `mp` claims it through
+/// BuildClaim (op 0x1C) and `fp` decides the claim for executor `mp` in `mesh`'s lane; `fp` runs it
+/// (`via-drift-run`, complete), calling `build.attempt.run` naming the mesh. When `mp` is the
+/// fabric-primary, it opens (route `node-recovery`, admitted) and claims at its own door, with no Build
+/// call, no claim call and no dispatch. Either way `mp` runs the attempt (`via-attempt-run`, lane
+/// `mesh`, executor `mp`) and its reconcile converges in `mesh`'s lane.
+fn assert_mesh_primary_ran_the_recovery(
+    run: &[Value],
+    mp: &str,
+    fp: &str,
+    mesh: &str,
+    build: &str,
+    attempt: &str,
+    before: &Value,
+) {
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let submit = named(run, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the submit roots the run");
-    let open = named(run, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).unwrap_or_else(|| panic!("{mp} opened the recovery at its own door"));
+    let submit = named(run, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"])
+        .expect("the submit roots the run");
+    assert_eq!(attr(submit, "submitter"), mp, "{mp} submits: {submit}");
+    let open = named(run, "rdm.node_admin.build.update.via-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"])
+        .unwrap_or_else(|| panic!("the recovery's open"));
+    let claim = named(run, "rdm.node_admin.build.update.via-claim-decision")
+        .into_iter()
+        .find(|sp| attr(sp, "attempt") == attempt && attr(sp, "lane") == mesh)
+        .unwrap_or_else(|| panic!("the claim decision of attempt {attempt} of {mesh}'s lane"));
+    let calls = |op: u8| {
+        named(run, "rdm.node_rpc.request.update.via-call")
+            .into_iter()
+            .filter(|sp| calls_op(sp, op))
+            .count()
+    };
+    if mp == fp {
+        assert_eq!(
+            (
+                attr(open, "route"),
+                attr(open, "outcome"),
+                attr(open, "mesh"),
+                attr(open, "build_id"),
+                attr(open, "attempt")
+            ),
+            (
+                "node-recovery".to_string(),
+                "admitted".to_string(),
+                mesh.to_string(),
+                build.to_string(),
+                attempt.to_string()
+            ),
+            "the open at the fabric-primary's own door, attempt {attempt} of {mesh}'s lane: {open}"
+        );
+        assert_eq!(
+            open["parent_span_id"], submit["span_id"],
+            "the open is the submit's own in-process call: {open}"
+        );
+        assert_eq!(
+            (
+                attr(claim, "node"),
+                attr(claim, "executor"),
+                attr(claim, "outcome")
+            ),
+            (mp.to_string(), mp.to_string(), "won".to_string()),
+            "decided at its own door: {claim}"
+        );
+        assert_eq!(
+            (calls(0x20), calls(0x1C)),
+            (0, 0),
+            "no Build call and no claim call in the recovery's run"
+        );
+        assert!(
+            named(run, "rdm.node_admin.build.update.via-drift-run").is_empty(),
+            "no reported drift run"
+        );
+    } else {
+        assert_eq!(
+            (attr(open, "route"), attr(open, "outcome"), attr(open, "mesh"), attr(open, "build_id"), attr(open, "attempt")),
+            ("build.create".to_string(), "reported".to_string(), mesh.to_string(), build.to_string(), attempt.to_string()),
+            "the fabric-primary opens the reported drift at attempt {attempt} of {mesh}'s lane: {open}"
+        );
+        let serve = run
+            .iter()
+            .find(|sp| sp["span_id"] == open["parent_span_id"])
+            .unwrap_or_else(|| panic!("the open's parent: {open}"));
+        assert_eq!(
+            (s(&serve["name"]), attr(serve, "node"), attr(serve, "call")),
+            (
+                "rdm.node_admin.build.serve.via-node-rpc".to_string(),
+                fp.to_string(),
+                "create".to_string()
+            ),
+            "the open is {fp}'s serve of the report: {serve}"
+        );
+        assert!(calls(0x20) >= 2 && calls(0x1C) == 1, "the report (op 0x20), the claim (op 0x1C) and build.attempt.run (op 0x20) in the recovery's run");
+        assert_eq!(
+            (
+                attr(claim, "node"),
+                attr(claim, "executor"),
+                attr(claim, "outcome")
+            ),
+            (fp.to_string(), mp.to_string(), "won".to_string()),
+            "{fp} decides {mp}'s claim: {claim}"
+        );
+        let drift = named(run, "rdm.node_admin.build.update.via-drift-run")
+            .into_iter()
+            .find(|sp| attr(sp, "attempt") == attempt)
+            .unwrap_or_else(|| panic!("{fp}'s run of the reported attempt"));
+        assert_eq!(
+            (
+                attr(drift, "node"),
+                attr(drift, "lane"),
+                attr(drift, "executor"),
+                attr(drift, "outcome")
+            ),
+            (
+                fp.to_string(),
+                mesh.to_string(),
+                mp.to_string(),
+                "complete".to_string()
+            ),
+            "{drift}"
+        );
+    }
+    let started = named(run, "rdm.node_admin.build.serve.via-attempt-run")
+        .into_iter()
+        .find(|sp| attr(sp, "attempt") == attempt && attr(sp, "lane") == mesh)
+        .expect("the attempt's run");
     assert_eq!(
-        (attr(open, "route"), attr(open, "outcome"), attr(open, "mesh"), attr(open, "build_id"), attr(open, "attempt")),
-        ("node-recovery".to_string(), "admitted".to_string(), mesh.to_string(), build.to_string(), attempt.to_string()),
-        "the open at the mesh-primary's own door, attempt {attempt} of {mesh}'s lane: {open}"
+        (attr(started, "node"), attr(started, "executor")),
+        (mp.to_string(), mp.to_string()),
+        "{started}"
     );
-    assert_eq!(open["parent_span_id"], submit["span_id"], "the open is the submit's own in-process call: {open}");
-    let claim = named(run, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| attr(sp, "attempt") == attempt).unwrap_or_else(|| panic!("{mp}'s claim decision of attempt {attempt}"));
+    let reconcile = named(run, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .find(|sp| attr(sp, "build_id") == build && attr(sp, "attempt") == attempt)
+        .expect("the attempt's reconcile");
     assert_eq!(
-        (attr(claim, "node"), attr(claim, "lane"), attr(claim, "executor"), attr(claim, "outcome")),
-        (mp.to_string(), mesh.to_string(), mp.to_string(), "won".to_string()),
-        "the mesh-primary decided its own claim on its mesh's rows: {claim}"
+        (
+            attr(reconcile, "lane"),
+            attr(reconcile, "executor"),
+            attr(reconcile, "outcome")
+        ),
+        (mesh.to_string(), mp.to_string(), "converged".to_string()),
+        "{reconcile}"
     );
-    let started = named(run, "rdm.node_admin.build.serve.via-attempt-run").into_iter().find(|sp| attr(sp, "attempt") == attempt).expect("the attempt's run");
-    assert_eq!((attr(started, "node"), attr(started, "lane"), attr(started, "executor")), (mp.to_string(), mesh.to_string(), mp.to_string()), "{started}");
-    let reconcile = named(run, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|sp| attr(sp, "build_id") == build && attr(sp, "attempt") == attempt).expect("the attempt's reconcile");
-    assert_eq!((attr(reconcile, "lane"), attr(reconcile, "executor"), attr(reconcile, "outcome")), (mesh.to_string(), mp.to_string(), "converged".to_string()), "{reconcile}");
-    let calls: Vec<&Value> = named(run, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| calls_op(sp, 0x20) || calls_op(sp, 0x1C)).collect();
-    assert!(calls.is_empty(), "no Build call and no claim call in the recovery's run: {calls:?}");
-    assert!(named(run, "rdm.node_admin.build.update.via-dispatch").is_empty(), "no fabric-primary dispatch in the recovery's run");
 }
 
 /// The receipts of the recovery of `node` at `attempt` of `mesh`'s drift lane a Build holds: its
@@ -202,8 +321,8 @@ fn recovery_receipts(b: &Value, mesh: &str, node: &str, attempt: &str) -> Option
 }
 
 /// The fabric-primary's own Build log holds the recovery of `node` at `attempt` of `mesh`'s drift
-/// lane, heard on the Build topic (node-recovery.md, R-BI7: the fabric-primary learns it from the
-/// Build topic): its node.delete's `node.delete:<node>` NodeDeleted receipt, and the Complete of its
+/// lane (node-recovery.md "Execution", Q118: the fabric-primary writes every Build record, from the
+/// receipts the executor reports up the stream): its node.delete's `node.delete:<node>` NodeDeleted receipt, and the Complete of its
 /// last operation, node.create (`node.create:<node>`).
 async fn fp_recovery_receipts(estate: &Estate, fp: &PathName, build: &str, mesh: &str, node: &str, attempt: &str) -> (Value, Value) {
     let held = build_log::build_fact(&estate.carrier_at(fp).await, build, &format!("the recovery's receipts in {mesh}'s lane"), Duration::from_secs(30), |p| {
@@ -216,20 +335,21 @@ async fn fp_recovery_receipts(estate: &Estate, fp: &PathName, build: &str, mesh:
 
 /// CONTRACT: a rpc node whose mesh transport stops for good exits (reserved code 4, recorded in
 /// its data dir). Its mesh-primary (node-recovery.md), not the fabric-primary, proves the exit:
-/// it marks the node TRUE OFFLINE, asks the provider about the exact runtime, and on Exited opens
-/// one recovery keyed on the exited birth at its own door, as the next attempt of its mesh's lane
-/// of the accepted Build (no Build minted), claims it on its mesh's rows and runs it (R-BI7: "the
-/// mesh-primary opens the recovery attempt of the current Build itself: claim on its mesh's rows,
-/// then run; no call to the fabric-primary"): node.delete of the exited instance (node.deleted from
-/// the exit proof, once, named by the exact birth), then node.create at the same path.name over the
-/// inherited data dir, and nothing after it. The fabric-primary learns the receipts from the Build
-/// topic. The path comes back with the SAME transport key and data dir and a NEW node.id and
+/// it marks the node TRUE OFFLINE, asks the provider about the exact runtime, and on Exited reports
+/// the drift up as `build.create { Change(Recover) }` keyed on the exited birth (node-recovery.md
+/// "Execution", Q118). The fabric-primary opens it as the next attempt of the mesh's lane of the
+/// accepted Build (no Build minted), the mesh-primary claims it through BuildClaim, and the
+/// fabric-primary calls `build.attempt.run` naming the mesh; the mesh-primary runs it: node.delete
+/// of the exited instance (node.deleted from the exit proof, once, named by the exact birth), then
+/// node.create at the same path.name over the inherited data dir, and nothing after it. The
+/// fabric-primary writes the receipts the run reports up the stream. The path comes back with the SAME transport key and data dir and a NEW node.id and
 /// incarnation. No other node changes, and the fabric-primary's drift check opens nothing for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
-    let (estate, birth_build) = two_mesh_estate("a_transport_stopped_exit_is_restarted_as_the_same_node").await;
-    // The node lives in the mesh that does NOT hold the fabric-primary: its own mesh-primary is the
-    // reconciler, and it opens, claims and runs the recovery on its own mesh's rows.
+    let (estate, birth_build) =
+        two_mesh_estate("a_transport_stopped_exit_is_restarted_as_the_same_node").await;
+    // The node lives in the mesh that does NOT hold the fabric-primary: its own mesh-primary reports
+    // the drift to the fabric-primary, claims the attempt and runs it.
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
@@ -253,23 +373,80 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 
     // The mesh-primary proved the exit and submitted the recovery, keyed on the exited birth.
     let recovery = recovery_span(&estate, node_path, &before["node_id"]).await;
-    assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "the node's own mesh-primary submits: {recovery}");
-    assert_eq!(recovery["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {recovery}");
-    assert_eq!(s(&recovery["attributes"]["verdict"]), "exited", "on the verdict exited: {recovery}");
-    assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "the recovery is an attempt of the accepted Build: {recovery}");
-    assert_eq!(s(&recovery["attributes"]["disposition"]), "created", "the mesh-primary's own door opened it: {recovery}");
-    assert_eq!(s(&recovery["attributes"]["mesh"]), mesh, "an attempt of the member's mesh's lane: {recovery}");
+    assert_eq!(
+        s(&recovery["attributes"]["submitter"]),
+        mesh_primary,
+        "the node's own mesh-primary submits: {recovery}"
+    );
+    assert_eq!(
+        recovery["attributes"]["incarnation_id"], before["incarnation_id"],
+        "keyed on the exact exited birth: {recovery}"
+    );
+    assert_eq!(
+        s(&recovery["attributes"]["verdict"]),
+        "exited",
+        "on the verdict exited: {recovery}"
+    );
+    assert_eq!(
+        s(&recovery["attributes"]["build_id"]),
+        birth_build,
+        "the recovery is an attempt of the accepted Build: {recovery}"
+    );
+    assert_eq!(
+        s(&recovery["attributes"]["disposition"]),
+        "created",
+        "the fabric-primary opened it: {recovery}"
+    );
+    assert_eq!(
+        s(&recovery["attributes"]["mesh"]),
+        mesh,
+        "an attempt of the member's mesh's lane: {recovery}"
+    );
     let attempt = s(&recovery["attributes"]["attempt"]);
     // The submit followed the recovery to its terminal frame and records it (never "submitted").
-    assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
-    let build = build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt.parse().expect("an attempt"), SETTLE).await;
-    assert_eq!(build.build_id.as_str(), birth_build, "no Build was minted: {build:?}");
-    // The fabric-primary heard the recovery's receipts on the Build topic (its recovery dedup reads
-    // them), in the mesh's lane: the delete's NodeDeleted naming the exited birth, and the create's Complete.
-    let heard = fp_recovery_receipts(&estate, &Estate::path(&s(&primary["name"])), &birth_build, mesh, node_path, &attempt).await;
-    assert_eq!(heard.0["output"]["node_id"], before["node_id"], "the fabric-primary's NodeDeleted names the exited node: {:?}", heard.0);
-    assert_eq!(heard.0["output"]["incarnation"], before["incarnation_id"], "and its exact birth: {:?}", heard.0);
-    assert!(heard.1["output"].is_null(), "Complete commits no output: {:?}", heard.1);
+    assert_eq!(
+        s(&recovery["attributes"]["outcome"]),
+        format!("complete: attempt {attempt}"),
+        "the recovery's terminal: {recovery}"
+    );
+    let build = build_log::attempt_complete(
+        &estate.carrier().await,
+        &birth_build,
+        attempt.parse().expect("an attempt"),
+        SETTLE,
+    )
+    .await;
+    assert_eq!(
+        build.build_id.as_str(),
+        birth_build,
+        "no Build was minted: {build:?}"
+    );
+    // The fabric-primary wrote the recovery's receipts (its recovery dedup reads them), in the mesh's
+    // lane: the delete's NodeDeleted naming the exited birth, and the create's Complete.
+    let heard = fp_recovery_receipts(
+        &estate,
+        &Estate::path(&s(&primary["name"])),
+        &birth_build,
+        mesh,
+        node_path,
+        &attempt,
+    )
+    .await;
+    assert_eq!(
+        heard.0["output"]["node_id"], before["node_id"],
+        "the fabric-primary's NodeDeleted names the exited node: {:?}",
+        heard.0
+    );
+    assert_eq!(
+        heard.0["output"]["incarnation"], before["incarnation_id"],
+        "and its exact birth: {:?}",
+        heard.0
+    );
+    assert!(
+        heard.1["output"].is_null(),
+        "Complete commits no output: {:?}",
+        heard.1
+    );
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
     let spans = wait_for("the recovery's last operation, the exited birth's fence and the new node's boot span are exported", SETTLE, || async {
@@ -277,10 +454,18 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
         (create_span(&in_trace(&spans, &recovery), &birth_build, &attempt, node_path).is_some() && !exit_fences(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
-    // The recovery's own run, one trace on the mesh-primary: its open at its own door, its claim on
-    // its mesh's rows, the attempt's run and its reconcile, each naming the mesh's lane.
+    // The recovery's own run, one trace from the mesh-primary's submit: the report, the fabric-primary's
+    // open, the claim it decides, its run naming the mesh, and the attempt's run and reconcile.
     let run = in_trace(&spans, &recovery);
-    assert_mesh_primary_ran_the_recovery(&run, &mesh_primary, mesh, &birth_build, &attempt, &before);
+    assert_mesh_primary_ran_the_recovery(
+        &run,
+        &mesh_primary,
+        &s(&primary["name"]),
+        mesh,
+        &birth_build,
+        &attempt,
+        &before,
+    );
     // Delete, then create: the exited birth departs once, named by its exact birth, before the new node boots.
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
@@ -368,9 +553,22 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     // The recovery's own run: the attempt number is mesh1's lane's, which the fabric lane's numbering
     // also holds, so its spans are read in the submit's trace.
     let run = in_trace(&spans, &recovery);
-    assert_mesh_primary_ran_the_recovery(&run, &mesh_primary, "mesh1", &birth_build, &attempt, &before);
-    let reconcile = lane_reconcile_span(&run, &birth_build, "mesh1", &attempt).expect("the attempt's reconcile span");
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("node.delete:{NODE},node.create:{NODE}"), "the recovery's two operations, in order: {reconcile}");
+    assert_mesh_primary_ran_the_recovery(
+        &run,
+        &mesh_primary,
+        &mesh_primary,
+        "mesh1",
+        &birth_build,
+        &attempt,
+        &before,
+    );
+    let reconcile = lane_reconcile_span(&run, &birth_build, "mesh1", &attempt)
+        .expect("the attempt's reconcile span");
+    assert_eq!(
+        s(&reconcile["attributes"]["operations"]),
+        format!("node.delete:{NODE},node.create:{NODE}"),
+        "the recovery's two operations, in order: {reconcile}"
+    );
     let mut last = 0u64;
     for step in ["NodeDeleting", "NodeDeleted", "RemoveTopologyMembership", "DeployRuntime", "WaitForNodeReady"] {
         let sp = step_span(&run, &birth_build, &attempt, NODE, step).unwrap_or_else(|| panic!("the recovery's {step} step span"));
@@ -495,9 +693,9 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
 /// killed with the key still missing (nothing it submitted can complete), and mesh2's other admin
 /// takes the seat. Once no attempt for the member is in flight, the key is put back. The new
 /// mesh-primary never submitted for the member, never inspects it (its birth departed) and holds
-/// nothing of it in memory: it reads the accepted Build's Failed attempt and opens the same birth's
-/// recovery at its own door, claimed on mesh2's rows (R-BI7:
-/// no call to the fabric-primary in mesh1). A later attempt of mesh2's lane of the same Build runs
+/// nothing of it in memory: it reads the accepted Build's Failed attempt and reports the same birth's
+/// recovery to the fabric-primary in mesh1, which opens it; the new mesh-primary claims it through
+/// BuildClaim and runs it (node-recovery.md "Execution", Q118). A later attempt of mesh2's lane of the same Build runs
 /// only the create, and the path comes back as a new node over the same data dir and
 /// endpoint key. Must NOT happen: the path left empty after the seat moved, a second node.delete of
 /// the exited birth, a Build minted.
@@ -552,26 +750,89 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
     let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node after mesh2's seat moved"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
     assert_eq!(estate.data_dir(NODE).await, data_dir, "the same data dir");
-    let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
-    assert_eq!((s(&done["attributes"]["submitter"]), s(&done["attributes"]["mesh"])), (heir.clone(), "mesh2".to_string()), "the admin that took the seat opened it in mesh2's lane: {done}");
-    assert_eq!(s(&done["attributes"]["disposition"]), "created", "its own door opened the next attempt: {done}");
-    assert_eq!(s(&done["attributes"]["build_id"]), birth_build, "the same Build, no Build minted: {done}");
-    assert_eq!(done["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {done}");
-    let attempt: u64 = s(&done["attributes"]["attempt"]).parse().expect("the completed submit names its attempt");
-    assert!(attempt > failed_attempt, "a later attempt than the failed one: {done}");
-    assert_eq!(s(&done["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{done}");
-    assert!(s(&done["attributes"]["after_failed_attempt"]).parse::<u64>().is_ok_and(|a| a >= failed_attempt && a < attempt), "the submit follows the Failed attempt the Build holds: {done}");
-
-    let spans = wait_for("the completing attempt's reconcile span is exported", Duration::from_secs(30), || async {
-        let spans = estate.spans();
-        lane_reconcile_span(&in_trace(&spans, &done), &birth_build, "mesh2", &attempt.to_string()).is_some().then_some(spans)
-    })
+    let done = wait_for(
+        "the completed submit of the exited birth is exported",
+        Duration::from_secs(60),
+        || async {
+            submits(&estate.spans())
+                .into_iter()
+                .find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete"))
+        },
+    )
     .await;
-    // The admin that took the seat opened, claimed and ran it itself, at that attempt of mesh2's lane,
-    // with no call to the fabric-primary.
+    assert_eq!(
+        (
+            s(&done["attributes"]["submitter"]),
+            s(&done["attributes"]["mesh"])
+        ),
+        (heir.clone(), "mesh2".to_string()),
+        "the admin that took the seat opened it in mesh2's lane: {done}"
+    );
+    assert_eq!(
+        s(&done["attributes"]["disposition"]),
+        "created",
+        "the fabric-primary opened the next attempt: {done}"
+    );
+    assert_eq!(
+        s(&done["attributes"]["build_id"]),
+        birth_build,
+        "the same Build, no Build minted: {done}"
+    );
+    assert_eq!(
+        done["attributes"]["incarnation_id"], before["incarnation_id"],
+        "keyed on the exact exited birth: {done}"
+    );
+    let attempt: u64 = s(&done["attributes"]["attempt"])
+        .parse()
+        .expect("the completed submit names its attempt");
+    assert!(
+        attempt > failed_attempt,
+        "a later attempt than the failed one: {done}"
+    );
+    assert_eq!(
+        s(&done["attributes"]["outcome"]),
+        format!("complete: attempt {attempt}"),
+        "{done}"
+    );
+    assert!(
+        s(&done["attributes"]["after_failed_attempt"])
+            .parse::<u64>()
+            .is_ok_and(|a| a >= failed_attempt && a < attempt),
+        "the submit follows the Failed attempt the Build holds: {done}"
+    );
+
+    let spans = wait_for(
+        "the completing attempt's reconcile span is exported",
+        Duration::from_secs(30),
+        || async {
+            let spans = estate.spans();
+            lane_reconcile_span(
+                &in_trace(&spans, &done),
+                &birth_build,
+                "mesh2",
+                &attempt.to_string(),
+            )
+            .is_some()
+            .then_some(spans)
+        },
+    )
+    .await;
+    // The admin that took the seat reported it, claimed it and ran it, at that attempt of mesh2's lane
+    // the fabric-primary opened.
     let run = in_trace(&spans, &done);
-    assert_mesh_primary_ran_the_recovery(&run, &heir, "mesh2", &birth_build, &attempt.to_string(), &before);
-    let admitted = named(&run, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the open of the completing attempt");
+    assert_mesh_primary_ran_the_recovery(
+        &run,
+        &heir,
+        &fp,
+        "mesh2",
+        &birth_build,
+        &attempt.to_string(),
+        &before,
+    );
+    let admitted = named(&run, "rdm.node_admin.build.update.via-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"])
+        .expect("the open of the completing attempt");
     assert!(
         !named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").iter().any(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == heir.as_str()),
         "{heir} never inspected the departed birth: the submit came from the durable facts"
@@ -1353,8 +1614,8 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
 /// CONTRACT (node-recovery.md sequence step 1: "A repeat submit answers AlreadyApplied or
 /// BuildInProgress, never a second recovery"; step 3: "the old (node.id, incarnation) fenced in the
 /// peer-location book"): a member of the mesh that does not hold the fabric-primary is killed and
-/// recovered by its mesh-primary on its own mesh's rows (R-BI7). Once the fabric-primary holds the
-/// recovery's receipts in that mesh's lane, heard on the Build topic, the same recovery submitted
+/// recovered through its mesh-primary's report (node-recovery.md "Execution", Q118). Once the
+/// fabric-primary holds the recovery's receipts in that mesh's lane, the same recovery submitted
 /// again to it on op 0x20 (`build.create` Recover keyed on the exited birth) answers Started
 /// AlreadyApplied naming the recovery's attempt, then its Complete terminal: keyed on the exited
 /// birth, whoever asks; nothing runs, the mesh's lane gains no attempt, the path keeps the recovered
@@ -1378,8 +1639,12 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
     assert_eq!(s(&recovery["attributes"]["disposition"]), "created", "{recovery}");
     assert_eq!(s(&recovery["attributes"]["mesh"]), mesh, "an attempt of {mesh}'s lane: {recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
-    assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{recovery}");
-    // A resubmit before the fabric-primary heard the receipts would race the Build topic.
+    assert_eq!(
+        s(&recovery["attributes"]["outcome"]),
+        format!("complete: attempt {attempt}"),
+        "{recovery}"
+    );
+    // The repeat follows the receipts the fabric-primary wrote.
     fp_recovery_receipts(&estate, &fp, &birth_build, &mesh, &node, &attempt).await;
 
     let change = BuildChange::Recover {
@@ -1408,13 +1673,47 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 
     // Every process flushed its spans on exit: the whole record.
     let spans = estate.spans();
-    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["outcome"] == "admitted").collect();
-    assert_eq!(opened.len(), 1, "exactly one recovery is opened for the exited birth: {opened:?}");
-    let applied: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-recovery-already-applied").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert_eq!(applied.len(), 1, "the repeat is answered from the recovery's receipts: {applied:?}");
-    assert_eq!(s(&applied[0]["attributes"]["attempt"]), attempt, "{applied:?}");
-    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert_eq!(deleted.len(), 1, "the exited birth is deleted once: {deleted:?}");
+    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery")
+        .into_iter()
+        .filter(|sp| {
+            sp["attributes"]["node_id"] == before["node_id"]
+                && matches!(
+                    sp["attributes"]["outcome"].as_str(),
+                    Some("admitted" | "reported")
+                )
+        })
+        .collect();
+    assert_eq!(
+        opened.len(),
+        1,
+        "exactly one recovery is opened for the exited birth: {opened:?}"
+    );
+    let applied: Vec<&Value> = named(
+        &spans,
+        "rdm.node_admin.build.reject.via-recovery-already-applied",
+    )
+    .into_iter()
+    .filter(|sp| sp["attributes"]["node_id"] == before["node_id"])
+    .collect();
+    assert_eq!(
+        applied.len(),
+        1,
+        "the repeat is answered from the recovery's receipts: {applied:?}"
+    );
+    assert_eq!(
+        s(&applied[0]["attributes"]["attempt"]),
+        attempt,
+        "{applied:?}"
+    );
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node_id"] == before["node_id"])
+        .collect();
+    assert_eq!(
+        deleted.len(),
+        1,
+        "the exited birth is deleted once: {deleted:?}"
+    );
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
@@ -1486,7 +1785,7 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     .await;
     let workflow = reconcile_span(&spans, &birth_build, &delete_attempt.to_string()).expect("attempt N's reconcile span");
     assert_eq!(s(&workflow["attributes"]["outcome"]), "failed", "{workflow}");
-    let opened = named(&in_trace(&spans, &recovery), "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["outcome"] == "admitted").cloned().expect("the recovery's open");
+    let opened = named(&in_trace(&spans, &recovery), "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("admitted" | "reported"))).cloned().expect("the recovery's open");
     assert!(end(workflow) <= start(&opened), "the recovery opens once attempt N ended: {workflow} vs {opened}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     estate.settles_to(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
@@ -1826,23 +2125,26 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     eprintln!("trace {}: via-node-row delete node_id={} keys={} tags={}; trace {}: via-node-row claim node={} node_id={} seeded_from={} keys={} tags={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&deleted[0]["attributes"]["tags"]), s(&claim["trace_id"]), mesh_primary, s(&after["node_id"]), s(&a["seeded_from"]), a["keys"], s(&a["tags"]));
 }
 
-/// CONTRACT (R-BI7, proposal Part C: "The mesh-primary is the reconciler of its own mesh and does not
-/// wait for the fabric-primary to heal it. The fabric-primary can be offline"; its flame: "a member
-/// exits while the fabric-primary is stopped, and the trace shows the mesh-primary's proven exit, its
-/// own claim on its mesh's rows, and the recovery completing with no fabric-primary call"): mesh1 holds
-/// the fabric-primary and a second node-admin; mesh2 holds one node-admin, its mesh-primary, and two
-/// rpc nodes. The fabric-primary is stopped by plan (node.stop: its seats move to mesh1's other
+/// CONTRACT (node-recovery.md "Execution", Q118: the mesh-primary reports the drift up, the
+/// fabric-primary opens the attempt, the mesh-primary claims it through BuildClaim, the fabric-primary
+/// calls `build.attempt.run` naming the mesh and writes every Build record): mesh1 holds the
+/// fabric-primary and a second node-admin; mesh2 holds one node-admin, its mesh-primary, and two rpc
+/// nodes. The fabric-primary is stopped by plan (node.stop: its seats move to mesh1's other
 /// node-admin, then it stops). With it stopped, `mesh2.rpc.1` is killed. mesh2's primary proves the
-/// exit and runs the recovery itself: the submit's trace holds the open at its own door, its claim
-/// decided on mesh2's rows in mesh2's lane, the attempt's run and its converged reconcile, and no
-/// Build call or claim call (op 0x20, 0x1C) and no dispatch. No other admin submits, opens or claims
-/// that recovery, no attempt of the fabric lane acts on the member, and the stopped fabric-primary
-/// stays stopped through it; the fabric-primary that holds the seat now learns the receipts from the
-/// Build topic. Must NOT happen: the recovery waiting for a fabric-primary, a call to one, or the
-/// stopped fabric-primary running again.
+/// exit and reports it to the admin that took the fabric-primary role: the submit's trace holds that
+/// admin's open in mesh2's lane, its decision of mesh2's primary's claim, its run naming the mesh, and
+/// mesh2's primary's run of the attempt and its converged reconcile. No other admin submits the
+/// recovery, no attempt of the fabric lane acts on the member, the stopped fabric-primary stays
+/// stopped through it, and the fabric-primary now holds the receipts. Must NOT happen: the recovery
+/// waiting for the stopped fabric-primary, or it running again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_mesh_primary_alone() {
-    let (mut estate, build) = fabric_of("a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_mesh_primary_alone", &[("mesh1", 2, 1), ("mesh2", 1, 2)], Duration::from_secs(90)).await;
+async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_its_successor() {
+    let (mut estate, build) = fabric_of(
+        "a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_its_successor",
+        &[("mesh1", 2, 1), ("mesh2", 1, 2)],
+        Duration::from_secs(90),
+    )
+    .await;
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     let fp_name = s(&fp["name"]);
@@ -1892,7 +2194,15 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
     })
     .await;
     let run = in_trace(&spans, &done);
-    assert_mesh_primary_ran_the_recovery(&run, &mp, "mesh2", &build, &attempt, &before);
+    assert_mesh_primary_ran_the_recovery(
+        &run,
+        &mp,
+        &successor_name,
+        "mesh2",
+        &build,
+        &attempt,
+        &before,
+    );
     // No other admin submitted, opened or claimed it, and no attempt of the fabric lane acted on it.
     for sp in submits(&spans) {
         assert_eq!(s(&sp["attributes"]["submitter"]), mp, "only mesh2's primary submits its member's recovery: {sp}");
@@ -1901,13 +2211,36 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
     for sp in named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]) {
         assert!(submit_traces.contains(&s(&sp["trace_id"])), "every open of the recovery is under mesh2's primary's submit: {sp}");
     }
-    for sp in named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build && sp["attributes"]["lane"] == "mesh2") {
-        assert_eq!(s(&sp["attributes"]["node"]), mp, "only mesh2's primary decides a claim in mesh2's lane: {sp}");
+    for sp in named(&spans, "rdm.node_admin.build.update.via-claim-decision")
+        .into_iter()
+        .filter(|sp| {
+            s(&sp["attributes"]["build_id"]) == build
+                && sp["attributes"]["lane"] == "mesh2"
+                && start(sp) >= start(&done)
+        })
+    {
+        assert_eq!(
+            s(&sp["attributes"]["node"]),
+            successor_name,
+            "only the fabric-primary decides a claim in mesh2's lane: {sp}"
+        );
     }
-    let member_ops: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| s(&r["attributes"]["build_id"]) == build && s(&r["attributes"]["operations"]).contains(&format!("node.create:{NODE}")) && start(r) >= start(&done)).collect();
-    assert!(member_ops.iter().all(|r| r["attributes"]["lane"] == "mesh2" && s(&r["attributes"]["executor"]) == mp), "only mesh2's lane acts on the member after its exit: {member_ops:?}");
-    // The stopped fabric-primary stayed stopped through the recovery, and the fabric-primary that
-    // holds the seat now learns the receipts from the Build topic.
+    let member_ops: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .filter(|r| {
+            s(&r["attributes"]["build_id"]) == build
+                && s(&r["attributes"]["operations"]).contains(&format!("node.create:{NODE}"))
+                && start(r) >= start(&done)
+        })
+        .collect();
+    assert!(
+        member_ops
+            .iter()
+            .all(|r| r["attributes"]["lane"] == "mesh2" && s(&r["attributes"]["executor"]) == mp),
+        "only mesh2's lane acts on the member after its exit: {member_ops:?}"
+    );
+    // The stopped fabric-primary stayed stopped through the recovery, and the fabric-primary now holds
+    // the receipts it wrote.
     let still = estate.node_value(&fp_name).await;
     assert_eq!((still["parked"].clone(), still["incarnation_id"].clone()), (json!(true), fp["incarnation_id"].clone()), "{fp_name} stayed stopped: {still}");
     let (deleted, created) = fp_recovery_receipts(&estate, &Estate::path(&successor_name), &build, "mesh2", NODE, &attempt).await;
@@ -1921,24 +2254,23 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
     estate.shutdown().await;
 }
 
-/// CONTRACT (R-BI7 caveat 2: each mesh-primary claims its mesh's drift attempts on its mesh's rows;
-/// build.md :365 as the approved proposal A4 words it: "The next attempt is claimed after the running
-/// attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is lost with the
-/// attempt unfinished, after exact departure proof"): mesh2 has two node-admins, each the testkit's
-/// faulted node-admin. `mesh2.rpc.1` is killed; mesh2's primary P opens and claims its recovery as an
-/// attempt of mesh2's lane and runs it. The fault door holds P inside the run, at the member's
-/// node.delete NodeDeleted receipt (the `receipt` cut: NodeDeleting is durable and its pre-notice
-/// published, the departure is proven, the NodeDeleted receipt is not yet durable). Once NA2's own
-/// Build log holds that attempt running under P's claim with its NodeDeleting receipt, P is killed
-/// while the cut holds it (claimed, mid-run, no verdict). mesh2's other admin NA2 is elected mesh2's
-/// primary, and the fabric-primary FP, which runs an unheard mesh-primary's recovery (node-recovery.md
-/// step 2 and sequence step 1), investigates P and submits its recovery: at FP's door the attempt P left
-/// running in mesh2's lane ends Failed on P's departure (`build.update.via-departed-claimant`, outcome
-/// `ended`, naming P's exact birth), then FP claims the next attempt of the fabric lane for P's recovery
-/// (`build.update.via-claim-decision`, FP, won), in that order, in the submit's own trace. P comes back
-/// as a new node, and the member's recovery, owed again from the Failed attempt, completes under NA2 in
-/// mesh2's lane. Must NOT happen: mesh2's lane held for good by the lost claimant, or an admin other than
-/// mesh2's primaries claiming in mesh2's lane.
+/// CONTRACT (node-recovery.md "Execution", Q118: the fabric-primary opens a reported drift, decides its
+/// mesh-primary's claim and runs it naming the mesh; build.md :365 as the approved proposal A4 words it:
+/// "The next attempt is claimed after the running attempt's terminal receipt (Complete, Failed or
+/// HandedOff), or, when the executor is lost with the attempt unfinished, after exact departure
+/// proof"): mesh2 has two node-admins, each the testkit's faulted node-admin. `mesh2.rpc.1` is killed;
+/// mesh2's primary P reports its recovery, the fabric-primary FP opens it as an attempt of mesh2's
+/// lane, P claims it and FP runs it at P. The fault door holds P inside the run, at the member's
+/// node.delete `deleted` event (the `event` cut: the NodeDeleted receipt reported and written by FP,
+/// node.deleted not yet published). Once NA2's own Build log holds that attempt running with P its
+/// executor and its NodeDeleting receipt, P is killed while the cut holds it (claimed, mid-run, no
+/// verdict). FP ends that attempt Failed only on P's proven departure, naming it; mesh2's other admin
+/// NA2 is elected mesh2's primary, and FP, which runs an unheard mesh-primary's recovery
+/// (node-recovery.md step 2 and sequence step 1), claims the next attempt of the fabric lane for P's
+/// recovery (`build.update.via-claim-decision`, FP, won) after the lost attempt ended. P comes back as a
+/// new node, and the member's recovery, owed again from the Failed attempt, completes through NA2 in
+/// mesh2's lane. Must NOT happen: mesh2's lane held for good by the lost executor, or an admin other
+/// than the fabric-primary deciding a claim in mesh2's lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_the_fabric_primary_recovers_it() {
     let (estate, build) = faulted_fabric_of("a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_the_fabric_primary_recovers_it", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
@@ -1949,56 +2281,107 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
     let na2 = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != p["name"]).expect("mesh2's other node-admin")["name"]);
     assert!(!fp.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp}");
 
-    // The member's recovery is the one node.delete of it P runs: the cut holds P at its NodeDeleted
-    // receipt until P is killed.
+    // The member's recovery is the one node.delete of it P runs: the cut holds P at its node.deleted
+    // event until P is killed.
     const NODE: &str = "mesh2.rpc.1";
     let door = Door::at(&estate, &p_name).await;
-    door.arm("member-deleted", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": NODE})).await;
+    door.arm(
+        "member-deleted",
+        json!({"kind": "event", "event": "deleted", "node": NODE}),
+    )
+    .await;
     let before = estate.node_value(NODE).await;
     estate.kill_node(NODE).await;
     let held = door.wait_held("member-deleted").await;
-    assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.delete:{NODE}")), "P holds the member's NodeDeleted receipt of the accepted Build: {held}");
-    let lost_attempt = held["hit"]["attempt"].as_u64().expect("the held receipt names its attempt");
-    // NA2 heard the claim and the NodeDeleting receipt on the Build topic: in its own log mesh2's lane
-    // runs that attempt for the member's recovery, claimed by P, with no verdict.
-    let heard = build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("attempt {lost_attempt} of mesh2's lane running under {p_name}'s claim, its NodeDeleting durable"), SETTLE, |pr| {
+    assert_eq!(
+        (s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])),
+        (build.clone(), format!("node.delete:{NODE}")),
+        "P holds the member's node.deleted of the accepted Build: {held}"
+    );
+    let lost_attempt = held["hit"]["attempt"]
+        .as_u64()
+        .expect("the held event names its attempt");
+    // NA2 heard FP's records on the Build topic: in its own log mesh2's lane runs that attempt for the
+    // member's recovery, P its executor, with no verdict.
+    let heard = build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("attempt {lost_attempt} of mesh2's lane running with {p_name} its executor, its NodeDeleting durable"), SETTLE, |pr| {
         let b = serde_json::to_value(pr).expect("a Build view serializes");
         let lane = &b["lanes"]["mesh2"];
         let deleting = lane_steps(&b, "mesh2").iter().any(|r| r["operation"] == format!("node.delete:{NODE}").as_str() && r["step"] == "NodeDeleting" && r["attempt"] == json!(lost_attempt) && r["outcome"] == "complete");
-        deleting && lane["attempt"] == json!(lost_attempt) && lane["state"] == "running" && lane["claimant"] == p_name.as_str() && lane["action"]["action"] == "recover" && lane["action"]["path"] == NODE
+        deleting && lane["attempt"] == json!(lost_attempt) && lane["state"] == "running" && lane["executor"] == p_name.as_str() && lane["claimant"] == fp.as_str() && lane["action"]["action"] == "recover" && lane["action"]["path"] == NODE
     })
     .await
     .unwrap_or_else(|end| panic!("{end}"));
     estate.kill_node(&p_name).await;
 
-    // FP ends P's attempt of mesh2's lane on P's departure, then claims the fabric lane for P's recovery.
-    let ended = wait_for(&format!("{fp} ends attempt {lost_attempt} of mesh2's lane on {p_name}'s departure"), SETTLE, || async {
-        named(&estate.spans(), "rdm.node_admin.build.update.via-departed-claimant")
+    // FP ends P's attempt of mesh2's lane on P's proven departure: at its run of the attempt, or at its
+    // door when that run had not proven it yet.
+    let ended = wait_for(
+        &format!("{fp} ends attempt {lost_attempt} of mesh2's lane on {p_name}'s departure"),
+        SETTLE,
+        || async {
+            let spans = estate.spans();
+            let at_door = named(&spans, "rdm.node_admin.build.update.via-departed-claimant")
+                .into_iter()
+                .find(|sp| {
+                    sp["attributes"]["node"] == fp.as_str()
+                        && sp["attributes"]["executor"] == p_name.as_str()
+                        && sp["attributes"]["lane"] == "mesh2"
+                        && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string()
+                        && sp["attributes"]["outcome"] == "ended"
+                });
+            let at_run = named(&spans, "rdm.node_admin.build.update.via-drift-run")
+                .into_iter()
+                .find(|sp| {
+                    sp["attributes"]["node"] == fp.as_str()
+                        && sp["attributes"]["executor"] == p_name.as_str()
+                        && sp["attributes"]["lane"] == "mesh2"
+                        && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string()
+                        && sp["attributes"]["outcome"] == "failed"
+                        && s(&sp["attributes"]["reason"]).contains("departure is proven")
+                });
+            at_door.or(at_run).cloned()
+        },
+    )
+    .await;
+    let take_over = wait_for(
+        "FP's submit and claim of P's recovery are exported",
+        Duration::from_secs(60),
+        || async {
+            let spans = estate.spans();
+            let submit = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+                .into_iter()
+                .find(|sp| {
+                    sp["attributes"]["submitter"] == fp.as_str()
+                        && sp["attributes"]["node_id"] == p["node_id"]
+                })
+                .cloned()?;
+            let claim = named(
+                &in_trace(&spans, &submit),
+                "rdm.node_admin.build.update.via-claim-decision",
+            )
             .into_iter()
-            .find(|sp| sp["attributes"]["node"] == fp.as_str() && sp["attributes"]["claimant"] == p_name.as_str() && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string() && sp["attributes"]["outcome"] == "ended")
-            .cloned()
-    })
+            .find(|sp| sp["attributes"]["node"] == fp.as_str())
+            .cloned()?;
+            Some((submit, claim))
+        },
+    )
     .await;
-    assert_eq!((s(&ended["attributes"]["lane"]), s(&ended["attributes"]["node_id"]), s(&ended["attributes"]["incarnation_id"])), ("mesh2".to_string(), s(&p["node_id"]), s(&p["incarnation_id"])), "the take-over names P's exact birth: {ended}");
-    let spans = wait_for("the take-over's claim and submit are exported", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        let run = in_trace(&spans, &ended);
-        let claimed = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|sp| sp["attributes"]["node"] == fp.as_str());
-        let submitted = named(&run, "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| sp["attributes"]["submitter"] == fp.as_str());
-        (claimed && submitted).then_some(spans)
-    })
-    .await;
-    let run = in_trace(&spans, &ended);
-    let submit = named(&run, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["submitter"] == fp.as_str()).cloned().expect("FP's submit");
-    assert_eq!((s(&submit["attributes"]["node"]), s(&submit["attributes"]["node_id"])), (p_name.clone(), s(&p["node_id"])), "FP's submit is of P's recovery: {submit}");
-    let claim = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| sp["attributes"]["node"] == fp.as_str()).cloned().expect("FP's claim");
+    let (submit, claim) = take_over;
+    assert_eq!(
+        s(&submit["attributes"]["node"]),
+        p_name,
+        "FP's submit is of P's recovery: {submit}"
+    );
     assert_eq!(
         (s(&claim["attributes"]["lane"]), s(&claim["attributes"]["executor"]), s(&claim["attributes"]["outcome"])),
         ("fabric".to_string(), fp.clone(), "won".to_string()),
         "FP claimed the fabric lane for P's recovery: {claim}"
     );
-    assert!(end(&ended) <= start(&claim), "the lost attempt ended before the next was claimed");
-    // P and the member come back as new nodes; the member's recovery completes under NA2, mesh2's primary.
+    assert!(
+        end(&ended) <= start(&claim),
+        "the lost attempt ended before the next was claimed"
+    );
+    // P and the member come back as new nodes; the member's recovery completes through NA2, mesh2's primary.
     for (path, old) in [(p_name.as_str(), &p), (NODE, &before)] {
         until_new_birth(&estate, path, old, SETTLE).await;
     }
@@ -2006,14 +2389,30 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
         named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"] && s(&sp["attributes"]["outcome"]).starts_with("complete")).cloned()
     })
     .await;
-    assert_eq!((s(&member["attributes"]["submitter"]), s(&member["attributes"]["mesh"])), (na2.clone(), "mesh2".to_string()), "the member's recovery completes under NA2 in mesh2's lane: {member}");
+    assert_eq!(
+        (
+            s(&member["attributes"]["submitter"]),
+            s(&member["attributes"]["mesh"])
+        ),
+        (na2.clone(), "mesh2".to_string()),
+        "the member's recovery completes through NA2 in mesh2's lane: {member}"
+    );
     let spans = estate.spans();
-    for sp in named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build && sp["attributes"]["lane"] == "mesh2") {
-        assert!([p_name.as_str(), na2.as_str()].contains(&s(&sp["attributes"]["node"]).as_str()), "only mesh2's primaries decide claims in mesh2's lane: {sp}");
+    for sp in named(&spans, "rdm.node_admin.build.update.via-claim-decision")
+        .into_iter()
+        .filter(|sp| {
+            s(&sp["attributes"]["build_id"]) == build && sp["attributes"]["lane"] == "mesh2"
+        })
+    {
+        assert_eq!(
+            s(&sp["attributes"]["node"]),
+            fp,
+            "only the fabric-primary decides claims in mesh2's lane: {sp}"
+        );
     }
     eprintln!(
-        "s78 gap 1 live: {p_name} held by the fault door at the member's NodeDeleted receipt {} and killed running attempt {lost_attempt} of mesh2's lane of {build} ({na2} held it running under {:?}); take-over trace {} | via-node-recovery span {} submitter {fp} node {p_name} | via-departed-claimant span {} outcome {} claimant {} | via-claim-decision span {} attempt {} outcome {} | member complete trace {} attempt {}",
-        held["hit"], heard.lanes.get("mesh2").and_then(|l| l.claimant.clone()), s(&ended["trace_id"]), s(&submit["span_id"]), s(&ended["span_id"]), s(&ended["attributes"]["outcome"]), s(&ended["attributes"]["claimant"]), s(&claim["span_id"]), s(&claim["attributes"]["attempt"]), s(&claim["attributes"]["outcome"]), s(&member["trace_id"]), s(&member["attributes"]["attempt"]),
+        "s78 gap 1 live: {p_name} held by the fault door at the member's node.deleted {} and killed running attempt {lost_attempt} of mesh2's lane of {build} ({na2} held it running with executor {:?}); ended by {} span {} | FP submit span {} node {p_name} | via-claim-decision span {} attempt {} outcome {} | member complete trace {} attempt {}",
+        held["hit"], heard.lanes.get("mesh2").and_then(|l| l.executor.clone()), s(&ended["name"]), s(&ended["span_id"]), s(&submit["span_id"]), s(&claim["span_id"]), s(&claim["attributes"]["attempt"]), s(&claim["attributes"]["outcome"]), s(&member["trace_id"]), s(&member["attributes"]["attempt"]),
     );
     estate.record_trace_url(ended["trace_id"].as_str().unwrap_or(""));
     estate.shutdown().await;

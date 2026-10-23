@@ -225,7 +225,22 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         me: me.clone(),
         topology: control.topology.clone(),
         builds: rig.builds.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: control.claims.clone() }),
+        door: Arc::new(ClaimDoor {
+            me: me.clone(),
+            node_id: control
+                .topology
+                .read()
+                .await
+                .node(&me)
+                .expect("the fabric-primary is in the view")
+                .node_id
+                .clone(),
+            topology: control.topology.clone(),
+            builds: rig.builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: control.claims.clone(),
+            claimed: Default::default(),
+        }),
         dispatcher: dispatcher(run.clone()),
         gate: Arc::new(OpenGate),
         departure,
@@ -253,7 +268,15 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         me: me.clone(),
         topology: control.topology.clone(),
         builds: rig.builds.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), node_id, topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: control.claims.clone() }),
+        door: Arc::new(ClaimDoor {
+            me: me.clone(),
+            node_id,
+            topology: control.topology.clone(),
+            builds: rig.builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: control.claims.clone(),
+            claimed: Default::default(),
+        }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
@@ -280,7 +303,22 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         me: me.clone(),
         topology: control.topology.clone(),
         builds: fp.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: control.claims.clone() }),
+        door: Arc::new(ClaimDoor {
+            me: me.clone(),
+            node_id: control
+                .topology
+                .read()
+                .await
+                .node(&me)
+                .expect("the fabric-primary is in the view")
+                .node_id
+                .clone(),
+            topology: control.topology.clone(),
+            builds: fp.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: control.claims.clone(),
+            claimed: Default::default(),
+        }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
@@ -1169,7 +1207,15 @@ struct LostAfterStopNode {
 impl Dispatcher for LostAfterStopNode {
     async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rdm_core::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rdm_admin::executor::RunPlan) -> Dispatched {
         use rdm_core::build::BuildReply;
-        let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.to_string(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
+        let step = |operation: &str, step: &str| {
+            InnerItem::Frame(BuildReply::Step {
+                build_id: build_id.to_string(),
+                attempt,
+                operation: format!("{operation}:mesh1.rpc.1"),
+                step: step.into(),
+                receipt: None,
+            })
+        };
         let run = {
             let mut runs = self.runs.lock().unwrap();
             *runs += 1;

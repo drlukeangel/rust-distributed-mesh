@@ -41,7 +41,9 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         ),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) }, "00 00 0c"),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
-        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]], operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()) }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00 01 02 7b7d 01 01 6e"),
+        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]], operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()), mesh: None }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00 01 02 7b7d 01 01 6e 00"),
+        // a drift attempt names its mesh (Q118): mesh "m"
+        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![], operations: vec![], hand_off_to: None, mesh: Some("m".into()) }, "01 01 62 02 01 65 00 00 00 00 00 00 00 01 01 6d"),
         (BuildRequest::Get { build_id: "b".into() }, "02 01 62"),
         (BuildRequest::Delete { build_id: "b".into() }, "03 01 62"),
     ];
@@ -60,17 +62,131 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
     let b = || "b".to_string();
     let s = |v: &str| v.to_string();
     let fixtures = [
-        (Started { build_id: b(), attempt: 1, disposition: Disposition::AlreadyApplied }, "00 01 62 01 03"),
-        (Started { build_id: b(), attempt: 1, disposition: Disposition::Created }, "00 01 62 01 00"),
-        (Started { build_id: b(), attempt: 1, disposition: Disposition::Reattached }, "00 01 62 01 05"),
-        (Step { build_id: b(), attempt: 1, operation: s("o"), step: s("s") }, "01 01 62 01 01 6f 01 73"),
-        (Blocked { build_id: b(), attempt: 1, operation: s("o"), step: s("s"), reason: s("r") }, "02 01 62 01 01 6f 01 73 01 72"),
-        (Steps { build_id: b(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: s("o"), step: s("s"), result: StepResult::Complete }] }, "03 01 62 00 01 01 01 01 6f 01 73 00"),
-        (Steps { build_id: b(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: s("o"), step: s("s"), result: StepResult::Failed { reason: s("r") , code: rdm_core::outcome::Code::FailedPrecondition } }] }, "03 01 62 00 01 01 01 01 6f 01 73 01 01 72 09"),
-        (Complete { build_id: b(), attempt: 2 }, "04 01 62 02"),
-        (Failed { build_id: b(), attempt: 2, operation: s("o"), step: s("s"), reason: s("r") , code: rdm_core::outcome::Code::FailedPrecondition }, "05 01 62 02 01 6f 01 73 01 72 09"),
-        (HandedOff { build_id: b(), attempt: 2, to: s("t") }, "06 01 62 02 01 74"),
-        (Got { build_id: b(), phase: BuildPhase::Complete, attempt: 2, executor: Some(s("e")), reason: s("requested"), last_failure: None, steps: 3, chunks: 1 }, "07 01 62 02 02 01 01 65 09 726571756573746564 00 03 01"),
+        (
+            Started {
+                build_id: b(),
+                attempt: 1,
+                disposition: Disposition::AlreadyApplied,
+            },
+            "00 01 62 01 03",
+        ),
+        (
+            Started {
+                build_id: b(),
+                attempt: 1,
+                disposition: Disposition::Created,
+            },
+            "00 01 62 01 00",
+        ),
+        (
+            Started {
+                build_id: b(),
+                attempt: 1,
+                disposition: Disposition::Reattached,
+            },
+            "00 01 62 01 05",
+        ),
+        (
+            Step {
+                build_id: b(),
+                attempt: 1,
+                operation: s("o"),
+                step: s("s"),
+                receipt: None,
+            },
+            "01 01 62 01 01 6f 01 73 00",
+        ),
+        // the inner stream's Step carries its receipt for the fabric-primary to write (Q118)
+        (
+            Step {
+                build_id: b(),
+                attempt: 1,
+                operation: s("o"),
+                step: s("s"),
+                receipt: Some(vec![0x7b, 0x7d]),
+            },
+            "01 01 62 01 01 6f 01 73 01 02 7b7d",
+        ),
+        (
+            Blocked {
+                build_id: b(),
+                attempt: 1,
+                operation: s("o"),
+                step: s("s"),
+                reason: s("r"),
+            },
+            "02 01 62 01 01 6f 01 73 01 72",
+        ),
+        (
+            Steps {
+                build_id: b(),
+                chunk_index: 0,
+                chunk_count: 1,
+                steps: vec![StepReceipt {
+                    attempt: 1,
+                    operation: s("o"),
+                    step: s("s"),
+                    result: StepResult::Complete,
+                }],
+            },
+            "03 01 62 00 01 01 01 01 6f 01 73 00",
+        ),
+        (
+            Steps {
+                build_id: b(),
+                chunk_index: 0,
+                chunk_count: 1,
+                steps: vec![StepReceipt {
+                    attempt: 1,
+                    operation: s("o"),
+                    step: s("s"),
+                    result: StepResult::Failed {
+                        reason: s("r"),
+                        code: rdm_core::outcome::Code::FailedPrecondition,
+                    },
+                }],
+            },
+            "03 01 62 00 01 01 01 01 6f 01 73 01 01 72 09",
+        ),
+        (
+            Complete {
+                build_id: b(),
+                attempt: 2,
+            },
+            "04 01 62 02",
+        ),
+        (
+            Failed {
+                build_id: b(),
+                attempt: 2,
+                operation: s("o"),
+                step: s("s"),
+                reason: s("r"),
+                code: rdm_core::outcome::Code::FailedPrecondition,
+            },
+            "05 01 62 02 01 6f 01 73 01 72 09",
+        ),
+        (
+            HandedOff {
+                build_id: b(),
+                attempt: 2,
+                to: s("t"),
+            },
+            "06 01 62 02 01 74",
+        ),
+        (
+            Got {
+                build_id: b(),
+                phase: BuildPhase::Complete,
+                attempt: 2,
+                executor: Some(s("e")),
+                reason: s("requested"),
+                last_failure: None,
+                steps: 3,
+                chunks: 1,
+            },
+            "07 01 62 02 02 01 01 65 09 726571756573746564 00 03 01",
+        ),
         (Deleted { build_id: b() }, "08 01 62"),
         (NotFabricPrimary { fabric_primary: Some(s("p")) }, "09 01 01 70"),
         (NotExecutor { named: s("n"), recipient: s("r") }, "0a 01 6e 01 72"),
@@ -111,9 +227,26 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Build::OP, 0x20);
     assert_eq!(Build::frame_kind(&Started { build_id: "b".into(), attempt: 1, disposition: Disposition::Created }), FrameKind::Started);
     for data in [
-        Step { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into() },
-        Blocked { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into(), reason: "r".into() },
-        Steps { build_id: "b".into(), chunk_index: 0, chunk_count: 1, steps: vec![] },
+        Step {
+            build_id: "b".into(),
+            attempt: 1,
+            operation: "o".into(),
+            step: "s".into(),
+            receipt: None,
+        },
+        Blocked {
+            build_id: "b".into(),
+            attempt: 1,
+            operation: "o".into(),
+            step: "s".into(),
+            reason: "r".into(),
+        },
+        Steps {
+            build_id: "b".into(),
+            chunk_index: 0,
+            chunk_count: 1,
+            steps: vec![],
+        },
     ] {
         assert_eq!(Build::frame_kind(&data), FrameKind::Data, "{data:?}");
     }
@@ -157,6 +290,7 @@ fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() 
         intent: (0..32).map(|_| vec![0u8; 4096 - 64]).collect(),
         operations: (0..64).map(|_| vec![0u8; 256]).collect(),
         hand_off_to: Some("mesh1.admin.1".into()),
+        mesh: Some("mesh1".into()),
     };
     assert!(Build::encode_request(&q).unwrap().len() <= Build::MAX_REQUEST_FRAME_BYTES);
 }

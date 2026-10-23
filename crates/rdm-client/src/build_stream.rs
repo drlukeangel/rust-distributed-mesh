@@ -469,7 +469,7 @@ mod tests {
                     // The frames after `Started` are written once the caller holds only the stream.
                     g.notified().await;
                     for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
-                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "node.create:mesh1.admin.1".into(), step: step.into() }).await.map_err(gone)?;
+                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "node.create:mesh1.admin.1".into(), step: step.into(), receipt: None }).await.map_err(gone)?;
                     }
                     Ok(BuildReply::FabricPrimaryMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
                 }

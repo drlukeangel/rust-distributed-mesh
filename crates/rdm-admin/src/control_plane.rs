@@ -281,28 +281,66 @@ impl ControlPlane {
         if fabric_holds {
             return self.end_fabric_attempt_of_a_lost_claimant(current, mesh).await;
         }
-        let Some(lane) = current.lanes.get(mesh).filter(|l| l.state == BuildState::Running) else { return Ok(false) };
-        let Some(claimant) = lane.claimant.as_deref().and_then(|c| c.parse::<PathName>().ok()) else { return Ok(false) };
+        let Some(lane) = current
+            .lanes
+            .get(mesh)
+            .filter(|l| l.state == BuildState::Running)
+        else {
+            return Ok(false);
+        };
+        // The admin that runs the attempt departed: its executor (the claimant too, for an attempt its
+        // mesh-primary claimed at its own door; the fabric-primary decided the claim of a reported one).
+        let Some(executor) = lane
+            .executor
+            .as_deref()
+            .or(lane.claimant.as_deref())
+            .and_then(|c| c.parse::<PathName>().ok())
+        else {
+            return Ok(false);
+        };
+        let claimant = lane
+            .claimant
+            .clone()
+            .unwrap_or_else(|| executor.to_string());
         let me = self.held_name().await;
-        if claimant == me || claimant == self.me {
+        if executor == me || executor == self.me {
             return Ok(false);
         }
-        let Some(n) = self.departure_of(&claimant).await? else { return Ok(false) };
+        let Some(n) = self.departure_of(&executor).await? else {
+            return Ok(false);
+        };
         let attempt = lane.attempt;
-        let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
-        let reason = format!("{claimant} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
-        let verdict = crate::build_state::BuildAttemptReceipt { mesh: Some(mesh.to_string()), build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason , code: rdm_core::outcome::Code::FailedPrecondition } };
+        let incarnation = n
+            .incarnation_id
+            .as_ref()
+            .map(|i| i.as_str().to_string())
+            .unwrap_or_default();
+        let reason = format!("{executor} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, executor = %executor, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
+        let verdict = crate::build_state::BuildAttemptReceipt {
+            mesh: Some(mesh.to_string()),
+            build_id: current.build_id.clone(),
+            attempt,
+            outcome: crate::build_state::AttemptOutcome::Failed {
+                reason,
+                code: rdm_core::outcome::Code::FailedPrecondition,
+            },
+        };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt could not be ended: the mesh stays held by it"));
             return Err(Refusal::State(e));
         }
-        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string() };
+        let held = crate::mesh_claims::InFlight {
+            build_id: current.build_id.clone(),
+            lane: Some(mesh.to_string()),
+            attempt,
+            claimant,
+        };
         if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
-            return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of mesh {mesh}'s lane of {} is ended on {claimant}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
+            return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of mesh {mesh}'s lane of {} is ended on {executor}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
         }
         span.record("outcome", "ended");
         span.in_scope(|| tracing::info!("the mesh's drift attempt ends with its departed claimant, and its in-flight row is released"));
@@ -812,9 +850,12 @@ impl ControlPlane {
             } else {
                 t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone())
             };
-            // The claimant of a drift attempt is its mesh's own primary, as this admin's view holds
-            // the seat (R-BI7 caveat 2): decided from this admin's view, never from who asked.
-            if recoverer.as_ref() != Some(&me) {
+            // A mesh-primary reports its drift up as build.create { Change(Recover) }: the fabric-primary
+            // opens the attempt at `(build_id, mesh, attempt)` and the mesh-primary claims it through
+            // BuildClaim (node-recovery.md "Execution", Q118). Any other admin that is not the recoverer
+            // opens nothing.
+            let reported = recoverer.as_ref().is_some_and(|r| *r != me) && route == "build.create" && t.fabric_primary().is_some_and(|n| n.name == me);
+            if recoverer.as_ref() != Some(&me) && !reported {
                 let fabric_primary = t.fabric_primary().map(|n| n.name.to_string());
                 let mesh_primary = recoverer.map(|n| n.to_string());
                 outer.in_scope(|| {
@@ -824,6 +865,17 @@ impl ControlPlane {
                 return Err(Refusal::NotClaimant { mesh: path.mesh.clone(), fabric_primary, mesh_primary });
             }
             let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() };
+            // A reported recovery whose attempt still runs under the reporter is reattached, never
+            // claimed again (build.md: "A live run is reattached, never re-claimed"): the fabric-primary
+            // lost its stream to the run, and the reporter's next report finds it.
+            if let Some(claimant) = recoverer.as_ref().filter(|_| reported) {
+                let current = self.builds.current().await.map_err(Refusal::State)?;
+                let live = current.as_ref().and_then(|c| c.lanes.get(&path.mesh).filter(|l| l.state == BuildState::Running && l.action.as_ref() == Some(&action) && l.executor.as_deref() == Some(claimant.to_string().as_str())).map(|l| Opened { build_id: c.build_id.clone(), attempt: l.attempt, mesh: Some(path.mesh.clone()) }));
+                if let Some(opened) = live {
+                    span.record("open_attempt", "reattached");
+                    return Ok(Recovery::Reported { opened, claimant: claimant.clone() });
+                }
+            }
             let (_admitted, current, open) = self.mesh_settled(&path.mesh, &action).await?;
             if !current.topology.contains(&path) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
@@ -841,7 +893,7 @@ impl ControlPlane {
             // the mesh.
             // Fabric recovery's re-create runs in its target mesh's lane: free while the fabric lane holds an
             // attempt the lost fabric-primary claimed, which the restored fabric-primary resumes.
-            let lane = if unheard_mesh_primary && fabric_recovery.is_none() { None } else { Some(path.mesh.as_str()) };
+            let lane = if unheard_mesh_primary && fabric_recovery.is_none() && !reported { None } else { Some(path.mesh.as_str()) };
             // The lane's attempt opened with this very recovery and claimed by no one is claimed as
             // it stands; otherwise the lane's next attempt is opened for it.
             // A fabric-lane attempt opened with this very recovery and claimed by no one (an executor's open whose
@@ -881,6 +933,10 @@ impl ControlPlane {
                 Some(attempt) => Opened { build_id: current.build_id.clone(), attempt, mesh: lane.map(str::to_string) },
                 None => self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await?,
             };
+            // A reported drift: opened here, claimed by the mesh-primary through BuildClaim.
+            if let Some(claimant) = recoverer.filter(|_| reported) {
+                return Ok(Recovery::Reported { opened, claimant });
+            }
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
             match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh).await {
                 rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
@@ -895,17 +951,26 @@ impl ControlPlane {
         }
         .instrument(span.clone())
         .await;
-        if let Ok(Recovery::Opened(o) | Recovery::AlreadyApplied(o)) = &r {
+        if let Ok(
+            Recovery::Opened(o)
+            | Recovery::AlreadyApplied(o)
+            | Recovery::Reported { opened: o, .. },
+        ) = &r
+        {
             span.record("build_id", o.build_id.as_str());
             span.record("attempt", o.attempt);
         }
-        span.record("outcome", match &r {
-            Ok(Recovery::Opened(_)) => "admitted",
-            Ok(Recovery::AlreadyApplied(_)) => "already-applied",
-            Err(Refusal::BuildInProgress(_)) => "build-in-progress",
-            Err(Refusal::NotClaimant { .. }) => "not-claimant",
-            Err(_) => "refused",
-        });
+        span.record(
+            "outcome",
+            match &r {
+                Ok(Recovery::Opened(_)) => "admitted",
+                Ok(Recovery::Reported { .. }) => "reported",
+                Ok(Recovery::AlreadyApplied(_)) => "already-applied",
+                Err(Refusal::BuildInProgress(_)) => "build-in-progress",
+                Err(Refusal::NotClaimant { .. }) => "not-claimant",
+                Err(_) => "refused",
+            },
+        );
         r
     }
 
@@ -1209,6 +1274,14 @@ pub enum Recovery {
     Opened(Opened),
     /// The exited birth was already recovered, by this attempt of the Build: nothing was opened.
     AlreadyApplied(Opened),
+    /// A mesh's drift reported by its mesh-primary (Q118): the attempt opened here in the mesh's
+    /// lane, which `claimant` claims through BuildClaim and this fabric-primary runs naming the mesh.
+    Reported {
+        /// The attempt.
+        opened: Opened,
+        /// The mesh-primary that reported it: the attempt's claimant and executor.
+        claimant: PathName,
+    },
 }
 
 #[cfg(test)]

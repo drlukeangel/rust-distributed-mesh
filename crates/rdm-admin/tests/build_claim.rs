@@ -64,8 +64,21 @@ struct Seat {
     _router: Router,
 }
 
-async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildStateAdapter>, contexts: Arc<AttemptContexts>) -> Seat {
-    let door = Arc::new(ClaimDoor { me: b.node.name.clone(), node_id: b.node.node_id.clone(), topology, builds, contexts, claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) });
+async fn seat(
+    b: &Birth,
+    topology: Arc<RwLock<Topology>>,
+    builds: Arc<dyn BuildStateAdapter>,
+    contexts: Arc<AttemptContexts>,
+) -> Seat {
+    let door = Arc::new(ClaimDoor {
+        me: b.node.name.clone(),
+        node_id: b.node.node_id.clone(),
+        topology,
+        builds,
+        contexts,
+        claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+        claimed: Default::default(),
+    });
     let slot: build_claim::ClaimSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door.clone());
     let server = build_claim::serve(ServerBuilder::new(), slot)

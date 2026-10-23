@@ -447,6 +447,7 @@ impl Estate {
             builds: self.builds.clone(),
             contexts: Arc::new(rdm_admin::build_claim::AttemptContexts::in_memory()),
             claims: self.claims.clone(),
+            claimed: Default::default(),
         });
         Arc::new(DriveEnv {
             me: primary.clone(),

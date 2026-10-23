@@ -84,6 +84,9 @@ enum Admitted {
     Opened(crate::control_plane::Opened),
     /// The fact the change is keyed on was already applied, by this attempt.
     AlreadyApplied(crate::control_plane::Opened),
+    /// A mesh's drift its mesh-primary reported (Q118): the attempt opened in the mesh's lane, which
+    /// the mesh-primary claims and this fabric-primary runs naming the mesh.
+    Reported(crate::control_plane::Opened, PathName),
 }
 
 impl BuildDoor {
@@ -139,16 +142,35 @@ impl BuildDoor {
             }
             BuildChange::Terminate { node, node_id, incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "build.create", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = tracing::field::Empty, attempt = tracing::field::Empty);
-                return match cp.open_terminate(span, "build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
-                    Ok(crate::control_plane::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),
-                    Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Admitted::AlreadyApplied(o)),
+                return match cp
+                    .open_terminate(
+                        span,
+                        "build.create",
+                        node.clone(),
+                        node_id.clone(),
+                        incarnation.clone(),
+                    )
+                    .await
+                {
+                    Ok(
+                        crate::control_plane::Recovery::Opened(o)
+                        | crate::control_plane::Recovery::Reported { opened: o, .. },
+                    ) => Ok(Admitted::Opened(o)),
+                    Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => {
+                        Ok(Admitted::AlreadyApplied(o))
+                    }
                     Err(r) => Err(refusal_reply(r)),
                 };
             }
             BuildChange::Recover { node, node_id, incarnation } => {
                 return match cp.open_recovery("build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
                     Ok(crate::control_plane::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),
-                    Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Admitted::AlreadyApplied(o)),
+                    Ok(crate::control_plane::Recovery::Reported { opened, claimant }) => {
+                        Ok(Admitted::Reported(opened, claimant))
+                    }
+                    Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => {
+                        Ok(Admitted::AlreadyApplied(o))
+                    }
                     Err(r) => Err(refusal_reply(r)),
                 }
             }
@@ -183,8 +205,8 @@ impl BuildDoor {
         let call = req.op();
         let reply = async {
             match req {
-                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent, operations, hand_off_to } => match build_id_of(&build_id) {
-                    Ok(id) => self.attempt_run(id, attempt, executor, context, intent, operations, hand_off_to, sink).await,
+                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent, operations, hand_off_to, mesh } => match build_id_of(&build_id) {
+                    Ok(id) => self.attempt_run(id, attempt, executor, context, intent, operations, hand_off_to, mesh, sink).await,
                     Err(refused) => Ok(refused),
                 },
                 other => {
@@ -242,6 +264,9 @@ impl BuildDoor {
                         let _sink = started(sink, BuildReply::Started { build_id: o.build_id.to_string(), attempt: o.attempt, disposition: Disposition::AlreadyApplied }).await?;
                         return Ok(BuildReply::Complete { build_id: o.build_id.to_string(), attempt: o.attempt });
                     }
+                    Ok(Admitted::Reported(opened, claimant)) => {
+                        return self.drift_run(opened, claimant, sink).await
+                    }
                     Err(refusal) => return Ok(refusal),
                 };
                 let drive = self.drives.ensure(&self.env, &opened.build_id, opened.attempt);
@@ -253,6 +278,150 @@ impl BuildDoor {
                 Err(refused) => Ok(refused),
             },
         }
+    }
+
+    /// The run of a mesh's drift attempt its mesh-primary `executor` reported (node-recovery.md
+    /// "Execution", Q118): `Started` names the attempt, the mesh-primary claims it through BuildClaim,
+    /// and this fabric-primary calls `build.attempt.run` naming the mesh, writes each receipt the
+    /// executor reports up the stream and the attempt's verdict, then releases the mesh's in-flight row.
+    /// A claim not made within [`DISPATCH_SEND`] leaves the attempt open, claimed by no one: the
+    /// mesh-primary's next report claims it as it stands.
+    async fn drift_run(
+        &self,
+        opened: crate::control_plane::Opened,
+        executor: PathName,
+        sink: ReplySink<Build, NotStarted>,
+    ) -> Result<BuildReply, HandlerFault> {
+        use crate::build_state::{
+            AttemptOutcome, BuildAttemptReceipt, BuildStepReceipt, StepOutcome,
+        };
+        let me = self.held_name().await;
+        let (id, attempt) = (opened.build_id.clone(), opened.attempt);
+        let Some(mesh) = opened.mesh.clone() else {
+            return Ok(rdm_core::reply::build::not_ready(format!("{me}: attempt {attempt} of {id} was reported as a drift attempt and is numbered in no mesh")));
+        };
+        let mut sink = started(
+            sink,
+            BuildReply::Started {
+                build_id: id.to_string(),
+                attempt,
+                disposition: Disposition::Created,
+            },
+        )
+        .await?;
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-drift-run", build_id = %id.log(), lane = %mesh, attempt, executor = %executor, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let lane = crate::build_run::LaneBuilds::of(&self.control.builds, Some(&mesh));
+        let reply = async {
+            let deadline = tokio::time::Instant::now() + DISPATCH_SEND;
+            let p = loop {
+                let claimed = self.env.door.claimed.notified();
+                tokio::pin!(claimed);
+                claimed.as_mut().enable();
+                match lane.read_build(&id).await {
+                    Ok(p) if p.attempt == attempt && p.executor.as_deref() == Some(executor.to_string().as_str()) => break p,
+                    Ok(_) => {}
+                    Err(e) => return rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read in mesh {mesh}'s lane: {e}")),
+                }
+                if tokio::time::timeout_at(deadline, claimed).await.is_err() {
+                    return rdm_core::reply::build::not_ready(format!("{me}: attempt {attempt} of {id} in mesh {mesh}'s lane was not claimed by {executor} within {DISPATCH_SEND:?}: it stays open, claimed by no one"));
+                }
+            };
+            let observed = self.control.topology.read().await.clone();
+            let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
+            let context = self.env.door.contexts.get_lane(&id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
+            let intent = crate::build_drive::intent_frames(&*self.control.builds, &id).await;
+            let turn = self.env.turns.turn("drift-run").await;
+            // An executor whose run this admin lost: only its exact departure proof ends the attempt
+            // (build.md: "or, when the executor is lost with the attempt unfinished, after exact
+            // departure proof"); otherwise the attempt holds its mesh, and the reporter's next report
+            // reattaches to the run.
+            let lost = |executor: &PathName| {
+                let executor = executor.clone();
+                let (me, id, mesh) = (me.clone(), id.clone(), mesh.clone());
+                async move {
+                    match self.env.departure.proven(&executor).await {
+                        Ok(()) => Ok(format!("{executor} departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven")),
+                        Err(not_proven) => Err(rdm_core::reply::build::not_ready(format!("{me}: the run of attempt {attempt} of {id} at {executor} was lost and its departure is not proven ({not_proven}): the attempt holds mesh {mesh}, and the next report reattaches to it"))),
+                    }
+                }
+            };
+            // The verdict this fabric-primary writes, and the terminal of the reporter's stream.
+            let failed = |operation: String, step: String, reason: String, code: rdm_core::outcome::Code| (Some((operation, step)), AttemptOutcome::Failed { reason, code });
+            let (failed_step, outcome, terminal) = match self.env.dispatcher.dispatch_in(&turn, &executor, &mesh, &id, attempt, context, intent, plan).await {
+                Dispatched::Refused(r) => {
+                    let (s, o) = failed(String::new(), "attempt".into(), format!("{executor} refused the run: {}", r.name()), rdm_core::outcome::Code::Unavailable);
+                    (s, o, r)
+                }
+                Dispatched::Unreached(_) => match lost(&executor).await {
+                    Ok(why) => {
+                        let (s, o) = failed(String::new(), "attempt".into(), why.clone(), rdm_core::outcome::Code::Unavailable);
+                        (s, o, rdm_core::reply::build::failed(id.to_string(), attempt, String::new(), "attempt".into(), bounded_reason(why), rdm_core::outcome::Code::Unavailable))
+                    }
+                    Err(held) => return held,
+                },
+                Dispatched::Stream(mut stream) => loop {
+                    match stream.next().await {
+                        InnerItem::Frame(BuildReply::Step { build_id, attempt: a, operation, step, receipt }) => {
+                            if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
+                                if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
+                                    tracing::info!(error = %e, operation = %operation, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
+                                }
+                            }
+                            stream.accepted().await;
+                            let _ = sink.data(BuildReply::Step { build_id, attempt: a, operation, step, receipt: None }).await;
+                        }
+                        InnerItem::Frame(f @ BuildReply::Blocked { .. }) => {
+                            stream.accepted().await;
+                            let _ = sink.data(f).await;
+                        }
+                        InnerItem::Frame(t @ BuildReply::Complete { .. }) => break (None, AttemptOutcome::Converged, t),
+                        InnerItem::Frame(BuildReply::Failed { operation, step, reason, code, .. }) => {
+                            let t = rdm_core::reply::build::failed(id.to_string(), attempt, operation.clone(), step.clone(), reason.clone(), code);
+                            let (s, o) = failed(operation, step, reason, code);
+                            break (s, o, t);
+                        }
+                        InnerItem::Frame(t @ BuildReply::HandedOff { .. }) => {
+                            let BuildReply::HandedOff { to, .. } = &t else { unreachable!() };
+                            break (None, AttemptOutcome::HandedOff { to: to.clone() }, t);
+                        }
+                        InnerItem::Frame(other) => {
+                            let (s, o) = failed(String::new(), "attempt".into(), format!("{executor}'s run ended {}", other.name()), rdm_core::outcome::Code::Unavailable);
+                            break (s, o, other);
+                        }
+                        InnerItem::Ended | InnerItem::Broke(_) => match lost(&executor).await {
+                            Ok(why) => {
+                                let (s, o) = failed(String::new(), "attempt".into(), why.clone(), rdm_core::outcome::Code::Unavailable);
+                                break (s, o, rdm_core::reply::build::failed(id.to_string(), attempt, String::new(), "attempt".into(), why, rdm_core::outcome::Code::Unavailable));
+                            }
+                            Err(held) => return held,
+                        },
+                    }
+                },
+            };
+            drop(turn);
+            if let (Some((operation, step)), AttemptOutcome::Failed { reason, code }) = (&failed_step, &outcome) {
+                if !operation.is_empty() {
+                    let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: step.clone(), outcome: StepOutcome::Failed { reason: reason.clone(), code: *code }, output: None, executor: Some(executor.to_string()), mesh: Some(mesh.clone()) }).await;
+                }
+            }
+            if let Err(e) = lane.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: Some(mesh.clone()) }).await {
+                return rdm_core::reply::build::not_ready(format!("{me}: the verdict of attempt {attempt} of {id} in mesh {mesh}'s lane could not be written: {e}"));
+            }
+            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string() };
+            if let Err(e) = self.control.claims.release_in_flight(&mesh, &row).await {
+                tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), lane = %mesh, attempt, mesh = %mesh, node = %me, error = %e)
+                    .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
+            }
+            terminal
+        }
+        .instrument(span.clone())
+        .await;
+        span.record("outcome", reply.name());
+        if let BuildReply::Failed { reason, .. } | BuildReply::NotReady { reason } = &reply {
+            span.record("reason", reason.as_str());
+        }
+        span.in_scope(|| tracing::info!("a reported drift attempt ran"));
+        Ok(reply)
     }
 
     /// A re-submit by build id never creates a second Build: a complete Build answers
@@ -368,7 +537,19 @@ impl BuildDoor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn attempt_run(&self, id: BuildId, attempt: u32, executor: String, context: CallContext, intent: Vec<Vec<u8>>, operations: Vec<Vec<u8>>, hand_off_to: Option<String>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    #[allow(clippy::too_many_arguments)]
+    async fn attempt_run(
+        &self,
+        id: BuildId,
+        attempt: u32,
+        executor: String,
+        context: CallContext,
+        intent: Vec<Vec<u8>>,
+        operations: Vec<Vec<u8>>,
+        hand_off_to: Option<String>,
+        mesh: Option<String>,
+        sink: ReplySink<Build, NotStarted>,
+    ) -> Result<BuildReply, HandlerFault> {
         // The caller of `build.attempt.run` is the fabric-primary that drives the Build. When this
         // executor became fabric-primary during the run (the attempt's own node.primary.update), the
         // caller is no longer the driver: its fence is set and its stream ends here with
@@ -384,7 +565,21 @@ impl BuildDoor {
                 Err(e) => return Ok(rdm_core::reply::build::rejected("operation-undecodable".into(), format!("{me}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}"))),
             }
         }
-        match self.run.attempt_run(&id, attempt, &executor, &context, &intent, &plan).await {
+        // A drift attempt is run in its mesh, numbered there; served to a remote fabric-primary, its
+        // receipts go up this stream and the fabric-primary writes them (Q118).
+        let served = match mesh.as_deref() {
+            Some(lane) if !held_at_start => {
+                self.run
+                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan)
+                    .await
+            }
+            lane => {
+                self.run
+                    .attempt_run_in(lane, &id, attempt, &executor, &context, &intent, &plan)
+                    .await
+            }
+        };
+        match served {
             Attached::Refused(r) => Ok(r),
             Attached::Ended { replay, terminal } => {
                 let mut sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt, disposition: Disposition::Reattached }).await?;
@@ -509,6 +704,9 @@ impl InnerStream for RemoteStream {
             }
         }
     }
+    async fn accepted(&mut self) {
+        self.stream.accepted().await;
+    }
 }
 
 /// Calls the executor `executor` names: in process when that is this admin, over Node RPC otherwise.
@@ -535,12 +733,92 @@ impl Dispatcher for RpcDispatcher {
             || self.topology.try_read().ok().is_some_and(|t| t.held_name_of(&self.me, None) == *me);
         is_me.then(|| self.local.hold(build_id, attempt)).flatten()
     }
-    async fn dispatch(&self, turn: &crate::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
+    async fn dispatch(
+        &self,
+        turn: &crate::stop_gate::Turn,
+        executor: &PathName,
+        build_id: &BuildId,
+        attempt: u32,
+        context: CallContext,
+        intent: Vec<Vec<u8>>,
+        plan: RunPlan,
+    ) -> Dispatched {
+        self.dispatch_to(
+            turn, executor, None, build_id, attempt, context, intent, plan,
+        )
+        .await
+    }
+    async fn dispatch_in(
+        &self,
+        turn: &crate::stop_gate::Turn,
+        executor: &PathName,
+        lane: &str,
+        build_id: &BuildId,
+        attempt: u32,
+        context: CallContext,
+        intent: Vec<Vec<u8>>,
+        plan: RunPlan,
+    ) -> Dispatched {
+        self.dispatch_to(
+            turn,
+            executor,
+            Some(lane),
+            build_id,
+            attempt,
+            context,
+            intent,
+            plan,
+        )
+        .await
+    }
+}
+
+impl RpcDispatcher {
+    /// `build.attempt.run` of `attempt` at `executor`, in `lane` for a mesh's drift attempt (Q118).
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_to(
+        &self,
+        turn: &crate::stop_gate::Turn,
+        executor: &PathName,
+        lane: Option<&str>,
+        build_id: &BuildId,
+        attempt: u32,
+        context: CallContext,
+        intent: Vec<Vec<u8>>,
+        plan: RunPlan,
+    ) -> Dispatched {
         let me = self.local.held_name().await;
         if *executor == self.me || *executor == me {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided
             // on, and the run's turn is begun under the drive pass's.
-            return local_dispatched(self.local.attempt_run_under(turn, build_id, attempt, &executor.to_string(), &context, &[], &plan).await);
+            return match lane {
+                None => local_dispatched(
+                    self.local
+                        .attempt_run_under(
+                            turn,
+                            build_id,
+                            attempt,
+                            &executor.to_string(),
+                            &context,
+                            &[],
+                            &plan,
+                        )
+                        .await,
+                ),
+                Some(lane) => local_dispatched(
+                    self.local
+                        .attempt_run_in(
+                            Some(lane),
+                            build_id,
+                            attempt,
+                            &executor.to_string(),
+                            &context,
+                            &[],
+                            &plan,
+                        )
+                        .await,
+                ),
+            };
         }
         let node_id = self.topology.read().await.members().find(|n| n.name == *executor).map(|n| n.node_id.clone());
         let Some(node_id) = node_id else {
@@ -553,14 +831,41 @@ impl Dispatcher for RpcDispatcher {
                 Err(e) => return Dispatched::Unreached(format!("the operation {} does not encode: {e}", op.key())),
             }
         }
-        let req = BuildRequest::AttemptRun { build_id: build_id.to_string(), attempt, executor: executor.to_string(), context: context.clone(), intent, operations, hand_off_to: plan.hand_off_to };
-        let opts = CallOptions { budget: Budget::Stream { send: DISPATCH_SEND }, context: Some(context), ..CallOptions::default() };
-        match self.client.call_stream::<Build>(&NodeTarget::ExactNode(node_id), &req, &opts).await {
+        let req = BuildRequest::AttemptRun {
+            build_id: build_id.to_string(),
+            attempt,
+            executor: executor.to_string(),
+            context: context.clone(),
+            intent,
+            operations,
+            hand_off_to: plan.hand_off_to,
+            mesh: lane.map(str::to_string),
+        };
+        let opts = CallOptions {
+            budget: Budget::Stream {
+                send: DISPATCH_SEND,
+            },
+            context: Some(context),
+            ..CallOptions::default()
+        };
+        match self
+            .client
+            .call_stream::<Build>(&NodeTarget::ExactNode(node_id), &req, &opts)
+            .await
+        {
             // The executor records each frame's receipt before it sends the frame (a step's receipt
             // before its Step, the verdict before the terminal: `build_run.rs` `append_step_receipt`,
             // `HeldRun::finish`): the drive records nothing it needs to recover them, and reading a
             // frame is its recovery (node-rpc.md §43, a read-only consumer).
-            Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream: stream.read_only() })),
+            // A drift attempt's executor reports its receipts up the stream instead (Q118): a frame
+            // is acked once this fabric-primary wrote its receipt.
+            Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream {
+                stream: if lane.is_some() {
+                    stream
+                } else {
+                    stream.read_only()
+                },
+            })),
             Err((RpcOutcome::Reply(r), _)) => Dispatched::Refused(r.value().clone()),
             Err((RpcOutcome::Unserved(u), _)) => Dispatched::Refused(rdm_core::reply::build::not_ready(format!("{executor} does not serve the Build family: {u:?}"))),
             Err((other, _)) => Dispatched::Unreached(format!("the call to {executor} ended {}: {other:?}", other.name())),

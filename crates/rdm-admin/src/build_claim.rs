@@ -180,6 +180,9 @@ pub struct ClaimDoor {
     pub contexts: Arc<AttemptContexts>,
     /// Each mesh's in-flight row: what a claim takes before it is decided.
     pub claims: Arc<dyn MeshStorage>,
+    /// Woken at every claim this door wins: the fabric-primary's run of a reported drift attempt
+    /// waits on it for its mesh-primary's claim (Q118).
+    pub claimed: Arc<tokio::sync::Notify>,
 }
 
 impl ClaimDoor {
@@ -197,9 +200,14 @@ impl ClaimDoor {
     /// mesh's drift lane that mesh's primary's. `mesh` is the mesh the attempt acts in, when known.
     async fn not_claimant(&self, lane: Option<&str>, mesh: Option<&str>) -> Option<BuildClaimReply> {
         let t = self.topology.read().await;
+        // The fabric-primary decides every claim, a mesh's drift attempt's included (its mesh-primary
+        // claims through BuildClaim, Q118); a mesh-primary that is not the fabric-primary decides only
+        // its own lane's claims it opens in process, which no report reaches.
         let claims = match lane {
             None => t.holds_fabric_seat(&self.node_id),
-            Some(lane) => t.holds_mesh_seat(lane, &self.node_id),
+            Some(lane) => {
+                t.holds_fabric_seat(&self.node_id) || t.holds_mesh_seat(lane, &self.node_id)
+            }
         };
         (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.name.to_string()), mesh.and_then(|m| t.cohort_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.name.to_string())))
     }
@@ -228,8 +236,26 @@ impl ClaimDoor {
                 .in_scope(|| tracing::info!("this admin may not claim in that lane in its view"));
             return refusal;
         }
-        let claim = BuildAttemptClaim { claimant: Some(me.to_string()), mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, executor: executor.to_string() };
-        decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &mesh).await
+        let claim = BuildAttemptClaim {
+            claimant: Some(me.to_string()),
+            mesh: lane.map(str::to_string),
+            build_id: build_id.clone(),
+            attempt,
+            executor: executor.to_string(),
+        };
+        let reply = decide_claim(
+            &me,
+            &*self.builds,
+            &*self.claims,
+            &self.contexts,
+            &claim,
+            &mesh,
+        )
+        .await;
+        if matches!(reply, BuildClaimReply::Won { .. }) {
+            self.claimed.notify_waiters();
+        }
+        reply
     }
 
     /// A request off the wire: the seat first (a receiver that may not claim in the request's lane

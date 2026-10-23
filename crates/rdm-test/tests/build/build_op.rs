@@ -307,10 +307,35 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     estate.record_trace_url(reconcile["trace_id"].as_str().unwrap_or(""));
 }
 
-async fn attempt_run(caller: &Caller, to: &str, build: &BuildId, attempt: u32, executor: &str) -> BuildReply {
-    let req = BuildRequest::AttemptRun { build_id: build.to_string(), attempt, executor: executor.into(), context: CallContext::default(), intent: Vec::new(), operations: Vec::new(), hand_off_to: None };
-    let opts = CallOptions { budget: Budget::Stream { send: Duration::from_secs(10) }, ..CallOptions::default() };
-    match caller.client.call_stream::<Build>(&NodeTarget::CurrentPath(path(to)), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
+async fn attempt_run(
+    caller: &Caller,
+    to: &str,
+    build: &BuildId,
+    attempt: u32,
+    executor: &str,
+) -> BuildReply {
+    let req = BuildRequest::AttemptRun {
+        build_id: build.to_string(),
+        attempt,
+        executor: executor.into(),
+        context: CallContext::default(),
+        intent: Vec::new(),
+        operations: Vec::new(),
+        hand_off_to: None,
+        mesh: None,
+    };
+    let opts = CallOptions {
+        budget: Budget::Stream {
+            send: Duration::from_secs(10),
+        },
+        ..CallOptions::default()
+    };
+    match caller
+        .client
+        .call_stream::<Build>(&NodeTarget::CurrentPath(path(to)), &req, &opts)
+        .await
+        .map(|(s, e)| (s.read_only(), e))
+    {
         Err((RpcOutcome::Reply(r), _)) => r.into_value(),
         Err((other, _)) => panic!("the call to {to} ended {other:?}"),
         Ok((mut stream, _)) => match stream.next().await {

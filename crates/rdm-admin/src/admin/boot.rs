@@ -1011,60 +1011,139 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
                                 }
                             }
-                            records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
-                            let book = membership.book.clone();
-                            let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
-                            let control = Arc::new(
-                                ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()).with_first_ready(records.first_ready.clone(), status_storage.clone()).with_claims(mesh_claims.clone()),
-                            );
-                            // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
-                            // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
-                            let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone(), claims: mesh_claims.clone() });
-                            let _ = claim_slot.set(claim_door.clone());
-                            {
-                                let (book, records) = (book.clone(), records.clone());
-                                let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
-                            }
-                            let _ = view_slot.set(control.topology.clone());
-                            let _ = control.fabric_recovery.set(crate::fabric_recovery::reader(book.clone(), records.clone()));
-                            let _ = control.seats.set(book.seats.clone());
-                            {
-                                let (me, book, records, fabric, fabric_id, provider) = (name.clone(), book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
-                                let _ = control.view_now.set(Arc::new(move || {
-                                    let (me, book, records, fabric, fabric_id) = (me.clone(), book.clone(), records.clone(), fabric.clone(), fabric_id.clone());
-                                    Box::pin(async move {
-                                        let reads = ViewReads::read(&me, &book, &records, &fabric_id).await;
-                                        project_with(&fabric, &fabric_id, provider, &book, &records, &reads)
-                                    })
-                                }));
-                            }
-                            let _ = control.connections.set(connections.held());
-                            {
-                                let book = book.clone();
-                                let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter(|d| d.load.is_some() || d.gossip.is_some()).map(|d| (d.node.node_id.to_string(), (d.load, d.gossip))).collect()));
-                            }
-                            // Where this admin's own `before_ready` stands: written by its start (and a rejoin's),
-                            // read by the Ready check and by a probe naming this admin.
-                            let before_ready_cell: crate::status_rpc::BeforeReadyCell = Arc::default();
-                            // This admin's re-publish of its presence, for a probe naming it (the round's down op): filled once its
-                            // digest exists, below.
-                            let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
-                            // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
-                            let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
-                            // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
-                            let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
-                            let commands = Arc::new(crate::node_commands::CommandBook::new(cfg.connections_delete_deadline));
-                            let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
-                            let mesh_deleter: crate::mesh_delete::MeshDeleterSlot = Arc::new(std::sync::OnceLock::new());
-                            let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
-                            let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
-                            // The record the writer of this admin's mesh rows holds, shared with its config door: a config
-                            // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
-                            let written = Arc::new(crate::node_rows::WrittenRows::default());
-                            let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone())));
-                            {
-                                let records_for_ids = records.clone();
-                                let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
+                                records
+                                    .meshes
+                                    .lock()
+                                    .unwrap()
+                                    .insert(cfg.mesh.clone(), mesh_id.clone());
+                                let book = membership.book.clone();
+                                let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
+                                let control = Arc::new(
+                                    ControlPlane::new(
+                                        builds_dyn.clone(),
+                                        accepted.clone(),
+                                        name.clone(),
+                                        project(
+                                            &cfg.fabric,
+                                            &cfg.fabric_id,
+                                            policy.provider,
+                                            &book,
+                                            &records,
+                                        ),
+                                        rafka_time.clone(),
+                                    )
+                                    .with_contexts(attempt_contexts.clone())
+                                    .with_first_ready(
+                                        records.first_ready.clone(),
+                                        status_storage.clone(),
+                                    )
+                                    .with_claims(mesh_claims.clone()),
+                                );
+                                // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
+                                // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
+                                let claim_door = Arc::new(crate::build_claim::ClaimDoor {
+                                    me: name.clone(),
+                                    node_id: node_id.clone(),
+                                    topology: control.topology.clone(),
+                                    builds: builds_dyn.clone(),
+                                    contexts: attempt_contexts.clone(),
+                                    claims: mesh_claims.clone(),
+                                    claimed: Default::default(),
+                                });
+                                let _ = claim_slot.set(claim_door.clone());
+                                {
+                                    let (book, records) = (book.clone(), records.clone());
+                                    let _ =
+                                        control.absence.set(Arc::new(move |name: &PathName| {
+                                            describe_absence(&book, &records, name)
+                                        }));
+                                }
+                                let _ = view_slot.set(control.topology.clone());
+                                let _ = control.fabric_recovery.set(
+                                    crate::fabric_recovery::reader(book.clone(), records.clone()),
+                                );
+                                let _ = control.seats.set(book.seats.clone());
+                                {
+                                    let (me, book, records, fabric, fabric_id, provider) = (
+                                        name.clone(),
+                                        book.clone(),
+                                        records.clone(),
+                                        cfg.fabric.clone(),
+                                        cfg.fabric_id.clone(),
+                                        policy.provider,
+                                    );
+                                    let _ = control.view_now.set(Arc::new(move || {
+                                        let (me, book, records, fabric, fabric_id) = (
+                                            me.clone(),
+                                            book.clone(),
+                                            records.clone(),
+                                            fabric.clone(),
+                                            fabric_id.clone(),
+                                        );
+                                        Box::pin(async move {
+                                            let reads =
+                                                ViewReads::read(&me, &book, &records, &fabric_id)
+                                                    .await;
+                                            project_with(
+                                                &fabric, &fabric_id, provider, &book, &records,
+                                                &reads,
+                                            )
+                                        })
+                                    }));
+                                }
+                                let _ = control.connections.set(connections.held());
+                                {
+                                    let book = book.clone();
+                                    let _ = control.loads.set(Arc::new(move || {
+                                        book.current(book.staleness_floor())
+                                            .into_iter()
+                                            .filter(|d| d.load.is_some() || d.gossip.is_some())
+                                            .map(|d| {
+                                                (d.node.node_id.to_string(), (d.load, d.gossip))
+                                            })
+                                            .collect()
+                                    }));
+                                }
+                                // Where this admin's own `before_ready` stands: written by its start (and a rejoin's),
+                                // read by the Ready check and by a probe naming this admin.
+                                let before_ready_cell: crate::status_rpc::BeforeReadyCell =
+                                    Arc::default();
+                                // This admin's re-publish of its presence, for a probe naming it (the round's down op): filled once its
+                                // digest exists, below.
+                                let republish: crate::status_rpc::Republish =
+                                    Arc::new(std::sync::OnceLock::new());
+                                // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
+                                let configure: crate::status_rpc::Configure =
+                                    Arc::new(std::sync::OnceLock::new());
+                                // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
+                                let rename: crate::status_rpc::Rename =
+                                    Arc::new(std::sync::OnceLock::new());
+                                let commands = Arc::new(crate::node_commands::CommandBook::new(
+                                    cfg.connections_delete_deadline,
+                                ));
+                                let own_commands: Arc<
+                                    std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>,
+                                > = Arc::new(std::sync::OnceLock::new());
+                                let mesh_deleter: crate::mesh_delete::MeshDeleterSlot =
+                                    Arc::new(std::sync::OnceLock::new());
+                                let rounds_slot: Arc<
+                                    std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>,
+                                > = Arc::new(std::sync::OnceLock::new());
+                                let configs_slot: crate::node_config::NodeConfigsSlot =
+                                    Arc::new(std::sync::OnceLock::new());
+                                // The record the writer of this admin's mesh rows holds, shared with its config door: a config
+                                // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
+                                let written = Arc::new(crate::node_rows::WrittenRows::default());
+                                let _ = configs_slot.set(Arc::new(
+                                    crate::node_config::NodeConfigs::new(
+                                        node_rpc.client.clone(),
+                                        configure.clone(),
+                                        written.clone(),
+                                    ),
+                                ));
+                                {
+                                    let records_for_ids = records.clone();
+                                    let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
                                     app_channels: Some(membership.clone()),
                                     declaration_seam: wiring.declaration_seam.clone(),
                                     command_frame_seam: wiring.command_frame_seam.clone(),
@@ -2008,47 +2087,88 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                     }
 
-                                    // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
-                                    // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
-                                    // topology shows PendingReconnect, half a floor after the mark, with the one ladder
-                                    // (node-tickle.md, `offline::tickle`): the probe (op 27) direct, and when it does not answer,
-                                    // the same probe through up to two peers at once on the ViaPeer route, the leads the store's
-                                    // by-destination connections index names first, then live nodes of its mesh (Q107 item 1). The
-                                    // node's status lands on its row in nodes.storage and in the view.
-                                    let recovery = RecoverySubmitter {
-                                        me: name.clone(),
-                                        topology: control.topology.clone(),
-                                        book: book.clone(),
-                                        provider: runner.provider.clone(),
-                                        nodes_storage: nodes_storage.clone(),
-                                        status_storage: status_storage.clone(),
-                                        door: build_slot.clone(),
-                                        builds: control.builds.clone(),
-                                        data_root: cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone()),
-                                        gone_dirs: Arc::default(),
-                                    };
-                                    // Fabric recovery (Q122): started by the seat watch in the fabric-primary's own mesh, and by mesh
-                                    // investigation's decision step from the backbone.
-                                    let fabric_recovery = Arc::new(crate::fabric_recovery::FabricRecoveryDoor::new(
-                                        name.clone(),
-                                        node_id.clone(),
-                                        control.topology.clone(),
-                                        book.clone(),
-                                        records.clone(),
-                                        crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
-                                        recovery.clone(),
-                                        handover_slot.clone(),
-                                        cfg.fabric_primary,
-                                    ));
-                                    {
-                                        let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
-                                        let park = park_gate.clone();
-                                        let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
-                                        // A birth heard again is commanded back through node.mesh.join (Q87).
-                                        let ladder_heard_again = heard_again_slot.clone();
-                                        // The ladder's leads: the by-destination index of the store (Q107 item 1).
-                                        let ladder_connections = connections_storage.clone();
-                                        tasks.push(tokio::spawn(async move {
+                                                // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
+                                                // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
+                                                // topology shows PendingReconnect, half a floor after the mark, with the one ladder
+                                                // (node-tickle.md, `offline::tickle`): the probe (op 27) direct, and when it does not answer,
+                                                // the same probe through up to two peers at once on the ViaPeer route, the leads the store's
+                                                // by-destination connections index names first, then live nodes of its mesh (Q107 item 1). The
+                                                // node's status lands on its row in nodes.storage and in the view.
+                                                let recovery = RecoverySubmitter {
+                                                    me: name.clone(),
+                                                    topology: control.topology.clone(),
+                                                    book: book.clone(),
+                                                    provider: runner.provider.clone(),
+                                                    nodes_storage: nodes_storage.clone(),
+                                                    status_storage: status_storage.clone(),
+                                                    door: build_slot.clone(),
+                                                    client: Some(node_rpc.client.clone()),
+                                                    builds: control.builds.clone(),
+                                                    data_root: cfg
+                                                        .data_dir
+                                                        .parent()
+                                                        .map(Path::to_path_buf)
+                                                        .unwrap_or_else(|| cfg.data_dir.clone()),
+                                                    gone_dirs: Arc::default(),
+                                                };
+                                                // Fabric recovery (Q122): started by the seat watch in the fabric-primary's own mesh, and by mesh
+                                                // investigation's decision step from the backbone.
+                                                let fabric_recovery = Arc::new(
+                                                    crate::fabric_recovery::FabricRecoveryDoor::new(
+                                                        name.clone(),
+                                                        node_id.clone(),
+                                                        control.topology.clone(),
+                                                        book.clone(),
+                                                        records.clone(),
+                                                        crate::seat_watch::Looker {
+                                                            me: name.clone(),
+                                                            me_id: node_id.clone(),
+                                                            membership: membership.clone(),
+                                                            client: node_rpc.client.clone(),
+                                                            provider: runner.provider.clone(),
+                                                            nodes: Some(nodes_storage.clone()),
+                                                            heard_again: heard_again_slot.clone(),
+                                                            connections: Some(
+                                                                connections_storage.clone(),
+                                                            ),
+                                                        },
+                                                        recovery.clone(),
+                                                        handover_slot.clone(),
+                                                        cfg.fabric_primary,
+                                                    ),
+                                                );
+                                                {
+                                                    let (
+                                                        topology,
+                                                        records,
+                                                        status_storage,
+                                                        runner,
+                                                        me,
+                                                        me_id,
+                                                        mesh,
+                                                        recovery,
+                                                    ) = (
+                                                        control.topology.clone(),
+                                                        records.clone(),
+                                                        status_storage.clone(),
+                                                        runner.clone(),
+                                                        name.clone(),
+                                                        node_id.clone(),
+                                                        cfg.mesh.clone(),
+                                                        recovery.clone(),
+                                                    );
+                                                    let park = park_gate.clone();
+                                                    let mut cadence =
+                                                        crate::offline::Cadence::every(
+                                                            gossip_interval(),
+                                                        )?;
+                                                    // A birth heard again is commanded back through node.mesh.join (Q87).
+                                                    let ladder_heard_again =
+                                                        heard_again_slot.clone();
+                                                    // The ladder's leads: the by-destination index of the store (Q107 item 1).
+                                                    let ladder_connections =
+                                                        connections_storage.clone();
+                                                    tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight. The tick never waits
                                             // on it.
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();

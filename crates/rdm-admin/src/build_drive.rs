@@ -193,6 +193,9 @@ pub enum InnerItem {
 pub trait InnerStream: Send {
     /// The next item.
     async fn next(&mut self) -> InnerItem;
+    /// The frames handed over so far are recorded: their acks are owed now. A stream read as its
+    /// own recovery acks each frame as it reads it, and this does nothing.
+    async fn accepted(&mut self) {}
 }
 
 /// Calls the executor `executor` names for one claimed attempt.
@@ -203,7 +206,35 @@ pub trait Dispatcher: Send + Sync {
     /// fabric-primary planned (`plan`): the operations the executor runs and nothing else. `turn` is
     /// the drive pass's turn of the admin's gate: a run this admin makes itself begins its own turn
     /// under it, never waiting at the gate for the pass that waits on it.
-    async fn dispatch(&self, turn: &crate::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
+    async fn dispatch(
+        &self,
+        turn: &crate::stop_gate::Turn,
+        executor: &PathName,
+        build_id: &BuildId,
+        attempt: u32,
+        context: CallContext,
+        intent: Vec<Vec<u8>>,
+        plan: RunPlan,
+    ) -> Dispatched;
+    /// [`Self::dispatch`] of a mesh's drift attempt, numbered in `lane` (Q118): `build.attempt.run`
+    /// naming the mesh. A dispatcher that runs no drift attempt refuses it by name.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_in(
+        &self,
+        turn: &crate::stop_gate::Turn,
+        executor: &PathName,
+        lane: &str,
+        build_id: &BuildId,
+        attempt: u32,
+        context: CallContext,
+        intent: Vec<Vec<u8>>,
+        plan: RunPlan,
+    ) -> Dispatched {
+        let _ = (turn, build_id, attempt, context, intent, plan);
+        Dispatched::Unreached(format!(
+            "this dispatcher runs no drift attempt: {executor} in mesh {lane}"
+        ))
+    }
     /// Hold the run of `attempt` of `build_id` on the admin `me` (the drive's own) while a step of the
     /// Build runs in the drive itself (the holder's own node.primary.update): a dispatch of the attempt
     /// to `me` reattaches to it ([`crate::build_run::HeldRun`]). `None` when it holds no run here.
@@ -340,8 +371,18 @@ impl Drive {
     fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<BuildReply> {
         steps
             .iter()
-            .filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to)
-            .map(|s| BuildReply::Step { build_id: self.build_id.to_string(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() })
+            .filter(|s| {
+                s.outcome == crate::build_state::StepOutcome::Complete
+                    && s.attempt >= from
+                    && s.attempt < to
+            })
+            .map(|s| BuildReply::Step {
+                build_id: self.build_id.to_string(),
+                attempt: s.attempt,
+                operation: s.operation.clone(),
+                step: s.step.clone(),
+                receipt: None,
+            })
             .collect()
     }
 
@@ -1331,15 +1372,7 @@ impl DriveEnv {
     /// the recovery contract of the projection). What an executor needs to fold the same current
     /// attempt and to plan, carried by the call, so a run never waits for the Build topic.
     async fn intent_of(&self, id: &BuildId) -> Vec<Vec<u8>> {
-        let facts = match self.builds.facts().await {
-            Ok(f) => f.into_iter().filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Step(_) | crate::build_state::BuildFact::Forget { .. })).collect::<Vec<_>>(),
-            Err(_) => return Vec::new(),
-        };
-        let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
-        for e in refused {
-            tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only if the Build topic delivered it"));
-        }
-        frames.into_iter().map(|b| b.to_vec()).collect()
+        intent_frames(&*self.builds, id).await
     }
 
     /// A complete Build this drive made no call of: attach to the last attempt's executor and read
@@ -1446,6 +1479,30 @@ impl DriveEnv {
             }
         }
     }
+}
+
+/// The Build's intent as the executor absorbs it before it plans (`build.attempt.run`'s `intent`):
+/// postcard frames of the Build topic's message, every fact of `id` but its step receipts.
+pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId) -> Vec<Vec<u8>> {
+    let facts = match builds.facts().await {
+        Ok(f) => f
+            .into_iter()
+            .filter(|f| {
+                f.build_id() == id
+                    && !matches!(
+                        f,
+                        crate::build_state::BuildFact::Step(_)
+                            | crate::build_state::BuildFact::Forget { .. }
+                    )
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => return Vec::new(),
+    };
+    let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
+    for e in refused {
+        tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only if the Build topic delivered it"));
+    }
+    frames.into_iter().map(|b| b.to_vec()).collect()
 }
 
 /// Whether view `t` still names `m`'s holder the holder of the seats `m` moves before `op`.

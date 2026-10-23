@@ -273,6 +273,9 @@ pub enum BuildRequest {
         /// what is left: the run then ends `HandedOff` to it. `None` when the run is the rest of the
         /// plan, and the attempt ends `Complete`.
         hand_off_to: Option<String>,
+        /// The attempt's mesh for a drift attempt, numbered `(build_id, mesh, attempt)` (build.md section
+        /// 5.3); `None` for a topology attempt (Q118).
+        mesh: Option<String>,
     },
     /// `build.get`: the Build and its receipts, for reattachment after a cut.
     Get {
@@ -367,7 +370,9 @@ pub enum BuildReply {
         /// How the call came to the Build.
         disposition: Disposition,
     },
-    /// A step completed: sent only after its Complete receipt is durable on the executor that wrote it.
+    /// A step completed. On the inner attempt stream it reports the step's result upstream to the
+    /// fabric-primary, which writes its receipt; on the outer stream the fabric-primary sends it only
+    /// after it recorded the receipt (node-rpc-envelope.md, Frames, durable receipts and reattachment).
     Step {
         /// The Build.
         build_id: String,
@@ -377,6 +382,9 @@ pub enum BuildReply {
         operation: String,
         /// The step.
         step: String,
+        /// On the inner attempt stream the step's receipt (its output and executor), JSON-encoded, which
+        /// the fabric-primary writes; `None` on the outer stream and for a receipt already written.
+        receipt: Option<Vec<u8>>,
     },
     /// The step in flight is blocked. Non-terminal, in memory only, sent on a new blocker or a
     /// changed reason and never on a timer; never a step outcome.
@@ -611,7 +619,20 @@ impl BuildReply {
     /// The receipt key `(attempt, operation, step)` of a progress frame, when it is one.
     pub fn progress_key(&self) -> Option<(&str, u32, &str, &str)> {
         match self {
-            Self::Step { build_id, attempt, operation, step } | Self::Blocked { build_id, attempt, operation, step, .. } => Some((build_id, *attempt, operation, step)),
+            Self::Step {
+                build_id,
+                attempt,
+                operation,
+                step,
+                ..
+            }
+            | Self::Blocked {
+                build_id,
+                attempt,
+                operation,
+                step,
+                ..
+            } => Some((build_id, *attempt, operation, step)),
             _ => None,
         }
     }

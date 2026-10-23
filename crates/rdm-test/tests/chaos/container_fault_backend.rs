@@ -928,7 +928,13 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     for c in &creates {
         let recovered = named(&spans, "rdm.node_admin.build.update.via-recovery")
             .into_iter()
-            .any(|r| attr(r, "node") == attr(c, "node") && attr(r, "mesh") == lost_mesh && attr(r, "outcome") == "admitted" && at(r) > at(first) && at(r) <= at(c));
+            .any(|r| {
+                attr(r, "node") == attr(c, "node")
+                    && attr(r, "mesh") == lost_mesh
+                    && matches!(attr(r, "outcome"), "admitted" | "reported")
+                    && at(r) > at(first)
+                    && at(r) <= at(c)
+            });
         if !recovered {
             assert_eq!(executor_of(c), recovery_admin, "{} was created by the new mesh primary, not by {holder}", attr(c, "node"));
         }

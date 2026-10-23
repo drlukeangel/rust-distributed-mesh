@@ -16,6 +16,9 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's Build door: its own control plane, where it opens and claims its mesh's drift
     /// attempts, and its own executor, which runs them.
     pub door: crate::build_op::BuildSlot,
+    /// What this mesh-primary reports its drift to the fabric-primary through (Q118); none in a rig
+    /// that runs no Node RPC.
+    pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// This admin's Build state: the fabric's Build facts as its own log holds them. The tick reads
     /// from it which births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
@@ -328,8 +331,42 @@ impl RecoverySubmitter {
             span.record("attempt", o.attempt);
             span.record("disposition", disposition);
         };
-        match crate::build_run::run_recovery(&door.control, &door.run, route, node.name.clone(), node.node_id.clone(), incarnation.clone()).await {
-            Ok(Recovered::Ran { opened: o, terminal }) => {
+        // A mesh-primary that is not the fabric-primary reports its drift up (node-recovery.md
+        // "Execution", Q118). Fabric recovery's re-create is its executor's own (fabric-recovery.md step 3).
+        let fabric_primary = self
+            .topology
+            .read()
+            .await
+            .fabric_primary()
+            .map(|n| (n.name.clone(), n.node_id.clone()));
+        if let Some((fp, fp_id)) = fabric_primary
+            .filter(|(_, id)| route == "node-recovery" && *id != door.env.door.node_id)
+        {
+            let client = self.client.clone().ok_or_else(|| {
+                format!(
+                    "{}: no Node RPC client to report {}'s drift to {fp}",
+                    self.held_name(),
+                    node.name
+                )
+            })?;
+            return self
+                .report_drift(span, &door, &client, &fp, &fp_id, node, incarnation)
+                .await;
+        }
+        match crate::build_run::run_recovery(
+            &door.control,
+            &door.run,
+            route,
+            node.name.clone(),
+            node.node_id.clone(),
+            incarnation.clone(),
+        )
+        .await
+        {
+            Ok(Recovered::Ran {
+                opened: o,
+                terminal,
+            }) => {
                 opened(&o, "created");
                 match terminal {
                     BuildReply::Complete { attempt, .. } => Ok(RecoveryEnd::Complete { attempt }),
@@ -493,8 +530,21 @@ impl RecoverySubmitter {
         let r = if fp_name == me {
             let door = self.door.get().cloned().ok_or_else(|| format!("{me}: its Build door is not built yet"))?;
             let opened = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str());
-            match door.control.open_terminate(opened, "returned-birth", path.clone(), node_id.clone(), incarnation.clone()).await {
-                Ok(crate::control_plane::Recovery::Opened(o)) => {
+            match door
+                .control
+                .open_terminate(
+                    opened,
+                    "returned-birth",
+                    path.clone(),
+                    node_id.clone(),
+                    incarnation.clone(),
+                )
+                .await
+            {
+                Ok(
+                    crate::control_plane::Recovery::Opened(o)
+                    | crate::control_plane::Recovery::Reported { opened: o, .. },
+                ) => {
                     door.drives.ensure(&door.env, &o.build_id, o.attempt);
                     Ok("opened")
                 }
@@ -513,5 +563,135 @@ impl RecoverySubmitter {
         span.record("outcome", r.as_ref().map(|o| *o).unwrap_or("failed"));
         span.in_scope(|| tracing::info!("a deleted birth heard again, reported to the fabric-primary"));
         r.map(|_| ())
+    }
+}
+
+impl RecoverySubmitter {
+    /// The drift of `node`'s exited birth at `incarnation`, reported to the fabric-primary `fp`
+    /// (node-recovery.md "Execution", Q118): `build.create { Change(Recover) }`; at its `Started` this
+    /// mesh-primary claims the attempt through BuildClaim, and the fabric-primary runs it here with
+    /// `build.attempt.run` naming the mesh and writes its records. Followed to its terminal.
+    #[allow(clippy::too_many_arguments)]
+    async fn report_drift(
+        &self,
+        span: &tracing::Span,
+        door: &crate::build_op::BuildDoor,
+        client: &Arc<rdm_transport::NodeRpcClient>,
+        fp: &PathName,
+        fp_id: &NodeId,
+        node: &Node,
+        incarnation: &IncarnationId,
+    ) -> Result<RecoveryEnd, String> {
+        use rdm_core::build::{
+            Build, BuildChange, BuildReply, BuildRequest, BuildSubmit, Disposition,
+        };
+        use rdm_core::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
+        use rdm_core::outcome::RpcOutcome;
+        use rdm_transport::stream::StreamItem;
+        let target = rdm_transport::NodeTarget::ExactNode(fp_id.clone());
+        let req = BuildRequest::Create {
+            submit: BuildSubmit::Change(BuildChange::Recover {
+                node: node.name.clone(),
+                node_id: node.node_id.clone(),
+                incarnation: incarnation.clone(),
+            }),
+        };
+        let opts = rdm_transport::CallOptions {
+            budget: rdm_transport::Budget::Stream {
+                send: crate::build_op::DISPATCH_SEND,
+            },
+            ..rdm_transport::CallOptions::default()
+        };
+        let mut stream = match client.call_stream::<Build>(&target, &req, &opts).await {
+            Ok((s, _)) => s.read_only(),
+            Err((RpcOutcome::Reply(r), _)) => {
+                return Err(format!("{}: {:?}", r.value().name(), r.value()))
+            }
+            Err((other, _)) => {
+                return Err(format!(
+                    "the report of {}'s drift to {fp} ended {}",
+                    node.name,
+                    other.name()
+                ))
+            }
+        };
+        loop {
+            match stream.next().await {
+                Some(StreamItem::Frame(
+                    _,
+                    BuildReply::Started {
+                        build_id,
+                        attempt,
+                        disposition,
+                    },
+                )) => {
+                    span.record("build_id", build_id.as_str());
+                    span.record("mesh", node.mesh.as_str());
+                    span.record("attempt", attempt);
+                    span.record(
+                        "disposition",
+                        if disposition == Disposition::AlreadyApplied {
+                            "already-applied"
+                        } else {
+                            "created"
+                        },
+                    );
+                    if disposition == Disposition::AlreadyApplied {
+                        continue;
+                    }
+                    let claim = BuildClaimRequest::ClaimAttempt {
+                        build_id: build_id.clone(),
+                        attempt,
+                        executor_node_id: door.env.door.node_id.clone(),
+                        executor_incarnation: door.incarnation.clone(),
+                        mesh: Some(node.mesh.clone()),
+                    };
+                    match client.call::<BuildClaim>(&target, &claim, &rdm_transport::CallOptions::default()).await.0 {
+                        RpcOutcome::Reply(r) if matches!(r.value(), BuildClaimReply::Won { .. }) => {}
+                        RpcOutcome::Reply(r) => return Err(format!("the claim of attempt {attempt} of {build_id} in mesh {}'s lane was answered {}: {:?}", node.mesh, r.value().name(), r.value())),
+                        other => return Err(format!("the claim of attempt {attempt} of {build_id} in mesh {}'s lane ended {}", node.mesh, other.name())),
+                    }
+                }
+                Some(StreamItem::Frame(_, BuildReply::Complete { attempt, .. })) => {
+                    return Ok(RecoveryEnd::Complete { attempt })
+                }
+                Some(StreamItem::Frame(
+                    _,
+                    BuildReply::Failed {
+                        attempt,
+                        operation,
+                        step,
+                        reason,
+                        ..
+                    },
+                )) => {
+                    return Ok(RecoveryEnd::Failed {
+                        attempt,
+                        operation,
+                        step,
+                        reason,
+                    })
+                }
+                Some(StreamItem::Frame(
+                    _,
+                    BuildReply::Step { .. } | BuildReply::Blocked { .. },
+                )) => {}
+                Some(StreamItem::Frame(_, other)) => {
+                    return Err(format!("{}: {other:?}", other.name()))
+                }
+                Some(StreamItem::Failed(f)) => {
+                    return Err(format!(
+                        "the report of {}'s drift to {fp} broke: {f:?}",
+                        node.name
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "the report of {}'s drift to {fp} ended without its terminal",
+                        node.name
+                    ))
+                }
+            }
+        }
     }
 }

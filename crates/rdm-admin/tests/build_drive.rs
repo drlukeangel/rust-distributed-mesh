@@ -124,7 +124,15 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         me: me.clone(),
         topology: topology.clone(),
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }),
+        door: Arc::new(ClaimDoor {
+            node_id: fp_id.clone(),
+            me,
+            topology: topology.clone(),
+            builds: builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+            claimed: Default::default(),
+        }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
         departure: proofs.clone(),
@@ -1056,7 +1064,13 @@ async fn a_seat_row_naming_the_executor_ends_the_drive_on_the_executors_new_seat
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 runs at the executor");
     // The executor's SeatTransfer step reached the holder, whose row is the fence.
     r.switch.fence_to(Some("mesh1.admin.2"));
-    let step = BuildReply::Step { build_id: r.build.to_string(), attempt: 1, operation: "node.stop:mesh1.admin.1".into(), step: "SeatTransfer".into() };
+    let step = BuildReply::Step {
+        build_id: r.build.to_string(),
+        attempt: 1,
+        operation: "node.stop:mesh1.admin.1".into(),
+        step: "SeatTransfer".into(),
+        receipt: None,
+    };
     feed.send(InnerItem::Frame(step.clone())).unwrap();
     match next_within(&mut reader).await {
         Some(Read::Frame(f)) => assert_eq!(f, step, "the run's frame reaches the callers"),
@@ -1672,7 +1686,15 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: e.door.claims.clone() }),
+        door: Arc::new(ClaimDoor {
+            node_id: n_id.clone(),
+            me: n_name.clone(),
+            topology: e.topology.clone(),
+            builds: r.builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: e.door.claims.clone(),
+            claimed: Default::default(),
+        }),
         dispatcher: e.dispatcher.clone(),
         gate: n_switch,
         departure: e.departure.clone(),
@@ -1858,7 +1880,15 @@ async fn a_successor_that_reads_the_holders_attempt_ended_claims_the_next_attemp
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: e.door.claims.clone() }),
+        door: Arc::new(ClaimDoor {
+            node_id: n_id.clone(),
+            me: n_name.clone(),
+            topology: e.topology.clone(),
+            builds: r.builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: e.door.claims.clone(),
+            claimed: Default::default(),
+        }),
         dispatcher: e.dispatcher.clone(),
         gate: n_switch,
         departure: e.departure.clone(),
@@ -1958,7 +1988,15 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: e.door.claims.clone() }),
+        door: Arc::new(ClaimDoor {
+            node_id: n_id.clone(),
+            me: n_name.clone(),
+            topology: e.topology.clone(),
+            builds: r.builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            claims: e.door.claims.clone(),
+            claimed: Default::default(),
+        }),
         dispatcher: e.dispatcher.clone(),
         gate: n_gate.clone(),
         departure: e.departure.clone(),
@@ -2201,6 +2239,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
                 builds: builds.clone(),
                 contexts,
                 claims,
+                claimed: Default::default(),
             }),
             dispatcher: rpc_dispatcher,
             gate: switch,
