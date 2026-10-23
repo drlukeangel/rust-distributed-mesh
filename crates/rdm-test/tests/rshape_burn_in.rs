@@ -5400,7 +5400,9 @@ async fn partition_run(cell: &str, shape: Shape) {
         }
         let silent_own: Vec<String> = named(spans, "rdm.mesh.membership.update.via-mesh-silent")
             .into_iter()
-            .filter(|sp| start_ns(sp) >= marks.0 && start_ns(sp) <= marks.3 && mesh_of(&s(&sp["attributes"]["node"])).is_some_and(|m| m == s(&sp["attributes"]["mesh"])))
+            // A birth the cut's recovery terminated loses its mesh on its way out: not an admin of a
+            // live mesh losing it.
+            .filter(|sp| start_ns(sp) >= marks.0 && start_ns(sp) <= marks.3 && !renewed_paths.contains(&s(&sp["attributes"]["node"])) && mesh_of(&s(&sp["attributes"]["node"])).is_some_and(|m| m == s(&sp["attributes"]["mesh"])))
             .map(|sp| s(&sp["attributes"]["node"]))
             .collect();
         assert!(silent_own.is_empty(), "no admin lost its own mesh: {silent_own:?}");
