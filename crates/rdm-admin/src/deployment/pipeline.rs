@@ -2433,8 +2433,15 @@ impl DeploymentPipeline<'_> {
             DeploymentStatus::Exited { .. } => "exited",
             DeploymentStatus::Unknown => "unavailable",
         };
+        // The fields node-runtime-inspect.md's span names: the exit code of an exited runtime, and why the
+        // provider could not answer.
+        let exit_code = match &status {
+            DeploymentStatus::Exited { code } => code.map(|c| c.to_string()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let reason = if status == DeploymentStatus::Unknown { "the provider cannot read the exact runtime's state" } else { "" };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), handle = ?handle, caller, verdict).in_scope(|| tracing::info!("{why}"));
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), handle = ?handle, caller, verdict, exit_code, reason).in_scope(|| tracing::info!("{why}"));
         status
     }
 

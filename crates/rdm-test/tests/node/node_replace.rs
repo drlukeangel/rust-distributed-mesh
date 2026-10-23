@@ -2347,3 +2347,50 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     }
     estate.shutdown().await;
 }
+
+/// OBSERVATION (task #34; node-recovery.md step 3 and node-investigation.md: "A node that comes back
+/// after it was re-created is refused ... (`superseded-birth`)"): a member is held (SIGSTOP) until its
+/// mesh-primary recovers it as a new birth at its path, then the held birth is continued. For two
+/// staleness floors the cell records what the returning birth does and what refuses it: whether any
+/// view lists its old node id again, whether its process still runs, and which spans name it. The
+/// facts are written to the artifact `superseded.json`; the cell asserts only that the path keeps one
+/// live birth, the re-created one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_superseded_birth_that_comes_back_is_observed() {
+    let (mut estate, _build) = estate("a_superseded_birth_that_comes_back_is_observed").await;
+    const NODE: &str = "mesh1.rpc.2";
+    let before = estate.node_value(NODE).await;
+    let old_id = s(&before["node_id"]);
+    let rt = exact_runtime(&estate, NODE).await;
+    let pid = rt.pid;
+    assert_eq!(rt.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
+    let after = until_new_birth(&estate, NODE, &before, SETTLE).await;
+    let resumed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let cont = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
+    let floor = rdm_transport::membership::staleness_floor();
+    let mut samples = Vec::new();
+    let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(5);
+    while std::time::Instant::now() < until {
+        let views = estate.node_values().await;
+        let old_listed: Vec<String> = views.iter().filter(|n| s(&n["node_id"]) == old_id).map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
+        let live_at_path: Vec<String> = views.iter().filter(|n| n["name"] == NODE && live(n)).map(|n| s(&n["node_id"])).collect();
+        samples.push(json!({"t_ms": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 - resumed_ns) / 1_000_000, "old_listed": old_listed, "live_at_path": live_at_path, "old_process_alive": alive(pid as u64)}));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    estate.stop().await;
+    let spans = estate.spans();
+    let start_ns = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let mut named_old: std::collections::BTreeMap<String, usize> = Default::default();
+    for sp in spans.iter().filter(|sp| start_ns(sp) >= resumed_ns) {
+        let a = sp["attributes"].to_string();
+        if a.contains(&old_id) || a.contains(&s(&before["incarnation_id"])) {
+            *named_old.entry(s(&sp["name"])).or_default() += 1;
+        }
+    }
+    let refusals: Vec<Value> = spans.iter().filter(|sp| start_ns(sp) >= resumed_ns && (s(&sp["name"]).contains(".reject.") || s(&sp["name"]).contains("refus")) && sp["attributes"].to_string().contains(&old_id)).map(|sp| json!({"name": sp["name"], "attributes": sp["attributes"]})).collect();
+    let facts = json!({"node": NODE, "old_node_id": old_id, "new_node_id": after["node_id"], "continued": cont, "samples": samples, "spans_naming_the_old_birth": named_old, "refusals": refusals});
+    estate.artifact("superseded.json", &facts);
+    eprintln!("superseded birth facts: {}", serde_json::to_string_pretty(&facts).unwrap());
+    let last = samples.last().cloned().unwrap_or(Value::Null);
+    assert_eq!(last["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
+}
