@@ -272,7 +272,7 @@ impl AdminRunner {
             if t.binding.is_some() {
                 return Ok(t);
             }
-            let binding = built_in_binding(node.kind, &t.executable).await.map_err(|e| format!("node.create:{node}: {e}"))?;
+            let binding = built_in_binding(node.kind, &t.executable, self.fabric_provider).await.map_err(|e| format!("node.create:{node}: {e}"))?;
             return Ok(LaunchTemplate { binding: Some(binding), ..t });
         };
         verify_binding(&binding, node.kind, self.fabric_provider, from).await.map_err(|e| format!("node.create:{node}: the executable the {from} names is refused; nothing is launched: {e}"))?;
@@ -1313,11 +1313,17 @@ pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: N
 }
 
 /// The built-in executable `kind` launches at this admin, as a binding: its file hashed now, so the
-/// row of the node created from it records exactly these bytes.
-async fn built_in_binding(kind: NodeKind, executable: &std::path::Path) -> Result<rdm_core::binding::Binding, String> {
+/// row of the node created from it records exactly these bytes, and the image `provider` runs it in
+/// (the container provider's runtime image; none under the process provider), so a recovery seeded from
+/// that row passes the launch's image check.
+async fn built_in_binding(kind: NodeKind, executable: &std::path::Path, provider: ProviderKind) -> Result<rdm_core::binding::Binding, String> {
     let path = executable.to_path_buf();
     let sha256 = crate::blocking::blocking_io(move || rdm_core::binding::sha256_file(&path)).await.map_err(|e| format!("the built-in executable {} could not be hashed: {e}", executable.display()))?;
-    Ok(rdm_core::binding::Binding { launch_id: kind.name().into(), executable: executable.to_path_buf(), sha256, image: None })
+    let image = match provider {
+        ProviderKind::Process => None,
+        ProviderKind::Container => Some(crate::deployment::container::RUNTIME_IMAGE.to_string()),
+    };
+    Ok(rdm_core::binding::Binding { launch_id: kind.name().into(), executable: executable.to_path_buf(), sha256, image })
 }
 
 #[cfg(test)]
@@ -1346,6 +1352,12 @@ mod tests {
         for (binding, provider) in [(b(Some(image)), ProviderKind::Process), (b(None), ProviderKind::Container), (b(Some("another:image")), ProviderKind::Container)] {
             let want = binding.check_image(super::super::boot::provider_image(provider)).unwrap_err().to_string();
             assert_eq!(verify_binding(&binding, NodeKind::RpcNode, provider, "build").await, Err(want), "{provider:?}");
+        }
+        // The built-in binding a node's row records passes the same check under each provider: a container
+        // recovery seeded from that row launches (the release red at dc2b20be7: "the binding names no image").
+        for provider in [ProviderKind::Process, ProviderKind::Container] {
+            let built_in = built_in_binding(NodeKind::RpcNode, &exe, provider).await.unwrap();
+            assert_eq!(verify_binding(&built_in, NodeKind::RpcNode, provider, "row").await, Ok(()), "{provider:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
