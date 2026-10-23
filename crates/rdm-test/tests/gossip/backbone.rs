@@ -21,9 +21,11 @@
 //! 6. a lost backbone push (the two primaries cut from each other) is
 //!    repaired by gossip through the other admins: the peer mesh is never
 //!    lost by the mesh's ordinary nodes, and nothing beside gossip resends;
-//! 7. an admin isolated past the silence window executes nothing of a Build
-//!    submitted through it, and after the heal its rightful executor runs it
-//!    without re-creating a live node;
+//! 7. an admin isolated past the silence window refuses a Build submitted through it; while it is cut
+//!    every view holds at most one primary per (mesh, node type), and a recovery it or anyone opens
+//!    follows node investigation's verdict, which side's births survive not pinned (Q4, Q111,
+//!    fabric-recovery.md step 2); after the heal every pre-cut path.name holds one live birth, the same in
+//!    every admin's view, and a Build submitted at the fabric-primary then completes;
 //! 8. a restarted node is ready only once it holds every mesh.
 //!
 //! The faults drop UDP on loopback (`nft`, as root or `sudo -n`); where
@@ -295,9 +297,9 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
+async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_heals_to_one_birth_per_path() {
     let _one = SERIAL.lock().await;
-    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing"), "fabric2", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_heals_to_one_birth_per_path"), "fabric2", "mesh1").await;
     let nodes = mm(&estate, "fabric2").await;
     let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
     wait_for("mesh2's rpc nodes hold mesh1", Duration::from_secs(30), || {
@@ -360,14 +362,31 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
         .collect();
     assert!(lost.is_empty(), "with {p1} and {p2} cut apart, mesh2's rpc nodes kept mesh1: {lost:?}");
 
-    // 7. Isolate mesh1's non-primary admin past the silence window and ask it for a Build: it refuses
-    // it and executes nothing; the Build submitted at the fabric-primary completes once healed, and no
-    // other live node is created again.
+    // 7. Isolate mesh1's non-primary admin past the silence window and ask it for a Build: it refuses it.
+    // Isolated, it cannot tell its own cut from the fabric-primary's loss: it may run fabric recovery, whose
+    // node investigation decides (fabric-recovery.md step 2-3, Q111), and which side's births survive is not
+    // pinned (Q4). Every view holds at most one primary per (mesh, node type); after the heal every pre-cut
+    // path.name holds one live birth, the same in every admin's view, and a Build submitted at the
+    // fabric-primary then completes.
     let nodes = estate.node_values().await;
     let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] != true).cloned().unwrap();
     let lone_name = s(&lone["name"]);
     let others: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| *n != lone_name).collect();
-    let before: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
+    let pre_cut: BTreeSet<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let admins: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"]).parse().unwrap()).collect();
+    let one_primary = |view: &[Value]| -> Result<(), String> {
+        let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready-for-traffic") {
+            seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(s(&n["name"]));
+        }
+        let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        match seen.iter().find(|(_, v)| v.len() > 1) {
+            Some((k, v)) => Err(format!("two primaries of {k:?}: {v:?}")),
+            None if fps.len() > 1 => Err(format!("two fabric-primaries: {fps:?}")),
+            None => Ok(()),
+        }
+    };
+    let cut_at = now_ns();
     let isolation = Partition::start(&udp_ports(&nodes, &[lone_name.clone()]), &udp_ports(&nodes, &others)).expect("the host dropped traffic above");
     wait_for(&format!("{lone_name} no longer hears its mesh"), rdm_transport::membership::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
@@ -379,25 +398,57 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
     .await;
     // build.create at the isolated admin is refused: while the fabric-primary's record names a holder it
     // does not hear, its view names no fabric-primary (Q122, fabric-node-lifecycle-elections.md: "no
-    // node-admin is elected"), so it accepts nothing and names nobody. The Build goes to the fabric-primary.
+    // node-admin is elected"), so it accepts nothing and names nobody.
     let lone_path: PathName = lone_name.parse().unwrap();
     match Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await {
         Err(e) => assert!(e.to_string().contains("not-fabric-primary"), "the isolated {lone_name} refuses build.create as not the fabric-primary: {e}"),
         Ok(stream) => panic!("the isolated {lone_name} accepted build.create {}", stream.build_id()),
     }
-    let fp_path: PathName = s(&primary(&nodes, "mesh1")["name"]).parse().unwrap();
-    let mut grow = Builds::new(estate.carrier_at(&fp_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create at the fabric-primary {fp_path} was refused: {e}"));
-    let b = grow.build_id().to_string();
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    let by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
-        .filter(|sp| attr(sp, "build_id") == b && attr(sp, "executor") == lone_name)
-        .map(|sp| attr(sp, "operations"))
-        .collect();
-    assert!(by_lone.is_empty(), "the isolated {lone_name} executed nothing: {by_lone:?}");
+    // Held past the decision: every view an admin answers holds at most one primary per cohort.
+    let until = std::time::Instant::now() + rdm_transport::membership::staleness_floor() * 2;
+    while std::time::Instant::now() < until {
+        for admin in &admins {
+            if let Some(view) = estate.node_views_at(admin).await {
+                let view: Vec<Value> = view.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
+                one_primary(&view).unwrap_or_else(|e| panic!("during the cut, {admin}'s view: {e}"));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     drop(isolation);
+    // Healed: every pre-cut path.name holds exactly one live ReadyForTraffic birth, the same in every
+    // admin's view (a new NodeId where its recovery re-created it).
+    let converged = wait_for("every admin holds one live birth per pre-cut path, the same in each", Duration::from_secs(180), || async {
+        let mut want: Option<BTreeMap<String, String>> = None;
+        for admin in &admins {
+            let view: Vec<Value> = estate.node_views_at(admin).await?.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
+            one_primary(&view).ok()?;
+            let mut at = BTreeMap::new();
+            for p in &pre_cut {
+                let live: Vec<&Value> = view.iter().filter(|n| n["name"] == p.as_str() && n["status"] == "ready-for-traffic").collect();
+                if live.len() != 1 {
+                    return None;
+                }
+                at.insert(p.clone(), s(&live[0]["node_id"]));
+            }
+            if want.as_ref().is_some_and(|w| *w != at) {
+                return None;
+            }
+            want = Some(at);
+        }
+        want
+    })
+    .await;
+    // A recovery through cut and heal follows node investigation's verdict, never `reached`.
+    for sp in named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| start(sp) >= cut_at) {
+        assert_ne!(attr(sp, "verdict"), "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");
+    }
+    // The Build submitted at the fabric-primary the healed fabric names completes.
+    let healed = estate.node_values().await;
+    let fp_path: PathName = s(&healed.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the healed fabric names a fabric-primary: {healed:?}"))["name"]).parse().unwrap();
+    let mut grow = Builds::new(estate.carrier_at(&fp_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create at the fabric-primary {fp_path} was refused: {e}"));
     Estate::until_complete(&mut grow).await;
-    let mut want: BTreeSet<String> = before.keys().cloned().collect();
+    let mut want: BTreeSet<String> = pre_cut.clone();
     want.insert("mesh1.rpc.3".into());
     let after = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
     // Relearned with membership after the heal: every birth's current
@@ -405,13 +456,6 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_executes_nothing() {
     for n in &after {
         assert!(n["data_dir"].as_str().is_some_and(|d| !d.is_empty()), "{} carries its data dir after the heal: {n}", n["name"]);
     }
-    // The isolated admin, unreached by its mesh-primary and inspected running, may be terminated and
-    // re-created at its path (node-recovery.md step 3, Q111: any verdict but `reached` recovers at once);
-    // every other birth is never created again.
-    for n in &after {
-        if let Some(inc) = before.get(&s(&n["name"])).filter(|_| n["name"] != lone_name.as_str()) {
-            assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);
-        }
-    }
+    let _ = converged;
     estate.stop().await;
 }
