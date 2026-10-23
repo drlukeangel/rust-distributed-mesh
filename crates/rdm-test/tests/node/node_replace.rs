@@ -1930,17 +1930,18 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
 /// node.delete NodeDeleted receipt (the `receipt` cut: NodeDeleting is durable and its pre-notice
 /// published, the departure is proven, the NodeDeleted receipt is not yet durable). Once NA2's own
 /// Build log holds that attempt running under P's claim with its NodeDeleting receipt, P is killed
-/// while the cut holds it (claimed, mid-run, no verdict). mesh2's other admin NA2
-/// takes mesh2's seat, proves P's exit and submits P's recovery: at NA2's own door the attempt P left
-/// running ends Failed on that proof (`build.update.via-departed-claimant`, outcome `ended`, naming P's
-/// exact birth), then NA2 claims the next attempt of mesh2's lane for P's recovery
-/// (`build.update.via-claim-decision`, NA2, won), in that order, in the submit's own trace. P comes
-/// back as a new node, and the member's recovery, owed again from the Failed attempt, completes under
-/// NA2. Must NOT happen: mesh2's lane held for good by the lost claimant, or another admin claiming
-/// in mesh2's lane.
+/// while the cut holds it (claimed, mid-run, no verdict). mesh2's other admin NA2 is elected mesh2's
+/// primary, and the fabric-primary FP, which runs an unheard mesh-primary's recovery (node-recovery.md
+/// step 2 and sequence step 1), investigates P and submits its recovery: at FP's door the attempt P left
+/// running in mesh2's lane ends Failed on P's departure (`build.update.via-departed-claimant`, outcome
+/// `ended`, naming P's exact birth), then FP claims the next attempt of the fabric lane for P's recovery
+/// (`build.update.via-claim-decision`, FP, won), in that order, in the submit's own trace. P comes back
+/// as a new node, and the member's recovery, owed again from the Failed attempt, completes under NA2 in
+/// mesh2's lane. Must NOT happen: mesh2's lane held for good by the lost claimant, or an admin other than
+/// mesh2's primaries claiming in mesh2's lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_mesh_primary_on_its_departure() {
-    let (estate, build) = faulted_fabric_of("a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_mesh_primary_on_its_departure", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_the_fabric_primary_recovers_it() {
+    let (estate, build) = faulted_fabric_of("a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_the_fabric_primary_recovers_it", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
@@ -1970,11 +1971,11 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_me
     .unwrap_or_else(|end| panic!("{end}"));
     estate.kill_node(&p_name).await;
 
-    // NA2 takes the lane over on P's exit proof, then claims the next attempt for P's recovery.
-    let ended = wait_for(&format!("{na2} ends attempt {lost_attempt} of mesh2's lane on {p_name}'s exit proof"), SETTLE, || async {
+    // FP ends P's attempt of mesh2's lane on P's departure, then claims the fabric lane for P's recovery.
+    let ended = wait_for(&format!("{fp} ends attempt {lost_attempt} of mesh2's lane on {p_name}'s departure"), SETTLE, || async {
         named(&estate.spans(), "rdm.node_admin.build.update.via-departed-claimant")
             .into_iter()
-            .find(|sp| sp["attributes"]["node"] == na2.as_str() && sp["attributes"]["claimant"] == p_name.as_str() && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string() && sp["attributes"]["outcome"] == "ended")
+            .find(|sp| sp["attributes"]["node"] == fp.as_str() && sp["attributes"]["claimant"] == p_name.as_str() && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string() && sp["attributes"]["outcome"] == "ended")
             .cloned()
     })
     .await;
@@ -1982,22 +1983,22 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_me
     let spans = wait_for("the take-over's claim and submit are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         let run = in_trace(&spans, &ended);
-        let claimed = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|sp| sp["attributes"]["node"] == na2.as_str());
-        let submitted = named(&run, "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| sp["attributes"]["submitter"] == na2.as_str());
+        let claimed = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|sp| sp["attributes"]["node"] == fp.as_str());
+        let submitted = named(&run, "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| sp["attributes"]["submitter"] == fp.as_str());
         (claimed && submitted).then_some(spans)
     })
     .await;
     let run = in_trace(&spans, &ended);
-    let submit = named(&run, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["submitter"] == na2.as_str()).cloned().expect("NA2's submit");
-    assert_eq!((s(&submit["attributes"]["node"]), s(&submit["attributes"]["node_id"])), (p_name.clone(), s(&p["node_id"])), "the take-over is NA2's submit of P's recovery: {submit}");
-    let claim = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| sp["attributes"]["node"] == na2.as_str()).cloned().expect("NA2's claim");
+    let submit = named(&run, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["submitter"] == fp.as_str()).cloned().expect("FP's submit");
+    assert_eq!((s(&submit["attributes"]["node"]), s(&submit["attributes"]["node_id"])), (p_name.clone(), s(&p["node_id"])), "FP's submit is of P's recovery: {submit}");
+    let claim = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| sp["attributes"]["node"] == fp.as_str()).cloned().expect("FP's claim");
     assert_eq!(
-        (s(&claim["attributes"]["lane"]), s(&claim["attributes"]["attempt"]), s(&claim["attributes"]["executor"]), s(&claim["attributes"]["outcome"])),
-        ("mesh2".to_string(), (lost_attempt + 1).to_string(), na2.clone(), "won".to_string()),
-        "NA2 claimed the next attempt of mesh2's lane: {claim}"
+        (s(&claim["attributes"]["lane"]), s(&claim["attributes"]["executor"]), s(&claim["attributes"]["outcome"])),
+        ("fabric".to_string(), fp.clone(), "won".to_string()),
+        "FP claimed the fabric lane for P's recovery: {claim}"
     );
     assert!(end(&ended) <= start(&claim), "the lost attempt ended before the next was claimed");
-    // P and the member come back as new nodes; the member's recovery completes under NA2.
+    // P and the member come back as new nodes; the member's recovery completes under NA2, mesh2's primary.
     for (path, old) in [(p_name.as_str(), &p), (NODE, &before)] {
         until_new_birth(&estate, path, old, SETTLE).await;
     }
@@ -2011,7 +2012,7 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_me
         assert!([p_name.as_str(), na2.as_str()].contains(&s(&sp["attributes"]["node"]).as_str()), "only mesh2's primaries decide claims in mesh2's lane: {sp}");
     }
     eprintln!(
-        "s78 gap 1 live: {p_name} held by the fault door at the member's NodeDeleted receipt {} and killed running attempt {lost_attempt} of mesh2's lane of {build} ({na2} held it running under {:?}); take-over trace {} | via-node-recovery span {} submitter {na2} node {p_name} | via-departed-claimant span {} outcome {} claimant {} | via-claim-decision span {} attempt {} outcome {} | member complete trace {} attempt {}",
+        "s78 gap 1 live: {p_name} held by the fault door at the member's NodeDeleted receipt {} and killed running attempt {lost_attempt} of mesh2's lane of {build} ({na2} held it running under {:?}); take-over trace {} | via-node-recovery span {} submitter {fp} node {p_name} | via-departed-claimant span {} outcome {} claimant {} | via-claim-decision span {} attempt {} outcome {} | member complete trace {} attempt {}",
         held["hit"], heard.lanes.get("mesh2").and_then(|l| l.claimant.clone()), s(&ended["trace_id"]), s(&submit["span_id"]), s(&ended["span_id"]), s(&ended["attributes"]["outcome"]), s(&ended["attributes"]["claimant"]), s(&claim["span_id"]), s(&claim["attributes"]["attempt"]), s(&claim["attributes"]["outcome"]), s(&member["trace_id"]), s(&member["attributes"]["attempt"]),
     );
     estate.record_trace_url(ended["trace_id"].as_str().unwrap_or(""));

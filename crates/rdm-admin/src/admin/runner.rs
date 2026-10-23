@@ -274,6 +274,7 @@ impl AdminRunner {
             return Ok(LaunchTemplate { binding: Some(binding), ..t });
         };
         verify_binding(&binding, node.kind, from).await.map_err(|e| format!("node.create:{node}: the executable the {from} names is refused; nothing is launched: {e}"))?;
+        tracing::info!(launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, "launching from the explicit executable binding");
         let executable = binding.executable.clone();
         self.template_launching(node.kind, &node.mesh, executable, Some(binding)).await
     }

@@ -2856,8 +2856,10 @@ async fn recovery_run(cell: &str, shape: Shape) {
     assert!(!fabric_after.is_empty(), "the surviving admins claimed further fabric-lane attempts of {b0} after the executor's death: {spans_after:#?}");
     assert_eq!(fabric_after[0]["attempt"].as_u64(), Some(later[0].0), "the first surviving fabric-lane claim is the attempt that follows the dead executor's: {fabric_after:#?}");
     assert_ne!(fabric_after[0]["executor"], executor_name.as_str(), "the first fabric-lane claim after the death is a survivor's");
-    // The dead admin's path.name is re-born by the same Build: its mesh's surviving primary admin proves the exit and
-    // runs its node recovery, its delete, create and update under b0 by a later attempt (mesh-recovery.md:8-9).
+    // The dead admin's path.name is re-born by the same Build. It was its mesh's primary: the fabric-primary
+    // investigates it and opens its recovery once the election has named its mesh's next primary
+    // (node-recovery.md step 2 and sequence step 1), and the create is executed by that surviving primary
+    // (commands go down), under b0 by a later attempt.
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == executor_name.as_str() && start_ns(c) > kill_ns)
@@ -2877,7 +2879,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     );
     let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("node.create:{executor_name}"))).map(|c| s(&c["executor"])).collect();
     let survivor_name = s(&survivor["name"]);
-    assert_eq!(rebirth_executors, BTreeSet::from([survivor_name.clone()]), "the dead admin's re-birth was planned and executed by its mesh's surviving primary admin {survivor_name} (the fabric-primary {fp_at_the_death} owns only a mesh that has none)");
+    assert!(rebirth_executors.contains(&survivor_name) && rebirth_executors.iter().all(|e| *e == survivor_name || *e == fp_at_the_death), "the dead admin's re-birth was opened by the fabric-primary {fp_at_the_death} and executed by its mesh's surviving primary admin {survivor_name}: {rebirth_executors:?}");
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([b0.clone()]), "the only Build ever accepted is the formation Build");
     let max_attempt = executors_by_attempt.keys().filter(|(_, lane, _)| lane.is_empty()).map(|(_, _, n)| *n).max().unwrap();

@@ -579,8 +579,12 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
                 Some(mesh) => {
                     let handoff: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|s| attr(s, "mesh") == mesh && attr(s, "outcome") == "applied").collect();
                     assert_eq!(handoff.len(), 1, "`{cut}`: one applied Pending hand-off for {mesh}: {handoff:#?}");
-                    assert!(span_start(ready[0]) >= span_start(handoff[0]), "`{cut}`: {node} reached Ready only after the Pending hand-off applied");
-                    ("pending-handoff", span_start(handoff[0]))
+                    // The node's own apply of the Pending it was handed: the fabric primary's span records the
+                    // call's answer once it returns, which a node quick to Ready can precede.
+                    let applied: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|s| attr(s, "node") == node && attr(s, "op") == "apply-mesh-state" && attr(s, "outcome") == "applied").collect();
+                    assert!(!applied.is_empty(), "`{cut}`: {node} applied the Pending it was handed");
+                    assert!(span_start(ready[0]) >= span_start(applied[0]), "`{cut}`: {node} reached Ready only after the Pending hand-off applied");
+                    ("pending-handoff", span_start(applied[0]))
                 }
                 None => ("release", span_end(hold)),
             };

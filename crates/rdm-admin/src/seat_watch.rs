@@ -300,14 +300,29 @@ pub async fn run(w: Watch) {
             }
             // Any verdict but `reached` of a peer mesh's primary is this fabric-primary's recovery of it,
             // at once (node-recovery.md step 3, Q111): nothing holds and nothing waits for a proof.
-            // Submitted once per silence; a recovery that ends Failed is the drift pass's to open again.
+            // Submitted once per silence and owed until it is opened: a submit refused (an attempt still
+            // holds the mesh) is made again after a delay that doubles, while this admin's view holds the
+            // exact birth and this admin the fabric seat. A recovery that ends Failed is the drift pass's
+            // to open again.
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
                 (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0) => {
-                    let node = node.clone();
+                    let (node, topology, me_id) = (node.clone(), w.topology.clone(), me_birth.0.clone());
                     tokio::spawn(async move {
-                        if let Err(e) = recovery.submit(&node, &inspected).await {
-                            tracing::info!(node = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery");
+                        let mut backoff = rdm_transport::membership::gossip_interval();
+                        let ceiling = rdm_transport::membership::staleness_floor() * 4;
+                        loop {
+                            match recovery.submit(&node, &inspected).await {
+                                Ok(_) => break,
+                                Err(e) => tracing::info!(node = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery"),
+                            }
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(ceiling);
+                            let t = topology.read().await;
+                            let held = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id);
+                            if !held || !t.holds_fabric_seat(&me_id) {
+                                break;
+                            }
                         }
                     });
                     true
