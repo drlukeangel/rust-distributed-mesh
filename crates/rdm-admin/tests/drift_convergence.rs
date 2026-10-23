@@ -30,6 +30,7 @@ use rdm_admin::build_state::{BuildState, BuildStateAdapter as _, MemoryBuildStat
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Inspected, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::build_drive::{Drive, DriveEnd, DriveEnv, OpenGate};
 use rdm_admin::executor::OperationRunner;
+use rdm_admin::node_investigation::Finding;
 use rdm_admin::seat_revision::{fence, FenceOutcome, PathProbe};
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
@@ -141,16 +142,16 @@ struct Probe(Arc<World>);
 
 #[async_trait::async_trait]
 impl PathProbe for Probe {
-    async fn answers(&self, node: &Node) -> bool {
-        self.0.of(node.node_id.as_str()).is_some_and(|r| r.answers)
-    }
-    async fn inspect(&self, node: &Node) -> Inspected {
+    async fn investigate(&self, node: &Node) -> Finding {
+        if self.0.of(node.node_id.as_str()).is_some_and(|r| r.answers) {
+            return Finding::Reached { answer: rdm_core::status::StatusReply::Applied, carrier: None };
+        }
         match self.0.of(node.node_id.as_str()).map(|r| r.status) {
-            None => Inspected::Unavailable(format!("{} has no runtime in this world", node.name)),
-            Some(DeploymentStatus::Running) => Inspected::Running,
-            Some(DeploymentStatus::OsStopped) => Inspected::OsStopped,
-            Some(DeploymentStatus::Exited { code }) => Inspected::Exited(code),
-            Some(DeploymentStatus::Unknown) => Inspected::Unavailable("the provider cannot tell its runtime's state: Unknown".into()),
+            None => Finding::Unproven { reason: format!("{} has no runtime in this world", node.name) },
+            Some(DeploymentStatus::Running) => Finding::Running,
+            Some(DeploymentStatus::OsStopped) => Finding::OsStopped,
+            Some(DeploymentStatus::Exited { code }) => Finding::Exited { code },
+            Some(DeploymentStatus::Unknown) => Finding::Unproven { reason: "the provider cannot tell its runtime's state: Unknown".into() },
         }
     }
 }

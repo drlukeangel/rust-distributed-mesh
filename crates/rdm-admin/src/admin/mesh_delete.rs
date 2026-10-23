@@ -310,13 +310,13 @@ impl AdminRunner {
         if crate::mesh_delete::exit_receipts(steps, outer, std::slice::from_ref(b)).contains_key(&(b.node_id.clone(), b.incarnation_id.clone())) {
             return Ok(());
         }
-        // An admin that answers is reached, not lost (Q111): silent in this view only for a moment (the
+        // An admin node investigation reaches is not lost (Q111): silent in this view only for a moment (the
         // lost primary published the mesh's aggregate), it is the surviving admin the election names
         // (mesh-delete.md "Resume after the primary's loss" step 2), and the next attempt hands it the
         // workflow. Nothing is deleted or created for the mesh.
         let held = self.topology.read().await.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
         if let Some(n) = held {
-            if self.answers(&n).await {
+            if matches!(crate::seat_revision::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                 return Err(RunEnd::Incomplete(format!("{outer}: {mesh}'s node-admin {} {} answers, so it survives; the next attempt hands the workflow to the admin the election names", b.node, b.incarnation_id)));
             }
         }

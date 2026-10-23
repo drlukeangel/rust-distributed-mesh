@@ -67,6 +67,8 @@ pub struct AdminRunner {
     pub endpoint: Option<Endpoint>,
     /// This process's one Node RPC client (and its live resolver): every running admin holds it.
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
+    /// Its connections store: the by-destination index names node investigation's leads.
+    pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
     /// Where the retire pipeline's lifecycle events go: this admin's membership and backbone.
     pub lifecycle_events: Arc<dyn crate::deployment::pipeline::LifecycleEvents>,
     /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a handoff for.
@@ -439,18 +441,6 @@ impl AdminRunner {
             self.handles.lock().unwrap().remove(path);
         }
         out
-    }
-
-    /// Does `node`'s runtime answer when asked directly (not through gossip)?
-    /// A Node RPC `Ping`, two seconds; a frozen or gone runtime does not answer.
-    pub(crate) async fn answers(&self, node: &Node) -> bool {
-        const WITHIN: Duration = Duration::from_secs(2);
-        // Every kind, a node-admin included, serves Ping on its one endpoint.
-        let node_rpc = &self.node_rpc;
-        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(WITHIN), ..Default::default() };
-        let req = rdm_core::ping::PingRequest::Ping { payload: b"fence".to_vec() };
-        let (out, _) = node_rpc.client.call::<rdm_core::ping::Ping>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
-        out.reply().is_some()
     }
 
     /// `Node: Pending -> ReadyForTraffic`, committed once the node reports ready.
@@ -995,12 +985,14 @@ impl AdminRunner {
 
 #[async_trait::async_trait]
 impl crate::seat_revision::PathProbe for AdminRunner {
-    async fn answers(&self, node: &Node) -> bool {
-        AdminRunner::answers(self, node).await
-    }
-    /// node.runtime.inspect over the one runtime resolution (`node_investigation::birth_runtime`).
-    async fn inspect(&self, node: &Node) -> crate::deployment::provider::Inspected {
-        crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.book, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await.0
+    /// Node investigation (the one primitive, Q107 item 1) on `node` from this admin's view: the leads,
+    /// the direct tickle and the same kick through peers, then node.runtime.inspect over the one runtime
+    /// resolution.
+    async fn investigate(&self, node: &Node) -> crate::node_investigation::Finding {
+        let view = self.topology.read().await.clone();
+        let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.held_name().to_string(), connections: self.connections.clone() };
+        let inspect = async { crate::node_investigation::Finding::from(crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.book, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await.0) };
+        crate::node_investigation::investigate(node, &view, &calls, inspect).await
     }
 }
 
