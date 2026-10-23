@@ -609,6 +609,12 @@ impl TypeFabric {
 }
 
 async fn type_fabric(with_b2: bool) -> TypeFabric {
+    type_fabric_heard(with_b2, true).await
+}
+
+/// [`type_fabric`], B1's own view holding B2 (its digest, ReadyForTraffic) only when `b1_hears_b2`: the
+/// mesh-primary's view holds B2 ReadyForTraffic either way.
+async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000008", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, status).await;
@@ -636,7 +642,7 @@ async fn type_fabric(with_b2: bool) -> TypeFabric {
             m.resolver.insert(r.clone());
         }
         m.door.membership().seats().take(Seat::Cohort(RPC), &member_holder(&b1, 2));
-        for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id) {
+        for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.membership().book.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it ReadyForTraffic.
             assert!(m.door.membership().book.started(&other.resolved.node_id, &other.resolved.incarnation, &other.resolved.name));
@@ -724,7 +730,8 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
 
 /// CONTRACT (node-primary-update.md Roles: "For the node-admin type the primary is the mesh-primary and
 /// the commander is the fabric-primary"; node-rpc-envelope.md: "the fabric-primary commands a
-/// mesh-primary's update with `UpdatePrimary { node_type, build_id, run, operation }` on the primary ...
+/// mesh-primary's update with `UpdatePrimary { node_type, build_id, run, operation, successor }` on the
+/// primary, `successor` none: a node-admin computes the election itself ...
 /// The primary runs the sequence and answers `PrimaryUpdated { revisions }`"): X, the fabric-primary,
 /// commands P's update. P names N by the election over its own view, calls it, and answers X with N's
 /// node.primary.updated, which X installs before its Build continues: X, P and N hold N mesh-primary of
@@ -899,7 +906,7 @@ fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_
         f.p.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
         let rows = status_rows_of(&f.p, false).await;
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
-        let command = || Request::UpdatePrimary { node_type: "node-admin".into(), build_id: "b1".into(), run: 1, operation: op.into() };
+        let command = || Request::UpdatePrimary { node_type: "node-admin".into(), build_id: "b1".into(), run: 1, operation: op.into(), successor: None };
         let r = send(&f.x, &f.p, command()).await;
         assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "primary" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
@@ -959,12 +966,12 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
 /// CONTRACT (node-primary-update.md: "one primitive for every node type"; Roles: "For any other type the
 /// mesh-primary is commander and writer, and the primary only makes the call"; step 2: the writer
 /// pre-checks; steps 4-5; node-rpc-envelope.md: "the mesh-primary commands another type's primary the same
-/// way"): P, mesh1's mesh-primary, commands B1, mesh1's rpc-node primary. B1 names B2 by the election over
-/// its own view with itself excluded, calls it, and answers P with B2's node.primary.updated, which P
+/// way, `successor` the exact birth its pre-check named"): P, mesh1's mesh-primary, commands B1, mesh1's
+/// rpc-node primary, naming B2. B1 calls B2, and answers P with B2's node.primary.updated, which P
 /// installs: P, B1 and B2 hold B2 rpc-node primary of mesh1 at 3. P finished no writes for it: a non-admin
 /// primary has no mesh rows, and B2's row is recorded from its digest.
 #[test]
-fn a_mesh_primary_commands_its_rpc_primary_which_names_its_successor_by_the_same_election_and_calls_it() {
+fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_found_and_the_primary_calls_it() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
@@ -978,6 +985,28 @@ fn a_mesh_primary_commands_its_rpc_primary_which_names_its_successor_by_the_same
         assert_eq!(f.b1.door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
         assert_eq!(f.b2().door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");
+        let _ = &f.x;
+    });
+}
+
+/// CONTRACT (Q129; node-primary-update.md step 4: "for a type other than `node-admin`, the birth the
+/// mesh-primary's command names (step 2)"): P's view holds B2 ReadyForTraffic; B1's own view has not heard
+/// B2 at all. P's stop-time update of B1 completes: B1 calls the B2 P named and answers with B2's
+/// node.primary.updated, with no election of its own and no `cannot transfer` refusal. A command naming no
+/// successor at B1 is refused by name. What must NOT happen: B1 refusing because its own view holds no
+/// secondary (the land-gate red at 1918053cb, memory_estate).
+#[test]
+fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_one_its_mesh_primary_named() {
+    let cap = trace_capture("fabric-handover");
+    cap.run(async {
+        let f = type_fabric_heard(true, false).await;
+        let b1 = node_at(&f.p, "mesh1.rpc.1").await;
+        let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
+        let revisions = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
+        assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
+        assert_eq!(f.b1.door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
+        let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.2"), successor: None }).await;
+        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == "mesh1.rpc.1 is a rpc-node primary: its mesh-primary's command names no successor"), "{bare:?}");
         let _ = &f.x;
     });
 }

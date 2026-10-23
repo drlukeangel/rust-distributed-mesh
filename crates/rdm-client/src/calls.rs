@@ -493,6 +493,7 @@ impl<'a> NodeRpc<'a> {
             build_id: build_id.to_string(),
             run: attempt,
             operation: format!("node.primary.update:{build_id}:{attempt}:{holder}"),
+            successor: None,
         };
         let span = NodeOp::PrimaryUpdate.span();
         let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(holder.clone()), &req, opts), span.clone()).await;
@@ -515,6 +516,7 @@ impl<'a> NodeRpc<'a> {
             build_id: build_id.to_string(),
             run: attempt,
             operation: format!("node.fabric-primary.update:{build_id}:{attempt}:{holder}"),
+            successor: None,
         };
         let span = NodeOp::FabricPrimaryUpdate.span();
         let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(holder.clone()), &req, opts), span.clone()).await;

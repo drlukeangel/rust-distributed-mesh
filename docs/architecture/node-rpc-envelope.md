@@ -1541,8 +1541,10 @@ submission opened: a resume continues it and replays that run's row; a resubmit 
 so a new transfer.
 
 The commanded arm rides the same op: the fabric-primary commands a mesh-primary's update with
-`UpdatePrimary { node_type, build_id, run, operation }` on the primary, and the mesh-primary commands another type's
-primary the same way. The primary runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,
+`UpdatePrimary { node_type, build_id, run, operation, successor }` on the primary, `successor` none: a node-admin
+computes the election itself. The mesh-primary commands another type's primary the same way, `successor` the exact
+birth its pre-check named (step 2), and that primary calls it without an election of its own; commanded with
+none, it is refused by name. The primary runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,
 or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when it ends failed; `Incomplete` is never
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.

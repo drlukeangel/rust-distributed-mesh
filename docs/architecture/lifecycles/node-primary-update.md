@@ -50,7 +50,8 @@ and recording it are separate for every type.
 3. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): once
    NA2 is mesh-primary NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
    (its own `connections/<node>/` rows are its own, R14).
-4. The primary calls `node.primary.update` on the successor's exact birth. The successor becomes
+4. The primary calls `node.primary.update` on the successor's exact birth: for a type other than `node-admin`,
+   the birth the mesh-primary's command names (step 2). The successor becomes
    primary: it installs the election's result the call carries in its own topology view, answers
    `node.primary.updated { revisions }` on that call, and its next `Digest` carries the change
    (`is_primary`, and `is_fabric_primary` when both moved, at the next revision), its normal

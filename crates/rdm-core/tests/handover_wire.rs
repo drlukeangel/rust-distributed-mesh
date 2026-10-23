@@ -41,7 +41,8 @@ const SUCCESSOR: &str = "0c 303132333435363738396364  0c 79727a37396a3330337a737
 /// successor carrying the election's result: one entry per primary that moves, `(node_type, primary,
 /// successor, revision)`, the fabric-primary an entry of node type `fabric`, then the Build, its run and
 /// the operation. `UpdatePrimary` (variant 1) is the command from above: the node type whose primary
-/// moves, the Build, its run and the operation. There is no take-over call (Q122). What must NOT happen: a name in place of a birth, a field moved, a variant inserted before
+/// moves, the Build, its run, the operation and the successor's exact birth the mesh-primary named, none
+/// to a node-admin (Q129). There is no take-over call (Q122). What must NOT happen: a name in place of a birth, a field moved, a variant inserted before
 /// the end.
 #[test]
 fn requests_match_the_frozen_two_variant_wire_schema() {
@@ -51,8 +52,10 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
             NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: "o".into() },
             format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 02 016f"),
         ),
-        // variant 1 | node_type "rpc-node" | build_id | run | operation
-        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into() }, "01 08 7270632d6e6f6465 0162 02 016f".to_string()),
+        // variant 1 | node_type "rpc-node" | build_id | run | operation | successor none (a node-admin's command)
+        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into(), successor: None }, "01 08 7270632d6e6f6465 0162 02 016f 00".to_string()),
+        // variant 1 | ... | successor some: the birth the mesh-primary's pre-check named (Q129)
+        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into(), successor: Some(successor()) }, format!("01 08 7270632d6e6f6465 0162 02 016f 01 {SUCCESSOR}")),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");

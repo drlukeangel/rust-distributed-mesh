@@ -14,7 +14,7 @@ use rdm_core::catalog::OpOwner;
 use rdm_core::framing::Birth;
 use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, FABRIC};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::{MemberStatus, NodeKind, Seat};
+use rdm_core::{NodeKind, Seat};
 use rdm_transport::membership::{Membership, SeatBook, SeatTaken};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use tracing::Instrument as _;
@@ -126,8 +126,8 @@ pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries:
 
 /// The 0x21 door of a node that is not a node-admin. As the successor it installs the election's result
 /// the call carries and answers node.primary.updated (step 4). As its type's primary, commanded by its
-/// mesh-primary, it runs the sequence: the election over its own view with itself excluded names the
-/// successor, it calls the successor and answers with its node.primary.updated. It writes no row: its
+/// mesh-primary, it calls the successor the command names (the mesh-primary's pre-check, step 2; no
+/// election of its own, Q129) and answers with its node.primary.updated. It writes no row: its
 /// mesh-primary records the change from the successor's digest (step 5).
 pub struct MemberDoor {
     me: PathName,
@@ -173,7 +173,7 @@ impl MemberDoor {
         let _one_at_a_time = self.serving.lock().await;
         match req {
             Request::PrimaryUpdate { primaries, build_id, run, operation } => self.install(primaries, build_id, run, operation),
-            Request::UpdatePrimary { node_type, build_id, run, operation } => self.update(node_type, build_id, run, operation).await,
+            Request::UpdatePrimary { node_type, build_id, run, operation, successor } => self.update(node_type, build_id, run, operation, successor).await,
         }
     }
 
@@ -194,18 +194,19 @@ impl MemberDoor {
         reply
     }
 
-    /// The primary of its node type, commanded by its mesh-primary, runs the sequence (steps 2 and 4):
-    /// the election over its own view with itself excluded names the successor; none is `Failed` by
-    /// name; it calls the successor and answers with its node.primary.updated, installed in its own view
-    /// first. A successor that does not answer is `Failed`: the successor is unheard after the update.
-    async fn update(&self, node_type: String, build_id: String, run: u32, operation: String) -> Reply {
+    /// The primary of its node type, commanded by its mesh-primary, runs step 4: it calls the successor
+    /// the command names (the mesh-primary's pre-check, step 2), runs no election of its own (Q129), and
+    /// answers with the successor's node.primary.updated, installed in its own view first. A command that
+    /// names none is `Failed` by name; a successor that does not answer is `Failed`: the successor is
+    /// unheard after the update.
+    async fn update(&self, node_type: String, build_id: String, run: u32, operation: String, successor: Option<Birth>) -> Reply {
         let payload = (Vec::new(), format!("{node_type} {build_id}"));
         if let Some(r) = self.commanded.before(&operation, &payload) {
             return r;
         }
         let me = self.held_name();
         let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node = %me, node_type = %node_type, build_id = %build_id, run, operation = %operation, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
-        let reply = self.update_in(&me, &node_type, &build_id, run, &operation).instrument(span.clone()).await;
+        let reply = self.update_in(&me, &node_type, &build_id, run, &operation, successor).instrument(span.clone()).await;
         span.record("outcome", reply.name());
         if let Reply::Failed { reason, .. } = &reply {
             span.record("detail", reason.as_str());
@@ -217,7 +218,7 @@ impl MemberDoor {
         reply
     }
 
-    async fn update_in(&self, me: &PathName, node_type: &str, build_id: &str, run: u32, operation: &str) -> Reply {
+    async fn update_in(&self, me: &PathName, node_type: &str, build_id: &str, run: u32, operation: &str, successor: Option<Birth>) -> Reply {
         let (mesh, kind) = (me.mesh.clone(), me.kind);
         if node_type != kind.node_type() {
             return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {}, not of the type {node_type} the command names", kind.node_type()), rdm_core::outcome::Code::FailedPrecondition);
@@ -230,14 +231,11 @@ impl MemberDoor {
             self.read_own_mesh(me, &mesh).await;
         }
         let revision = book.cohort(&mesh, kind).map_or(0, |r| r.revision) + 1;
-        // Step 2: the election over the nodes of its type in its mesh, itself excluded.
-        let members: Vec<rdm_core::MeshDigest> = self.membership.book.all().into_iter().filter(|d| d.node.name.mesh == mesh && d.node.name.kind == kind && d.node.node_id != self.node_id).collect();
-        let candidates: Vec<rdm_core::election::Candidate<'_>> = members.iter().map(|d| rdm_core::election::Candidate { node_id: &d.node.node_id, ready: d.status == MemberStatus::ReadyForTraffic }).collect();
-        let Some(winner) = rdm_core::election::elect(&candidates).map(|i| &members[i]) else {
-            return rdm_core::reply::handover::bounded_failed(STEP, &rdm_core::election::no_secondary(node_type, &mesh), rdm_core::outcome::Code::FailedPrecondition);
+        // Step 4 on the successor the mesh-primary's pre-check named (step 2): no election here (Q129).
+        let Some(successor) = successor else {
+            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {node_type} primary: its mesh-primary's command names no successor"), rdm_core::outcome::Code::FailedPrecondition);
         };
-        let successor = Birth { node_id: winner.node.node_id.clone(), incarnation: winner.node.incarnation.clone() };
-        tracing::Span::current().record("successor", winner.node.name.to_string().as_str());
+        tracing::Span::current().record("successor", successor.node_id.as_str());
         let entries = vec![(node_type.to_string(), self.me_birth(), successor.clone(), revision)];
         // Step 4: the call on the successor's exact birth.
         match call_successor(&self.client, &successor.node_id, &entries, build_id, run, operation).await {
@@ -245,7 +243,7 @@ impl MemberDoor {
                 install(book, &revisions, self.mesh_of());
                 Reply::PrimaryUpdated { revisions }
             }
-            Err(how) => rdm_core::reply::handover::bounded_failed(STEP, &format!("the successor is unheard after the update: {} ({successor}) {how}", winner.node.name), rdm_core::outcome::Code::Unavailable),
+            Err(how) => rdm_core::reply::handover::bounded_failed(STEP, &format!("the successor is unheard after the update: {successor} {how}"), rdm_core::outcome::Code::Unavailable),
         }
     }
 }

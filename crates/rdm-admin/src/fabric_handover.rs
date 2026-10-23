@@ -546,7 +546,7 @@ impl HandoverDoor {
                 Err(why) => Err(SeatMoveEnd::Incomplete(why)),
             };
         }
-        let req = Request::UpdatePrimary { node_type: holder.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.to_string() };
+        let req = Request::UpdatePrimary { node_type: holder.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.to_string(), successor: None };
         match self.call_once(&to.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
             Ok(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => {
                 self.take(&revisions).await;
@@ -642,7 +642,7 @@ impl HandoverDoor {
     pub async fn serve(self: &Arc<Self>, req: Request) -> Reply {
         match req {
             Request::PrimaryUpdate { primaries, build_id, run, operation } => self.serve_primary_update(primaries, build_id, run, operation).await,
-            Request::UpdatePrimary { node_type, build_id, run, operation } => self.serve_update_primary(node_type, build_id, run, operation).await,
+            Request::UpdatePrimary { node_type, build_id, run, operation, .. } => self.serve_update_primary(node_type, build_id, run, operation).await,
         }
     }
 
@@ -680,14 +680,23 @@ impl HandoverDoor {
             refused("commander", "not-primary", &reason, operation);
             return Err(rdm_core::reply::handover::bounded_not_primary(&reason));
         }
-        // Step 2: the writer's pre-check, from its own view.
+        // Step 2: the writer's pre-check, from its own view, names the successor the command carries: the
+        // primary calls it and runs no election of its own (Q129).
         let view = self.topology.read().await.clone();
         let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
-        if let Err(text) = crate::election::commanded_cohort_successor(&nodes, &self.incumbency(), holder) {
+        let successor = match crate::election::commanded_cohort_successor(&nodes, &self.incumbency(), holder) {
+            Ok(n) => n,
+            Err(text) => {
+                refused("commander", "no-successor", &text, operation);
+                return Err(rdm_core::reply::handover::bounded_failed(STEP, &text, rdm_core::outcome::Code::FailedPrecondition));
+            }
+        };
+        let Some(named) = birth_of(&successor) else {
+            let text = format!("{me}: the successor {} of {operation} has no known birth", successor.name);
             refused("commander", "no-successor", &text, operation);
             return Err(rdm_core::reply::handover::bounded_failed(STEP, &text, rdm_core::outcome::Code::FailedPrecondition));
-        }
-        let req = Request::UpdatePrimary { node_type: holder.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.to_string() };
+        };
+        let req = Request::UpdatePrimary { node_type: holder.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.to_string(), successor: Some(exact(&named)) };
         match self.call_once(&holder.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
             Ok(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => {
                 self.take(&revisions).await;

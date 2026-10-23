@@ -55,6 +55,10 @@ pub enum NodePrimaryUpdateRequest {
         run: u32,
         /// The update's operation identity.
         operation: String,
+        /// The successor's exact birth, named by the mesh-primary's pre-check (node-primary-update.md step
+        /// 2) when it commands another type's primary; none to a node-admin, which computes the election
+        /// itself (Q129).
+        successor: Option<Birth>,
     },
 }
 
