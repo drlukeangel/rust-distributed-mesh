@@ -21,8 +21,7 @@ nodes). A store keeps no row about another object. Every RDM store maps onto a t
 |---|---|---|---|
 | Fabric | `fabric.storage` | `<system_org>.ops.fabrics` | the Fabric record (id, name) and its name's claim; the primary records; the fabric's status and its fabric events; the fabric root's issue date and the fabric CA's issue date and expiry (the root has no TTL: it changes only on `fabric.root.update`; the root and the CA stay local to each node-admin, fabric-certs.md §Custody; no receipts); the fabric's state, shutdown among its states (no topic of its own) |
 | Mesh | `mesh.storage` | `<system_org>.ops.meshes` | the mesh row (MeshId, name, dead); the mesh's status; its in-flight row |
-| Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert's expiry, a lost or unreadable data dir, and its runtime's end (exit code, where its logs were kept); a node-admin's contacts (the births it heard), on its own node (no topic of its own); a node-admin birth's signing cert issue date and expiry. Only the dates are stored; every cert stays local to its node, like the root, and the mesh has no issuer (Luke, 2026-10-23) |
-| Node offline | `nodes.storage` | `<system_org>.ops.nodes.offline` | a node's silence: each observer's offline verdict about it (Q139 open: fold into `ops.nodes`) |
+| Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert's expiry, its silence (`PendingReconnect`, `Dead`, none once heard), a lost or unreadable data dir, and its runtime's end (exit code, where its logs were kept); a node-admin's contacts (the births it heard), on its own node (no topic of its own); a node-admin birth's signing cert issue date and expiry. Only the dates are stored; every cert stays local to its node, like the root, and the mesh has no issuer (Luke, 2026-10-23) |
 | Node connections | `connections.storage` | `<system_org>.ops.nodes.connections` | the connections log (unchanged) |
 | Build | `builds.storage` | `<system_org>.ops.builds` | the Build facts and each attempt's context; the births a Build made, as the Build's state (no topic of its own) |
 
@@ -38,7 +37,7 @@ are on its node row; only cert dates are stored; Q141 A (below).
 | `FabricEventRow` | the fabric's events, `fabric.storage` / `ops.fabrics` | the fabric-primary |
 | `NodeDeclaredRow` | the birth's declared state, `nodes.storage` / `ops.nodes` | the node's mesh-primary |
 | `NodeOperationRow` | the birth's operation effects, `nodes.storage` / `ops.nodes` | the node's mesh-primary |
-| `NodeSilenceRow` | the node's offline verdicts, `ops.nodes.offline` (or `ops.nodes`, Q139) | each observer, as today |
+| `NodeSilenceRow` | the birth's silence, `nodes.storage` / `ops.nodes` | the node's mesh-primary (its tickle loop, as today: `status_storage.rs:136`) |
 | `NodeDataDirLostRow`, `NodeDataDirUnreadableRow` | the birth, `nodes.storage` / `ops.nodes` | the node's mesh-primary |
 | `NodeCertRow` | the birth's member cert expiry (`issued_at`, `expires_at`, `renew_at`), `ops.nodes` | the issuer, on `CertRenewed` (Q141) |
 | `NodeCertReceiptRow` | gone (Q141) | |
@@ -73,7 +72,8 @@ Step 5: old "The issuer records the receipt on the row. The old cert expires on 
 Step 4: old "The row records the last receipt. The old issuer expires on its own." new "Each admin's node row holds the dates it answered. The old issuer expires on its own."
 
 ### Open
-- Q139: `ops.nodes.offline` folded into `ops.nodes`.
+- `ops.nodes.offline` is rafka's own (`NodeOfflineRecord`: one observer's offline episode of one node, with a
+  broker's refill; `rafka-entity-topology/src/offline.rs:147`). No RDM row maps to it, so Q139 is withdrawn.
 - Q140: `ops.nodes` and `ops.builds` compacted like `ops.fabrics` and `ops.meshes`. Today they are delete,
   7 days (rafka-v2 `gateway/tests/functional/store_plane_policy_at_birth.rs:126`), so every node row and
   Build record expires 7 days after its last write.
