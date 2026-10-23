@@ -50,7 +50,7 @@ are on its node row; only cert dates are stored; Q141 A (below).
 (`fabric_storage`, `storage::{MeshStorage, NodesStorage}`). Callers today: `admin/{boot,mesh_delete,records,recovery,runner}.rs`,
 `admin.rs`, `cert_renewal.rs`, `control_plane.rs`, `fabric_state.rs`, `join.rs`, `mesh_delete.rs`,
 `node_properties.rs`, `offline.rs`, `status_declare.rs`, `status_rpc.rs`, `storage_backend.rs`, `views.rs`,
-`rdm-test/src/rig.rs` and 17 test files. Old `status.storage` records are read once on upgrade and written
+`rdm-test/src/rig.rs` and 16 test files. Old `status.storage` records are read once on upgrade and written
 to their object (durable format moved).
 
 ### Q141 A: the date on the node row is the receipt (Luke, 2026-10-23)
