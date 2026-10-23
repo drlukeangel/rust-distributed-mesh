@@ -658,6 +658,15 @@ fn check_services(spans: &[Value], inv: &mut Invariants) -> BTreeSet<String> {
         assert!(!services.contains(never), "no built-in `{never}` ran: {services:?}");
     }
     inv.holds("the estate ran only the consumer's four executables (the other services are the controller's probe)", true, json!({"services": services}));
+    // The consumer's node-admin seams (demo/src/bin/rshape_node_admin.rs): its own storage backend opened
+    // the boundaries of every admin, and its lifecycle hook ran on the way into traffic of each kind of node.
+    let opened: Vec<&Value> = named(spans, "rafka.storage.create.via-consumer-backend");
+    assert!(!opened.is_empty() && opened.iter().all(|sp| sp["attributes"]["outcome"] == "opened"), "the consumer's backend opened the node-admin's boundaries: {opened:?}");
+    let hooked: BTreeSet<String> = named(spans, "rafka.node.update.via-ready-hook").into_iter().map(|sp| s(&sp["attributes"]["node"])).collect();
+    for kind in ["broker", "gateway", "compute"] {
+        assert!(hooked.iter().any(|n| n.split('.').nth(1) == Some(kind)), "the consumer's lifecycle hook ran on a {kind}'s way into traffic: {hooked:?}");
+    }
+    inv.holds("the consumer's storage backend opened every admin's boundaries and its lifecycle hook ran on each kind's way into traffic", true, json!({"backend_opens": opened.len(), "hooked": hooked}));
     services
 }
 

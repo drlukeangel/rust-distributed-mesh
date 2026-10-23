@@ -1,7 +1,73 @@
 //! `rshape-node-admin`: the R-shape consumer's node-admin entry point, composed from RDM's public
-//! node-admin seam (`rdm_admin::entry::run`). All configuration is the environment.
+//! node-admin seam (`rdm_admin::entry::run_on`). All configuration is the environment.
+//!
+//! It is the primer for the two seams a product's node-admin plugs in besides its hooks and channels:
+//! - its own storage backend, handed over through `run_on`: [`ConsumerBackend`] is asked for every
+//!   boundary the admin opens (its own row, then the six boundaries), here by delegating to RDM's file
+//!   backend; a product's own backend (Rafka's topic-backed one) takes the file backend's place;
+//! - a lifecycle hook, registered on `Wiring.hooks`: [`ReadyHook`] runs on every node's
+//!   `Pending -> ReadyForTraffic` the admin brings into traffic, after eligibility and before the commit,
+//!   and gates it (a product's entry step for a node, such as a returning broker's, lives here).
+use async_trait::async_trait;
+use rdm_admin::fabric_rounds::RoundActions;
+use rdm_admin::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
+use rdm_admin::model::{IncarnationId, ProviderKind};
+use rdm_admin::storage::NodeRecord;
+use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope};
+use rdm_admin::storage_error::StorageError;
+use rdm_admin::wiring::{FabricHooks, Wiring};
+use std::path::Path;
+use std::sync::Arc;
+
+const SERVICE: &str = "rshape-node-admin";
+
+/// The consumer's storage backend: every boundary RDM's node-admin opens is asked of it.
+struct ConsumerBackend(Arc<dyn StorageBackend>);
+
+#[async_trait]
+impl StorageBackend for ConsumerBackend {
+    fn qualify(&self, provider: ProviderKind) -> Result<(), String> {
+        self.0.qualify(provider)
+    }
+
+    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+        self.0.own_row(data_dir, writer).await
+    }
+
+    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
+        let opened = self.0.open(scope, embedding).await;
+        tracing::info_span!(target: "rshape", "rafka.storage.create.via-consumer-backend", fabric_id = %scope.fabric_id, mesh = %scope.own_mesh, outcome = if opened.is_ok() { "opened" } else { "refused" })
+            .in_scope(|| tracing::info!("the consumer's backend opened the node-admin's boundaries"));
+        opened
+    }
+}
+
+/// The consumer's lifecycle hook on a node's way into traffic.
+struct ReadyHook;
+
+#[async_trait]
+impl LifecycleHook for ReadyHook {
+    async fn run(&self, ctx: &HookContext) -> Result<(), String> {
+        tracing::info_span!(target: "rshape", "rafka.node.update.via-ready-hook", node = %ctx.target, transition_id = %ctx.transition_id, attempt = ctx.attempt)
+            .in_scope(|| tracing::info!("the consumer's hook ran before the node's ReadyForTraffic commit"));
+        Ok(())
+    }
+}
 
 #[tokio::main]
 async fn main() {
-    rdm_admin::entry::run("rshape-node-admin").await
+    let ready = LifecycleHookSpec {
+        hook_id: "rshape-ready".into(),
+        transition: TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic },
+        phase: HookPhase::AfterEligibilityBeforeCommit,
+        applies_when: ShapePredicate::Always,
+        blocking: true,
+        max_attempts: 1,
+    };
+    rdm_admin::entry::run_on(
+        SERVICE,
+        |cfg| Arc::new(ConsumerBackend(rdm_admin::storage_backend::file_backend(cfg.store_dir.clone()))),
+        |cfg| Wiring { fabric_hooks: FabricHooks::no_app_work(), certs: rdm_admin::entry::material_or_exit(SERVICE, cfg), hooks: vec![(ready, Arc::new(ReadyHook))], ..Wiring::default() },
+    )
+    .await
 }
