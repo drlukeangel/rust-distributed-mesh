@@ -15,8 +15,7 @@ nodes). A store keeps no row about another object. `status.storage` goes.
 
 | Object | RDM store | rafka topic | Rows on it |
 |---|---|---|---|
-| Fabric | `fabric.storage` | `<system_org>.ops.fabrics` | the Fabric record (id, name) and its name's claim; the primary records; the fabric's status and its fabric events; the fabric root, CA and their receipts |
-| Fabric shutdown | `fabric.storage` | `<system_org>.ops.fabrics.shutdown` | the shutdown claim (unchanged) |
+| Fabric | `fabric.storage` | `<system_org>.ops.fabrics` | the Fabric record (id, name) and its name's claim; the primary records; the fabric's status and its fabric events; the fabric root, CA and their receipts; the fabric's state, shutdown among its states (no topic of its own) |
 | Mesh | `mesh.storage` | `<system_org>.ops.meshes` | the mesh row (MeshId, name, dead); the mesh's status; its in-flight row; its issuer and the issuer's receipts |
 | Node | `nodes.storage` | `<system_org>.ops.nodes` | the node at its path.name (config, tags); each birth: its runtime (runtime fact, data dir), its declared state, the operation effects applied to it, its member cert and the cert's receipts, a lost or unreadable data dir, and its runtime's end (exit code, where its logs were kept) |
 | Node offline | `nodes.storage` | `<system_org>.ops.nodes.offline` | a node's silence: each observer's offline verdict about it |
