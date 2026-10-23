@@ -2775,6 +2775,7 @@ impl Membership {
             let mut held: BTreeSet<String> = BTreeSet::new();
             let mut heard: BTreeSet<String> = BTreeSet::new();
             loop {
+                book.mark_awake();
                 let node = view.current_name();
                 let own_mesh = view.mesh.clone();
                 let current = book.current(book.staleness_floor());
@@ -3969,6 +3970,9 @@ pub struct DigestBook {
     refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, String)>>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
+    /// When this node's own loop last ran ([`Self::mark_awake`]); `None` for a book no loop reads. A gap
+    /// between two of its runs longer than the staleness floor is time this process was not running.
+    awake: Arc<Mutex<Option<Instant>>>,
     /// The stopped births (`NodeStopped`) by NodeId: what this book held of each when it dropped it,
     /// and the latest heartbeat of it refused since. No heartbeat of the stopped birth is taken; only
     /// the mesh-primary's `node.joined` ([`Self::joined`]), its projection moving past the stop
@@ -4164,6 +4168,7 @@ impl DigestBook {
             departed: Arc::default(),
             refused_departures: Arc::default(),
             in_flight: Arc::default(),
+            awake: Arc::default(),
             stopped_marks: Arc::default(),
             restarts_carried: Arc::default(),
             primary: Arc::default(),
@@ -5087,6 +5092,7 @@ impl DigestBook {
     /// Every own-mesh birth this book holds only from its mesh-primary's projection
     /// ([`DigestBook::projected_at`]), each with how long it has gone unheard at `now`.
     pub fn projected_unheard_at(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
+        self.woken();
         let ids: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
         ids.iter().filter_map(|id| self.projected_at(id, now)).collect()
     }
@@ -5479,6 +5485,7 @@ impl DigestBook {
     /// is current like any member (gossip.md §6.1: a stopped status by itself and silence are not
     /// departure proof), and every aggregate carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
+        self.woken();
         let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect();
         self.hand_out(ds.iter_mut());
         ds
@@ -5505,6 +5512,32 @@ impl DigestBook {
         }
     }
 
+    /// This node's own loop ran at `now` ([`Self::woken`] first): what a gap is measured from.
+    pub fn mark_awake(&self) {
+        self.woken();
+        *self.awake.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// A node that was not running for longer than the staleness floor (its process frozen) measured
+    /// no silence in that gap: on its first read after it, every member's silence restarts, so it acts
+    /// on a member only after a full floor of silence it measured awake (Q131).
+    fn woken(&self) {
+        let now = Instant::now();
+        let gap = {
+            let mut awake = self.awake.lock().unwrap();
+            match *awake {
+                Some(last) if now.saturating_duration_since(last) > self.staleness_floor => {
+                    *awake = Some(now);
+                    now.saturating_duration_since(last)
+                }
+                _ => return,
+            }
+        };
+        self.restart_silence();
+        tracing::info_span!("rdm.mesh.membership.update.via-woken", gap_ms = gap.as_millis() as u64, staleness_ms = self.staleness_floor.as_millis() as u64)
+            .in_scope(|| tracing::info!("this node was not running for longer than the staleness floor: every member's silence restarts now"));
+    }
+
     /// The member's latest digest and how long it has been silent.
     pub fn get(&self, node_id: &str) -> Option<(MeshDigest, Duration)> {
         self.get_at(node_id, Instant::now())
@@ -5512,6 +5545,7 @@ impl DigestBook {
 
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
+        self.woken();
         let mut held = self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
@@ -5524,6 +5558,7 @@ impl DigestBook {
     /// book with `NodeStopped` and is not here either. A view hearing no other member and holding one of
     /// these is cut off; a view holding none is not, however many members it stopped.
     pub fn unheard_unexplained(&self, own_mesh: &str, me: &str) -> Vec<(String, String, u64)> {
+        self.woken();
         let now = Instant::now();
         let floor = self.staleness_floor();
         let restarting: BTreeSet<String> = self.in_flight().into_iter().filter(|o| o.is_restart()).map(|o| o.node_id.to_string()).collect();
@@ -5579,6 +5614,7 @@ impl DigestBook {
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
+        self.woken();
         let mut held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
@@ -5676,6 +5712,36 @@ mod tests {
     /// carrying its birth's primary revision and fabric-primary revision is held by the book as those
     /// records; a later digest of another birth at a lower revision replaces neither; one at a higher
     /// revision does. What must NOT happen: a stale announcement replacing a later record.
+    /// CONTRACT (Q131, fabric-recovery.md step 2: silence "in its own book"; the heard-again red at
+    /// 0acba6d97: mesh1.admin.2, thawed, read mesh1.admin.1 silent past the floor and opened its
+    /// recovery): a node whose own loop stopped for longer than the staleness floor measured no silence
+    /// in that gap. On its first read after waking, no member is unheard past the floor, and a member is
+    /// unheard again only after a full floor measured awake. A book no loop marks awake measures silence
+    /// as before. Must NOT happen: a thawed node reading its whole mesh silent the moment it wakes.
+    #[test]
+    fn a_node_that_was_not_running_past_the_floor_measures_no_silence_in_that_gap() {
+        let floor = Duration::from_millis(150);
+        let member = birth_at("mesh1.rpc.1", 1);
+        let awake = DigestBook::with_floor(Duration::from_secs(60), floor);
+        assert!(awake.record(member.clone()));
+        awake.mark_awake();
+        std::thread::sleep(floor * 2);
+        assert!(awake.unheard_unexplained("mesh1", "mesh1.admin.2").is_empty(), "silence restarts on waking");
+        std::thread::sleep(floor * 2);
+        awake.mark_awake();
+        let bare = DigestBook::with_floor(Duration::from_secs(60), floor);
+        assert!(bare.record(member.clone()));
+        std::thread::sleep(floor * 2);
+        assert_eq!(bare.unheard_unexplained("mesh1", "mesh1.admin.2").len(), 1, "a book no loop marks awake measures silence as before");
+        let marked = DigestBook::with_floor(Duration::from_secs(60), floor);
+        assert!(marked.record(member));
+        for _ in 0..8 {
+            marked.mark_awake();
+            std::thread::sleep(floor / 4);
+        }
+        assert_eq!(marked.unheard_unexplained("mesh1", "mesh1.admin.2").len(), 1, "a full floor of silence measured awake is silence");
+    }
+
     #[test]
     fn a_digest_carries_its_births_primary_records_and_the_book_holds_the_latest() {
         let book = DigestBook::default();
