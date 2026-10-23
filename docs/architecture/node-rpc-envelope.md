@@ -1412,6 +1412,9 @@ pub enum BuildChange {
     Stop { node: PathName },
     Start { node: PathName },
     Recover { node: PathName, node_id: NodeId, incarnation: IncarnationId },
+    // A deleted birth heard again, reported by the node that refused it; the fabric-primary
+    // terminates its runtime (lifecycles/node-investigation.md).
+    Terminate { node: PathName, node_id: NodeId, incarnation: IncarnationId },
 }
 
 pub enum BuildSubmit {
