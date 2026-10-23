@@ -1471,7 +1471,7 @@ pub enum BuildPhase {
 
 pub enum BuildReply {
     Started { build_id: String, attempt: u32, disposition: Disposition },
-    Step { build_id: String, attempt: u32, operation: String, step: String },
+    Step { build_id: String, attempt: u32, operation: String, step: String, receipt: Option<Vec<u8>> }, // on the inner attempt stream the step's receipt (its outcome and executor), which the fabric-primary writes; none on the outer stream (Q118, Q133)
     Blocked { build_id: String, attempt: u32, operation: String, step: String, reason: String },
     Steps { build_id: String, chunk_index: u32, chunk_count: u32, steps: Vec<StepReceipt> },
     Complete { build_id: String, attempt: u32 },
