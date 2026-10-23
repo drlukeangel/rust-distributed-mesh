@@ -5262,9 +5262,13 @@ impl DigestBook {
     fn record_with(&self, d: MeshDigest, now: Instant, node: &str, channel: &str) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "mesh-channel");
-            // Its own word on its mesh's channel: the deleted birth runs. The node that refused it reports
-            // it to the fabric-primary, which terminates its runtime (node-investigation.md, Q110, Q128).
-            self.returned.lock().unwrap().entry((d.node.node_id.to_string(), d.node.incarnation.to_string())).or_insert_with(|| d.clone());
+            // Its own word on its mesh's channel, emitted after its NodeDeleted: the deleted birth runs (a
+            // digest it sent before it exited, delivered late, is not). The node that refused it reports it
+            // to the fabric-primary, which terminates its runtime (node-investigation.md, Q110, Q128).
+            let after_deletion = self.departed.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(op, _)| op.incarnation == d.node.incarnation && d.emitted_at_rafka_ms > op.event_at_rafka_ms);
+            if after_deletion {
+                self.returned.lock().unwrap().entry((d.node.node_id.to_string(), d.node.incarnation.to_string())).or_insert_with(|| d.clone());
+            }
             return false;
         }
         if self.stopped_refuses(&d, "heartbeat", now) {
