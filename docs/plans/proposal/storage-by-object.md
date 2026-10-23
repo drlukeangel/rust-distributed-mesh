@@ -1,7 +1,9 @@
 ## Storage by object: every row on the object it describes, mapped to rafka's ops topics
 
-Proposal for i143; built by i141 (the storage work), not by i143. Each line below says whether Luke has
-ruled on it.
+Proposal for i143. The RDM side is i143's: `status.storage` goes and every row moves to the store of the
+object it describes, with the keys, writers, durability and receipt rules below. The rafka side is i141's:
+the mapping of each RDM store onto rafka's ops topics and the retention change (Q140). Each line below says
+whether Luke has ruled on it.
 
 ### Problem
 `status.storage` holds rows of every kind: mesh status, fabric events, a birth's declared state, an
