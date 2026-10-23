@@ -13,7 +13,7 @@ use rdm_core::{BuildId, MeshId, NodeId};
 use rdm_admin::deployment::pipeline::RuntimeProof;
 use rdm_admin::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteBook, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
 use rdm_admin::status_rpc::Declared;
-use rdm_admin::status_storage::{MemoryStatusStorage, MeshStatusRow, StatusStorage};
+use rdm_admin::storage::{MemoryMeshStorage, MeshStatusRow, MeshStorage};
 use rdm_core::status::{MeshDeleteRound, MeshState, StatusReply};
 use serde_json::Value;
 
@@ -204,13 +204,13 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leav
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
-    let (runs, storage, declared) = (MeshDeleteRuns::default(), MemoryStatusStorage::default(), std::sync::Mutex::new(Declared::default()));
+    let (runs, storage, declared) = (MeshDeleteRuns::default(), MemoryMeshStorage::default(), std::sync::Mutex::new(Declared::default()));
     let ((first, end, after, row), trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.update.via-delete-mesh-after-deleted");
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
-                let first = admit_delete_mesh(&runs, &storage, &declared, &held, &owner).await;
+                let first = admit_delete_mesh(&runs, &storage, &declared, "mesh2", &held, &owner).await;
                 let m = manifest.clone();
                 let end = run_admitted(&runs, &mesh_id, move |_, _| {
                     let m = m.clone();
@@ -219,11 +219,11 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leav
                 .await;
                 // mesh.deleted: the mesh-primary's handoff commits its mesh row Dead before it calls
                 // mesh-deleted; the call is lost, so the owner sends delete-mesh again.
-                storage.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
+                storage.put_mesh_status("mesh2", &MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
                 declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Dead);
                 let mut after = Vec::new();
                 for (k, sender) in [(&held, &owner), (&stale, &late), (&next, &owner)] {
-                    after.push(admit_delete_mesh(&runs, &storage, &declared, k, sender).await);
+                    after.push(admit_delete_mesh(&runs, &storage, &declared, "mesh2", k, sender).await);
                 }
                 let row = storage.mesh_statuses().await.unwrap().get(&mesh_id).copied();
                 (first, end, after, row)

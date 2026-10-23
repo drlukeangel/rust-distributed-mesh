@@ -653,7 +653,7 @@ A silent member is its mesh-primary's
 [node recovery](lifecycles/node-recovery.md); a peer mesh is the fabric-primary's
 [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
 
-**What a mesh-primary records of a silent member** is its status rows: the `PendingReconnect` and
+**What a mesh-primary records of a silent member** is rows on the node: the `PendingReconnect` and
 `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the `data-dir-lost` and
 `data-dir-unreadable` facts
 ([node recovery](lifecycles/node-recovery.md), [deployment provider](deployment-provider.md) §2.5),

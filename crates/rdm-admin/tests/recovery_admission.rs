@@ -666,7 +666,6 @@ fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
 #[tokio::test]
 async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh_primary_on_its_exit_proof() {
     use rdm_admin::build_state::BuildState;
-    use rdm_admin::status_storage::MemoryStatusStorage;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -674,7 +673,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -768,10 +767,9 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 /// by a row whose attempt ended, or the row released on silence alone.
 #[tokio::test]
 async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_on_its_exit_proof() {
-    use rdm_admin::status_storage::MemoryStatusStorage;
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -845,7 +843,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<rdm_admin::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
@@ -961,7 +959,6 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     use rdm_admin::accepted::AttemptAction;
     use rdm_admin::build_state::{AttemptOpened, BuildState};
     use rdm_admin::mesh_claims::InFlight;
-    use rdm_admin::status_storage::MemoryStatusStorage;
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-unclaimed-resubmit", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -969,7 +966,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+    let rows: Arc<rdm_admin::fabric_storage::MemoryFabricStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();

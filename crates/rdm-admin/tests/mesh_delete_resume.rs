@@ -20,7 +20,7 @@ use rdm_core::status::StatusReply;
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows, RowRefused};
 use rdm_admin::status_rpc::Declared;
-use rdm_admin::status_storage::{MemoryStatusStorage, StatusStorage};
+use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_admin::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_core::status::MeshState;
@@ -712,7 +712,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let mut last = node(FINAL);
     last.config = tier_of(FINAL);
     let storage = Arc::new(MemoryNodesStorage::default());
-    let status = MemoryStatusStorage::default();
+    let status = MemoryMeshStorage::default();
     let declared = Mutex::new(Declared::default());
     let view = Arc::new(RwLock::new(writer_view(std::slice::from_ref(&last), None, Some(fp.clone()))));
     let rows = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), storage.clone());
@@ -738,10 +738,10 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         });
         let stopped = rows.deleted(&last, &deleting).await;
         let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None};
-        let after = mesh_left_rows(Some(&rows), &status, &rdm_admin::storage::MemoryMeshStorage::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
+        let after = mesh_left_rows(Some(&rows), &status, &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = storage.node_row_at(&last.name).await.unwrap();
         let statuses = status.mesh_statuses().await.unwrap();
-        let dead_held = status.mesh_status_held_of("mesh2", &rdm_admin::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
+        let dead_held = status.mesh_status_held("mesh2", &rdm_admin::storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
         // mesh2 created again: its first admin's claim wins over the Deleted row.
         let again = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, None, ClaimFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
@@ -759,8 +759,8 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable at its path.name");
     assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &last.node_id, &last.config), "{row:?}");
-    assert!(dead_held, "the mesh row is Dead among mesh2's own status rows (status/mesh2/, R-MD1)");
-    assert_eq!(statuses.get(&mesh_id), None, "no row of mesh2 among the fabric-primary's own mesh's status rows: {statuses:?}");
+    assert!(dead_held, "the mesh's status is Dead on mesh2 (mesh.storage, R-MD1)");
+    assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Dead), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Dead), "and held as applied");
     match &again {
         Ok(Claimed::Written { row, seeded_from }) => {

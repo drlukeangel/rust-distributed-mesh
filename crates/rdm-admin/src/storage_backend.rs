@@ -1,8 +1,8 @@
 //! The storage backend a node-admin runs on (build.md: "production backends for the imported storage
-//! interfaces"). It opens the six storage boundaries, `fabric.storage` ([`FabricStorage`]),
-//! `meshes` ([`MeshStorage`]), `nodes.storage` ([`NodesStorage`]), `status.storage`
-//! ([`StatusStorage`]), `connections.storage` ([`ConnectionsStorage`]) and the Build journal
-//! ([`LocalBuildLog`]), and every durable read and write of the admin goes through them. The admin's
+//! interfaces"). It opens the five storage boundaries, `fabric.storage` ([`FabricStorage`]),
+//! `mesh.storage` ([`MeshStorage`]), `nodes.storage` ([`NodesStorage`]), `connections.storage`
+//! ([`ConnectionsStorage`]) and the Build journal ([`LocalBuildLog`]), and every durable read and
+//! write of the admin goes through them. A fact lives in the store of the object it describes. The admin's
 //! boot takes its backend beside its `Wiring` (`admin::start_on`); RDM standalone's is
 //! [`FileBackend`] (the `file-backend` feature, the default), the boundaries as files on the fabric's
 //! store root and the admin's data dir. [`MemoryBackend`] holds one process's rows.
@@ -12,7 +12,6 @@ use crate::fabric_handover::FinishWrites;
 use crate::fabric_rounds::RoundActions;
 use crate::fabric_storage::FabricStorage;
 use crate::model::{FabricId, IncarnationId, PathName, ProviderKind};
-use crate::status_storage::StatusStorage;
 use crate::storage::{ConnectionsStorage, MeshStorage, NodeRecord, NodesStorage};
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
@@ -27,7 +26,7 @@ pub struct StorageScope {
     pub data_dir: PathBuf,
     /// The Fabric the admin belongs to.
     pub fabric_id: FabricId,
-    /// The mesh the admin belongs to: its Build lane, its status rows and its members' rows.
+    /// The mesh the admin belongs to: its Build lane and its members' rows.
     pub own_mesh: String,
     /// The incarnation this process writes as.
     pub writer: IncarnationId,
@@ -36,17 +35,16 @@ pub struct StorageScope {
 /// A node's own connections rows, opened once its `path.name` is decided.
 pub type OpenConnections = Arc<dyn Fn(PathName) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
-/// The storage a node-admin runs on, opened by its backend: the six boundaries, what the backend does
+/// The storage a node-admin runs on, opened by its backend: the five boundaries, what the backend does
 /// at a commit-state round, and how it finishes the writes it has issued.
 pub struct StorageBoundaries {
-    /// `fabric.storage`: the Fabric record, its name's claim and the seat moves.
+    /// `fabric.storage`: the Fabric record, its name's claim and its events.
     pub fabric: Arc<dyn FabricStorage>,
-    /// The Mesh rows and each mesh's in-flight row.
+    /// `mesh.storage`: the Mesh rows, each mesh's in-flight row and status facts.
     pub meshes: Arc<dyn MeshStorage>,
-    /// `nodes.storage`: the admin's own row, the runtimes it started, its mesh's Node rows and contacts.
+    /// `nodes.storage`: the admin's own row, the runtimes it started, every mesh's Node rows and
+    /// contacts, and the facts on each birth.
     pub nodes: Arc<dyn NodesStorage>,
-    /// `status.storage`: the status rows of the admin's mesh.
-    pub status: Arc<dyn StatusStorage>,
     /// `connections.storage`: the admin's own connections rows, by its `path.name`.
     pub connections: OpenConnections,
     /// The Build journal: the Build facts, and each attempt's context.
@@ -69,7 +67,7 @@ pub trait StorageBackend: Send + Sync {
     /// The admin's own row as its data dir holds it, read before any boundary opens: an inherited
     /// row names the Fabric and the mesh the boundaries open on (R-FI1). `None` for a new admin.
     async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError>;
-    /// Opens the six boundaries of `scope`; `embedding` is the embedding's own round actions, run
+    /// Opens the five boundaries of `scope`; `embedding` is the embedding's own round actions, run
     /// after the backend's.
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String>;
 }
@@ -113,16 +111,14 @@ impl StorageBackend for FileBackend {
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.writer).await.map_err(|e| e.to_string())?);
-        let status = Arc::new(crate::status_storage::FileStatusStorage::open(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
         let finish_writes: FinishWrites = {
-            let (meshes, nodes, fabric, status) = (meshes.clone(), nodes.clone(), fabric.clone(), status.clone());
+            let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
             Arc::new(move || {
-                let (meshes, nodes, fabric, status) = (meshes.clone(), nodes.clone(), fabric.clone(), status.clone());
+                let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
                 Box::pin(async move {
                     meshes.finish_issued_writes().await;
                     nodes.finish_issued_writes().await;
                     fabric.finish_issued_writes().await;
-                    status.finish_issued_writes().await;
                 })
             })
         };
@@ -133,7 +129,7 @@ impl StorageBackend for FileBackend {
                 Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
-        Ok(StorageBoundaries { fabric, meshes, nodes, status, connections, builds, round_actions, finish_writes, writes_to })
+        Ok(StorageBoundaries { fabric, meshes, nodes, connections, builds, round_actions, finish_writes, writes_to })
     }
 }
 
@@ -171,7 +167,6 @@ impl StorageBackend for MemoryBackend {
             fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             meshes: Arc::new(crate::storage::MemoryMeshStorage::default()),
             nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
-            status: Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh(&scope.own_mesh)),
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             // Nothing is held for a later publication: the embedding's actions alone, or none.

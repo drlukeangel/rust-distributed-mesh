@@ -22,15 +22,15 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 fn request_name(start: bool) -> &'static str { if start { "node.start" } else { "node.stop" } }
 
-fn operation_row(row: &crate::status_storage::NodeDeclaredRow, operation: &DeclaredOperation) -> crate::status_storage::NodeOperationRow {
-    crate::status_storage::NodeOperationRow { node_id: row.node_id.clone(), incarnation_id: row.incarnation_id.clone(), name: row.name.clone(), state: row.state, operation: operation.clone() }
+fn operation_row(row: &crate::storage::NodeDeclaredRow, operation: &DeclaredOperation) -> crate::storage::NodeOperationRow {
+    crate::storage::NodeOperationRow { node_id: row.node_id.clone(), incarnation_id: row.incarnation_id.clone(), name: row.name.clone(), state: row.state, operation: operation.clone() }
 }
 
 /// What this admin applied, by natural key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Declared {
     /// Applied operation effects survive every cycle begin; forgotten only with the exact birth.
-    pub operations: BTreeMap<String, crate::status_storage::NodeOperationRow>,
+    pub operations: BTreeMap<String, crate::storage::NodeOperationRow>,
     /// Per birth `(node id, incarnation)`: the greatest state it declared.
     pub nodes: std::collections::HashMap<(NodeId, IncarnationId), NodeState>,
     /// Per birth held in `nodes`: the path.name it declared at.
@@ -124,7 +124,7 @@ impl Declared {
     /// Fold status rows into what this admin applied: the greatest state per Mesh and per birth,
     /// each Fabric event once, and the path.name each birth declared at. What this admin already
     /// holds stands where it is the greater; nothing is written back.
-    pub fn fold_rows(&mut self, meshes: std::collections::HashMap<MeshId, MeshState>, events: Vec<crate::status_storage::FabricEventRow>, rows: Vec<crate::status_storage::NodeDeclaredRow>) {
+    pub fn fold_rows(&mut self, meshes: std::collections::HashMap<MeshId, MeshState>, events: Vec<crate::fabric_storage::FabricEventRow>, rows: Vec<crate::storage::NodeDeclaredRow>) {
         for (mesh, state) in meshes {
             let held = self.meshes.entry(mesh).or_insert(state);
             *held = (*held).max(state);
@@ -135,23 +135,24 @@ impl Declared {
                 held.push(e.event);
             }
         }
-        for (birth, name) in crate::status_storage::declared_names(&rows) {
+        for (birth, name) in crate::storage::declared_names(&rows) {
             self.names.entry(birth).or_insert(name);
         }
-        for (birth, state) in crate::status_storage::fold_declared(rows) {
+        for (birth, state) in crate::storage::fold_declared(rows) {
             let held = self.nodes.entry(birth).or_insert(state);
             *held = (*held).max(state);
         }
     }
 
-    /// The rows `status` holds, folded ([`Declared::fold_rows`]): what a seat holder rebuilds from.
-    pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage) -> Result<Self, String> {
-        let meshes = status.mesh_statuses().await.map_err(|e| format!("status.storage: {e}"))?;
-        let events = status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))?;
-        let rows = status.node_declared().await.map_err(|e| format!("status.storage: {e}"))?;
+    /// The facts on every mesh, on the fabric and on the births of `mesh`, folded
+    /// ([`Declared::fold_rows`]): what the mesh's primary rebuilds from.
+    pub async fn rehydrate(nodes: &dyn crate::storage::NodesStorage, meshes: &dyn crate::storage::MeshStorage, fabric: &dyn crate::fabric_storage::FabricStorage, mesh: &str) -> Result<Self, String> {
+        let statuses = meshes.mesh_statuses().await.map_err(|e| format!("mesh.storage: {e}"))?;
+        let events = fabric.fabric_events().await.map_err(|e| format!("fabric.storage: {e}"))?;
+        let rows = nodes.node_declared(mesh).await.map_err(|e| format!("nodes.storage: {e}"))?;
         let mut declared = Self::default();
-        declared.fold_rows(meshes, events, rows);
-        for row in status.node_operations().await.map_err(|e| format!("status.storage: {e}"))? {
+        declared.fold_rows(statuses, events, rows);
+        for row in nodes.node_operations(mesh).await.map_err(|e| format!("nodes.storage: {e}"))? {
             declared.operations.insert(row.key(), row);
         }
         Ok(declared)
@@ -161,7 +162,9 @@ impl Declared {
 /// The status rows of this admin's own mesh, which it folds into what it applied when it takes
 /// the mesh's seat.
 pub struct SeatFold {
-    storage: Arc<dyn crate::status_storage::StatusStorage>,
+    nodes: Arc<dyn crate::storage::NodesStorage>,
+    meshes: Arc<dyn crate::storage::MeshStorage>,
+    fabric: Arc<dyn crate::fabric_storage::FabricStorage>,
     mesh: String,
     /// This admin's `path.name`: what the fold span names it by, as every status span does.
     name: crate::model::PathName,
@@ -172,15 +175,20 @@ pub struct SeatFold {
 }
 
 impl SeatFold {
-    /// The rows of `mesh` in `storage`, folded by the admin `name` born as `me`.
-    pub fn new(storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, name: crate::model::PathName, me: NodeId) -> Self {
-        Self { storage, mesh, name, me, folded: Mutex::new(false) }
+    /// The facts on `mesh`'s births, on every mesh and on the fabric, folded by the admin `name`
+    /// born as `me`.
+    pub fn new(nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, fabric: Arc<dyn crate::fabric_storage::FabricStorage>, mesh: String, name: crate::model::PathName, me: NodeId) -> Self {
+        Self { nodes, meshes, fabric, mesh, name, me, folded: Mutex::new(false) }
     }
 
-    /// The status store this fold reads: this admin's own mesh's rows, and another mesh's through
-    /// its `_of` reads.
-    pub fn storage(&self) -> &Arc<dyn crate::status_storage::StatusStorage> {
-        &self.storage
+    /// The fabric store this fold reads the fabric's events from.
+    pub fn fabric(&self) -> &Arc<dyn crate::fabric_storage::FabricStorage> {
+        &self.fabric
+    }
+
+    /// The nodes store this fold reads the facts on its mesh's births from.
+    pub fn nodes(&self) -> &Arc<dyn crate::storage::NodesStorage> {
+        &self.nodes
     }
 
     /// The mesh whose status rows this fold reads.
@@ -224,10 +232,10 @@ impl SeatFold {
             error = tracing::field::Empty,
         );
         let read = async {
-            let meshes = self.storage.mesh_statuses().await.map_err(|e| format!("Mesh status rows of {}: {e}", self.mesh))?;
-            let events = self.storage.fabric_events().await.map_err(|e| format!("Fabric event rows of {}: {e}", self.mesh))?;
-            let rows = self.storage.node_declared().await.map_err(|e| format!("node declared-state rows of {}: {e}", self.mesh))?;
-            let operations = self.storage.node_operations().await.map_err(|e| format!("node operation rows of {}: {e}", self.mesh))?;
+            let meshes = self.meshes.mesh_statuses().await.map_err(|e| format!("Mesh status rows: {e}"))?;
+            let events = self.fabric.fabric_events().await.map_err(|e| format!("Fabric event rows: {e}"))?;
+            let rows = self.nodes.node_declared(&self.mesh).await.map_err(|e| format!("node declared-state rows of {}: {e}", self.mesh))?;
+            let operations = self.nodes.node_operations(&self.mesh).await.map_err(|e| format!("node operation rows of {}: {e}", self.mesh))?;
             Ok::<_, String>((meshes, events, rows, operations))
         };
         match tracing::Instrument::instrument(read, span.clone()).await {
@@ -311,7 +319,7 @@ pub enum MemberStatusReceipt<'a> {
     /// authority: the Pending of its accepted join report, the ReadyForTraffic of its node.started,
     /// the Stopped of its stop, or the state its `DeclareNodeState` names. Its ReadyForTraffic also
     /// ends that exact birth's open restart.
-    Declared(&'a crate::status_storage::NodeDeclaredRow),
+    Declared(&'a crate::storage::NodeDeclaredRow),
     /// `NodeJoined` on the start's command stream (`node.mesh.joined`): the birth's stop, if one is
     /// held, ends, and the birth is held Pending; or, when `already` names the state its declared state
     /// holds in its new cycle (that Pending, or the ReadyForTraffic it declared since), held with that
@@ -393,11 +401,14 @@ pub struct StatusAuthority {
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// What this admin applied.
     pub declared: Arc<Mutex<Declared>>,
-    /// The nodes store: the node rows a config update puts (`UpdateNodeConfig`).
+    /// The nodes store: the node rows a config update puts (`UpdateNodeConfig`), and the facts on
+    /// each birth an applied declaration puts before it is answered.
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
-    /// Where an applied Mesh status, Fabric event or node declared state is a keyed row, put before
-    /// it is answered.
-    pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
+    /// The mesh store: an applied Mesh status is a fact on its mesh, put before it is answered.
+    pub meshes_storage: Arc<dyn crate::storage::MeshStorage>,
+    /// The fabric store: the fabric's events, put by the fabric-primary before it answers and read by
+    /// every other mesh-primary that applies them.
+    pub fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage>,
     /// The mesh ids this admin holds, by mesh name.
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
     /// The births this admin's offline tick watches through durable rows alone (`durable_births`: a
@@ -471,9 +482,9 @@ pub struct StatusAuthority {
 pub enum Effect {
     /// A node's declared-state row: the state its exact birth declared, and the operation that
     /// produced it when one did (i146 Q36).
-    Node(crate::status_storage::NodeDeclaredRow, NodeState, Option<DeclaredOperation>),
-    /// A mesh and the state applied to it.
-    Mesh(MeshId, MeshState),
+    Node(crate::storage::NodeDeclaredRow, NodeState, Option<DeclaredOperation>),
+    /// A mesh and the state applied to it, with the mesh's name when the request carried it.
+    Mesh(MeshId, MeshState, Option<String>),
     /// A fabric event applied.
     Fabric(FabricId, String),
 }
@@ -518,7 +529,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                 None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
             }
             if let Some(operation) = operation {
-                let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
+                let row = crate::storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
                 if declared.operations.contains_key(&operation_row(&row, operation).key()) {
                     return (rdm_core::reply::already_applied(), None);
                 }
@@ -526,13 +537,13 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             let current = declared.node(&subject.node_id, incarnation);
             match transition(current, *state) {
                 Transition::AlreadyApplied if operation.is_some() => {
-                    let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
+                    let row = crate::storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
                     (rdm_core::reply::already_applied(), Some(Effect::Node(row, *state, operation.clone())))
                 }
                 Transition::AlreadyApplied => (rdm_core::reply::already_applied(), None),
                 Transition::Backward { current } => (rdm_core::reply::status::rejected_invalid_node_transition(current), None),
                 Transition::Apply => {
-                    let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
+                    let row = crate::storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
                     (rdm_core::reply::applied(), Some(Effect::Node(row, *state, operation.clone())))
                 }
             }
@@ -576,7 +587,11 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                     return (rdm_core::reply::status::rejected_stale_mesh(held.clone()), None);
                 }
             }
-            apply_mesh(declared, mesh_id, *state)
+            let (decided, effect) = apply_mesh(declared, mesh_id, *state);
+            (decided, effect.map(|e| match e {
+                Effect::Mesh(id, state, _) => Effect::Mesh(id, state, Some(mesh_name.clone())),
+                other => other,
+            }))
         }
         StatusRequest::ApplyFabricEvent { fabric_id, event } => {
             if !me.is_primary {
@@ -601,15 +616,33 @@ pub(crate) fn event_key(e: &FabricEvent) -> String {
     }
 }
 
-/// One commit of a Fabric event among the status rows of this admin's mesh: the keyed row put and
-/// acknowledged, then held as applied once and answered (`Applied` the first time, `AlreadyApplied`
-/// after). A refused put answers `NotReady` naming the store and holds nothing, so the same commit again
-/// is decided afresh. The fabric-primary's own ready-for-traffic row, put as it enters ready-for-traffic
-/// (`crate::fabric_rounds`), and an `ApplyFabricEvent` it sends a mesh primary commit here alike.
-pub(crate) async fn commit_fabric_event(storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
-    if let Err(e) = storage.put_fabric_event(&crate::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.to_string() }).await {
-        return rdm_core::reply::status::not_ready(format!("status.storage refused the Fabric event row: {e}"));
+/// One commit of a Fabric event by its writer, the fabric-primary (states.md, "Who sets each state"):
+/// the keyed fact put on the fabric and acknowledged, then held as applied once and answered
+/// (`Applied` the first time, `AlreadyApplied` after). A refused put answers `NotReady` naming the store
+/// and holds nothing, so the same commit again is decided afresh. The fabric-primary's own
+/// ready-for-traffic fact, put as it enters ready-for-traffic (`crate::fabric_rounds`), and the
+/// `ApplyFabricEvent` it sends its own mesh commit here alike.
+pub(crate) async fn commit_fabric_event(storage: &dyn crate::fabric_storage::FabricStorage, declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
+    if let Err(e) = storage.put_fabric_event(&crate::fabric_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.to_string() }).await {
+        return rdm_core::reply::status::not_ready(format!("fabric.storage refused the Fabric event fact: {e}"));
     }
+    hold_fabric_event(declared, fabric_id, event)
+}
+
+/// An `ApplyFabricEvent` at a mesh-primary that is not the fabric-primary: the fact is the
+/// fabric-primary's to write, and is held as applied once the fabric holds it (a point read of its
+/// key); until then the answer is `NotReady` naming the store, and nothing is held or written.
+pub(crate) async fn hold_written_fabric_event(storage: &dyn crate::fabric_storage::FabricStorage, declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
+    let row = crate::fabric_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.to_string() };
+    match storage.fabric_events().await {
+        Ok(rows) if rows.contains(&row) => hold_fabric_event(declared, fabric_id, event),
+        Ok(_) => rdm_core::reply::status::not_ready(format!("fabric.storage does not hold the Fabric event fact {event} its writer, the fabric-primary, puts first")),
+        Err(e) => rdm_core::reply::status::not_ready(format!("fabric.storage could not be read for the Fabric event fact {event}: {e}")),
+    }
+}
+
+/// The Fabric event `event` held as applied: `Applied` the first time, `AlreadyApplied` after.
+fn hold_fabric_event(declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
     let mut declared = declared.lock().unwrap();
     let events = declared.fabric.entry(fabric_id.clone()).or_default();
     if events.iter().any(|e| e == event) {
@@ -624,13 +657,13 @@ pub(crate) async fn commit_fabric_event(storage: &dyn crate::status_storage::Sta
 /// acknowledged, then held as applied and answered. A refused put answers `NotReady` naming the
 /// store and holds nothing, so the same commit again is decided afresh; the commit decides again
 /// over what is held after the put, so two commits of one natural key racing answer `Applied` once.
-pub(crate) async fn commit_mesh_state(storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<Declared>, mesh_id: &MeshId, state: MeshState) -> StatusReply {
+pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage, declared: &Mutex<Declared>, mesh: &str, mesh_id: &MeshId, state: MeshState) -> StatusReply {
     let (decided, effect) = apply_mesh(&declared.lock().unwrap(), mesh_id, state);
     if effect.is_none() {
         return decided;
     }
-    if let Err(e) = storage.put_mesh_status(&crate::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state }).await {
-        return rdm_core::reply::status::not_ready(format!("status.storage refused the Mesh status row {mesh_id}-{state:?}: {e}"));
+    if let Err(e) = storage.put_mesh_status(mesh, &crate::storage::MeshStatusRow { mesh_id: mesh_id.clone(), state }).await {
+        return rdm_core::reply::status::not_ready(format!("mesh.storage refused the Mesh status fact {mesh_id}-{state:?} of {mesh}: {e}"));
     }
     let mut declared = declared.lock().unwrap();
     match apply_mesh(&declared, mesh_id, state) {
@@ -646,7 +679,7 @@ fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (Statu
     match transition(declared.meshes.get(mesh_id).copied(), state) {
         Transition::AlreadyApplied => (rdm_core::reply::already_applied(), None),
         Transition::Backward { current } => (rdm_core::reply::status::rejected_invalid_mesh_transition(current), None),
-        Transition::Apply => (rdm_core::reply::applied(), Some(Effect::Mesh(mesh_id.clone(), state))),
+        Transition::Apply => (rdm_core::reply::applied(), Some(Effect::Mesh(mesh_id.clone(), state, None))),
     }
 }
 
@@ -695,7 +728,7 @@ impl StatusAuthority {
             (declared.connections_deleted.get(&birth).cloned(), declared.meshes_left.contains(&birth))
         };
         let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-        let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+        let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
         crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, first_ready, req).await
     }
 
@@ -797,13 +830,13 @@ impl StatusAuthority {
             }
             StatusRequest::UpdateName { .. } => return self.update_name(req).await,
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
-                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), first_ready, req).await;
             }
             StatusRequest::UpdateNodeConfig { node_id, .. } => {
                 // A caller's config put, like every property command, is refused until the initial fabric
                 // has first reached ready-for-traffic (proposal node-properties-own-commands.md §1).
-                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
                 if let Some(refused) = crate::node_properties::refused_before_first_ready(&me_name, &self.topology, first_ready, "node.config.update", node_id, &tracing::Span::current()).await {
                     return refused;
                 }
@@ -821,7 +854,7 @@ impl StatusAuthority {
                             None => Err(format!("{me_name} holds no rounds yet: the current Build is not read")),
                         };
                         {
-                            let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), &planned, select).await;
+                            let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.nodes_storage), &planned, select).await;
                             if let (Some(channels), StatusReply::Nodes { nodes }) = (&self.app_channels, &mut answer) {
                                 for n in nodes {
                                     let sets = if n.node_id == self.node_id {
@@ -847,7 +880,7 @@ impl StatusAuthority {
                     // a read that fails is named, never answered as no Build.
                     return match self.builds.current_build().await {
                         Ok(current) => {
-                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage, self.certs.as_ref().and_then(|c| c.now_ms())).await
+                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.nodes_storage, self.certs.as_ref().and_then(|c| c.now_ms())).await
                         }
                         Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
@@ -993,20 +1026,23 @@ impl StatusAuthority {
     /// a birth of this admin's own mesh among its own rows, and a birth of another mesh (the
     /// fabric-primary accepting the join report of a birth of a mesh with no primary, Q97) among that
     /// mesh's rows, where that mesh's primary and every reader of it read them.
-    async fn put_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-        if row.name.mesh == self.me.mesh {
-            return self.status_storage.put_node_declared(row).await;
+    async fn put_declared(&self, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+        self.nodes_storage.put_node_declared(&row.name.mesh, row).await
+    }
+
+    /// The name of the mesh carrying `mesh_id`: a mesh this admin's Build created, else one its view
+    /// holds.
+    async fn mesh_name_of(&self, mesh_id: &MeshId) -> Option<String> {
+        if let Some((name, _)) = (self.mesh_ids)().into_iter().find(|(_, id)| id == mesh_id) {
+            return Some(name);
         }
-        self.status_storage.put_node_declared_of(&row.name.mesh, row).await
+        self.topology.read().await.meshes.iter().find(|m| m.id.as_ref() == Some(mesh_id)).map(|m| m.name.clone())
     }
 
     /// Tombstone every declared-state key of the birth `(node_id, birth)` among the status rows of
     /// `mesh`, the birth's mesh, where [`Self::put_declared`] put them.
     async fn remove_declared(&self, mesh: &str, node_id: &NodeId, birth: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-        if mesh == self.me.mesh {
-            return self.status_storage.remove_node_declared(node_id, birth).await;
-        }
-        self.status_storage.remove_node_declared_of(mesh, node_id, birth).await
+        self.nodes_storage.remove_node_declared(mesh, node_id, birth).await
     }
 
     /// A start begins `birth`'s next cycle (node-start.md): what it declared before its stop
@@ -1073,7 +1109,7 @@ impl StatusAuthority {
             return rdm_core::reply::already_applied();
         }
         self.begin_cycle_held(node_id, name, birth).await;
-        let row = crate::status_storage::NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: birth.clone(), name: name.clone(), state: NodeState::Pending };
+        let row = crate::storage::NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: birth.clone(), name: name.clone(), state: NodeState::Pending };
         self.commit_held(Effect::Node(row, NodeState::Pending, None)).await
     }
 
@@ -1132,7 +1168,7 @@ impl StatusAuthority {
             let operations: Vec<_> = self.declared.lock().unwrap().operations.values().filter(|r| r.node_id == node_id && r.incarnation_id == incarnation).cloned().collect();
             let mut failed = false;
             for row in &operations {
-                if self.status_storage.remove_node_operation(row).await.is_err() { failed = true; break; }
+                if self.nodes_storage.remove_node_operation(&row.name.mesh, row).await.is_err() { failed = true; break; }
             }
             if failed { continue; }
             self.declared.lock().unwrap().operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);
@@ -1216,7 +1252,7 @@ impl StatusAuthority {
                     // cannot publish stopped between the seen check and setting stopping.
                     let _admission = self.operation_effects.write().await;
                     accepted = true;
-                    let declared = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Stopped };
+                    let declared = crate::storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Stopped };
                     let identity = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
                     let completed = self.declared.lock().unwrap().operations.contains_key(&operation_row(&declared, &identity).key());
                     if !start && !completed {
@@ -1239,7 +1275,7 @@ impl StatusAuthority {
                     Some(match closure.clone() { Some(receipt) => A::Stopped { receipt }, None => A::Indeterminate { code: Code::Internal, reason: "NodeStopped without StopConnectionsDeleted".into() } })
                 }
                 R::NodeStarted if start => {
-                    let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: incarnation.clone(), name: node.name.clone(), state: NodeState::ReadyForTraffic };
+                    let row = crate::storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: incarnation.clone(), name: node.name.clone(), state: NodeState::ReadyForTraffic };
                     let operation = DeclaredOperation { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() };
                     let applied = self.persist_then_commit(Effect::Node(row, NodeState::ReadyForTraffic, Some(operation))).await;
                     Some(if matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { A::Started {} } else { A::StartFailed { code: <Status as NodeProtocol>::classify_reply(&applied).code(), step: "node.started".into(), reason: format!("ReadyForTraffic not recorded: {applied:?}") } })
@@ -1465,11 +1501,23 @@ impl StatusAuthority {
                 return rdm_core::reply::status::rejected_invalid_node_transition(current);
             }
         }
-        if let Effect::Mesh(mesh_id, state) = &effect {
-            return commit_mesh_state(&*self.status_storage, &self.declared, mesh_id, *state).await;
+        if let Effect::Mesh(mesh_id, state, named) = &effect {
+            let found = match named {
+                Some(name) => Some(name.clone()),
+                None => self.mesh_name_of(mesh_id).await,
+            };
+            let Some(mesh) = found else {
+                return rdm_core::reply::status::not_ready(format!("no mesh this admin holds carries the id {mesh_id}: its status has no mesh to be put on"));
+            };
+            return commit_mesh_state(&*self.meshes_storage, &self.declared, &mesh, mesh_id, *state).await;
         }
         if let Effect::Fabric(fabric_id, event) = &effect {
-            let reply = commit_fabric_event(&*self.status_storage, &self.declared, fabric_id, event).await;
+            let writes = self.topology.read().await.fabric_primary().is_some_and(|f| f.node_id == self.node_id);
+            let reply = if writes {
+                commit_fabric_event(&*self.fabric_storage, &self.declared, fabric_id, event).await
+            } else {
+                hold_written_fabric_event(&*self.fabric_storage, &self.declared, fabric_id, event).await
+            };
             // The row of the ready-for-traffic event is the durable fact that the fabric first reached
             // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
             if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) && *event == event_key(&FabricEvent::ReadyForTraffic) {
@@ -1478,7 +1526,7 @@ impl StatusAuthority {
             return reply;
         }
         let put = match &effect {
-            Effect::Node(row, ..) => self.put_declared(row).await.map_err(|e| format!("status.storage refused the node declared-state row: {e}")),
+            Effect::Node(row, ..) => self.put_declared(row).await.map_err(|e| format!("nodes.storage refused the node declared-state fact: {e}")),
             Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
             Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
         };
@@ -1486,8 +1534,8 @@ impl StatusAuthority {
             return rdm_core::reply::status::not_ready(reason);
         }
         if let Some(row) = &operation {
-            if let Err(error) = self.status_storage.put_node_operation(row).await {
-                return rdm_core::reply::status::not_ready(format!("status.storage refused the applied operation: {error}"));
+            if let Err(error) = self.nodes_storage.put_node_operation(&row.name.mesh, row).await {
+                return rdm_core::reply::status::not_ready(format!("nodes.storage refused the applied operation: {error}"));
             }
         }
         let reply = {
@@ -1541,7 +1589,7 @@ impl StatusAuthority {
     /// executor (node-stop.md steps 4-5): its Leaving is recorded in the same declared-state row the
     /// birth's own declaration names, so NodeStopped is published once, from whichever arrived first.
     pub async fn stop_received(&self, op: &rdm_core::LifecycleOp) -> StatusReply {
-        let row = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Stopped };
+        let row = crate::storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Stopped };
         let operation = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
         let reply = self.persist_then_commit(Effect::Node(row, NodeState::Stopped, Some(operation))).await;
         tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, outcome = reply.name(), "otel.kind" = "internal")
@@ -1910,7 +1958,7 @@ impl CarryEnd {
 pub type AuthoritySlot = Arc<OnceLock<Arc<StatusAuthority>>>;
 
 /// Publishes NodeStopped for the birth of `row` stopped by `operation` (i146 Q29, Q36).
-pub type StoppedPublisher = Arc<dyn Fn(crate::status_storage::NodeDeclaredRow, DeclaredOperation) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+pub type StoppedPublisher = Arc<dyn Fn(crate::storage::NodeDeclaredRow, DeclaredOperation) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 #[allow(dead_code)]
 fn _assert_send_sync() {
@@ -1931,8 +1979,8 @@ mod tests {
     }
 
     /// The silence status the mesh primary stored for `node` at `incarnation`, as a reader folds it.
-    async fn stored_silence(status: &dyn crate::status_storage::StatusStorage, node: &crate::model::Node) -> Option<crate::model::NodeStatus> {
-        status.node_silences().await.unwrap().into_iter().find(|c| c.node_id == node.node_id && Some(&c.incarnation_id) == node.incarnation_id.as_ref()).and_then(|c| c.status)
+    async fn stored_silence(status: &dyn crate::storage::NodesStorage, node: &crate::model::Node) -> Option<crate::model::NodeStatus> {
+        status.node_silences(&node.mesh).await.unwrap().into_iter().find(|c| c.node_id == node.node_id && Some(&c.incarnation_id) == node.incarnation_id.as_ref()).and_then(|c| c.status)
     }
 
     /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): a node's declared state and the silence
@@ -1956,7 +2004,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![admin.clone(), rpc.clone()],
         }));
-        let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
@@ -1969,7 +2017,8 @@ mod tests {
             fabric_id: topology.read().await.fabric.id.clone(),
             topology: topology.clone(),
             declared: Arc::new(Mutex::new(Declared::default())),
-            status_storage: status.clone(),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -1978,7 +2027,7 @@ mod tests {
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            nodes_storage: status.clone(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -2034,7 +2083,8 @@ mod tests {
             fabric_id: topology.read().await.fabric.id.clone(),
             topology: topology.clone(),
             declared: Arc::new(Mutex::new(Declared::default())),
-            status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -2056,7 +2106,7 @@ mod tests {
         };
         let published: Arc<Mutex<Vec<(NodeId, String, u32)>>> = Arc::default();
         let into = published.clone();
-        let publisher: StoppedPublisher = Arc::new(move |row: crate::status_storage::NodeDeclaredRow, op: DeclaredOperation| {
+        let publisher: StoppedPublisher = Arc::new(move |row: crate::storage::NodeDeclaredRow, op: DeclaredOperation| {
             into.lock().unwrap().push((row.node_id, op.operation, op.attempt));
             Box::pin(async {})
         });
@@ -2090,13 +2140,13 @@ mod tests {
             vec![(declared_first.node_id.clone(), stop.operation.clone(), 2), (stream_first.node_id.clone(), stop2.operation.clone(), 2)],
             "NodeStopped once per stop, from whichever reached the mesh-primary first, and from nothing else"
         );
-        let recovered = Declared::rehydrate(&*authority.status_storage).await.unwrap();
+        let recovered = Declared::rehydrate(&*authority.nodes_storage, &*authority.meshes_storage, &*authority.fabric_storage, &authority.me.mesh).await.unwrap();
         assert_eq!(recovered.operations, authority.declared.lock().unwrap().operations, "Q49: the successor folds every applied operation, including the previous cycle's stop");
 
     }
 
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
-    fn authority_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::status_storage::MemoryStatusStorage>) -> StatusAuthority {
+    fn authority_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::storage::MemoryNodesStorage>) -> StatusAuthority {
         StatusAuthority {
             certs: None,
             app_channels: None,
@@ -2109,7 +2159,8 @@ mod tests {
             fabric_id,
             topology,
             declared: Arc::new(Mutex::new(Declared::default())),
-            status_storage: status,
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -2118,7 +2169,7 @@ mod tests {
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            nodes_storage: status,
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -2151,20 +2202,20 @@ mod tests {
         let fabric_id = FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), own.clone(), other.clone()] }));
-        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1"));
+        let status = Arc::new(crate::storage::MemoryNodesStorage::default());
         let authority = authority_with_store(&admin, topology, fabric_id, status.clone());
         for n in [&own, &other] {
             assert_eq!(authority.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
         }
-        let births = |rows: Vec<crate::status_storage::NodeDeclaredRow>| rows.into_iter().map(|r| (r.node_id, r.state)).collect::<Vec<_>>();
-        let own_rows = crate::status_storage::StatusStorage::node_declared(&*status).await.unwrap();
+        let births = |rows: Vec<crate::storage::NodeDeclaredRow>| rows.into_iter().map(|r| (r.node_id, r.state)).collect::<Vec<_>>();
+        let own_rows = crate::storage::NodesStorage::node_declared(&*status, "mesh1").await.unwrap();
         assert_eq!(births(own_rows.clone()), vec![(own.node_id.clone(), NodeState::Pending)], "mesh1's rows hold its own birth's Pending and nothing of mesh2's: {own_rows:?}");
-        assert_eq!(births(status.node_declared_of("mesh2")), vec![(other.node_id.clone(), NodeState::Pending)], "mesh2's birth's Pending is among mesh2's rows");
+        assert_eq!(births(crate::storage::NodesStorage::node_declared(&*status, "mesh2").await.unwrap()), vec![(other.node_id.clone(), NodeState::Pending)], "mesh2's birth's Pending is among mesh2's rows");
         for n in [&own, &other] {
             authority.begin_cycle(n, n.incarnation_id.as_ref().unwrap()).await;
         }
-        assert!(crate::status_storage::StatusStorage::node_declared(&*status).await.unwrap().is_empty(), "the own birth's begun cycle tombstones its row among mesh1's rows");
-        assert!(status.node_declared_of("mesh2").is_empty(), "mesh2's birth's begun cycle tombstones its row among mesh2's rows");
+        assert!(crate::storage::NodesStorage::node_declared(&*status, "mesh1").await.unwrap().is_empty(), "the own birth's begun cycle tombstones its row among mesh1's rows");
+        assert!(crate::storage::NodesStorage::node_declared(&*status, "mesh2").await.unwrap().is_empty(), "mesh2's birth's begun cycle tombstones its row among mesh2's rows");
     }
 
     /// CONTRACT (Q99, Q97; node-mesh-join.md step 10: the mesh-primary "records and publishes the node
@@ -2190,13 +2241,13 @@ mod tests {
         let fabric_id = FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
-        let status = Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh("mesh1"));
+        let status = Arc::new(crate::storage::MemoryNodesStorage::default());
         let authority = Arc::new(authority_with_store(&admin, topology, fabric_id.clone(), status.clone()));
         // The join door, its accepted report's Pending recorded by this authority as boot wires it.
         let replies: Arc<Mutex<Vec<R>>> = Arc::default();
         let joins = Arc::new(crate::join::Joins::default());
         let door = crate::join::JoinDoor {
-            status_storage: None,
+            nodes: None,
             me: admin.name.clone(),
             joins: joins.clone(),
             answer: Arc::new(|| {
@@ -2281,7 +2332,7 @@ mod tests {
         let pending_rows = || {
             let status = status.clone();
             async move {
-                let rows = crate::status_storage::StatusStorage::node_declared(&*status).await.unwrap();
+                let rows = crate::storage::NodesStorage::node_declared(&*status, "mesh1").await.unwrap();
                 rows.into_iter().map(|r| (r.node_id, r.incarnation_id, r.state)).collect::<Vec<_>>()
             }
         };
@@ -2314,121 +2365,120 @@ mod tests {
         assert_eq!(serve("a retry of the next commanded join").await, R::AlreadyApplied, "a retry of the next commanded join belongs to its Pending");
     }
 
-    /// A status store whose `Leaving` declared-state put returns only once the `ReadyForTraffic`
+    /// A nodes store whose `Leaving` declared-state put returns only once the `ReadyForTraffic`
     /// put for the same birth has landed: two declarations decided against the same held state,
     /// their puts landing Leaving then ReadyForTraffic.
     #[derive(Default)]
     struct RacingPuts {
-        inner: crate::status_storage::MemoryStatusStorage,
+        inner: crate::storage::MemoryNodesStorage,
         ready_landed: tokio::sync::Notify,
     }
 
     #[async_trait::async_trait]
-    impl crate::status_storage::StatusStorage for RacingPuts {
-        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status(row).await
+    impl crate::storage::NodesStorage for RacingPuts {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_runtime(row).await
         }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, crate::storage_error::StorageError> {
-            self.inner.mesh_statuses().await
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtimes().await
         }
-        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_fabric_event(row).await
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtime(node_id, incarnation).await
         }
-        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events().await
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.inner.own().await
         }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events_of(mesh).await
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_own(record).await
         }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.inner.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
-
-        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(row).await?;
-            match row.state {
-                NodeState::Stopped => self.ready_landed.notified().await,
-                NodeState::ReadyForTraffic => self.ready_landed.notify_one(),
-                _ => {}
-            }
-            Ok(())
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.inner.contacts().await
         }
-        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(node_id, incarnation_id).await
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_contact(record).await
         }
-        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared_of(mesh, row).await?;
-            match row.state {
-                NodeState::Stopped => self.ready_landed.notified().await,
-                NodeState::ReadyForTraffic => self.ready_landed.notify_one(),
-                _ => {}
-            }
-            Ok(())
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_contact(mesh, node_id).await
         }
-        async fn remove_node_declared_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_row(row).await
         }
-        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared().await
+        async fn node_row_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_row_at(name).await
         }
-        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(row).await
+        async fn node_row_name(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<Option<crate::model::PathName>, crate::storage_error::StorageError> {
+            self.inner.node_row_name(mesh, node_id).await
         }
-        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences().await
+        async fn remove_node_row(&self, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_row(name).await
         }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.mesh_status_held_of(mesh, row).await
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.tagged(label).await
         }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status_of(mesh, row).await
+        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
         }
-        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs_of(mesh).await
+        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
+            self.inner.node_declared(mesh).await
         }
-        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_of(mesh, row).await
+        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_operation(mesh, row).await
         }
-        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.node_cert_receipts_of(mesh).await
+        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
+            self.inner.node_operations(mesh).await
         }
-        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_receipt_of(mesh, row).await
+        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_operation(mesh, row).await
         }
-        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuers_of(mesh).await
+        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_silence(mesh, row).await
         }
-        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_of(mesh, row).await
+        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
+            self.inner.node_silences(mesh).await
         }
-        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuer_receipts_of(mesh).await
+        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
         }
-        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_lost_at(mesh, name).await
         }
-        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost_of(mesh, row).await
+        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_lost(mesh, row).await
         }
-        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
         }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_unreadable_at(mesh, name).await
         }
-        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_unreadable(mesh, row).await
         }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
         }
-}
+        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.inner.node_certs(mesh).await
+        }
+        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert(mesh, row).await
+        }
+        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
+            self.inner.signing_certs(mesh).await
+        }
+        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_signing_cert(mesh, row).await
+        }
+        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_declared(mesh, row).await?;
+            match row.state {
+                NodeState::Stopped => self.ready_landed.notified().await,
+                NodeState::ReadyForTraffic => self.ready_landed.notify_one(),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
 
     /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): two declarations of one birth decided
     /// against the same held state both put their row before either is committed. Whatever order
@@ -2462,7 +2512,8 @@ mod tests {
             fabric_id: topology.read().await.fabric.id.clone(),
             topology: topology.clone(),
             declared: Arc::new(Mutex::new(Declared::default())),
-            status_storage: status.clone(),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -2471,7 +2522,7 @@ mod tests {
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            nodes_storage: status.clone(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -2489,7 +2540,7 @@ mod tests {
         assert_eq!((a, b), (R::Applied, R::Applied), "both decided forward from the same held state");
         let held = authority.declared.lock().unwrap().node(&rpc.node_id, &birth);
         assert_eq!(held, Some(NodeState::Stopped), "memory holds the greater state");
-        let rehydrated = Declared::rehydrate(&*status).await.unwrap();
+        let rehydrated = Declared::rehydrate(&*status, &*authority.meshes_storage, &*authority.fabric_storage, "mesh1").await.unwrap();
         assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the rows back to a state behind the one it held");
     }
 
@@ -2529,7 +2580,8 @@ mod tests {
             topology: Arc::new(tokio::sync::RwLock::new(view)),
             declared: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
-            status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Default::default(),
@@ -2877,7 +2929,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![admin.clone(), restarted.clone(), deleted.clone(), standing.clone()],
         }));
-        let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
@@ -2890,7 +2942,8 @@ mod tests {
             fabric_id: topology.read().await.fabric.id.clone(),
             topology: topology.clone(),
             declared: Arc::new(Mutex::new(Declared::default())),
-            status_storage: status.clone(),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -2899,7 +2952,7 @@ mod tests {
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            nodes_storage: status.clone(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -2942,14 +2995,14 @@ mod tests {
         }
         assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "retired".to_string())], "the restarted node's old birth is retired for its new incarnation");
         assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "retired".to_string())], "the deleted node's birth is retired for its deletion");
-        use crate::status_storage::StatusStorage as _;
-        let rows: Vec<String> = status.node_declared().await.unwrap().into_iter().map(|r| r.node_id.to_string()).collect();
+        use crate::storage::NodesStorage as _;
+        let rows: Vec<String> = status.node_declared("mesh1").await.unwrap().into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the book still holds keeps its declared-state row");
         let held = authority.declared.lock().unwrap().clone();
         assert_eq!(held.node(&restarted.node_id, restarted.incarnation_id.as_ref().unwrap()), None, "the restarted node's old birth is forgotten");
         assert_eq!(held.node(&deleted.node_id, deleted.incarnation_id.as_ref().unwrap()), None, "the deleted birth is forgotten");
         assert_eq!(held.node(&standing.node_id, standing.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the held birth keeps its state");
-        assert_eq!(Declared::rehydrate(&*status).await.unwrap().nodes.len(), 1, "a restarted authority folds only the held birth back");
+        assert_eq!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.len(), 1, "a restarted authority folds only the held birth back");
     }
 
     /// CONTRACT (node-recovery.md "Steps": "node.create at the same path.name", "New: node.id"): a
@@ -2975,7 +3028,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![admin.clone(), exited.clone()],
         }));
-        let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             certs: None,
             app_channels: None,
@@ -2988,7 +3041,8 @@ mod tests {
             fabric_id: topology.read().await.fabric.id.clone(),
             topology: topology.clone(),
             declared: Arc::new(Mutex::new(Declared::default())),
-            status_storage: status.clone(),
+            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
+            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -2997,7 +3051,7 @@ mod tests {
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            nodes_storage: status.clone(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -3030,9 +3084,9 @@ mod tests {
             vec![(exited.node_id.to_string(), recovered.node_id.to_string(), "retired".to_string())],
             "the exited birth is retired for the new node at its path"
         );
-        use crate::status_storage::StatusStorage as _;
-        assert!(status.node_declared().await.unwrap().is_empty(), "no declared-state row of the exited birth is left");
+        use crate::storage::NodesStorage as _;
+        assert!(status.node_declared("mesh1").await.unwrap().is_empty(), "no declared-state row of the exited birth is left");
         assert_eq!(authority.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
-        assert!(Declared::rehydrate(&*status).await.unwrap().nodes.is_empty(), "a restarted authority folds nothing of it back");
+        assert!(Declared::rehydrate(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.unwrap().nodes.is_empty(), "a restarted authority folds nothing of it back");
     }
 }

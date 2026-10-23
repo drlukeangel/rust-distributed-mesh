@@ -13,7 +13,6 @@ use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind};
 use rdm_admin::model::{Fabric, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::status_rpc::{Declared, StatusAuthority};
-use rdm_admin::status_storage::{MemoryStatusStorage, StatusStorage};
 use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
@@ -53,7 +52,7 @@ struct Rig {
     _router: Router,
     resolved: ResolvedNode,
     authority: Arc<StatusAuthority>,
-    storage: Arc<MemoryStatusStorage>,
+    storage: Arc<MemoryNodesStorage>,
     /// The nodes store: the node rows the fabric-primary puts for a config update.
     nodes: Arc<MemoryNodesStorage>,
     topology: Arc<tokio::sync::RwLock<Topology>>,
@@ -115,6 +114,63 @@ impl NodesStorage for Rows {
     async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
         self.inner.tagged(label).await
     }
+    async fn put_node_declared(&self, mesh: &str, row: &rdm_admin::storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_declared(mesh, row).await
+    }
+    async fn remove_node_declared(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
+    }
+    async fn node_declared(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_declared(mesh).await
+    }
+    async fn put_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_operation(mesh, row).await
+    }
+    async fn node_operations(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_operations(mesh).await
+    }
+    async fn remove_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node_operation(mesh, row).await
+    }
+    async fn put_node_silence(&self, mesh: &str, row: &rdm_admin::storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_silence(mesh, row).await
+    }
+    async fn node_silences(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_silences(mesh).await
+    }
+    async fn node_data_dir_lost(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_lost_at(mesh, name).await
+    }
+    async fn put_node_data_dir_lost(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_data_dir_lost(mesh, row).await
+    }
+    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_unreadable_at(mesh, name).await
+    }
+    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_data_dir_unreadable(mesh, row).await
+    }
+    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
+    }
+    async fn node_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_certs(mesh).await
+    }
+    async fn put_node_cert(&self, mesh: &str, row: &rdm_admin::storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_cert(mesh, row).await
+    }
+    async fn signing_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::SigningCertRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.signing_certs(mesh).await
+    }
+    async fn put_signing_cert(&self, mesh: &str, row: &rdm_admin::storage::SigningCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_signing_cert(mesh, row).await
+    }
 }
 
 impl Rig {
@@ -144,8 +200,8 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         nodes,
     }));
     let fabric_id = topology.read().await.fabric.id.clone();
-    let storage = Arc::new(MemoryStatusStorage::default());
     let nodes = Arc::new(MemoryNodesStorage::default());
+    let storage = nodes.clone();
     let refuse_release = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (m1id, m2id) = (MeshId::mint(), MeshId::mint());
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
@@ -162,7 +218,8 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         fabric_id,
         topology: topology.clone(),
         declared: Arc::new(Mutex::new(Declared::default())),
-        status_storage: storage.clone(),
+        meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+        fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
         nodes_storage: Arc::new(Rows { inner: nodes.clone(), refuse_release: refuse_release.clone() }),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
@@ -241,7 +298,7 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     let rpc1 = &b["rpc1"];
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
     // Applied is on the subject's row before it was answered.
-    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rig.storage.node_declared("mesh1").await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!(row.state, NodeState::ReadyForTraffic);
     assert_eq!(row.incarnation_id, rpc1.node.incarnation_id.clone().unwrap());
     // The same natural key again: one logical event.
@@ -302,7 +359,7 @@ async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_
     assert!(rig.topology.read().await.births().all(|n| n.endpoint_id != stranger.node.endpoint_id), "the stranger is in no birth of the view");
     // A member's declaration is decided for that member: Applied, on its row first.
     assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
-    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rig.storage.node_declared("mesh1").await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!((row.state, row.name.clone()), (NodeState::ReadyForTraffic, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
     // A node-admin's declaration reaches the fabric seat this admin holds.
     assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
@@ -362,7 +419,7 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.authority.declared.lock().unwrap().nodes.is_empty());
-    assert!(rig.storage.node_declared().await.unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
+    assert!(rig.storage.node_declared("mesh1").await.unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
@@ -407,7 +464,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 2, "the lost call and the retry, nothing replayed");
-    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rig.storage.node_declared("mesh1").await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!(row.state, NodeState::ReadyForTraffic);
 }
 
@@ -696,6 +753,63 @@ impl NodesStorage for RefusingRows {
     }
     async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
         self.0.tagged(label).await
+    }
+    async fn put_node_declared(&self, mesh: &str, row: &rdm_admin::storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node_declared(mesh, row).await
+    }
+    async fn remove_node_declared(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.remove_node_declared(mesh, node_id, incarnation_id).await
+    }
+    async fn node_declared(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_declared(mesh).await
+    }
+    async fn put_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node_operation(mesh, row).await
+    }
+    async fn node_operations(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_operations(mesh).await
+    }
+    async fn remove_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.remove_node_operation(mesh, row).await
+    }
+    async fn put_node_silence(&self, mesh: &str, row: &rdm_admin::storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node_silence(mesh, row).await
+    }
+    async fn node_silences(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_silences(mesh).await
+    }
+    async fn node_data_dir_lost(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_data_dir_lost(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_data_dir_lost_at(mesh, name).await
+    }
+    async fn put_node_data_dir_lost(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node_data_dir_lost(mesh, row).await
+    }
+    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_data_dir_unreadable_at(mesh, name).await
+    }
+    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node_data_dir_unreadable(mesh, row).await
+    }
+    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
+    }
+    async fn node_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_certs(mesh).await
+    }
+    async fn put_node_cert(&self, mesh: &str, row: &rdm_admin::storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node_cert(mesh, row).await
+    }
+    async fn signing_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::SigningCertRow>, rdm_admin::storage_error::StorageError> {
+        self.0.signing_certs(mesh).await
+    }
+    async fn put_signing_cert(&self, mesh: &str, row: &rdm_admin::storage::SigningCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_signing_cert(mesh, row).await
     }
 }
 
@@ -1843,7 +1957,7 @@ fn a_node_name_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_d
         let _node = left_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::StateCommit;
         let fabric_id = rig.topology.read().await.fabric.id.clone();
-        rig.storage.put_fabric_event(&rdm_admin::status_storage::FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
+        rdm_admin::fabric_storage::FabricStorage::put_fabric_event(&*rig.authority.fabric_storage, &rdm_admin::fabric_storage::FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "decided on the ready row on the root");
     });
@@ -2084,7 +2198,8 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 fabric_id: view.fabric.id.clone(),
                 topology: Arc::new(tokio::sync::RwLock::new(view)),
                 declared: Arc::new(Mutex::new(Declared::default())),
-                status_storage: Arc::new(MemoryStatusStorage::default()),
+                meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
+                fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
                 nodes_storage: Arc::new(MemoryNodesStorage::default()),
                 mesh_ids: Arc::new(BTreeMap::new),
                 durable: Default::default(),
@@ -2367,8 +2482,8 @@ async fn a_never_sent_stop_or_start_writes_no_lifecycle_state() {
         let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.{}:{}", if start { "start" } else { "stop" }, subject.name) };
         assert!(matches!(rig.authority.carry_lifecycle(subject, start, &ctx).await, CommandAdmission::NotSent { .. }));
         assert_eq!(*rig.authority.declared.lock().unwrap(), before);
-        assert!(rig.storage.node_declared().await.unwrap().is_empty());
-        assert!(rig.storage.node_operations().await.unwrap().is_empty());
+        assert!(rig.storage.node_declared("mesh1").await.unwrap().is_empty());
+        assert!(rig.storage.node_operations("mesh1").await.unwrap().is_empty());
     }
 }
 
@@ -2383,7 +2498,7 @@ async fn status_stop_and_start_positions_are_refused_by_name_without_execution()
         let result = call(&rig, subject, &request).await;
         assert!(matches!(reply(&result), StatusReply::RejectedUnmatchedCompletion { expected, reported, .. } if expected.contains("reserved") && reported.contains(request.op())), "{result:?}");
         assert_eq!(*rig.authority.declared.lock().unwrap(), before);
-        assert!(rig.storage.node_declared().await.unwrap().is_empty());
+        assert!(rig.storage.node_declared("mesh1").await.unwrap().is_empty());
     }
 }
 
@@ -2424,7 +2539,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         let (authority, target) = (rig.authority.clone(), subject.clone());
         let call = tokio::spawn(async move { authority.carry_lifecycle(&target, start, &ctx).await });
         tokio::time::timeout(Duration::from_secs(5), arrived.notified()).await.unwrap();
-        assert!(rig.storage.node_declared().await.unwrap().is_empty(), "no state before CommandAccepted");
+        assert!(rig.storage.node_declared("mesh1").await.unwrap().is_empty(), "no state before CommandAccepted");
         admit.notify_one();
         if !fail {
             tokio::time::timeout(Duration::from_secs(5), progressed.notified()).await.unwrap();
@@ -2438,12 +2553,12 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         let result = tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap();
         if fail {
             assert!(matches!(result, A::StartFailed { step, reason, code: rdm_core::outcome::Code::FailedPrecondition } if step == "before_ready" && reason == "app refused"));
-            assert!(rig.storage.node_operations().await.unwrap().is_empty());
+            assert!(rig.storage.node_operations("mesh1").await.unwrap().is_empty());
         } else {
             assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");
             let state = if start { NodeState::ReadyForTraffic } else { NodeState::Stopped };
             assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), Some(state), "recorded before the outer Build can complete");
-            assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
+            assert_eq!(rig.storage.node_operations("mesh1").await.unwrap().len(), 1);
         }
     }
 }
@@ -2500,7 +2615,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.start:{}", rpc.node.name) };
         let answer = rig.authority.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
-        assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
+        assert_eq!(rig.storage.node_operations("mesh1").await.unwrap().len(), 1);
         assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
     });
     let records: Vec<_> = cap.spans("rdm.node_admin.node.update.via-command-frame").into_iter().filter(|(_, a)| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
@@ -2702,6 +2817,6 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     let end = tokio::time::timeout(Duration::from_secs(5), rig.authority.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");
     assert!(matches!(end, A::Stopped { .. }), "{end:?}");
     assert_eq!(published.load(Ordering::SeqCst), 1, "the declaration publishes stopped; the recovered terminal publishes nothing twice");
-    assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
+    assert_eq!(rig.storage.node_operations("mesh1").await.unwrap().len(), 1);
     assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }

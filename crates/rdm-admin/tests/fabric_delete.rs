@@ -38,7 +38,7 @@ use rdm_admin::mesh_delete::{accepted_roster, amend_roster, complete_fabric_dele
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows};
 use rdm_admin::status_rpc::Declared;
-use rdm_admin::status_storage::{MeshStatusRow, MemoryStatusStorage, StatusStorage};
+use rdm_admin::storage::MeshStatusRow;
 use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRow, NodesStorage, RuntimeRow};
 use rdm_admin::topology::Topology;
 use rdm_core::status::MeshState;
@@ -219,7 +219,6 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
         rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id.clone(), name: name.into(), dead: false }).await.unwrap().unwrap();
     }
-    let status_storage = MemoryStatusStorage::default();
     let declared = Mutex::new(Declared::default());
     let nodes_storage = Arc::new(MemoryNodesStorage::default());
     let rows_m1 = Arc::new(NodeRows::new(m1_a1.name.clone(), m1_a1.node_id.clone(), observed.clone(), nodes_storage.clone()));
@@ -322,7 +321,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     rows_m1.deleted(&m2_a1, "node.delete:mesh2.admin.1").await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
     let left_m2 = mesh_left_proof(&manifest_m2, &term_m2_a1).unwrap();
-    mesh_left_rows(Some(&rows_m1), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
+    mesh_left_rows(Some(&rows_m1), &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
     builds
         .append_step_receipt(&BuildStepReceipt {
             mesh: None,
@@ -374,7 +373,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let facts = builds.facts().await.unwrap();
     let admitted_m1 = rdm_admin::mesh_delete::Admitted { roster: roster_m1, final_primary: me_m1.clone(), final_runtime: rt_m1, amendments: Vec::new() };
     let HandoffVerdict::Accept(manifest_m1) = handoff_verdict(&facts, &key_m1, &admitted_m1, &manifest_reference(build_id.as_str(), 1, &op_m1, false)) else { panic!("mesh1 handoff accepted") };
-    status_storage.put_mesh_status_of("mesh1", &MeshStatusRow { mesh_id: id1.clone(), state: MeshState::Dead }).await.unwrap();
+    mesh_storage.put_mesh_status("mesh1", &MeshStatusRow { mesh_id: id1.clone(), state: MeshState::Dead }).await.unwrap();
     rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id1.clone(), name: "mesh1".into(), dead: true }).await.unwrap().unwrap();
     record_completion(&*builds, &key_m1, "mesh1.admin.1", &manifest_m1).await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m1_r1.name);
@@ -423,7 +422,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     });
     rows_m1.deleted(&m1_a1, "node.delete:mesh1.admin.1").await.unwrap();
     let left_m1 = mesh_left_proof(&manifest_m1, &term_m1_a1).unwrap();
-    mesh_left_rows(Some(&rows_m1), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
+    mesh_left_rows(Some(&rows_m1), &mesh_storage, &declared, "mesh1.admin.1", &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
 
     // Every node row is Deleted, both mesh rows are Dead in status.storage and mesh.storage, and
     // the fabric name is released.
@@ -432,7 +431,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         assert_eq!(row.status, NodeStatus::Deleted, "{}'s node row is Deleted", n.name);
     }
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
-        assert!(status_storage.mesh_status_held_of(name, &MeshStatusRow { mesh_id: id.clone(), state: MeshState::Dead }).await.unwrap(), "{name} status row is Dead");
+        assert!(mesh_storage.mesh_status_held(name, &MeshStatusRow { mesh_id: id.clone(), state: MeshState::Dead }).await.unwrap(), "{name} status row is Dead");
     }
     let mesh_rows = mesh_storage.meshes().await.unwrap();
     assert!(mesh_rows.iter().all(|m| m.dead), "every mesh row in mesh.storage is Dead: {mesh_rows:?}");
@@ -484,12 +483,11 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
             nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
-        let status_storage = Arc::new(MemoryStatusStorage::default());
         let mesh_storage = MemoryMeshStorage::default();
         rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
-        // The fabric-primary's records: the exit-proof rows it puts land in its status store.
+        // The fabric-primary's records.
         let records = Records::default();
-        records.set_status(status_storage.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
+        records.set_status(nodes_storage.clone(), Arc::new(MemoryMeshStorage::default()), Arc::new(MemoryFabricStorage::new()), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -531,7 +529,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         // node-admin is created; rows are written Deleted by each node.delete and mesh2 is written Dead
         // as acting primary.
         fleet.running_pids.lock().unwrap().clear();
-        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
+        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
             .await
             .expect("a mesh none of whose members runs resolves on its members' deletes");
         let UnansweredMeshOutcome::FullyCrashed(manifest) = crashed else { panic!("expected FullyCrashed, got {crashed:?}") };
@@ -540,7 +538,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let row = nodes_storage.node_row_at(&n.name).await.unwrap().unwrap();
             assert_eq!(row.status, NodeStatus::Deleted, "{}'s row is written Deleted by its node.delete", n.name);
         }
-        assert!(status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap(), "mesh2 status row is written Dead by acting primary");
+        assert!(mesh_storage.mesh_status_held("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap(), "mesh2 status row is written Dead by acting primary");
         assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.dead), "mesh2 row in mesh.storage is Dead");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         assert_eq!(owner_resume(&steps, &op_m2), Ok(OwnerResume::Left), "MeshLeft is recorded so no separate RetireNode is planned for the crashed primary");
@@ -582,12 +580,11 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
             nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
-        let status_storage = Arc::new(MemoryStatusStorage::default());
         let mesh_storage = MemoryMeshStorage::default();
         rdm_admin::storage::claim_mesh(&mesh_storage, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
         let declared = Mutex::new(Declared::default());
         let records = Records::default();
-        records.set_status(status_storage.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
+        records.set_status(nodes_storage.clone(), Arc::new(MemoryMeshStorage::default()), Arc::new(MemoryFabricStorage::new()), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -623,7 +620,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
                 pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
-        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &*status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
+        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
             .await
             .expect("members live with the admin unreached resolves to CreateAdmin");
         let UnansweredMeshOutcome::CreateAdmin { path, predecessor } = outcome else { panic!("expected CreateAdmin, got {outcome:?}") };
@@ -696,13 +693,13 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         });
         rows_fp.deleted(&m2_a2, "node.delete:mesh2.admin.2").await.unwrap();
         let left = mesh_left_proof(&manifest, &term_a2).unwrap();
-        mesh_left_rows(Some(&rows_fp), &*status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
+        mesh_left_rows(Some(&rows_fp), &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
 
         for name in [&m2_a1.name, &m2_r1.name, &m2_a2.name] {
             let row = nodes_storage.node_row_at(name).await.unwrap().unwrap();
             assert_eq!(row.status, NodeStatus::Deleted, "{name}'s node row is Deleted");
         }
-        assert!(status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap());
+        assert!(mesh_storage.mesh_status_held("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap());
     }
 
     let _ = std::fs::remove_dir_all(&data_root);

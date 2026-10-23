@@ -77,11 +77,10 @@ pub struct ControlPlane {
     /// moves a seat or writes a caller's row is refused `fabric-not-ready` (states.md, "The initial
     /// fabric before ready-for-traffic").
     pub first_ready: crate::fabric_state::FirstReady,
-    /// The status rows of this admin's mesh on the fabric's store root: the ready-for-traffic row of the
-    /// fabric among them is the durable fact that it first reached ready-for-traffic (states.md, "The
-    /// initial fabric before ready-for-traffic"). Held in memory, empty, until the admin hands its own
-    /// ([`ControlPlane::with_first_ready`]).
-    pub ready_rows: Arc<dyn crate::status_storage::StatusStorage>,
+    /// The fabric store: the fabric's ready-for-traffic fact on it is the durable fact that it first
+    /// reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"). Held in
+    /// memory, empty, until the admin hands its own ([`ControlPlane::with_first_ready`]).
+    pub ready_rows: Arc<dyn crate::fabric_storage::FabricStorage>,
     /// The exact departure proof of a drift lane's claimant (build.md: "after exact departure proof"),
     /// set once the admin's drive is built; none proves nothing.
     pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::DepartureProof>>,
@@ -112,15 +111,15 @@ impl ControlPlane {
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
             first_ready: crate::fabric_state::FirstReady::new(),
-            ready_rows: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            ready_rows: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             departure: std::sync::OnceLock::new(),
         }
     }
 
     /// This control plane reading whether the initial fabric first reached ready-for-traffic from
-    /// `first_ready`, the handle its admin's fabric state sets, and `ready_rows`, the status rows of
-    /// its admin's mesh on the fabric's store root, where the durable fact is.
-    pub fn with_first_ready(mut self, first_ready: crate::fabric_state::FirstReady, ready_rows: Arc<dyn crate::status_storage::StatusStorage>) -> Self {
+    /// `first_ready`, the handle its admin's fabric state sets, and `ready_rows`, the fabric store, where
+    /// the durable fact is.
+    pub fn with_first_ready(mut self, first_ready: crate::fabric_state::FirstReady, ready_rows: Arc<dyn crate::fabric_storage::FabricStorage>) -> Self {
         self.first_ready = first_ready;
         self.ready_rows = ready_rows;
         self
@@ -165,19 +164,19 @@ impl ControlPlane {
     /// naming the workflow and the fabric's status. It runs before anything is read, claimed or
     /// written: a refused workflow opens no attempt and accepts no Build. Decided on the durable fact
     /// (states.md): what this admin already knows, else a point read of the fabric's ready-for-traffic
-    /// row among its mesh's status rows on the store root, which the fabric state it hears by gossip
-    /// can lag (an outside successor of the fabric seat). A read that fails is refused by name.
+    /// fact on the fabric store, which the fabric state it hears by gossip can lag. A read that fails is
+    /// refused by name.
     async fn admit_once_ready(&self, route: &'static str, workflow: String, outer: &tracing::Span) -> Result<(), Refusal> {
         let me = self.held_name().await;
-        let (status, fabric_id, fabric_primary_mesh) = {
+        let (status, fabric_id) = {
             let t = self.topology.read().await;
-            (t.fabric.status, t.fabric.id.clone(), t.fabric_primary().map(|n| n.mesh.clone()))
+            (t.fabric.status, t.fabric.id.clone())
         };
-        match self.first_ready.reached_on_root(&*self.ready_rows, &fabric_id, status, fabric_primary_mesh.as_deref()).await {
+        match self.first_ready.reached_on_root(&*self.ready_rows, &fabric_id, status).await {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(e) => {
-                let detail = format!("{me}: {workflow} cannot be admitted: whether fabric {fabric_id} first reached ready-for-traffic could not be read from the status rows of mesh {} on the store root (it is {}): {e}", me.mesh, status.name());
+                let detail = format!("{me}: {workflow} cannot be admitted: whether fabric {fabric_id} first reached ready-for-traffic could not be read from the fabric store (it is {}): {e}", status.name());
                 outer.in_scope(|| {
                     tracing::info_span!("rdm.node_admin.build.reject.via-fabric-ready-unreadable", route, workflow = %workflow, status = status.name(), detail = %detail)
                         .in_scope(|| tracing::info!("build refused: the ready-for-traffic row could not be read"))

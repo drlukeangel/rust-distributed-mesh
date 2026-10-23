@@ -283,7 +283,7 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
         let shown = until("node.get of mesh1.rpc.1 shows its cert row", BOUND, async || node_get(&root, &a.digest.node.node_id).await.and_then(|v| v.cert)).await;
         assert_eq!(shown, NodeCertView { issued_at, expires_at: held.cert.expiry_ms, issuer_expires_at: held.issuer.cert.expiry_ms }, "node.get shows the cert the birth holds");
 
-        let rows = root.runner.status_storage.node_certs_of("mesh1").await.expect("the cert rows read");
+        let rows = root.runner.nodes_storage.node_certs("mesh1").await.expect("the cert rows read");
         let row = rows.iter().find(|r| r.node_id == a.digest.node.node_id).unwrap_or_else(|| panic!("no cert row for mesh1.rpc.1: {rows:?}"));
         assert_eq!(
             (row.name.to_string(), &row.incarnation_id, row.issued_at, row.expires_at, row.issuer_expires_at),
@@ -434,7 +434,8 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
 /// not reach the node is retried every tick and marks the node nothing"): while the mesh-primary's
 /// calls to a member end NotSent, each tick spans one `via-renewal` `not-sent` for it, at least two
 /// of them; the member stays ready in the view at the same incarnation, nothing held-running,
-/// os-stopped or data-dir-lost is recorded of it, and its row has no receipt. Once the calls reach it,
+/// os-stopped or data-dir-lost is recorded of it, and its cert row is still the join's (Q141: a renewal
+/// not answered writes nothing). Once the calls reach it,
 /// the next tick installs the renewal.
 #[test]
 fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
@@ -460,8 +461,8 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
         let view = node_get(&root, &b.digest.node.node_id).await.expect("mesh1.rpc.1 in the view");
         assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::ReadyForTraffic, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
         assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
-        let receipts = root.runner.status_storage.node_cert_receipts_of("mesh1").await.unwrap();
-        assert!(!receipts.iter().any(|r| r.node_id == b.digest.node.node_id && r.issued_at > num(&join_issue(&spans, "mesh1.rpc.1"), "issued_at_rafka_ms")), "no receipt for a renewal not sent: {receipts:?} after {tries:?}");
+        let row = root.runner.nodes_storage.node_certs("mesh1").await.unwrap().into_iter().find(|r| r.node_id == b.digest.node.node_id).expect("the member's cert row");
+        assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.rpc.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");
 
         root.node_rpc.client.admit_new_connections();
         let installed = until("the renewal is installed once the calls reach the member", BOUND, async || renewals_of(&spans, "mesh1.rpc.1").into_iter().find(|f| f["outcome"] == "installed")).await;
@@ -711,7 +712,7 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         assert_eq!((shown.next_expiry, mesh1(&shown)), (Some(joined), Some(None)), "the next expiry is the member's, nothing stalls");
         cut_calls(&root, &b);
 
-        let row = root.runner.status_storage.node_certs_of("mesh1").await.unwrap().into_iter().find(|r| r.node_id == b.digest.node.node_id).expect("the member's cert row");
+        let row = root.runner.nodes_storage.node_certs("mesh1").await.unwrap().into_iter().find(|r| r.node_id == b.digest.node.node_id).expect("the member's cert row");
         let stalled = until("fabric.get shows mesh1's renewals stalled", BOUND, async || fabric_get(&root).await.filter(|f| matches!(mesh1(f), Some(Some(_))))).await;
         let floor = rdm_core::cadence::staleness_floor().as_millis() as u64;
         assert!(root.rafka_time.now_ms() > row.renew_at + floor, "stalled only past the renew point by more than a floor");

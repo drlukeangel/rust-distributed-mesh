@@ -803,29 +803,29 @@ where
 }
 
 /// Write the status the mesh primary holds for a silent birth (`PendingReconnect`, `Dead`, or
-/// `None` once it is heard again) as that birth's own silence row in status.storage: a blind put of
+/// `None` once it is heard again) as that birth's own silence fact in nodes.storage: a blind put of
 /// its `(node_id, incarnation)` key, the one writer of that fact. No other row is touched and no
 /// row is read back. A held record with no incarnation yet has no birth to key the row by: that is
 /// named, never a silent skip.
 ///
 /// Each refusal is its own span, named where it happened: `via-no-birth` for a record with no
-/// incarnation, `via-status-storage` (the birth, the status, the store's own cause) for a put the
+/// incarnation, `via-nodes-storage` (the birth, the status, the store's own cause) for a put the
 /// store refused. Nothing is put again from here: the caller's memo still holds the last status
 /// that stands, and node-recovery.md's next step (the provider's exact-exit proof) does not wait on
 /// this row ("Dead is observer-inferred and is never itself a reason to act").
-pub(crate) async fn put_silence_status(store: &dyn crate::status_storage::StatusStorage, node: &crate::model::Node, status: Option<crate::model::NodeStatus>) -> Result<bool, String> {
+pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage, node: &crate::model::Node, status: Option<crate::model::NodeStatus>) -> Result<bool, String> {
     let written = silence_word(status);
     let Some(incarnation_id) = node.incarnation_id.clone() else {
         let why = format!("{} ({}) holds no incarnation: no birth to key its silence row by", node.name, node.node_id);
-        tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node = %node.name, node_id = %node.node_id, status = written, store = "status.storage", error = %why)
+        tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node = %node.name, node_id = %node.node_id, status = written, store = "nodes.storage", error = %why)
             .in_scope(|| tracing::info!("the node's silence status names no birth: no row is written"));
         return Err(why);
     };
-    let row = crate::status_storage::NodeSilenceRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: incarnation_id.clone(), status };
-    if let Err(e) = store.put_node_silence(&row).await {
-        tracing::info_span!("rdm.node_admin.node.reject.via-status-storage", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = written, store = "status.storage", error = %e)
-            .in_scope(|| tracing::info!("status.storage refused the birth's silence row"));
-        return Err(format!("status.storage put of {} ({}) silence row at {} ({written}): {e}", node.name, node.node_id, incarnation_id.as_str()));
+    let row = crate::storage::NodeSilenceRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: incarnation_id.clone(), status };
+    if let Err(e) = store.put_node_silence(&node.mesh, &row).await {
+        tracing::info_span!("rdm.node_admin.node.reject.via-nodes-storage", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = written, store = "nodes.storage", error = %e)
+            .in_scope(|| tracing::info!("nodes.storage refused the birth's silence fact"));
+        return Err(format!("nodes.storage put of {} ({}) silence fact at {} ({written}): {e}", node.name, node.node_id, incarnation_id.as_str()));
     }
     Ok(true)
 }
@@ -1807,238 +1807,259 @@ pub(crate) mod tests {
         eprintln!("span rdm.node_admin.node.remove.via-offline-gone trace_id={} {:?}", gone[0].trace_id, gone[0].attributes);
     }
 
-    /// A status store counting every read of any of its rows.
+    /// A nodes store counting every read of any fact on a birth.
     #[derive(Default)]
     struct ReadCounting {
-        inner: crate::status_storage::MemoryStatusStorage,
+        inner: crate::storage::MemoryNodesStorage,
         reads: std::sync::atomic::AtomicUsize,
     }
 
-    #[async_trait::async_trait]
-    impl crate::status_storage::StatusStorage for ReadCounting {
-        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status(row).await
-        }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::storage_error::StorageError> {
+    impl ReadCounting {
+        fn read(&self) {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.mesh_statuses().await
         }
-        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_fabric_event(row).await
-        }
-        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.fabric_events().await
-        }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events_of(mesh).await
-        }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.inner.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
+    }
 
-        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(row).await
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for ReadCounting {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_runtime(row).await
         }
-        async fn remove_node_declared(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(node_id, incarnation_id).await
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtimes().await
         }
-        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared_of(mesh, row).await
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtime(node_id, incarnation).await
         }
-        async fn remove_node_declared_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.inner.own().await
         }
-        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.node_declared().await
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_own(record).await
         }
-        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(row).await
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.inner.contacts().await
         }
-        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.node_silences().await
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_contact(record).await
         }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.mesh_status_held_of(mesh, row).await
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_contact(mesh, node_id).await
         }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status_of(mesh, row).await
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_row(row).await
         }
-        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs_of(mesh).await
+        async fn node_row_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_row_at(name).await
         }
-        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_of(mesh, row).await
+        async fn node_row_name(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<Option<crate::model::PathName>, crate::storage_error::StorageError> {
+            self.inner.node_row_name(mesh, node_id).await
         }
-        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.node_cert_receipts_of(mesh).await
+        async fn remove_node_row(&self, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_row(name).await
         }
-        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_receipt_of(mesh, row).await
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.tagged(label).await
         }
-        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuers_of(mesh).await
+        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_declared(mesh, row).await
         }
-        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_of(mesh, row).await
+        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
         }
-        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuer_receipts_of(mesh).await
+        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_operation(mesh, row).await
         }
-        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
+        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_operation(mesh, row).await
         }
-        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
+        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_lost(mesh, row).await
         }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_unreadable(mesh, row).await
+        }
+        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
+        }
+        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert(mesh, row).await
+        }
+        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_signing_cert(mesh, row).await
+        }
+        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_silence(mesh, row).await
+        }
+        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.node_silences(mesh).await
+        }
+        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.node_declared(mesh).await
+        }
+        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.node_operations(mesh).await
+        }
+        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.read();
             self.inner.node_data_dir_lost_at(mesh, name).await
         }
-        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost_of(mesh, row).await
+        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
         }
-        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.read();
             self.inner.node_data_dir_unreadable_at(mesh, name).await
         }
-        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.node_certs(mesh).await
         }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
+            self.read();
+            self.inner.signing_certs(mesh).await
         }
-}
+    }
 
     // @feature: node-lifecycle
     #[tokio::test]
     async fn mesh_primary_status_write_puts_only_the_births_own_silence_row() {
         use crate::model::{IncarnationId, Node, NodeStatus, PathName};
-        use crate::status_storage::StatusStorage;
+        use crate::storage::NodesStorage;
         let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
         held.incarnation_id = Some(IncarnationId::mint());
         let store = ReadCounting::default();
-        let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), name: held.name.clone(), state: rdm_core::status::NodeState::ReadyForTraffic };
-        store.put_node_declared(&declared).await.unwrap();
+        let declared = crate::storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), name: held.name.clone(), state: rdm_core::status::NodeState::ReadyForTraffic };
+        store.put_node_declared("mesh1", &declared).await.unwrap();
 
-        assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence row is put");
-        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0, "the status write reads no row of status.storage");
-        let rows = store.node_silences().await.unwrap();
+        assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence fact is put");
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0, "the silence write reads no fact on any birth");
+        let rows = store.node_silences("mesh1").await.unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!((rows[0].node_id.clone(), rows[0].incarnation_id.clone(), rows[0].status), (held.node_id.clone(), held.incarnation_id.clone().unwrap(), Some(NodeStatus::Dead)));
-        assert_eq!(store.node_declared().await.unwrap(), vec![declared], "the declared-state row is another fact and stands");
+        assert_eq!(store.node_declared("mesh1").await.unwrap(), vec![declared], "the declared-state fact is another fact and stands");
         held.incarnation_id = None;
         assert!(put_silence_status(&store, &held, None).await.is_err(), "a held record with no birth is named, never skipped");
     }
 
-    /// A status store whose puts of silence rows are refused, as a full or read-only disk would.
+    /// A nodes store whose puts of silence facts are refused, as a full or read-only disk would.
     #[derive(Default)]
     pub(crate) struct SilenceRefusing {
-        pub inner: crate::status_storage::MemoryStatusStorage,
+        pub inner: crate::storage::MemoryNodesStorage,
     }
 
     #[async_trait::async_trait]
-    impl crate::status_storage::StatusStorage for SilenceRefusing {
-        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status(row).await
+    impl crate::storage::NodesStorage for SilenceRefusing {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_runtime(row).await
         }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::storage_error::StorageError> {
-            self.inner.mesh_statuses().await
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtimes().await
         }
-        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_fabric_event(row).await
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.inner.runtime(node_id, incarnation).await
         }
-        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events().await
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.inner.own().await
         }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
-            self.inner.fabric_events_of(mesh).await
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_own(record).await
         }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.inner.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
-
-        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(row).await
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.inner.contacts().await
         }
-        async fn remove_node_declared(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(node_id, incarnation_id).await
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_contact(record).await
         }
-        async fn put_node_declared_of(&self, mesh: &str, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared_of(mesh, row).await
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_contact(mesh, node_id).await
         }
-        async fn remove_node_declared_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_row(row).await
         }
-        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared().await
+        async fn node_row_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_row_at(name).await
         }
-        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("status/silence/{}", row.key()), reason: "No space left on device (os error 28)".into() })
+        async fn node_row_name(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<Option<crate::model::PathName>, crate::storage_error::StorageError> {
+            self.inner.node_row_name(mesh, node_id).await
         }
-        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences().await
+        async fn remove_node_row(&self, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_row(name).await
         }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
-            self.inner.mesh_status_held_of(mesh, row).await
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.tagged(label).await
         }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_status_of(mesh, row).await
+        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_declared(mesh, row).await
         }
-        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs_of(mesh).await
+        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
         }
-        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_of(mesh, row).await
+        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
+            self.inner.node_declared(mesh).await
         }
-        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.node_cert_receipts_of(mesh).await
+        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_operation(mesh, row).await
         }
-        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert_receipt_of(mesh, row).await
+        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
+            self.inner.node_operations(mesh).await
         }
-        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuers_of(mesh).await
+        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_operation(mesh, row).await
         }
-        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_of(mesh, row).await
+        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
+            self.inner.node_silences(mesh).await
         }
-        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
-            self.inner.mesh_issuer_receipts_of(mesh).await
+        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
         }
-        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-        }
-        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_lost_at(mesh, name).await
         }
-        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost_of(mesh, row).await
+        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_lost(mesh, row).await
         }
-        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
         }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
             self.inner.node_data_dir_unreadable_at(mesh, name).await
         }
-        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_unreadable(mesh, row).await
         }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
         }
-}
+        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.inner.node_certs(mesh).await
+        }
+        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert(mesh, row).await
+        }
+        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
+            self.inner.signing_certs(mesh).await
+        }
+        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_signing_cert(mesh, row).await
+        }
+        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("nodes/{mesh}/silence/{}", row.key()), reason: "No space left on device (os error 28)".into() })
+        }
+    }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 2: TRUE OFFLINE is "written as status
     /// Dead on the node's row"; CLAUDE.md: an error state names what failed and where, and distinct
-    /// facts get distinct spans): when status.storage refuses the mesh primary's put of a birth's
-    /// silence row, the refusal is one `rdm.node_admin.node.reject.via-status-storage` span naming the
+    /// facts get distinct spans): when nodes.storage refuses the mesh primary's put of a birth's
+    /// silence fact, the refusal is one `rdm.node_admin.node.reject.via-nodes-storage` span naming the
     /// node, its exact birth, the status being written, the store and the store's own cause, and the
     /// write answers that refusal; no row stands. A held record with no incarnation is another fact:
     /// one `via-no-birth` span, never the storage span. Must NOT happen: a refused write with no span
@@ -2047,7 +2068,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_refused_silence_status_write_is_spanned_with_the_birth_the_status_and_the_stores_cause() {
         use crate::model::{IncarnationId, Node, NodeStatus, PathName};
-        use crate::status_storage::StatusStorage;
+        use crate::storage::NodesStorage;
         let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
         held.incarnation_id = Some(IncarnationId::mint());
         let store = SilenceRefusing::default();
@@ -2061,8 +2082,8 @@ pub(crate) mod tests {
         };
         let why = refused.expect_err("a refused put answers its refusal");
         assert!(why.contains("No space left on device"), "the answer carries the store's cause: {why}");
-        assert!(store.node_silences().await.unwrap().is_empty(), "no silence row stands");
-        let spans = capture.named("rdm.node_admin.node.reject.via-status-storage");
+        assert!(store.node_silences("mesh1").await.unwrap().is_empty(), "no silence fact stands");
+        let spans = capture.named("rdm.node_admin.node.reject.via-nodes-storage");
         assert_eq!(spans.len(), 1, "one span for the one refused put: {spans:?}");
         let a = &spans[0].attributes;
         let attr = |k: &str| a.get(k).map(String::as_str).unwrap_or_default().to_string();
@@ -2070,9 +2091,9 @@ pub(crate) mod tests {
         assert_eq!(attr("node_id"), held.node_id.to_string(), "{a:?}");
         assert_eq!(attr("incarnation_id"), held.incarnation_id.clone().unwrap().as_str(), "the exact birth: {a:?}");
         assert_eq!(attr("status"), "dead", "the status it was writing: {a:?}");
-        assert_eq!(attr("store"), "status.storage", "{a:?}");
-        assert!(attr("error").contains("status/silence/") && attr("error").contains("No space left on device (os error 28)"), "the store's own cause, with its file: {a:?}");
-        eprintln!("span rdm.node_admin.node.reject.via-status-storage trace_id={} {a:?}", spans[0].trace_id);
+        assert_eq!(attr("store"), "nodes.storage", "{a:?}");
+        assert!(attr("error").contains("nodes/mesh1/silence/") && attr("error").contains("No space left on device (os error 28)"), "the store's own cause, with its file: {a:?}");
+        eprintln!("span rdm.node_admin.node.reject.via-nodes-storage trace_id={} {a:?}", spans[0].trace_id);
         assert!(unborn.is_err(), "a held record with no birth is named, never skipped");
         let no_birth = capture.named("rdm.node_admin.node.reject.via-no-birth");
         assert_eq!(no_birth.len(), 1, "the unborn record is its own refusal: {no_birth:?}");

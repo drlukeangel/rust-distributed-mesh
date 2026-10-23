@@ -12,7 +12,6 @@ pub(crate) struct RecoverySubmitter {
     pub book: DigestBook,
     pub provider: Arc<dyn DeploymentProvider>,
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
-    pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
     /// This admin's Build door: its own control plane, where it opens and claims its mesh's drift
     /// attempts, and its own executor, which runs them.
     pub door: crate::build_op::BuildSlot,
@@ -123,10 +122,10 @@ impl RecoverySubmitter {
             return outcome;
         }
         if let (Inspected::Exited(..), Some(inc), Some(dir)) = (&outcome, n.incarnation_id.clone(), self.birth_data_dir(n).await) {
-            if let Some(unreadable) = self.status_storage.node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await.ok().flatten() {
+            if let Some(unreadable) = self.nodes_storage.node_data_dir_unreadable(&n.mesh, &n.node_id, &inc).await.ok().flatten() {
                 match crate::deployment::pipeline::inspect_transport_key(&dir) {
                     Ok(_) => {
-                        let _ = self.status_storage.remove_node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc, &n.name).await;
+                        let _ = self.nodes_storage.remove_node_data_dir_unreadable(&n.mesh, &n.node_id, &inc, &n.name).await;
                         tracing::info_span!(
                             "rdm.node_admin.node.resolve.via-data-dir-repaired",
                             node = %n.name,
@@ -139,7 +138,7 @@ impl RecoverySubmitter {
                     }
                     Err(_) => return outcome,
                 }
-            } else if self.status_storage.node_data_dir_lost_of(&n.mesh, &n.node_id, &inc).await.ok().flatten().is_none() {
+            } else if self.nodes_storage.node_data_dir_lost(&n.mesh, &n.node_id, &inc).await.ok().flatten().is_none() {
                 match crate::deployment::pipeline::inspect_transport_key(&dir) {
                     Err(crate::deployment::pipeline::InheritedDirError::Gone(_)) => {
                         let now_ms = local_now_ms();
@@ -152,8 +151,8 @@ impl RecoverySubmitter {
                         if count < 2 || now_ms.saturating_sub(since) < data_dir_gone_hold_ms() {
                             return outcome;
                         }
-                        let lost_row = crate::status_storage::NodeDataDirLostRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), path: dir.display().to_string(), since };
-                        let _ = self.status_storage.put_node_data_dir_lost_of(&n.mesh, &lost_row).await;
+                        let lost_row = crate::storage::NodeDataDirLostRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), path: dir.display().to_string(), since };
+                        let _ = self.nodes_storage.put_node_data_dir_lost(&n.mesh, &lost_row).await;
                         tracing::info_span!(
                             "rdm.node_admin.node.update.via-data-dir-lost",
                             node = %n.name,
@@ -276,10 +275,10 @@ impl RecoverySubmitter {
         };
         let mut ready = Vec::with_capacity(owed.len());
         for o in owed {
-            if let Some(held) = self.status_storage.node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation).await.ok().flatten() {
+            if let Some(held) = self.nodes_storage.node_data_dir_unreadable(mesh, &o.node_id, &o.incarnation).await.ok().flatten() {
                 match crate::deployment::pipeline::inspect_transport_key(std::path::Path::new(&held.path)) {
                     Ok(_) => {
-                        let _ = self.status_storage.remove_node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation, &held.name).await;
+                        let _ = self.nodes_storage.remove_node_data_dir_unreadable(mesh, &o.node_id, &o.incarnation, &held.name).await;
                         tracing::info_span!(
                             "rdm.node_admin.node.resolve.via-data-dir-repaired",
                             node = %o.path,

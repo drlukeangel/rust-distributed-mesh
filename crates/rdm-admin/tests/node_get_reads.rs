@@ -3,7 +3,7 @@
 //! no longer holds is named at a path the current Build plans.
 
 use rdm_admin::model::*;
-use rdm_admin::status_storage::{MemoryStatusStorage, NodeDataDirLostRow, NodeDataDirUnreadableRow, StatusStorage};
+use rdm_admin::storage::{NodeDataDirLostRow, NodeDataDirUnreadableRow, NodesStorage};
 use rdm_admin::storage::MemoryNodesStorage;
 use rdm_admin::topology::Topology;
 use rdm_core::status::{NodeSelect, StatusReply};
@@ -21,7 +21,7 @@ fn path(name: &str) -> PathName {
     name.parse().unwrap()
 }
 
-async fn answer(view: &Topology, storage: &MemoryNodesStorage, status: &MemoryStatusStorage, planned: &rdm_admin::views::Planned, select: NodeSelect) -> Vec<rdm_core::views::NodeView> {
+async fn answer(view: &Topology, storage: &MemoryNodesStorage, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, select: NodeSelect) -> Vec<rdm_core::views::NodeView> {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
     match rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, storage, Some(status), planned, &select).await {
         StatusReply::Nodes { nodes } => nodes,
@@ -46,13 +46,14 @@ async fn node_get_answers_data_dir_facts_by_point_reads_at_their_path_name() {
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![admin.clone(), plain.clone(), recovered.clone()],
     };
-    let (storage, status) = (MemoryNodesStorage::default(), MemoryStatusStorage::default());
+    let storage = MemoryNodesStorage::default();
+    let status = &storage;
     // mesh1.rpc.2's predecessor lost its data dir; mesh1.rpc.3 was deleted by its recovery and is held
     // with its data dir unreadable.
     let lost = NodeDataDirLostRow { node_id: NodeId::mint(), name: path("mesh1.rpc.2"), incarnation_id: IncarnationId::mint(), path: "/data/mesh1.rpc.2".into(), since: 1_700 };
-    status.put_node_data_dir_lost_of("mesh1", &lost).await.unwrap();
+    status.put_node_data_dir_lost("mesh1", &lost).await.unwrap();
     let held = NodeDataDirUnreadableRow { node_id: NodeId::mint(), name: path("mesh1.rpc.3"), incarnation_id: IncarnationId::mint(), path: "/data/mesh1.rpc.3".into(), cause: "node-key: not hex".into() };
-    status.put_node_data_dir_unreadable_of("mesh1", &held).await.unwrap();
+    status.put_node_data_dir_unreadable("mesh1", &held).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::from([("mesh1".to_string(), ["mesh1.admin.1", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"].map(path).to_vec())]));
 
     let nodes = answer(&view, &storage, &status, &planned, NodeSelect::Mesh("mesh1".into())).await;
@@ -71,7 +72,7 @@ async fn node_get_answers_data_dir_facts_by_point_reads_at_their_path_name() {
     let without = answer(&view, &storage, &status, &unread, NodeSelect::Mesh("mesh1".into())).await;
     assert_eq!(without.len(), 3, "a Build that cannot be read names no path: the births the view holds are answered: {without:#?}");
 
-    status.remove_node_data_dir_unreadable_of("mesh1", &held.node_id, &held.incarnation_id, &held.name).await.unwrap();
+    status.remove_node_data_dir_unreadable("mesh1", &held.node_id, &held.incarnation_id, &held.name).await.unwrap();
     let cleared = answer(&view, &storage, &status, &planned, NodeSelect::Mesh("mesh1".into())).await;
     assert!(cleared.iter().all(|n| n.name != path("mesh1.rpc.3")), "a removed unreadable fact is gone from its path.name index: {cleared:#?}");
 }

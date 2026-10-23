@@ -14,7 +14,6 @@ use crate::topology::Topology;
 use rdm_core::connections::{ConnectionsHeld, NodeConnection};
 use rdm_core::{GossipStats, NodeLoad};
 use crate::storage::NodesStorage;
-use crate::status_storage::StatusStorage;
 use rdm_core::NodeId;
 use rdm_core::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
 use rdm_core::views::{DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
@@ -152,17 +151,17 @@ async fn row_of(storage: &dyn NodesStorage, n: &Node) -> Result<Option<crate::st
 
 /// The data-dir-lost fact at the birth `n`'s `path.name`: a point read of the path.name index, which
 /// holds the latest loss there (the exited birth's own, or the one the birth was recovered over).
-async fn data_dir_lost_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<DataDirLost> {
-    let row = status_storage?.node_data_dir_lost_at(&n.mesh, &n.name).await.ok().flatten()?;
+async fn data_dir_lost_of(facts: Option<&dyn NodesStorage>, n: &Node) -> Option<DataDirLost> {
+    let row = facts?.node_data_dir_lost_at(&n.mesh, &n.name).await.ok().flatten()?;
     Some(DataDirLost { path: row.path, since: row.since })
 }
 
-async fn data_dir_unreadable_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<DataDirUnreadable> {
+async fn data_dir_unreadable_of(facts: Option<&dyn NodesStorage>, n: &Node) -> Option<DataDirUnreadable> {
     if n.status == crate::model::NodeStatus::ReadyForTraffic {
         return None;
     }
-    let (s, inc) = (status_storage?, n.incarnation_id.as_ref()?);
-    let row = s.node_data_dir_unreadable_of(&n.mesh, &n.node_id, inc).await.ok().flatten()?;
+    let (s, inc) = (facts?, n.incarnation_id.as_ref()?);
+    let row = s.node_data_dir_unreadable(&n.mesh, &n.node_id, inc).await.ok().flatten()?;
     Some(DataDirUnreadable { path: row.path, cause: row.cause })
 }
 
@@ -171,7 +170,7 @@ async fn data_dir_unreadable_of(status_storage: Option<&dyn StatusStorage>, n: &
 /// included, its reads point reads made at once. A birth the view no longer holds is answered at a
 /// path `planned` names and no birth holds, from the data-dir-unreadable row at that path. No read
 /// lists a store.
-async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Result<Vec<NodeView>, ReadFailed> {
+async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, facts: Option<&dyn NodesStorage>, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Result<Vec<NodeView>, ReadFailed> {
     let births: Vec<&Node> = view
         .births()
         .filter(|n| match chosen {
@@ -182,8 +181,8 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         .collect();
     // Each chosen mesh's cert rows, folded once (fabric-certs.md §Tracking: `node.get` surfaces the
     // birth's held cert as `cert { issued_at, expires_at, issuer_expires_at }`).
-    let mut certs: BTreeMap<String, std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), crate::cert_renewal::BirthCert>> = BTreeMap::new();
-    if let Some(s) = status_storage {
+    let mut certs: BTreeMap<String, std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), crate::storage::NodeCertRow>> = BTreeMap::new();
+    if let Some(s) = facts {
         for mesh in births.iter().map(|n| n.mesh.clone()).collect::<BTreeSet<String>>() {
             if let Ok(folded) = crate::cert_renewal::fold_of(s, &mesh).await {
                 certs.insert(mesh, folded);
@@ -192,7 +191,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
     }
     let certs = &certs;
     let read = births.iter().map(|n| async move {
-        let (row, data_dir_lost, data_dir_unreadable) = futures_util::join!(row_of(storage, n), data_dir_lost_of(status_storage, n), data_dir_unreadable_of(status_storage, n));
+        let (row, data_dir_lost, data_dir_unreadable) = futures_util::join!(row_of(storage, n), data_dir_lost_of(facts, n), data_dir_unreadable_of(facts, n));
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
         let row = row?;
         let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default());
@@ -201,13 +200,13 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             v.held = v.types.clone();
         }
         v.held_hash = rdm_core::app_types::hash(&v.held);
-        v.cert = n.incarnation_id.as_ref().and_then(|i| certs.get(&n.mesh)?.get(&(n.node_id.clone(), i.clone()))).map(|c| rdm_core::views::NodeCertView { issued_at: c.held.issued_at, expires_at: c.held.expires_at, issuer_expires_at: c.held.issuer_expires_at });
+        v.cert = n.incarnation_id.as_ref().and_then(|i| certs.get(&n.mesh)?.get(&(n.node_id.clone(), i.clone()))).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
         v.data_dir_lost = data_dir_lost;
         v.data_dir_unreadable = data_dir_unreadable;
         Ok::<_, ReadFailed>(v)
     });
     let mut out = futures_util::future::try_join_all(read).await?;
-    if let Some(s) = status_storage {
+    if let Some(s) = facts {
         let meshes: Vec<&String> = match chosen {
             Chosen::Mesh(m) => planned.keys().filter(|k| k.as_str() == *m).collect(),
             _ => planned.keys().collect(),
@@ -252,10 +251,10 @@ pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage
     nodes_answer_with_status(me, view, loads, storage, None, &Ok(BTreeMap::new()), select).await
 }
 
-/// [`nodes_answer`] with `status_storage` supplying each birth's durable status-row facts (R-FM1,
+/// [`nodes_answer`] with `facts` supplying the durable facts on each birth (R-FM1,
 /// R-FM2), and `planned`, the current Build's paths, naming where a birth the view no longer holds is
 /// read.
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, planned: &Planned, select: &NodeSelect) -> StatusReply {
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, facts: Option<&dyn NodesStorage>, planned: &Planned, select: &NodeSelect) -> StatusReply {
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
         node = %me,
@@ -297,7 +296,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
             }
         };
-        match nodes(view, &loads(), storage, status_storage, &chosen, &planned).await {
+        match nodes(view, &loads(), storage, facts, &chosen, &planned).await {
             Ok(nodes) => {
                 let count = nodes.len();
                 span.record("nodes", count as u64);
@@ -421,8 +420,8 @@ pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>) -
 
 /// [`fabric_answer`] with the cert rows giving the next expiry across the fabric and each mesh whose
 /// renewals stall at `now_ms`, this admin's rafka-time (fabric-certs.md §Tracking).
-pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, status_storage: &dyn StatusStorage, now_ms: Option<u64>) -> StatusReply {
-    let (next_expiry, stalled) = crate::cert_renewal::fabric_watch(view, status_storage, now_ms).await;
+pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, facts: &dyn NodesStorage, now_ms: Option<u64>) -> StatusReply {
+    let (next_expiry, stalled) = crate::cert_renewal::fabric_watch(view, facts, now_ms).await;
     let mut reply = fabric_answer(me, view, build_id);
     if let StatusReply::Fabric { fabric } = &mut reply {
         fabric.next_expiry = next_expiry;

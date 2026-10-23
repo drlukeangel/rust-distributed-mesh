@@ -528,7 +528,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.reject.via-over-bound` | `crates/rdm-node/src/node_self.rs` | 1570 |
 | `rdm.node_admin.node.reject.via-runtime-row-unreadable` | `crates/rdm-admin/src/admin/rows_writer.rs` | 40 |
 | `rdm.node_admin.node.reject.via-runtime-rows-unreadable` | `crates/rdm-admin/src/admin/recovery.rs` | 87 |
-| `rdm.node_admin.node.reject.via-status-storage` | `crates/rdm-admin/src/offline.rs` | 826 |
+| `rdm.node_admin.node.reject.via-nodes-storage` | `crates/rdm-admin/src/offline.rs` | 826 |
 | `rdm.node_admin.node.reject.via-unreadable-build-log` | `crates/rdm-admin/src/stopped_gc.rs` | 333 |
 | `rdm.node_admin.node.reject.via-unreadable-stop-receipt` | `crates/rdm-admin/src/stopped_gc.rs` | 329 |
 | `rdm.node_admin.node.remove.via-claim-withdrawn` | `crates/rdm-admin/src/node_rows.rs` | 460 |
@@ -649,7 +649,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.status.update.via-declaration` | `crates/rdm-admin/src/status_rpc.rs` | 1566 |
 | `rdm.node_admin.status.update.via-declare` | `crates/rdm-admin/src/status_declare.rs` | 456 |
 | `rdm.node_admin.status.update.via-declare-retargeted` | `crates/rdm-admin/src/status_declare.rs` | 408 |
-| `rdm.node_admin.status.update.via-declared-put` | `crates/rdm-admin/src/status_storage.rs` | 778 |
+| `rdm.node_admin.status.update.via-declared-put` | `crates/rdm-admin/src/storage.rs` | 1499 |
 | `rdm.node_admin.status.update.via-mesh-join-admitted` | `crates/rdm-admin/src/status_rpc.rs` | 1062 |
 | `rdm.node_admin.status.update.via-probe` | `crates/rdm-admin/src/status_rpc.rs` | 1644 |
 | `rdm.node_admin.status.update.via-probe` | `crates/rdm-admin/src/status_rpc.rs` | 1654 |

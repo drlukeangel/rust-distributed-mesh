@@ -253,8 +253,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     }
     // states.md: the mesh's `deleting` is entered by the delete-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op": mesh1's primary stored its own mesh row
-    // Leaving when it admitted delete-mesh, in mesh1's status store on the fabric's store root (R14).
-    let mesh1_statuses = estate.fabric_store_root().join("status").join("mesh1").join("meshes");
+    // Leaving when it admitted delete-mesh, a fact on mesh1 in mesh.storage on the fabric's store root (R14).
+    let mesh1_statuses = estate.fabric_store_root().join("meshes").join("mesh1").join("status");
     let leaving_row = mesh1_statuses.join(format!("{mesh1_bare}-Leaving.json"));
     let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {}: {:?}", leaving_row.display(), std::fs::read_dir(&mesh1_statuses).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
     assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");

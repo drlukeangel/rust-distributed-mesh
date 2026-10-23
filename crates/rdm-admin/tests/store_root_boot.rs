@@ -150,7 +150,7 @@ impl Day0 {
 
     /// The ready-for-traffic row of the fabric, in the status rows of mesh1: the file the fabric event is put as.
     fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        let dir = self.fabric().join("status").join("mesh1").join("fabric");
+        let dir = self.fabric().join("fabric").join("events");
         std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
     }
 
@@ -184,11 +184,11 @@ fn first_ready_reasons(spans: &[serde_json::Value]) -> Vec<String> {
 
 /// CONTRACT (fabric-ready-for-traffic.md: once the round's check-ins are in, "the fabric is
 /// ready-for-traffic"; wire.md `ApplyFabricEvent`: "the fabric-primary applies a Fabric event at a mesh
-/// primary"; status_storage.rs: a Fabric event is a keyed row of its mesh's status rows): the
-/// fabric-primary applies the ready-for-traffic fabric event at every mesh primary, its own mesh's
-/// included. On a one-mesh fabric the Day-0 admin is that primary: the row `status/mesh1/fabric/<fabric
-/// id>-<hex of "ready-for-traffic">.json` stands on the root once the fabric first reaches
-/// ready-for-traffic. What must NOT happen: the fact that the fabric first reached ready-for-traffic
+/// primary"; states.md, "Who sets each state": the fabric-primary sets the fabric's
+/// ready-for-traffic): the fabric-primary puts the ready-for-traffic fabric event on the fabric and
+/// applies it at every mesh primary, its own mesh's included. On a one-mesh fabric the Day-0 admin is
+/// that primary: the fact `fabric/events/<fabric id>-<hex of "ready-for-traffic">.json` stands on the
+/// root once the fabric first reaches ready-for-traffic. What must NOT happen: the fact that the fabric first reached ready-for-traffic
 /// written on every mesh but the fabric-primary's, so that no row says it on a fabric of one mesh.
 #[test]
 fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
@@ -299,7 +299,6 @@ impl Prepared {
     fn at(name: &str, history: History) -> Self {
         use rdm_admin::fabric_storage::FabricStorage as _;
         use rdm_admin::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId};
-        use rdm_admin::status_storage::StatusStorage as _;
         use rdm_admin::storage::{MeshStorage as _, NodesStorage as _};
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
         let _ = std::fs::remove_dir_all(&dir);
@@ -360,8 +359,7 @@ impl Prepared {
             };
             nodes.put_node_row(&row).await.unwrap();
             if history == History::ReadyForTraffic {
-                let status = rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &incarnation).await.unwrap();
-                status.put_fabric_event(&rdm_admin::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+                fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
             }
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &incarnation).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
@@ -387,7 +385,7 @@ impl Prepared {
     }
 
     fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        let dir = self.store.join(self.fabric_id.to_string()).join("status").join("mesh1").join("fabric");
+        let dir = self.store.join(self.fabric_id.to_string()).join("fabric").join("events");
         std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
     }
 

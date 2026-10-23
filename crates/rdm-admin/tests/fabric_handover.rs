@@ -17,7 +17,7 @@ use rdm_admin::election::{resolve_with, Incumbency};
 use rdm_admin::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView};
 use rdm_admin::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
-use rdm_admin::status_storage::MemoryStatusStorage;
+use rdm_admin::fabric_storage::MemoryFabricStorage;
 use rdm_admin::storage::MemoryNodesStorage;
 use rdm_admin::topology::Topology;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -128,9 +128,9 @@ struct Admin {
     client: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
     resolved: ResolvedNode,
-    /// The status rows on the fabric's store root this admin's records fold and point-read: one store
-    /// shared by every admin of a fabric, its rows keyed by the mesh each names (R14).
-    status: Arc<MemoryStatusStorage>,
+    /// The fabric store this admin's records fold and point-read: one store shared by every admin of
+    /// a fabric (R14).
+    status: Arc<MemoryFabricStorage>,
     /// How many times the primary finished the writes it issued (node-primary-update.md step 3).
     finishes: Arc<std::sync::atomic::AtomicUsize>,
     /// Holds the finish open while `false`: a write still issued when the primary finishes its writes.
@@ -184,7 +184,7 @@ impl DeploymentProvider for Inspected {
     }
 }
 
-async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool, status: Arc<MemoryStatusStorage>) -> Admin {
+async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool, status: Arc<MemoryFabricStorage>) -> Admin {
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let time = rdm_transport::clock::RafkaTime::unadopted();
@@ -237,7 +237,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
     let (writes_finish, writes_gate) = tokio::sync::watch::channel(true);
     let records = {
         let records = Arc::new(Records::default());
-        records.set_status(status.clone(), mesh.to_string(), path.parse().unwrap(), node_id.clone());
+        records.set_status(Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), status.clone(), mesh.to_string(), path.parse().unwrap(), node_id.clone());
         records
     };
     // The cell's view is set by hand, not projected from digests: the projection runs the one election
@@ -330,8 +330,8 @@ async fn seat_at(a: &Admin, seat: Seat, holder: &Primary) {
 
 /// `a`'s mesh's status rows on the fabric's store root, holding the ready-for-traffic row of `a`'s
 /// fabric when `ready` (states.md, "The initial fabric before ready-for-traffic").
-async fn status_rows_of(a: &Admin, ready: bool) -> Arc<MemoryStatusStorage> {
-    use rdm_admin::status_storage::{FabricEventRow, StatusStorage};
+async fn status_rows_of(a: &Admin, ready: bool) -> Arc<MemoryFabricStorage> {
+    use rdm_admin::fabric_storage::{FabricEventRow, FabricStorage};
     if ready {
         let fabric_id = a.door.topology.read().await.fabric.id.clone();
         a.status.put_fabric_event(&FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
@@ -496,7 +496,7 @@ async fn fabric_n_ready_on_probe(fp: FabricPrimary) -> Seats {
 }
 
 async fn seats_fabric_over(fp: FabricPrimary, n_ready: bool) -> Seats {
-    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
+    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, status.clone()).await;
     let n = admin(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", n_ready, status.clone()).await;
     let m = admin(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, status.clone()).await;
@@ -615,7 +615,7 @@ async fn type_fabric(with_b2: bool) -> TypeFabric {
 /// [`type_fabric`], B1's own view holding B2 (its digest, ReadyForTraffic) only when `b1_hears_b2`: the
 /// mesh-primary's view holds B2 ReadyForTraffic either way.
 async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
-    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
+    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000008", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, status).await;
     let b1 = member(&fabric_id, "mesh1", "mesh1.rpc.1", "000000000004").await;
@@ -801,7 +801,7 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
 /// A fabric of two meshes, each with one node-admin: P of mesh1, mesh-primary at 3 and the fabric-primary
 /// at 7, and X of mesh2, mesh-primary at 1, at `x_status` in every view.
 async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
-    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
+    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, status).await;
     let nodes = vec![node_of(&p, NodeStatus::ReadyForTraffic, true), node_of(&x, x_status, false)];
@@ -897,7 +897,7 @@ fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
 /// the ready row, P's view still in state-sync, the identical command is decided on the row and N answers.
 #[test]
 fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_on_the_root_row() {
-    use rdm_admin::status_storage::{FabricEventRow, StatusStorage};
+    use rdm_admin::fabric_storage::{FabricEventRow, FabricStorage};
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());

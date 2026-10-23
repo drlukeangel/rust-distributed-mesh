@@ -197,29 +197,19 @@ impl HandoverDoor {
     }
 
     /// The R-PB1 refusal of every node.primary.update call (`side` names who refuses): before the initial
-    /// fabric first reaches ready-for-traffic no primary moves, decided on the ready-for-traffic row among
-    /// the status rows on the store root (the fabric-primary's mesh's first, then every mesh this admin's
-    /// view holds), which the fabric state this admin hears by gossip can lag. `None`: the fabric has first
+    /// fabric first reaches ready-for-traffic no primary moves, decided on the ready-for-traffic fact on the
+    /// fabric store, which the fabric state this admin hears by gossip can lag. `None`: the fabric has first
     /// reached ready-for-traffic. A store that cannot be read is `NotReady`, named.
     async fn refused_before_first_ready(&self, side: &'static str, operation: &str) -> Option<Reply> {
         let me = self.held_name();
-        let (fabric_id, status, meshes) = {
+        let (fabric_id, status) = {
             let view = self.topology.read().await;
-            let fabric_primary_mesh = self.membership.seats().fabric().map(|h| h.mesh);
-            let meshes: Vec<String> = fabric_primary_mesh.iter().cloned().chain(view.meshes.iter().map(|m| m.name.to_string()).filter(|m| Some(m) != fabric_primary_mesh.as_ref())).collect();
-            (view.fabric.id.clone(), view.fabric.status, meshes)
+            (view.fabric.id.clone(), view.fabric.status)
         };
-        let mut first_ready = self.records.first_ready_on_root(&fabric_id, status, meshes.first().map(String::as_str)).await;
-        for mesh in meshes.iter().skip(1) {
-            if !matches!(first_ready, Ok(false)) {
-                break;
-            }
-            first_ready = self.records.first_ready_on_root(&fabric_id, status, Some(mesh)).await;
-        }
-        match first_ready {
+        match self.records.first_ready_on_root(&fabric_id, status).await {
             Ok(true) => None,
             Ok(false) => {
-                let detail = format!("{me}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and no status rows on the store root hold a ready-for-traffic row of fabric {fabric_id}), and no primary moves before it does", status.name());
+                let detail = format!("{me}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and the fabric store holds no ready-for-traffic fact of fabric {fabric_id}), and no primary moves before it does", status.name());
                 refused(side, "fabric-not-ready", &detail, operation);
                 Some(rdm_core::reply::handover::bounded_fabric_not_ready(&detail))
             }

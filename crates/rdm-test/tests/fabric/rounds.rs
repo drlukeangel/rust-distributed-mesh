@@ -418,13 +418,13 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let before = rows_on(&root);
     estate.artifact("rows-before-state-commit.json", &json!(before));
     // Q97: every birth that made a join holds the Pending its join report's acceptance recorded beside
-    // its ReadyForTraffic; the Day-0 root joined nobody. Each is among its own mesh's status rows.
+    // its ReadyForTraffic; the Day-0 root joined nobody. Each is a fact on the birth among its own mesh's nodes.
     let mut declarations: Vec<String> = nodes.iter().flat_map(|n| {
         let name = s(&n["name"]);
         let mesh = name.split('.').next().unwrap().to_string();
         let joined = name != "mesh1.admin.1";
         let states: &[&str] = if joined { &["Pending", "ReadyForTraffic"] } else { &["ReadyForTraffic"] };
-        states.iter().map(|state| format!("status/{mesh}/declared/{}--{}--{state}.json", s(&n["node_id"]), s(&n["incarnation_id"]))).collect::<Vec<_>>()
+        states.iter().map(|state| format!("nodes/{mesh}/declared/{}--{}--{state}.json", s(&n["node_id"]), s(&n["incarnation_id"]))).collect::<Vec<_>>()
     }).collect();
     declarations.sort();
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
@@ -448,10 +448,10 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert!(holds("fabric/builds/"), "the fabric-primary's Build journal stands under fabric/builds/ (R-BI6): {after:#?}");
     // The per-seat rows under `fabric/seats` go (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C2: "the leadership view is folded from the
-    // transfer rows"): under fabric/ the fabric-primary holds its identity row and its `fabric/builds/`
-    // Build journal (R-BI6), and nothing else.
-    let only_identity_and_builds = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/identity.json" || r.starts_with("fabric/builds/"));
-    assert!(only_identity_and_builds(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity and fabric/builds/ and nothing else: {after:#?}");
+    // transfer rows"): under fabric/ the fabric-primary holds its identity row, its `fabric/builds/`
+    // Build journal (R-BI6) and the fabric's events (storage-by-object.md), and nothing else.
+    let only_identity_builds_and_events = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/identity.json" || r.starts_with("fabric/builds/") || r.starts_with("fabric/events/"));
+    assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity, fabric/builds/ and fabric/events/ and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
         assert!(holds(&format!("meshes/{mesh}.json")), "{mesh}'s primary published its Mesh row: {after:#?}");
     }
@@ -479,7 +479,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     // The fabric-primary accepted the second Build after the first state-commit: the Build is its own
     // entity in the builds store, so no pointer row under `fabric/` names it, and the other mesh's
     // primary reads it as the current Build.
-    assert!(only_identity_and_builds(&later), "accepting the second Build writes no pointer row under `fabric/` for it: {later:#?}");
+    assert!(only_identity_builds_and_events(&later), "accepting the second Build writes no pointer row under `fabric/` for it: {later:#?}");
     let other_fabric = estate.fabric_view_at(&"mesh2.admin.1".parse().unwrap()).await.expect("mesh2.admin.1 answers fabric.get for this Fabric");
     estate.artifact("mesh2-admin-fabric-after-second-build.json", &serde_json::to_value(&other_fabric).expect("a view serializes"));
     assert_eq!(other_fabric.build_id.as_deref(), Some(second.as_str()), "the other mesh's primary reads the second Build as the current Build: {other_fabric:?}");

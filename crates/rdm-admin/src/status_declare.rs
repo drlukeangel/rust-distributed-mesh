@@ -205,8 +205,8 @@ impl Declarer {
     /// knows, else a point read of the fabric's ready-for-traffic row among `rows`, which the fabric state
     /// it hears by gossip can lag (an outside successor of the fabric seat). A row found latches the
     /// handle the derivation reads. A read that fails is the caller's to name.
-    pub(crate) async fn read_first_ready(&self, rows: &dyn crate::status_storage::StatusStorage, view: &Topology) -> Result<bool, crate::storage_error::StorageError> {
-        self.first_ready.reached_on_root(rows, &view.fabric.id, view.fabric.status, view.fabric_primary().map(|n| n.mesh.as_str())).await
+    pub(crate) async fn read_first_ready(&self, fabric: &dyn crate::fabric_storage::FabricStorage, view: &Topology) -> Result<bool, crate::storage_error::StorageError> {
+        self.first_ready.reached_on_root(fabric, &view.fabric.id, view.fabric.status).await
     }
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
@@ -1124,7 +1124,7 @@ mod tests {
     /// the fabric's ready-for-traffic row.
     #[tokio::test]
     async fn a_fabric_primary_that_never_heard_ready_owes_the_event_on_the_ready_row_on_the_store_root() {
-        use crate::status_storage::{FabricEventRow, MemoryStatusStorage, StatusStorage};
+        use crate::fabric_storage::{FabricEventRow, FabricStorage, MemoryFabricStorage};
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let mut v = view("mesh1.admin.1", "mesh1.admin.1");
         v.fabric.status = ScopeStatus::Pending;
@@ -1135,7 +1135,7 @@ mod tests {
             k.sort();
             k
         };
-        let rows = MemoryStatusStorage::default();
+        let rows = MemoryFabricStorage::new();
         let d = Declarer::new();
         assert!(!d.read_first_ready(&rows, &v).await.unwrap(), "no ready-for-traffic row of the fabric on the root");
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ReadyForTraffic, false, None, &v, &ids);

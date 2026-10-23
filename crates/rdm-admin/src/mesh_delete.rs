@@ -822,13 +822,13 @@ where
 /// mesh-left at the fabric-primary, after exact coverage and before the `MeshLeft` receipt: the
 /// final birth's node.delete wrote its row `Deleted` and proved its exit, so every birth of the mesh
 /// is proven exited. `rows` is the fabric-primary's writer, writing as acting primary of a mesh that
-/// has none left; `proof` the complete proof set; the mesh row Dead is ensured through `status` and
+/// has none left; `proof` the complete proof set; the mesh's status Dead is ensured on `meshes` and
 /// held in `declared`, and the Mesh row Dead on `meshes`, which releases the mesh's name (R-MD1
 /// item 2, R-MN1 item 2).
 #[allow(clippy::too_many_arguments)]
-pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
     drop_departed_contacts(rows, executor, key, mesh, proof).await?;
-    ensure_mesh_dead(status, meshes, declared, executor, key, mesh).await
+    ensure_mesh_dead(meshes, declared, executor, key, mesh).await
 }
 
 /// The Mesh row of `mesh_id` at `mesh` written Dead on mesh.storage (R-MN1 item 2: a mesh's name is
@@ -874,15 +874,15 @@ async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, execu
     Ok(())
 }
 
-/// mesh-left's ensure-Dead (R-MD1 = A): the mesh row Dead among the deleted mesh's own status rows
-/// (`status/<mesh>/`), read by its key. The row held is the mesh-primary's commit at mesh.deleted
+/// mesh-left's ensure-Dead (R-MD1 = A): the deleted mesh's status Dead on the mesh (`mesh.storage`),
+/// read by its key. The row held is the mesh-primary's commit at mesh.deleted
 /// (or this fabric-primary's earlier write): AlreadyApplied, nothing written, no second transition.
 /// No row held means no primary survived to write it: this fabric-primary puts it as acting primary
 /// of a mesh with none left and records it as applied. One
 /// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
-async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str) -> Result<(), String> {
+async fn ensure_mesh_dead(meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str) -> Result<(), String> {
     let dead = rdm_core::status::MeshState::Dead;
-    let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
+    let row = crate::storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
     let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
     let refused = |e: String| {
         span.record("outcome", "not-committed");
@@ -890,12 +890,12 @@ async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, mes
         span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead is not committed"));
         format!("{}: the mesh row Dead of {mesh} ({}) is not committed: {e}", key.operation, key.mesh_id)
     };
-    let held = status.mesh_status_held_of(mesh, &row).await.map_err(|e| refused(format!("the row among {mesh}'s status rows could not be read: {e}")))?;
+    let held = meshes.mesh_status_held(mesh, &row).await.map_err(|e| refused(format!("{mesh}'s status could not be read: {e}")))?;
     let applied_here = declared.lock().unwrap().meshes.get(&key.mesh_id) == Some(&dead);
     let (outcome, writer) = if held {
         ("already-applied", if applied_here { "acting-primary" } else { "mesh-primary" })
     } else {
-        status.put_mesh_status_of(mesh, &row).await.map_err(|e| refused(format!("status.storage refused the row among {mesh}'s status rows: {e}")))?;
+        meshes.put_mesh_status(mesh, &row).await.map_err(|e| refused(format!("mesh.storage refused {mesh}'s status Dead: {e}")))?;
         declared.lock().unwrap().meshes.insert(key.mesh_id.clone(), dead);
         ("applied", "acting-primary")
     };
@@ -1474,11 +1474,11 @@ pub struct DeleteMeshAdmission {
 /// handoff); it is decided on the round held alone ([`MeshDeleteRuns::admit`]), so the round held resends
 /// a lost handoff, a later attempt resumes from the receipts and a stale or conflicting round is
 /// refused by name.
-pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &MeshDeleteKey, sender: &MeshDeleteOwner) -> DeleteMeshAdmission {
+pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::storage::MeshStorage, declared: &Mutex<crate::status_rpc::Declared>, mesh: &str, key: &MeshDeleteKey, sender: &MeshDeleteOwner) -> DeleteMeshAdmission {
     if runs.holds(&key.mesh_id) {
         return DeleteMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
     }
-    let committed = crate::status_rpc::commit_mesh_state(storage, declared, &key.mesh_id, rdm_core::status::MeshState::Leaving).await;
+    let committed = crate::status_rpc::commit_mesh_state(storage, declared, mesh, &key.mesh_id, rdm_core::status::MeshState::Leaving).await;
     let admission = match &committed {
         StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
         refused => MeshDeleteAdmission::Refused(refused.clone()),
@@ -1576,7 +1576,6 @@ pub async fn unanswered_mesh_delete<F, Fut>(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     records: &crate::admin::Records,
     rows: Option<&crate::node_rows::NodeRows>,
-    status: &dyn crate::status_storage::StatusStorage,
     meshes: &dyn crate::storage::MeshStorage,
     runtime_store: &dyn crate::storage::NodesStorage,
     key: &MeshDeleteKey,
@@ -1655,7 +1654,7 @@ where
             .cloned()
             .collect();
         // Every birth's row went Deleted inside its own node.delete; what is left is the mesh's.
-        mesh_left_rows(rows, status, meshes, &records.declared, executor, key, mesh, &all_receipts).await?;
+        mesh_left_rows(rows, meshes, &records.declared, executor, key, mesh, &all_receipts).await?;
         let deleted_manifest = ExitManifest {
             mesh_id: key.mesh_id.to_string(),
             roster: roster.clone(),

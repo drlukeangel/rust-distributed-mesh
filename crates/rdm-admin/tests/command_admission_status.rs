@@ -137,7 +137,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         fabric_id: fabric.clone(),
         topology,
         declared: Arc::new(std::sync::Mutex::new(Declared::default())),
-        status_storage: Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()),
+        meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
         nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
         mesh_ids: Arc::new(std::collections::BTreeMap::new),
         durable: Default::default(),

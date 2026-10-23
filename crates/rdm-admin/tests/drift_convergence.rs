@@ -1963,6 +1963,6 @@ fn one_step_create_of(action: &Option<rdm_admin::accepted::AttemptAction>) -> Op
 
 fn exit_records() -> rdm_admin::admin::Records {
     let r = rdm_admin::admin::Records::default();
-    r.set_status(std::sync::Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
+    r.set_status(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), std::sync::Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), std::sync::Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
     r
 }

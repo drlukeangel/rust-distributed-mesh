@@ -17,7 +17,7 @@ no gossip frame is published. A renewal is invisible to every other node.
 | When | Once the held cert has lived `RDM_CERT_RENEW_AT` (default two thirds) of its TTL, plus a jitter of up to 5 % of the TTL, read from the birth's cert row ([tracking](../fabric-certs.md#tracking)) |
 | Request | `RenewCert { node_id, incarnation, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`) |
 | Reply | `CertRenewed { node_id, incarnation, expires_at }`, the receipt: the node holds and presents the new cert. A node that cannot decode the cert answers a named refusal and keeps the one it holds |
-| Row | The issuer puts the birth's cert row, keyed by the birth and `issued_at`, before it sends (`issued_at`, `expires_at`, `renew_at`), and puts the receipt row under the same key on the receipt; the newest issue and whether it has a receipt are the birth's renewal state |
+| Row | On `CertRenewed` the issuer writes the birth's cert expiry on its node row (`issued_at`, `expires_at`, `renew_at`): the written expiry is the receipt. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |
 | Overlap | The old cert stays valid until its own expiry; a dial in flight during the install is admitted on either |
 | Never | A connection closed, a status set, a frame published, a node marked. A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connections.admit](node-connections-admit.md)) and its existing connections stay |
 | Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |
@@ -25,13 +25,12 @@ no gossip frame is published. A renewal is invisible to every other node.
 ## Numbered end-to-end sequence
 
 1. The issuer's tick reads its cert rows; a row whose `renew_at` has passed names a birth to renew.
-2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time,
-   and writes the row.
+2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time.
 3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and
    retried on the next tick, until the old cert expires; nothing else happens.
 4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers
    `CertRenewed`. Every connection it opens from now presents the new cert.
-5. The issuer records the receipt on the row. The old cert expires on its own.
+5. The issuer writes the expiry the node answered on its node row. The old cert expires on its own.
 
 ## Command and completion messages
 
@@ -51,11 +50,11 @@ sequenceDiagram
     participant A as Issuer (mesh-primary)
     participant N as Node (exact birth)
     Note over A: 1. tick: a cert row past renew_at
-    Note over A: 2. sign a fresh cert, write the row
+    Note over A: 2. sign a fresh cert
     A->>N: 3. RenewCert { node_id, incarnation, cert }
     Note over N: 4. install; presented on every new connection
     N-->>A: CertRenewed { expires_at }
-    Note over A: 5. the row records the receipt; nothing else moves
+    Note over A: 5. write the expiry the node answered; nothing else moves
 ```
 
 ## Failure and receipts

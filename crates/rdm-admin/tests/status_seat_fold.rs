@@ -4,7 +4,25 @@
 
 use rdm_admin::admin::Records;
 use rdm_admin::model::*;
-use rdm_admin::status_storage::{FabricEventRow, FileStatusStorage, MeshStatusRow, NodeDeclaredRow, StatusStorage};
+use rdm_admin::fabric_storage::{FabricEventRow, FabricStorage, FileFabricStorage};
+use rdm_admin::storage::{FileMeshStorage, FileNodesStorage, MeshStatusRow, MeshStorage, NodeDeclaredRow, NodesStorage};
+
+/// The stores an admin of mesh1 opens on the fabric's store root `root`, written as `writer`: the facts
+/// on its mesh's births, on every mesh and on the fabric.
+struct Stores {
+    nodes: Arc<FileNodesStorage>,
+    meshes: Arc<FileMeshStorage>,
+    fabric: Arc<FileFabricStorage>,
+}
+
+async fn stores(root: &rdm_admin::store_root::StoreRoot, writer: &IncarnationId) -> Stores {
+    let data_dir = root.dir().join(format!("data-{}", writer.as_str()));
+    Stores {
+        nodes: Arc::new(FileNodesStorage::open(&data_dir, root, "mesh1", writer).await.unwrap()),
+        meshes: Arc::new(FileMeshStorage::open(root, writer).await.unwrap()),
+        fabric: Arc::new(FileFabricStorage::open(root, writer).await.unwrap()),
+    }
+}
 use rdm_admin::topology::Topology;
 use rdm_core::status::{MeshState, NodeState};
 use serde_json::Value;
@@ -51,17 +69,18 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     let other = (other_node.node_id.clone(), other_node.incarnation_id.clone().unwrap());
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
     let root = rdm_admin::store_root::StoreRoot::at(&dir);
-    let a = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
-    a.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
-    a.put_fabric_event(&FabricEventRow { fabric_id: fabric_id.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
-    a.put_node_declared(&NodeDeclaredRow { node_id: rpc_birth.0.clone(), incarnation_id: rpc_birth.1.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
-    a.put_node_declared(&NodeDeclaredRow { node_id: other.0.clone(), incarnation_id: other.1.clone(), name: "mesh1.rpc.2".parse().unwrap(), state: NodeState::Pending }).await.unwrap();
-    let on_root = |d: &str| std::fs::read_dir(root.status("mesh1").join(d)).map(|e| e.filter_map(|e| e.ok()).filter(|e| e.path().extension().is_some_and(|x| x == "json")).count()).unwrap_or(0);
-    assert_eq!((on_root("meshes"), on_root("fabric"), on_root("declared")), (1, 1, 2), "A's rows live on the fabric's store root under status/mesh1/");
+    let a = stores(&root, &IncarnationId::mint()).await;
+    a.meshes.put_mesh_status("mesh1", &MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
+    a.fabric.put_fabric_event(&FabricEventRow { fabric_id: fabric_id.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
+    a.nodes.put_node_declared("mesh1", &NodeDeclaredRow { node_id: rpc_birth.0.clone(), incarnation_id: rpc_birth.1.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
+    a.nodes.put_node_declared("mesh1", &NodeDeclaredRow { node_id: other.0.clone(), incarnation_id: other.1.clone(), name: "mesh1.rpc.2".parse().unwrap(), state: NodeState::Pending }).await.unwrap();
+    let on_root = |d: &str| std::fs::read_dir(root.dir().join(d)).map(|e| e.filter_map(|e| e.ok()).filter(|e| e.path().extension().is_some_and(|x| x == "json")).count()).unwrap_or(0);
+    assert_eq!((on_root("meshes/mesh1/status"), on_root("fabric/events"), on_root("nodes/mesh1/declared")), (1, 1, 2), "A's facts live on the fabric's store root, each on its object");
     // B, the other admin of mesh1, with its own store instance over the same root.
     let b_id = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().node_id.clone();
     let records = Records::default();
-    records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap()), "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
+    let b_stores = stores(&root, &IncarnationId::mint()).await;
+    records.set_status(b_stores.nodes, b_stores.meshes, b_stores.fabric, "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
     let topology = RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() });
     // B installs views naming A the primary: it holds no seat and folds none of A's rows.
     records.install_projected(&topology, || before_view.clone()).await;
@@ -88,7 +107,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
 }
 
 /// CONTRACT (R14 :8 status is one of the interfaces "every writer and reader sees the same rows",
-/// :34 layout `status/<mesh>/`, item 7: the rebuild on a seat change reads the shared root;
+/// :34 layout of the shared root, item 7: the rebuild on a seat change reads the shared root;
 /// node-identity-and-state.md §4.3: the mesh-primary writes every status of its mesh): A, mesh1's
 /// primary, applied a Mesh status, a Fabric event and two node declared states, each a row on the
 /// fabric's store root. B, the other admin of mesh1 with its own store instance over that root,
@@ -186,9 +205,9 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 let (rpc1, rpc2, b) = (by_name(&before_view, "mesh1.rpc.1"), by_name(&before_view, "mesh1.rpc.2"), by_name(&before_view, "mesh1.admin.2"));
                 // A's rows on the fabric's store root: both members ReadyForTraffic, as A applied them.
                 let root = rdm_admin::store_root::StoreRoot::at(&dir);
-                let a = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
+                let a = stores(&root, &IncarnationId::mint()).await;
                 for n in [&rpc1, &rpc2] {
-                    a.put_node_declared(&NodeDeclaredRow { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), name: n.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
+                    a.nodes.put_node_declared("mesh1", &NodeDeclaredRow { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), name: n.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
                 }
                 // B: its membership's book, its seat fold over the same root.
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
@@ -197,7 +216,8 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
                 records.set_book(membership.book.clone());
-                records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap()), "mesh1".into(), b.name.clone(), b.node_id.clone());
+                let b_stores = stores(&root, &IncarnationId::mint()).await;
+                records.set_status(b_stores.nodes, b_stores.meshes, b_stores.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
                 assert!(membership.book.record(heartbeat(&fabric_id, &rpc1)), "rpc.1's heartbeat is held");
                 let status = |n: &Node| membership.book.get(n.node_id.as_str()).map(|(d, _)| d.status);
                 let topology = Arc::new(RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() }));
@@ -233,8 +253,9 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     fabric_id: fabric_id.clone(),
                     topology: topology.clone(),
                     declared: records.declared.clone(),
-                    status_storage: records_status_storage(&root).await,
-                    nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
+                    nodes_storage: stores(&root, &IncarnationId::mint()).await.nodes,
+                    meshes_storage: stores(&root, &IncarnationId::mint()).await.meshes,
+                    fabric_storage: stores(&root, &IncarnationId::mint()).await.fabric,
                     mesh_ids: Arc::new(std::collections::BTreeMap::new),
                     durable: Default::default(),
                     commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
@@ -279,16 +300,11 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
     }
 }
 
-/// A status store over `root`'s mesh1 rows, as the seat holder's status authority writes through it.
-async fn records_status_storage(root: &rdm_admin::store_root::StoreRoot) -> Arc<dyn StatusStorage> {
-    Arc::new(FileStatusStorage::open(root, "mesh1", &IncarnationId::mint()).await.unwrap())
-}
-
 /// Q49: cycle state rows may be cleared, but an applied operation survives a disk reopen and
 /// a successor writer. Attempts have separate identities; only forgetting the birth removes them.
 #[tokio::test]
 async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_store() {
-    use rdm_admin::status_storage::NodeOperationRow;
+    use rdm_admin::storage::NodeOperationRow;
     let dir = std::env::temp_dir().join(format!("operation-status-{}", NodeId::mint()));
     let root = rdm_admin::store_root::StoreRoot::at(&dir);
     let node_id = NodeId::mint();
@@ -299,20 +315,20 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     };
     let next = NodeOperationRow { operation: rdm_core::status::DeclaredOperation { attempt: 2, ..row.operation.clone() }, ..row.clone() };
     {
-        let store = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
-        store.put_node_declared(&NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: row.name.clone(), state: NodeState::Stopped }).await.unwrap();
-        store.put_node_operation(&row).await.unwrap();
-        store.put_node_operation(&next).await.unwrap();
-        store.remove_node_declared(&node_id, &incarnation).await.unwrap();
+        let store = stores(&root, &IncarnationId::mint()).await;
+        store.nodes.put_node_declared("mesh1", &NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: row.name.clone(), state: NodeState::Stopped }).await.unwrap();
+        store.nodes.put_node_operation("mesh1", &row).await.unwrap();
+        store.nodes.put_node_operation("mesh1", &next).await.unwrap();
+        store.nodes.remove_node_declared("mesh1", &node_id, &incarnation).await.unwrap();
     }
-    let successor = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
-    let held = rdm_admin::status_rpc::Declared::rehydrate(&successor).await.unwrap();
+    let successor = stores(&root, &IncarnationId::mint()).await;
+    let held = rdm_admin::status_rpc::Declared::rehydrate(&*successor.nodes, &*successor.meshes, &*successor.fabric, "mesh1").await.unwrap();
     assert_eq!(held.node(&node_id, &incarnation), None, "only the current cycle's state was cleared");
     assert_eq!(held.operations.len(), 2, "both attempts are still applied");
     assert_eq!(held.operations.get(&row.key()), Some(&row));
     assert_eq!(held.operations.get(&next.key()), Some(&next));
-    for applied in held.operations.values() { successor.remove_node_operation(applied).await.unwrap(); }
-    assert!(successor.node_operations().await.unwrap().is_empty(), "the operation rows are forgotten with the birth");
+    for applied in held.operations.values() { successor.nodes.remove_node_operation("mesh1", applied).await.unwrap(); }
+    assert!(successor.nodes.node_operations("mesh1").await.unwrap().is_empty(), "the operation rows are forgotten with the birth");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -339,7 +355,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let rpc = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap().clone();
                 let pad = rdm_admin::record_store::Scratchpad::new();
                 let held_root = rdm_admin::store_root::StoreRoot::held_at(&dir, pad.clone());
-                let storage = Arc::new(FileStatusStorage::open(&held_root, "mesh1", a.incarnation_id.as_ref().unwrap()).await.unwrap());
+                let storage = stores(&held_root, a.incarnation_id.as_ref().unwrap()).await;
                 let authority = rdm_admin::status_rpc::StatusAuthority {
                     certs: None,
                     app_channels: None,
@@ -347,7 +363,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     operation_effects: Default::default(), stopped: Default::default(),
                     me: a.name.clone(), node_id: a.node_id.clone(), fabric_id: fabric_id.clone(),
                     topology: Arc::new(RwLock::new(before.clone())), declared: Default::default(),
-                    status_storage: storage.clone(), nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
+                    nodes_storage: storage.nodes.clone(), meshes_storage: storage.meshes.clone(), fabric_storage: storage.fabric.clone(),
                     mesh_ids: Arc::new(std::collections::BTreeMap::new), durable: Default::default(),
                     commands: Arc::new(rdm_admin::node_commands::CommandBook::default()), own: Default::default(),
                     mesh_deleter: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
@@ -361,15 +377,15 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     state: NodeState::ReadyForTraffic, operation: None,
                 }).await;
                 assert_eq!(reply, StatusReply::Applied, "the predecessor acknowledged this exact birth's Ready");
-                assert_eq!(storage.node_declared().await.unwrap().len(), 1, "the predecessor reads the acknowledged row");
+                assert_eq!(storage.nodes.node_declared("mesh1").await.unwrap().len(), 1, "the predecessor reads the acknowledged row");
                 let disk = rdm_admin::store_root::StoreRoot::at(&dir);
-                let independent = FileStatusStorage::open(&disk, "mesh1", &IncarnationId::mint()).await.unwrap();
-                assert_eq!(independent.node_declared().await.unwrap().len(), 1, "Applied already made the row durable before publication");
-                storage.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
-                assert!(independent.mesh_statuses().await.unwrap().is_empty(), "Q54 does not publish the other held rows");
+                let independent = stores(&disk, &IncarnationId::mint()).await;
+                assert_eq!(independent.nodes.node_declared("mesh1").await.unwrap().len(), 1, "Applied already made the row durable before publication");
+                storage.meshes.put_mesh_status("mesh1", &MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
+                assert!(independent.meshes.mesh_statuses().await.unwrap().is_empty(), "Q54 does not publish the other held rows");
                 if published {
                     assert_eq!(pad.publish().await.unwrap().written(), 1, "only the held mesh row remains to publish");
-                    assert_eq!(independent.mesh_statuses().await.unwrap().len(), 1);
+                    assert_eq!(independent.meshes.mesh_statuses().await.unwrap().len(), 1);
                 }
                 drop(independent);
                 drop(authority);
@@ -379,15 +395,15 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 // A successor is an independent process: it cannot read the lost
                 // predecessor's scratchpad. Its root has already been established.
                 let root = rdm_admin::store_root::StoreRoot::at(&dir);
-                let successor = Arc::new(FileStatusStorage::open(&root, "mesh1", b.incarnation_id.as_ref().unwrap()).await.unwrap());
-                let rows = successor.node_declared().await.unwrap().len();
+                let successor = stores(&root, b.incarnation_id.as_ref().unwrap()).await;
+                let rows = successor.nodes.node_declared("mesh1").await.unwrap().len();
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
                 let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
                 records.set_book(membership.book.clone());
-                records.set_status(successor, "mesh1".into(), b.name.clone(), b.node_id.clone());
+                records.set_status(successor.nodes, successor.meshes, successor.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
                 assert!(membership.book.record(heartbeat(&fabric_id, &rpc)));
                 before.nodes.retain(|n| n.node_id != a.node_id);
                 for n in &mut before.nodes { if n.node_id == b.node_id { n.is_primary = true; n.is_fabric_primary = true; } }
@@ -424,15 +440,15 @@ fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
         now.nodes.retain(|n| n.name.to_string() != "mesh1.admin.1");
         now.nodes.iter_mut().find(|n| n.node_id == b.node_id).unwrap().is_primary = true;
         let root = rdm_admin::store_root::StoreRoot::at(&dir);
-        let storage = Arc::new(FileStatusStorage::open(&root, "mesh1", b.incarnation_id.as_ref().unwrap()).await.unwrap());
+        let storage = stores(&root, b.incarnation_id.as_ref().unwrap()).await;
         let exact = (rpc.node_id.clone(), rpc.incarnation_id.clone().unwrap());
         let stale = (rpc.node_id.clone(), IncarnationId::mint());
         let absent = (NodeId::mint(), IncarnationId::mint());
         for (node_id, incarnation_id) in [&exact, &stale, &absent] {
-            storage.put_node_declared(&NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation_id.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
+            storage.nodes.put_node_declared("mesh1", &NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation_id.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
         }
         let records = Records::default();
-        records.set_status(storage, "mesh1".into(), b.name.clone(), b.node_id.clone());
+        records.set_status(storage.nodes, storage.meshes, storage.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
         let topology = RwLock::new(Topology { nodes: Vec::new(), ..now.clone() });
         records.install_projected(&topology, || now.clone()).await;
         let held = records.declared.lock().unwrap();

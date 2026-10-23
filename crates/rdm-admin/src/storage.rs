@@ -25,7 +25,8 @@ use crate::record_store::FileRecords;
 use crate::mesh_claims::{InFlight, Taken};
 use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use rdm_core::status::{MeshState, NodeState};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(feature = "file-backend")]
 use std::path::Path;
 use std::sync::Mutex;
@@ -156,6 +157,12 @@ pub trait MeshStorage: Send + Sync {
     async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError>;
     /// The attempt holding `mesh`, when one does: a point read of its in-flight row.
     async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError>;
+    /// A blind put of the Mesh status fact `row` on the mesh named `mesh` (its own key).
+    async fn put_mesh_status(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError>;
+    /// Whether the mesh named `mesh` holds the Mesh status fact `row`: a point read of its key.
+    async fn mesh_status_held(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError>;
+    /// The greatest state held per Mesh, across every mesh.
+    async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError>;
 }
 
 /// A mesh store held in memory: the Mesh rows at their names, and each mesh's in-flight row.
@@ -163,6 +170,8 @@ pub trait MeshStorage: Send + Sync {
 pub struct MemoryMeshStorage {
     rows: Mutex<BTreeMap<String, MeshRecord>>,
     in_flight: Mutex<BTreeMap<String, InFlight>>,
+    /// Each mesh's status facts, by mesh name and row key.
+    statuses: Mutex<BTreeMap<(String, String), MeshStatusRow>>,
 }
 
 #[async_trait]
@@ -199,10 +208,22 @@ impl MeshStorage for MemoryMeshStorage {
     async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
         Ok(self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).get(mesh).cloned())
     }
+    async fn put_mesh_status(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
+        self.statuses.lock().unwrap().insert((mesh.to_string(), row.key()), row.clone());
+        Ok(())
+    }
+    async fn mesh_status_held(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError> {
+        Ok(self.statuses.lock().unwrap().contains_key(&(mesh.to_string(), row.key())))
+    }
+    async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError> {
+        Ok(fold_meshes(self.statuses.lock().unwrap().values().cloned()))
+    }
 }
 
 #[cfg(feature = "file-backend")]
 const MESH_FORMAT: &str = "mesh-record/2";
+#[cfg(feature = "file-backend")]
+const MESH_STATUS_FORMAT: &str = "mesh-status/1";
 
 #[cfg(feature = "file-backend")]
 /// The format of a mesh's in-flight row. A row in the retired `mesh-in-flight/1` (no lane key) is
@@ -214,14 +235,18 @@ const IN_FLIGHT_FORMAT: &str = "mesh-in-flight/2";
 const IN_FLIGHT: &str = "in-flight";
 
 #[cfg(feature = "file-backend")]
-/// `<store root>/meshes/<name>.json`: each mesh's Mesh row, written by that mesh's primary; and
-/// `meshes/<mesh>/claims/in-flight.json`, each mesh's in-flight row ([`crate::mesh_claims`]).
+/// `<store root>/meshes/<name>.json`: each mesh's Mesh row, written by that mesh's primary;
+/// `meshes/<mesh>/claims/in-flight.json`, each mesh's in-flight row ([`crate::mesh_claims`]); and
+/// `meshes/<mesh>/status/<mesh_id>-<state>.json`, each mesh's status facts, written by each state's
+/// setter (states.md, "Who sets each state").
 pub struct FileMeshStorage {
     rows: FileRecords,
     root: crate::store_root::StoreRoot,
     writer: IncarnationId,
     /// `meshes/<mesh>/claims/`, one store per mesh, opened on its first use.
     in_flight: tokio::sync::Mutex<BTreeMap<String, FileRecords>>,
+    /// `meshes/<mesh>/status/`, one store per mesh, opened on its first use.
+    statuses: tokio::sync::Mutex<BTreeMap<String, FileRecords>>,
 }
 
 #[cfg(feature = "file-backend")]
@@ -240,7 +265,34 @@ impl FileMeshStorage {
             root: root.clone(),
             writer: writer.clone(),
             in_flight: tokio::sync::Mutex::new(BTreeMap::new()),
+            statuses: tokio::sync::Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// `mesh`'s status facts, held to the fabric's publication boundary as its Mesh row is.
+    async fn statuses_of(&self, mesh: &str) -> Result<FileRecords, StorageError> {
+        let mut stores = self.statuses.lock().await;
+        if let Some(s) = stores.get(mesh) {
+            return Ok(s.clone());
+        }
+        let s = self.root.records(&self.root.meshes(mesh), "status", &self.writer).await?;
+        stores.insert(mesh.to_string(), s.clone());
+        Ok(s)
+    }
+
+    /// Every mesh that holds a directory under `meshes/` of the shared root, by name.
+    async fn meshes_on_root(&self) -> Result<Vec<String>, StorageError> {
+        let dir = self.root.dir().join("meshes");
+        crate::blocking::blocking_io(move || match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut names: Vec<String> = entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+                names.sort();
+                Ok(names)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(StorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
+        })
+        .await
     }
 
     /// `mesh`'s claims store. An attempt claim is a Build fact, durable on the root when it is
@@ -256,9 +308,14 @@ impl FileMeshStorage {
         Ok(s)
     }
 
-    /// Finishes every write of the Mesh rows this store has issued (node-primary-update.md step 3).
+    /// Finishes every write of the Mesh rows and status facts this store has issued
+    /// (node-primary-update.md step 3).
     pub async fn finish_issued_writes(&self) {
         self.rows.finish_issued_writes().await;
+        let statuses: Vec<FileRecords> = self.statuses.lock().await.values().cloned().collect();
+        for s in statuses {
+            s.finish_issued_writes().await;
+        }
     }
 }
 
@@ -298,6 +355,261 @@ impl MeshStorage for FileMeshStorage {
     }
     async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
         self.claims_of(mesh).await?.read(IN_FLIGHT, IN_FLIGHT_FORMAT).await
+    }
+    async fn put_mesh_status(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
+        self.statuses_of(mesh).await?.write(&row.key(), MESH_STATUS_FORMAT, row).await
+    }
+    async fn mesh_status_held(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError> {
+        self.statuses_of(mesh).await?.holds(&row.key()).await
+    }
+    async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError> {
+        let mut rows = Vec::new();
+        for mesh in self.meshes_on_root().await? {
+            rows.extend(self.statuses_of(&mesh).await?.list::<MeshStatusRow>(MESH_STATUS_FORMAT).await?);
+        }
+        Ok(fold_meshes(rows))
+    }
+}
+
+// ---------------------------------------------------------------- facts on a mesh and on its nodes
+
+/// One Mesh status fact on the mesh it describes (`mesh.storage`): the Mesh entered `state`. Keyed by
+/// the fact, `(mesh_id, state)`, so two states of one mesh are two rows and neither overwrites the
+/// other; a reader folds the greatest. Written by the state's setter (states.md, "Who sets each state").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshStatusRow {
+    /// The mesh.
+    pub mesh_id: MeshId,
+    /// The state it entered.
+    pub state: MeshState,
+}
+
+impl MeshStatusRow {
+    /// The row's key: the natural key of the fact.
+    pub fn key(&self) -> String {
+        format!("{}-{:?}", self.mesh_id, self.state)
+    }
+}
+
+/// The greatest state held per Mesh among `rows`.
+pub fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
+    let mut out: HashMap<MeshId, MeshState> = HashMap::new();
+    for r in rows {
+        let e = out.entry(r.mesh_id).or_insert(r.state);
+        if r.state > *e {
+            *e = r.state;
+        }
+    }
+    out
+}
+
+/// One node declared-state fact on the birth it describes, as its authority applied it: the birth
+/// `incarnation_id` entered `state`. Keyed by the fact itself, `(node_id, incarnation, state)`: two
+/// declarations of one birth put two rows and neither overwrites the other, whatever order their puts
+/// land in. A reader folds the greatest state per birth. Written only by the node's mesh-primary (the
+/// fabric-primary for a mesh with no primary); a start beginning the birth's next cycle tombstones
+/// that birth's rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDeclaredRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The birth that declared it.
+    pub incarnation_id: IncarnationId,
+    /// The birth's path.name as it declared: what a recovery's new node at that path supersedes it by.
+    pub name: PathName,
+    /// The state applied.
+    pub state: NodeState,
+}
+
+impl NodeDeclaredRow {
+    /// The row's key: the natural key of the fact.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id, self.state)
+    }
+
+    fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId, state: NodeState) -> String {
+        format!("{node_id}--{}--{state:?}", incarnation_id.as_str())
+    }
+
+    /// Every key a birth's declared-state rows can hold: what a cycle begin tombstones, blind.
+    pub fn keys_of_birth(node_id: &NodeId, incarnation_id: &IncarnationId) -> Vec<String> {
+        // Exhaustive: a new state is a compile error here until its key is tombstoned too.
+        let every = |s: NodeState| match s {
+            NodeState::Pending | NodeState::ReadyForTraffic | NodeState::ConnectionsDeleting | NodeState::Stopped => s,
+        };
+        [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::ConnectionsDeleting, NodeState::Stopped].into_iter().map(every).map(|s| Self::key_of(node_id, incarnation_id, s)).collect()
+    }
+}
+
+/// An operation effect already applied to this exact birth (Q49), on the birth. Independent of its
+/// current cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeOperationRow {
+    /// The birth's node.
+    pub node_id: NodeId,
+    /// The birth's incarnation.
+    pub incarnation_id: IncarnationId,
+    /// The path this birth held.
+    pub name: PathName,
+    /// The operation that produced this effect.
+    pub operation: rdm_core::status::DeclaredOperation,
+    /// The effect applied.
+    pub state: NodeState,
+}
+
+impl NodeOperationRow {
+    /// The operation identity: exact birth, Build, attempt and operation, never its current state.
+    pub fn key(&self) -> String {
+        let hex = |v: &str| v.bytes().map(|b| format!("{b:02x}")).collect::<String>();
+        format!("{}--{}--{}--{}--{}", self.node_id, self.incarnation_id, hex(&self.operation.build_id), self.operation.attempt, hex(&self.operation.operation))
+    }
+}
+
+/// The path.name each birth declared at.
+pub fn declared_names(rows: &[NodeDeclaredRow]) -> HashMap<(NodeId, IncarnationId), PathName> {
+    rows.iter().map(|r| ((r.node_id.clone(), r.incarnation_id.clone()), r.name.clone())).collect()
+}
+
+/// The greatest declared state per birth.
+pub fn fold_declared(rows: impl IntoIterator<Item = NodeDeclaredRow>) -> HashMap<(NodeId, IncarnationId), NodeState> {
+    let mut out = HashMap::new();
+    for r in rows {
+        let e = out.entry((r.node_id, r.incarnation_id)).or_insert(r.state);
+        if r.state > *e {
+            *e = r.state;
+        }
+    }
+    out
+}
+
+/// The silence status a mesh primary holds for one birth of its own mesh (node-identity-and-state.md
+/// §7.3), on the birth: `PendingReconnect`, then `Dead` once its offline tickle found no path on two
+/// rounds a staleness floor apart, `None` once it is heard again. Keyed by the exact birth; written
+/// only by the mesh primary's tickle loop. Observer-inferred: never itself a reason to act.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSilenceRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The status held, `None` while heard.
+    pub status: Option<crate::model::NodeStatus>,
+}
+
+impl NodeSilenceRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        birth_key(&self.node_id, &self.incarnation_id)
+    }
+}
+
+/// The key of the exact birth `(node_id, incarnation_id)`'s row in a family keyed by the birth.
+pub fn birth_key(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
+    format!("{node_id}--{}", incarnation_id.as_str())
+}
+
+/// The durable `data-dir-lost` fact on a birth (R-FM2): the inherited data dir was absent for
+/// `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth `Exited`. Keyed
+/// by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDataDirLostRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The absent data dir path.
+    pub path: String,
+    /// When the absent data dir was first observed, ms since the Unix epoch.
+    pub since: u64,
+}
+
+impl NodeDataDirLostRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        birth_key(&self.node_id, &self.incarnation_id)
+    }
+}
+
+/// The durable `data-dir-unreadable` fact on a birth (R-FM2): the inherited data dir exists on disk,
+/// but `node-key` is missing, unreadable, or corrupt. Keyed by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDataDirUnreadableRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The broken data dir path.
+    pub path: String,
+    /// Why `node-key` could not be loaded from the data dir.
+    pub cause: String,
+}
+
+impl NodeDataDirUnreadableRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        birth_key(&self.node_id, &self.incarnation_id)
+    }
+}
+
+/// A birth's member cert dates (fabric-certs.md §Tracking, `node-cert/2`), on the birth: written by
+/// the issuer when the birth holds the cert, at its join's admission and on each renewal's
+/// `CertRenewed`, from the issue the answer matches. The written expiry is the receipt (Q141); the row
+/// is the birth's renewal state. Keyed by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCertRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// When the cert was issued, rafka-time ms.
+    pub issued_at: u64,
+    /// When it expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When its issuing cert expires, rafka-time ms.
+    pub issuer_expires_at: u64,
+    /// When its issuer renews it (`rdm_core::certs::renew_at`), rafka-time ms.
+    pub renew_at: u64,
+}
+
+impl NodeCertRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        birth_key(&self.node_id, &self.incarnation_id)
+    }
+}
+
+/// A node-admin birth's signing cert dates (mesh-issuer-renew.md; `signing-cert/1`), on the birth:
+/// the cert it signs its mesh's member certs with stays in its process, like the root; its issue
+/// date and expiry are written by the fabric-primary when the admin holds it, at its join's admission
+/// and on each `IssuerUpdated`. The written expiry is the receipt (Q141). Keyed by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigningCertRow {
+    /// The node-admin.
+    pub node_id: NodeId,
+    /// Its `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// When the signing cert was minted, rafka-time ms.
+    pub issued_at: u64,
+    /// When it expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When the fabric-primary renews it, rafka-time ms.
+    pub renew_at: u64,
+}
+
+impl SigningCertRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        birth_key(&self.node_id, &self.incarnation_id)
     }
 }
 
@@ -531,6 +843,65 @@ pub trait NodesStorage: Send + Sync {
     /// carrying it, turns `Deleted`, or is the only row the node lets go of. A `label` that is not a
     /// tag label ([`rdm_core::status::tag_refusal`]) is refused by name.
     async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError>;
+    /// A blind put of the declared-state fact `row` on its birth in `mesh`, durable before the
+    /// answer leaves, before state-commit too (Q54).
+    async fn put_node_declared(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError>;
+    /// A blind tombstone of every declared-state key of the birth `(node_id, incarnation_id)` in `mesh`.
+    async fn remove_node_declared(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError>;
+    /// Every declared-state fact on the births of `mesh`.
+    async fn node_declared(&self, mesh: &str) -> Result<Vec<NodeDeclaredRow>, StorageError>;
+    /// A blind put of the operation effect `row` on its birth in `mesh`; a cycle begin never clears it.
+    async fn put_node_operation(&self, mesh: &str, row: &NodeOperationRow) -> Result<(), StorageError>;
+    /// Every operation effect on the births of `mesh`, including effects from earlier cycles.
+    async fn node_operations(&self, mesh: &str) -> Result<Vec<NodeOperationRow>, StorageError>;
+    /// Forget one operation effect, only when its exact birth is forgotten.
+    async fn remove_node_operation(&self, mesh: &str, row: &NodeOperationRow) -> Result<(), StorageError>;
+    /// A blind put of the birth's silence fact in `mesh`.
+    async fn put_node_silence(&self, mesh: &str, row: &NodeSilenceRow) -> Result<(), StorageError>;
+    /// Every birth's silence fact in `mesh`.
+    async fn node_silences(&self, mesh: &str) -> Result<Vec<NodeSilenceRow>, StorageError>;
+    /// The `data-dir-lost` fact of the birth `(node_id, incarnation_id)` in `mesh` (R-FM2).
+    async fn node_data_dir_lost(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError>;
+    /// The latest `data-dir-lost` fact at the `path.name` `name` in `mesh`: a point read of the
+    /// `path.name` index its put writes beside the birth's row, which a later birth at the same
+    /// path.name (the one recovered over a fresh data dir) is answered from.
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError>;
+    /// A blind put of the `data-dir-lost` fact `row` in `mesh` (R-FM2), and of its `path.name` index entry.
+    async fn put_node_data_dir_lost(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError>;
+    /// The `data-dir-unreadable` fact of the birth `(node_id, incarnation_id)` in `mesh` (R-FM2).
+    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError>;
+    /// The `data-dir-unreadable` fact at the `path.name` `name` in `mesh`: a point read of the
+    /// `path.name` index its put writes beside the birth's row, which a birth the view no longer
+    /// holds (deleted by its recovery, held unrecovered) is answered from.
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError>;
+    /// A blind put of the `data-dir-unreadable` fact `row` in `mesh` (R-FM2), and of its `path.name` index entry.
+    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError>;
+    /// Remove the `data-dir-unreadable` fact of the birth `(node_id, incarnation_id)` in `mesh`, and
+    /// its `path.name` index entry at `name`.
+    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError>;
+    /// Every birth's member cert dates in `mesh` (fabric-certs.md §Tracking).
+    async fn node_certs(&self, mesh: &str) -> Result<Vec<NodeCertRow>, StorageError>;
+    /// A blind put of a birth's member cert dates in `mesh`.
+    async fn put_node_cert(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError>;
+    /// Every node-admin birth's signing cert dates in `mesh`.
+    async fn signing_certs(&self, mesh: &str) -> Result<Vec<SigningCertRow>, StorageError>;
+    /// A blind put of a node-admin birth's signing cert dates in `mesh`.
+    async fn put_signing_cert(&self, mesh: &str, row: &SigningCertRow) -> Result<(), StorageError>;
+}
+
+/// The rows of one fact family in memory, by mesh name and row key.
+type MemoryFacts<T> = Mutex<BTreeMap<(String, String), T>>;
+
+fn facts_put<T: Clone>(facts: &MemoryFacts<T>, mesh: &str, key: String, row: &T) {
+    facts.lock().unwrap().insert((mesh.to_string(), key), row.clone());
+}
+
+fn facts_of<T: Clone>(facts: &MemoryFacts<T>, mesh: &str) -> Vec<T> {
+    facts.lock().unwrap().iter().filter(|((m, _), _)| m == mesh).map(|(_, r)| r.clone()).collect()
+}
+
+fn facts_get<T: Clone>(facts: &MemoryFacts<T>, mesh: &str, key: String) -> Option<T> {
+    facts.lock().unwrap().get(&(mesh.to_string(), key)).cloned()
 }
 
 /// The refusal of a key the tags index cannot hold: `label` is not a tag label.
@@ -592,6 +963,15 @@ pub struct MemoryNodesStorage {
     ids: Mutex<BTreeMap<NodeId, PathName>>,
     /// The node row's tags index: per label, the nodes carrying it, kept with `rows` under its lock.
     tags: Mutex<BTreeMap<String, BTreeSet<NodeId>>>,
+    declared: MemoryFacts<NodeDeclaredRow>,
+    operations: MemoryFacts<NodeOperationRow>,
+    silences: MemoryFacts<NodeSilenceRow>,
+    data_dir_lost: MemoryFacts<NodeDataDirLostRow>,
+    data_dir_lost_at: MemoryFacts<NodeDataDirLostRow>,
+    data_dir_unreadable: MemoryFacts<NodeDataDirUnreadableRow>,
+    data_dir_unreadable_at: MemoryFacts<NodeDataDirUnreadableRow>,
+    certs: MemoryFacts<NodeCertRow>,
+    signing_certs: MemoryFacts<SigningCertRow>,
 }
 
 /// The tags index after `node_id`'s labels `leaving` go and `arriving` come.
@@ -679,6 +1059,79 @@ impl NodesStorage for MemoryNodesStorage {
         tag_key(label, "memory nodes store")?;
         Ok(self.tags.lock().unwrap().get(label).cloned().unwrap_or_default())
     }
+    async fn put_node_declared(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        facts_put(&self.declared, mesh, row.key(), row);
+        Ok(())
+    }
+    async fn remove_node_declared(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let mut d = self.declared.lock().unwrap();
+        for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+            d.remove(&(mesh.to_string(), k));
+        }
+        Ok(())
+    }
+    async fn node_declared(&self, mesh: &str) -> Result<Vec<NodeDeclaredRow>, StorageError> {
+        Ok(facts_of(&self.declared, mesh))
+    }
+    async fn put_node_operation(&self, mesh: &str, row: &NodeOperationRow) -> Result<(), StorageError> {
+        facts_put(&self.operations, mesh, row.key(), row);
+        Ok(())
+    }
+    async fn node_operations(&self, mesh: &str) -> Result<Vec<NodeOperationRow>, StorageError> {
+        Ok(facts_of(&self.operations, mesh))
+    }
+    async fn remove_node_operation(&self, mesh: &str, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.operations.lock().unwrap().remove(&(mesh.to_string(), row.key()));
+        Ok(())
+    }
+    async fn put_node_silence(&self, mesh: &str, row: &NodeSilenceRow) -> Result<(), StorageError> {
+        facts_put(&self.silences, mesh, row.key(), row);
+        Ok(())
+    }
+    async fn node_silences(&self, mesh: &str) -> Result<Vec<NodeSilenceRow>, StorageError> {
+        Ok(facts_of(&self.silences, mesh))
+    }
+    async fn node_data_dir_lost(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        Ok(facts_get(&self.data_dir_lost, mesh, birth_key(node_id, incarnation_id)))
+    }
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        Ok(facts_get(&self.data_dir_lost_at, mesh, name.to_string()))
+    }
+    async fn put_node_data_dir_lost(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+        facts_put(&self.data_dir_lost, mesh, row.key(), row);
+        facts_put(&self.data_dir_lost_at, mesh, row.name.to_string(), row);
+        Ok(())
+    }
+    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(facts_get(&self.data_dir_unreadable, mesh, birth_key(node_id, incarnation_id)))
+    }
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(facts_get(&self.data_dir_unreadable_at, mesh, name.to_string()))
+    }
+    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+        facts_put(&self.data_dir_unreadable, mesh, row.key(), row);
+        facts_put(&self.data_dir_unreadable_at, mesh, row.name.to_string(), row);
+        Ok(())
+    }
+    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError> {
+        self.data_dir_unreadable.lock().unwrap().remove(&(mesh.to_string(), birth_key(node_id, incarnation_id)));
+        self.data_dir_unreadable_at.lock().unwrap().remove(&(mesh.to_string(), name.to_string()));
+        Ok(())
+    }
+    async fn node_certs(&self, mesh: &str) -> Result<Vec<NodeCertRow>, StorageError> {
+        Ok(facts_of(&self.certs, mesh))
+    }
+    async fn put_node_cert(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError> {
+        facts_put(&self.certs, mesh, row.key(), row);
+        Ok(())
+    }
+    async fn signing_certs(&self, mesh: &str) -> Result<Vec<SigningCertRow>, StorageError> {
+        Ok(facts_of(&self.signing_certs, mesh))
+    }
+    async fn put_signing_cert(&self, mesh: &str, row: &SigningCertRow) -> Result<(), StorageError> {
+        facts_put(&self.signing_certs, mesh, row.key(), row);
+        Ok(())
+    }
 }
 
 #[cfg(feature = "file-backend")]
@@ -691,6 +1144,20 @@ const ROW_FORMAT: &str = "node-row/1";
 const ROW_ID_FORMAT: &str = "node-row-id/1";
 #[cfg(feature = "file-backend")]
 const TAG_FORMAT: &str = "node-tag/1";
+#[cfg(feature = "file-backend")]
+const NODE_DECLARED_FORMAT: &str = "node-declared/3";
+#[cfg(feature = "file-backend")]
+const NODE_OPERATION_FORMAT: &str = "node-operation/1";
+#[cfg(feature = "file-backend")]
+const NODE_SILENCE_FORMAT: &str = "node-silence/1";
+#[cfg(feature = "file-backend")]
+const NODE_DATA_DIR_LOST_FORMAT: &str = "node-data-dir-lost/1";
+#[cfg(feature = "file-backend")]
+const NODE_DATA_DIR_UNREADABLE_FORMAT: &str = "node-data-dir-unreadable/1";
+#[cfg(feature = "file-backend")]
+const NODE_CERT_FORMAT: &str = "node-cert/2";
+#[cfg(feature = "file-backend")]
+const SIGNING_CERT_FORMAT: &str = "signing-cert/1";
 
 #[cfg(feature = "file-backend")]
 /// One row of the node row's tags index: the node carries the label. Its key is the node id, in the
@@ -720,6 +1187,24 @@ struct MeshNodes {
     rows: FileRecords,
     ids: FileRecords,
     contacts: FileRecords,
+    /// The births' declared-state facts, `declared/<node_id>--<incarnation>--<state>.json`: opened
+    /// straight to the disk, never held in the scratchpad, so an Applied declaration is durable before
+    /// state-commit (Q54).
+    declared: FileRecords,
+    /// The births' operation effects, `operations/<birth>--<build>--<attempt>--<operation>.json`.
+    operations: FileRecords,
+    /// The births' silence facts, `silence/<birth>.json`.
+    silence: FileRecords,
+    /// The births' `data-dir-lost` facts and their `path.name` index (R-FM2).
+    data_dir_lost: FileRecords,
+    data_dir_lost_at: FileRecords,
+    /// The births' `data-dir-unreadable` facts and their `path.name` index (R-FM2).
+    data_dir_unreadable: FileRecords,
+    data_dir_unreadable_at: FileRecords,
+    /// The births' member cert dates, `cert/<birth>.json`.
+    certs: FileRecords,
+    /// The node-admin births' signing cert dates, `signing-cert/<birth>.json`.
+    signing_certs: FileRecords,
     root: crate::store_root::StoreRoot,
     base: std::path::PathBuf,
     writer: IncarnationId,
@@ -735,6 +1220,15 @@ impl MeshNodes {
             rows: root.records(&base, "rows", writer).await?,
             ids: root.records(&base, "ids", writer).await?,
             contacts: root.records(&base, "contacts", writer).await?,
+            declared: FileRecords::open(&base, "declared", writer).await?,
+            operations: root.records(&base, "operations", writer).await?,
+            silence: root.records(&base, "silence", writer).await?,
+            data_dir_lost: root.records(&base, "data-dir-lost", writer).await?,
+            data_dir_lost_at: root.records(&base, "data-dir-lost-at", writer).await?,
+            data_dir_unreadable: root.records(&base, "data-dir-unreadable", writer).await?,
+            data_dir_unreadable_at: root.records(&base, "data-dir-unreadable-at", writer).await?,
+            certs: root.records(&base, "cert", writer).await?,
+            signing_certs: root.records(&base, "signing-cert", writer).await?,
             root: root.clone(),
             base,
             writer: writer.clone(),
@@ -744,7 +1238,20 @@ impl MeshNodes {
 
     /// Every store of this mesh's rows opened so far: rows, ids, contacts and each label's rows.
     fn stores(&self) -> Vec<FileRecords> {
-        let mut all = vec![self.rows.clone(), self.ids.clone(), self.contacts.clone()];
+        let mut all = vec![
+            self.rows.clone(),
+            self.ids.clone(),
+            self.contacts.clone(),
+            self.declared.clone(),
+            self.operations.clone(),
+            self.silence.clone(),
+            self.data_dir_lost.clone(),
+            self.data_dir_lost_at.clone(),
+            self.data_dir_unreadable.clone(),
+            self.data_dir_unreadable_at.clone(),
+            self.certs.clone(),
+            self.signing_certs.clone(),
+        ];
         all.extend(self.labels.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
         all
     }
@@ -987,6 +1494,83 @@ impl NodesStorage for FileNodesStorage {
         }
         Ok(all)
     }
+    async fn put_node_declared(&self, mesh: &str, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        let store = self.mesh(mesh).await?;
+        let span = tracing::info_span!("rdm.node_admin.status.update.via-declared-put",
+            node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), state = ?row.state,
+            writer = %self.writer.as_str(), directory = %store.base.join("declared").display(),
+            holding = store.declared.holding(), outcome = tracing::field::Empty);
+        let result = tracing::Instrument::instrument(store.declared.write(&row.key(), NODE_DECLARED_FORMAT, row), span.clone()).await;
+        span.record("outcome", if result.is_ok() { "acknowledged" } else { "refused" });
+        result
+    }
+    async fn remove_node_declared(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let store = self.mesh(mesh).await?;
+        for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+            store.declared.remove(&k).await?;
+        }
+        Ok(())
+    }
+    async fn node_declared(&self, mesh: &str) -> Result<Vec<NodeDeclaredRow>, StorageError> {
+        self.mesh(mesh).await?.declared.list(NODE_DECLARED_FORMAT).await
+    }
+    async fn put_node_operation(&self, mesh: &str, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.mesh(mesh).await?.operations.write(&row.key(), NODE_OPERATION_FORMAT, row).await
+    }
+    async fn node_operations(&self, mesh: &str) -> Result<Vec<NodeOperationRow>, StorageError> {
+        self.mesh(mesh).await?.operations.list(NODE_OPERATION_FORMAT).await
+    }
+    async fn remove_node_operation(&self, mesh: &str, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.mesh(mesh).await?.operations.remove(&row.key()).await.map(|_| ())
+    }
+    async fn put_node_silence(&self, mesh: &str, row: &NodeSilenceRow) -> Result<(), StorageError> {
+        self.mesh(mesh).await?.silence.write(&row.key(), NODE_SILENCE_FORMAT, row).await
+    }
+    async fn node_silences(&self, mesh: &str) -> Result<Vec<NodeSilenceRow>, StorageError> {
+        self.mesh(mesh).await?.silence.list(NODE_SILENCE_FORMAT).await
+    }
+    async fn node_data_dir_lost(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        self.mesh(mesh).await?.data_dir_lost.read(&birth_key(node_id, incarnation_id), NODE_DATA_DIR_LOST_FORMAT).await
+    }
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        self.mesh(mesh).await?.data_dir_lost_at.read(&name.to_string(), NODE_DATA_DIR_LOST_FORMAT).await
+    }
+    async fn put_node_data_dir_lost(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+        // The birth's row, then its path.name index entry: two keys, each a blind put of its own.
+        let store = self.mesh(mesh).await?;
+        store.data_dir_lost.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await?;
+        store.data_dir_lost_at.write(&row.name.to_string(), NODE_DATA_DIR_LOST_FORMAT, row).await
+    }
+    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        self.mesh(mesh).await?.data_dir_unreadable.read(&birth_key(node_id, incarnation_id), NODE_DATA_DIR_UNREADABLE_FORMAT).await
+    }
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        self.mesh(mesh).await?.data_dir_unreadable_at.read(&name.to_string(), NODE_DATA_DIR_UNREADABLE_FORMAT).await
+    }
+    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+        // The birth's row, then its path.name index entry: two keys, each a blind put of its own.
+        let store = self.mesh(mesh).await?;
+        store.data_dir_unreadable.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await?;
+        store.data_dir_unreadable_at.write(&row.name.to_string(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await
+    }
+    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError> {
+        // Tombstones of the birth's key and of its path.name index entry, each blind.
+        let store = self.mesh(mesh).await?;
+        store.data_dir_unreadable.remove(&birth_key(node_id, incarnation_id)).await?;
+        store.data_dir_unreadable_at.remove(&name.to_string()).await.map(|_| ())
+    }
+    async fn node_certs(&self, mesh: &str) -> Result<Vec<NodeCertRow>, StorageError> {
+        self.mesh(mesh).await?.certs.list(NODE_CERT_FORMAT).await
+    }
+    async fn put_node_cert(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError> {
+        self.mesh(mesh).await?.certs.write(&row.key(), NODE_CERT_FORMAT, row).await
+    }
+    async fn signing_certs(&self, mesh: &str) -> Result<Vec<SigningCertRow>, StorageError> {
+        self.mesh(mesh).await?.signing_certs.list(SIGNING_CERT_FORMAT).await
+    }
+    async fn put_signing_cert(&self, mesh: &str, row: &SigningCertRow) -> Result<(), StorageError> {
+        self.mesh(mesh).await?.signing_certs.write(&row.key(), SIGNING_CERT_FORMAT, row).await
+    }
 }
 
 // ---------------------------------------------------------------- connections.storage
@@ -998,6 +1582,166 @@ pub use rdm_node::storage::FileConnectionsStorage;
 #[cfg(all(test, feature = "file-backend"))]
 mod tests {
     use super::*;
+
+    /// The same script over any nodes store: two facts of one birth under different keys both stand
+    /// across a reopen, whatever order they land in (storage-by-object.md, "Keys, writers, fold"): a
+    /// late `Pending` beside `ReadyForTraffic`, two attempts' operation effects, a lost and an unreadable
+    /// data dir; the birth's member cert dates are one row, and a cycle reset removes its declared facts
+    /// and keeps its operation effects.
+    async fn two_facts_of_one_birth_both_stand(first: &dyn NodesStorage, reopened: &dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn NodesStorage>> + Send>>) {
+        let (node_id, incarnation_id, name): (NodeId, IncarnationId, PathName) = (NodeId::mint(), IncarnationId::mint(), "mesh1.rpc.1".parse().unwrap());
+        let declared = |state| NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation_id.clone(), name: name.clone(), state };
+        first.put_node_declared("mesh1", &declared(NodeState::ReadyForTraffic)).await.unwrap();
+        first.put_node_declared("mesh1", &declared(NodeState::Pending)).await.unwrap();
+        let effect = |attempt| NodeOperationRow { node_id: node_id.clone(), incarnation_id: incarnation_id.clone(), name: name.clone(), state: NodeState::Stopped, operation: rdm_core::status::DeclaredOperation { build_id: "b".into(), attempt, operation: "node.stop:mesh1.rpc.1".into() } };
+        first.put_node_operation("mesh1", &effect(1)).await.unwrap();
+        first.put_node_operation("mesh1", &effect(2)).await.unwrap();
+        first.put_node_data_dir_lost("mesh1", &NodeDataDirLostRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation_id.clone(), path: "/d".into(), since: 1 }).await.unwrap();
+        first.put_node_data_dir_unreadable("mesh1", &NodeDataDirUnreadableRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation_id.clone(), path: "/d".into(), cause: "node-key: not hex".into() }).await.unwrap();
+        let cert = |issued_at: u64| NodeCertRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation_id.clone(), issued_at, expires_at: issued_at + 10, issuer_expires_at: 100, renew_at: issued_at + 6 };
+        first.put_node_cert("mesh1", &cert(1)).await.unwrap();
+        first.put_node_cert("mesh1", &cert(20)).await.unwrap();
+
+        let store = reopened().await;
+        let folded = fold_declared(store.node_declared("mesh1").await.unwrap());
+        assert_eq!(folded.get(&(node_id.clone(), incarnation_id.clone())), Some(&NodeState::ReadyForTraffic), "a late Pending replaces no ReadyForTraffic: the fold reads both");
+        assert_eq!(store.node_declared("mesh1").await.unwrap().len(), 2, "two states, two facts");
+        assert_eq!(store.node_operations("mesh1").await.unwrap().len(), 2, "two attempts' effects both stand");
+        assert!(store.node_data_dir_lost("mesh1", &node_id, &incarnation_id).await.unwrap().is_some() && store.node_data_dir_unreadable("mesh1", &node_id, &incarnation_id).await.unwrap().is_some(), "a lost and an unreadable data dir both stand");
+        assert_eq!(store.node_certs("mesh1").await.unwrap(), vec![cert(20)], "the birth's cert dates are one row: the last written");
+        assert!(store.node_declared("mesh2").await.unwrap().is_empty(), "facts are on the birth's own mesh");
+        store.remove_node_declared("mesh1", &node_id, &incarnation_id).await.unwrap();
+        assert!(store.node_declared("mesh1").await.unwrap().is_empty(), "a cycle reset removes the birth's declared facts");
+        assert_eq!(store.node_operations("mesh1").await.unwrap().len(), 2, "and keeps its operation effects");
+    }
+
+    /// CONTRACT (storage-by-object.md, "Keys, writers, fold"; Q49, Q141): on the memory and the file
+    /// backends alike, every fact of a birth is its own keyed row under the birth's mesh in
+    /// `nodes.storage`, so no later or delayed write erases an independent fact; the file backend's
+    /// survive a reopen by another writer. What must NOT happen: a late Pending replacing
+    /// ReadyForTraffic, one attempt's effect erasing another's, two cert rows for one birth.
+    #[tokio::test]
+    async fn two_facts_of_one_birth_under_different_keys_both_stand_on_either_backend() {
+        let memory = std::sync::Arc::new(MemoryNodesStorage::default());
+        let held = memory.clone();
+        two_facts_of_one_birth_both_stand(&*memory, &move || {
+            let held = held.clone();
+            Box::pin(async move { Box::new(SharedNodes(held)) as Box<dyn NodesStorage> })
+        })
+        .await;
+        let dir = crate::test_support::tempdir("facts-of-one-birth");
+        let root = crate::store_root::StoreRoot::at(&dir);
+        let data = dir.join("data");
+        let first = FileNodesStorage::open(&data, &root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        two_facts_of_one_birth_both_stand(&first, &move || {
+            let (root, data) = (root.clone(), data.clone());
+            Box::pin(async move { Box::new(FileNodesStorage::open(&data, &root, "mesh1", &IncarnationId::mint()).await.unwrap()) as Box<dyn NodesStorage> })
+        })
+        .await;
+    }
+
+    /// The memory store a reopen hands back: the same rows.
+    struct SharedNodes(std::sync::Arc<MemoryNodesStorage>);
+
+    #[async_trait]
+    impl NodesStorage for SharedNodes {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.0.runtimes().await
+        }
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+            self.0.runtime(node_id, incarnation).await
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.0.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.0.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_contact(record).await
+        }
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_contact(mesh, node_id).await
+        }
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_row(row).await
+        }
+        async fn node_row_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node_row_at(name).await
+        }
+        async fn node_row_name(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<Option<crate::model::PathName>, crate::storage_error::StorageError> {
+            self.0.node_row_name(mesh, node_id).await
+        }
+        async fn remove_node_row(&self, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_node_row(name).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.0.tagged(label).await
+        }
+        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_declared(mesh, row).await
+        }
+        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_node_declared(mesh, node_id, incarnation_id).await
+        }
+        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
+            self.0.node_declared(mesh).await
+        }
+        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_operation(mesh, row).await
+        }
+        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
+            self.0.node_operations(mesh).await
+        }
+        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_node_operation(mesh, row).await
+        }
+        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_silence(mesh, row).await
+        }
+        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
+            self.0.node_silences(mesh).await
+        }
+        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.0.node_data_dir_lost(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.0.node_data_dir_lost_at(mesh, name).await
+        }
+        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_data_dir_lost(mesh, row).await
+        }
+        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.0.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.0.node_data_dir_unreadable_at(mesh, name).await
+        }
+        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_data_dir_unreadable(mesh, row).await
+        }
+        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
+        }
+        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.0.node_certs(mesh).await
+        }
+        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node_cert(mesh, row).await
+        }
+        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
+            self.0.signing_certs(mesh).await
+        }
+        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_signing_cert(mesh, row).await
+        }
+    }
     use rdm_core::connections::NodeConnection;
     use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState};
 

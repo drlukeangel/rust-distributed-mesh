@@ -79,8 +79,8 @@ pub struct AdminRunner {
     pub handover: Arc<crate::fabric_handover::HandoverDoor>,
     /// The signer this admin issues a new mesh's first admin's issuing material with.
     pub issuer: Arc<crate::certs::CertIssuer>,
-    /// This admin's status.storage: as a mesh primary, its members' status rows.
-    pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
+    /// This admin's nodes.storage: the facts on its mesh's births (cert dates among them).
+    pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// This admin's mesh.storage: as a mesh primary, its mesh's row Dead at mesh.deleted, and as
     /// fabric-primary at mesh-left, a leaving mesh's row Dead when no primary survived (R-MD1).
     pub mesh_storage: Arc<dyn crate::storage::MeshStorage>,
@@ -130,7 +130,7 @@ pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&A
 /// the operation which stopped it (i146 Q29, Q36): NodeStopped, the operation stamped with this
 /// admin's Rafka-time.
 pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
-    Arc::new(move |row: crate::status_storage::NodeDeclaredRow, operation: rdm_core::status::DeclaredOperation| {
+    Arc::new(move |row: crate::storage::NodeDeclaredRow, operation: rdm_core::status::DeclaredOperation| {
         let (membership, backbone, project) = (membership.clone(), backbone.clone(), project.clone());
         Box::pin(async move {
             // Inside node.restart the stop's stopped is held by NodeRestarting, never published as
@@ -335,14 +335,11 @@ impl AdminRunner {
 
     /// `template` for the launch of a node-admin of `mesh`: it carries the mesh's issuing material
     /// (fabric-certs.md "Where a node-admin's signing material comes from"), the issuer this admin
-    /// holds or, holding the root, mints once for the mesh (`mesh.issuer.create`), whose issuer row is
-    /// put right after the mint, before the launch carries it (mesh-issuer-renew.md step 1). A
-    /// refusal fails the create by name: the admin is never launched without it.
+    /// holds or, holding the root, mints once for the mesh (`mesh.issuer.create`) and keeps in process;
+    /// the launched admin's signing cert dates are written when its join is admitted. A refusal fails
+    /// the create by name: the admin is never launched without it.
     pub(crate) async fn with_issuing_material(&self, mut t: LaunchTemplate, mesh: &str) -> Result<LaunchTemplate, String> {
-        let (material, minted) = self.issuer.issuing_material_minting(mesh).map_err(|e| format!("{mesh}: the mesh's issuing material: {e}"))?;
-        if let Some(mint) = minted {
-            self.status_storage.put_mesh_issuer_of(&mint.mesh, &crate::cert_renewal::issuer_row(&mint)).await.map_err(|e| format!("{mesh}: the issuer row of the mesh's new issuer: {e}"))?;
-        }
+        let material = self.issuer.issuing_material(mesh).map_err(|e| format!("{mesh}: the mesh's issuing material: {e}"))?;
         t.issuing = material;
         Ok(t)
     }
@@ -705,7 +702,7 @@ impl AdminRunner {
         // The inherited data dir only when the delete read the old runtime exited, and its loss is not
         // recorded (node-recovery.md step 4, `R-FM2`); a newly allocated one otherwise.
         let lost = match self.records.status.get() {
-            Some(fold) => fold.storage().node_data_dir_lost_of(&node.mesh, &from.node_id, &from.incarnation).await.ok().flatten().is_some(),
+            Some(fold) => fold.nodes().node_data_dir_lost(&node.mesh, &from.node_id, &from.incarnation).await.ok().flatten().is_some(),
             None => false,
         };
         let exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
@@ -715,14 +712,14 @@ impl AdminRunner {
         } else {
             if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
                 if let Some(fold) = self.records.status.get() {
-                    let row = crate::status_storage::NodeDataDirUnreadableRow {
+                    let row = crate::storage::NodeDataDirUnreadableRow {
                         node_id: from.node_id.clone(),
                         name: node.clone(),
                         incarnation_id: from.incarnation.clone(),
                         path: data_dir.display().to_string(),
                         cause: cause.clone(),
                     };
-                    let _ = fold.storage().put_node_data_dir_unreadable_of(&node.mesh, &row).await;
+                    let _ = fold.nodes().put_node_data_dir_unreadable(&node.mesh, &row).await;
                 }
                 tracing::info_span!(
                     "rdm.node_admin.node.reject.via-data-dir-unreadable",

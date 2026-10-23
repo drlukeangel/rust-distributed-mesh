@@ -11,7 +11,8 @@ use iroh::SecretKey;
 use rdm_core::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
 use rdm_admin::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rdm_admin::status_rpc::{Declared, StatusAuthority};
-use rdm_admin::status_storage::{MemoryStatusStorage, StatusStorage};
+use rdm_admin::fabric_storage::{FabricStorage, MemoryFabricStorage};
+use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_admin::topology::Topology;
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
@@ -156,12 +157,12 @@ struct Rig {
 }
 
 async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>) -> Rig {
-    rig_with(me, others, mesh_ids, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await
+    rig_with(me, others, mesh_ids, Refusing::memory(), Declared::default(), None).await
 }
 
-/// The rig over a given `status.storage` and a given starting `Declared` (what a restarted
-/// authority folded from its rows).
-async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, status_storage: Arc<dyn StatusStorage>, declared: Declared, fabric: Option<rdm_core::FabricId>) -> Rig {
+/// The rig over given mesh and fabric stores and a given starting `Declared` (what a restarted
+/// authority folded from its facts).
+async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, stores: Arc<Refusing>, declared: Declared, fabric: Option<rdm_core::FabricId>) -> Rig {
     let mut nodes = vec![me.node.clone()];
     nodes.extend(others.iter().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
@@ -182,7 +183,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         fabric_id,
         topology,
         declared: Arc::new(Mutex::new(declared)),
-        status_storage,
+        meshes_storage: stores.clone(),
+        fabric_storage: stores,
         nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
@@ -564,132 +566,95 @@ fn cell_dir(cell: &str) -> PathBuf {
     dir
 }
 
-/// A `status.storage` whose puts are refused while `refuse` is set, over a real memory store.
+/// A mesh and fabric store whose puts are refused while `refuse` is set, over real memory stores.
+#[derive(Default)]
 struct Refusing {
-    inner: MemoryStatusStorage,
+    meshes: MemoryMeshStorage,
+    fabric: MemoryFabricStorage,
     refuse: std::sync::atomic::AtomicBool,
 }
 
 impl Refusing {
-    fn refusing() -> Arc<Self> {
-        Arc::new(Self { inner: MemoryStatusStorage::default(), refuse: std::sync::atomic::AtomicBool::new(true) })
+    fn memory() -> Arc<Self> {
+        Arc::new(Self::default())
     }
-    fn check(&self) -> Result<(), rdm_admin::storage_error::StorageError> {
+    fn refusing() -> Arc<Self> {
+        Arc::new(Self { refuse: std::sync::atomic::AtomicBool::new(true), ..Self::default() })
+    }
+    fn check(&self, file: &str) -> Result<(), rdm_admin::storage_error::StorageError> {
         if self.refuse.load(Ordering::SeqCst) {
-            return Err(rdm_admin::storage_error::StorageError::Io { file: "status/refused.json".into(), reason: "the disk refused the put".into() });
+            return Err(rdm_admin::storage_error::StorageError::Io { file: file.into(), reason: "the disk refused the put".into() });
         }
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
-impl StatusStorage for Refusing {
-    async fn put_mesh_status(&self, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.put_mesh_status(row).await
+impl MeshStorage for Refusing {
+    async fn mesh(&self, name: &str) -> Result<Option<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
+        self.meshes.mesh(name).await
+    }
+    async fn put_mesh(&self, record: &rdm_admin::storage::MeshRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.meshes.put_mesh(record).await
+    }
+    async fn meshes(&self) -> Result<Vec<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
+        self.meshes.meshes().await
+    }
+    async fn take_in_flight(&self, mesh: &str, claim: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::mesh_claims::Taken, rdm_admin::storage_error::StorageError> {
+        self.meshes.take_in_flight(mesh, claim).await
+    }
+    async fn release_in_flight(&self, mesh: &str, attempt: &rdm_admin::mesh_claims::InFlight) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.meshes.release_in_flight(mesh, attempt).await
+    }
+    async fn in_flight(&self, mesh: &str) -> Result<Option<rdm_admin::mesh_claims::InFlight>, rdm_admin::storage_error::StorageError> {
+        self.meshes.in_flight(mesh).await
+    }
+    async fn put_mesh_status(&self, mesh: &str, row: &rdm_admin::storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.check(&format!("meshes/{mesh}/status/refused.json"))?;
+        self.meshes.put_mesh_status(mesh, row).await
+    }
+    async fn mesh_status_held(&self, mesh: &str, row: &rdm_admin::storage::MeshStatusRow) -> Result<bool, rdm_admin::storage_error::StorageError> {
+        self.meshes.mesh_status_held(mesh, row).await
     }
     async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_statuses().await
-    }
-    async fn put_fabric_event(&self, row: &rdm_admin::status_storage::FabricEventRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.put_fabric_event(row).await
-    }
-    async fn fabric_events(&self) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.fabric_events().await
-    }
-    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.fabric_events_of(mesh).await
-    }
-    async fn put_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> { self.inner.put_node_operation(row).await }
-    async fn node_operations(&self) -> Result<Vec<rdm_admin::status_storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> { self.inner.node_operations().await }
-    async fn remove_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
-
-    async fn put_node_declared(&self, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.put_node_declared(row).await
-    }
-    async fn remove_node_declared(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.remove_node_declared(node_id, incarnation_id).await
-    }
-    async fn put_node_declared_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.put_node_declared_of(mesh, row).await
-    }
-    async fn remove_node_declared_of(&self, mesh: &str, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.remove_node_declared_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_declared(&self) -> Result<Vec<rdm_admin::status_storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_declared().await
-    }
-    async fn put_node_silence(&self, row: &rdm_admin::status_storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check()?;
-        self.inner.put_node_silence(row).await
-    }
-    async fn node_silences(&self) -> Result<Vec<rdm_admin::status_storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_silences().await
-    }
-    async fn mesh_status_held_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<bool, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_status_held_of(mesh, row).await
-    }
-    async fn put_mesh_status_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_status_of(mesh, row).await
-    }
-    async fn node_certs_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_certs_of(mesh).await
-    }
-    async fn put_node_cert_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_cert_of(mesh, row).await
-    }
-    async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertReceiptRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_cert_receipts_of(mesh).await
-    }
-    async fn put_node_cert_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeCertReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_cert_receipt_of(mesh, row).await
-    }
-    async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::MeshIssuerRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_issuers_of(mesh).await
-    }
-    async fn put_mesh_issuer_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_issuer_of(mesh, row).await
-    }
-    async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::MeshIssuerReceiptRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.mesh_issuer_receipts_of(mesh).await
-    }
-    async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_mesh_issuer_receipt_of(mesh, row).await
-    }
-    async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_lost_at(mesh, name).await
-    }
-    async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_data_dir_lost_of(mesh, row).await
-    }
-    async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::status_storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_unreadable_at(mesh, name).await
-    }
-    async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_data_dir_unreadable_of(mesh, row).await
-    }
-    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        self.meshes.mesh_statuses().await
     }
 }
 
-/// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only after
-/// its own keyed row was acknowledged. A refused put answers NotReady naming status.storage and
+#[async_trait::async_trait]
+impl FabricStorage for Refusing {
+    async fn fabric(&self) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
+        self.fabric.fabric().await
+    }
+    async fn name_claim(&self, name: &str) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
+        self.fabric.name_claim(name).await
+    }
+    async fn put_name_claim(&self, identity: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fabric.put_name_claim(identity).await
+    }
+    async fn remove_name_claim(&self, name: &str) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fabric.remove_name_claim(name).await
+    }
+    async fn put_identity(&self, identity: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.fabric.put_identity(identity).await
+    }
+    async fn put_fabric_event(&self, row: &rdm_admin::fabric_storage::FabricEventRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.check("fabric/events/refused.json")?;
+        self.fabric.put_fabric_event(row).await
+    }
+    async fn fabric_events(&self) -> Result<Vec<rdm_admin::fabric_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
+        self.fabric.fabric_events().await
+    }
+}
+
+/// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only once its
+/// own keyed fact is durable. A refused put of a Mesh status answers NotReady naming mesh.storage and
 /// holds nothing, so the same declaration again is decided afresh and applies (it is never
-/// AlreadyApplied over a fact nothing recorded). An authority restarted over the same rows folds
-/// them and answers the same natural keys AlreadyApplied. What must NOT happen: an Applied or
-/// AlreadyApplied for a row that was refused.
+/// AlreadyApplied over a fact nothing recorded). A Fabric event at a mesh-primary that is not the
+/// fabric-primary is the fabric-primary's to put (states.md, "Who sets each state"): until the fabric
+/// holds it the apply answers NotReady naming fabric.storage, and once it does, Applied. An authority
+/// restarted over the same facts folds them and answers the same natural keys AlreadyApplied. What
+/// must NOT happen: an Applied or AlreadyApplied for a fact that is not durable.
 #[test]
 fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
     let cell = "status_authority_answers_applied_only_after_its_row_is_acknowledged";
@@ -706,14 +671,14 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
 
         let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
-        assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("status.storage refused the Mesh status row") && reason.contains("the disk refused the put")), "{refused:?}");
+        assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("mesh.storage refused the Mesh status fact") && reason.contains("the disk refused the put")), "{refused:?}");
         assert!(rig.authority.declared.lock().unwrap().meshes.is_empty(), "a refused row holds nothing as applied");
-        assert!(store.inner.mesh_statuses().await.unwrap().is_empty());
+        assert!(store.meshes.mesh_statuses().await.unwrap().is_empty());
 
         store.refuse.store(false, Ordering::SeqCst);
         let first = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(first, StatusReply::Applied, "the retry of a refused put applies; it is not AlreadyApplied");
-        assert_eq!(store.inner.mesh_statuses().await.unwrap().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
+        assert_eq!(store.meshes.mesh_statuses().await.unwrap().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
         let again = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(again, StatusReply::AlreadyApplied);
 
@@ -721,15 +686,15 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         let mesh1_primary = birth("mesh3.admin.1", NodeKind::NodeAdmin, "mesh3", true, false);
         let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
-        store.refuse.store(true, Ordering::SeqCst);
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
-        assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("status.storage refused the Fabric event row")), "{ev_refused:?}");
+        assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event fact")), "{ev_refused:?}");
         assert!(rig3.authority.declared.lock().unwrap().fabric.is_empty());
-        store.refuse.store(false, Ordering::SeqCst);
+        // The fabric-primary puts the fact on the fabric, then applies it.
+        store.fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric.clone(), event: "ready-for-traffic".into() }).await.unwrap();
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
-        // The authority restarts over the same rows: what it folds is what it applied.
-        let folded = Declared::rehydrate(&*store).await.unwrap();
+        // The authority restarts over the same facts: what it folds is what it applied.
+        let folded = Declared::rehydrate(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await.unwrap();
         assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
         let me_again = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let restarted = rig_with(me_again, &[&fabric_primary], ids, store.clone(), folded, Some(fabric.clone())).await;
@@ -875,7 +840,7 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let mp_receiver = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", true, false);
         let held = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), held.clone())].into_iter().collect();
-        let rig2 = rig_with(mp_receiver, &[&fp], ids, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await;
+        let rig2 = rig_with(mp_receiver, &[&fp], ids, Refusing::memory(), Declared::default(), None).await;
         let wrong_fabric = rdm_core::FabricId::mint();
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rdm_core::status::FabricEvent::ReadyForTraffic }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.authority.fabric_id.clone() });
@@ -910,9 +875,11 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
         let fp2 = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
         let receiver = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let fabric = rdm_core::FabricId::mint();
-        let store: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+        let store = Refusing::memory();
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ReadyForTraffic };
+        // Each event is the fabric-primary's fact on the fabric before it applies it at a mesh-primary.
+        store.fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric.clone(), event: "ready-for-traffic".into() }).await.unwrap();
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The seat moves: fp2 holds it, fp1 does not.
         {
@@ -927,13 +894,14 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
             }
         }
         let shutdown = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } };
+        store.fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
         let old = reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await);
         assert_eq!(old, StatusReply::AlreadyApplied, "the old authority's repeat of an applied key is the same event");
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
         assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "a new event applies");
         assert_eq!(reply(&call(&rig, &fp1, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied, "once, whoever sends it");
-        // The receiver restarts over its rows.
-        let folded = Declared::rehydrate(&*store).await.unwrap();
+        // The receiver restarts over the fabric's facts.
+        let folded = Declared::rehydrate(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await.unwrap();
         let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {

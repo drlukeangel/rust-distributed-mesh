@@ -114,7 +114,7 @@ impl NodeObserver for LiveMesh {
                     fabric: rdm_admin::model::Fabric { id: fabric_id, name: "fabric1".into(), status: rdm_admin::model::ScopeStatus::ReadyForTraffic, provider: rdm_admin::model::ProviderKind::Process },
                     meshes: vec![], nodes: vec![me, node.clone()],
                 })),
-                declared: Default::default(), status_storage: Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()),
+                declared: Default::default(), meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
                 nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
                 hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
@@ -441,7 +441,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
         let learner = membership.clone();
-        Arc::new(rdm_admin::join::JoinDoor { status_storage: None, types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        Arc::new(rdm_admin::join::JoinDoor { nodes: None, types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             me: name.parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new({

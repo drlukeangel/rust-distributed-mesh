@@ -134,7 +134,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
         let log = installed.clone();
         let door = JoinDoor {
-            status_storage: None,
+            nodes: None,
             me: "mesh1.admin.1".parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| {
@@ -209,7 +209,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
 /// The door of an admin whose node row at `mesh1.rpc.1` is `row`, its installs logged in `log`.
 fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row: rdm_admin::storage::NodeRow) -> JoinDoor {
     JoinDoor {
-        status_storage: None,
+        nodes: None,
         me: "mesh1.admin.1".parse().unwrap(),
         joins,
         answer: Arc::new(|| {
@@ -352,7 +352,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             executable: None,
         };
         let door = JoinDoor {
-            status_storage: None,
+            nodes: None,
             me: "mesh1.admin.1".parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| {

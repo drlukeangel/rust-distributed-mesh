@@ -189,12 +189,35 @@ pub trait FabricStorage: Send + Sync {
     async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError>;
     /// Write `identity` as the Fabric's identity row, as given.
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError>;
+    /// Keep the Fabric event fact `row` under its own key; written by the fabric-primary (states.md,
+    /// "Who sets each state").
+    async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), FabricStorageError>;
+    /// The Fabric event facts held, each once.
+    async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, FabricStorageError>;
+}
+
+/// One Fabric event fact on the fabric: the Fabric event named `event` (its natural key) was applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FabricEventRow {
+    /// The fabric.
+    pub fabric_id: FabricId,
+    /// The event applied.
+    pub event: String,
+}
+
+impl FabricEventRow {
+    /// The row's key: the fabric id and the hex of the event name.
+    pub fn key(&self) -> String {
+        let hex: String = self.event.bytes().map(|b| format!("{b:02x}")).collect();
+        format!("{}-{hex}", self.fabric_id)
+    }
 }
 
 /// A fabric store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
+    events: Mutex<Vec<FabricEventRow>>,
 }
 
 impl MemoryFabricStorage {
@@ -227,6 +250,16 @@ impl FabricStorage for MemoryFabricStorage {
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
         *self.identity.lock().unwrap() = Some(identity.clone());
         Ok(())
+    }
+    async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), FabricStorageError> {
+        let mut e = self.events.lock().unwrap();
+        if !e.contains(row) {
+            e.push(row.clone());
+        }
+        Ok(())
+    }
+    async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, FabricStorageError> {
+        Ok(self.events.lock().unwrap().clone())
     }
 }
 
@@ -281,6 +314,8 @@ pub struct FileFabricStorage {
     /// fabric's claim of its name is the first of its rows.
     names: crate::record_store::FileRecords,
     records: crate::record_store::FileRecords,
+    /// `fabric/events/`: the Fabric event facts, written by the fabric-primary.
+    events: crate::record_store::FileRecords,
 }
 
 #[cfg(feature = "file-backend")]
@@ -312,7 +347,8 @@ impl FileFabricStorage {
         for dir in transfer_dirs {
             refuse_retired(&dir, &format!("the seat-transfer row format {REFUSED_TRANSFER_FORMAT} is retired: every seat move is one row of the fabric's sequence under {SEAT_MOVES_DIR}/ ({SEAT_MOVE_FORMAT})")).await?;
         }
-        Ok(Self { names, records })
+        let events = root.records(&own_data_dir.join(FABRIC_DIR), "events", writer).await?;
+        Ok(Self { names, records, events })
     }
 
     /// Finishes every write of the fabric's name claim and identity this store has issued
@@ -320,6 +356,7 @@ impl FileFabricStorage {
     pub async fn finish_issued_writes(&self) {
         self.names.finish_issued_writes().await;
         self.records.finish_issued_writes().await;
+        self.events.finish_issued_writes().await;
     }
 }
 
@@ -341,7 +378,17 @@ impl FabricStorage for FileFabricStorage {
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
         self.records.write(IDENTITY_KEY, IDENTITY_FORMAT, identity).await
     }
+    async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), FabricStorageError> {
+        self.events.write(&row.key(), FABRIC_EVENT_FORMAT, row).await
+    }
+    async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, FabricStorageError> {
+        self.events.list(FABRIC_EVENT_FORMAT).await
+    }
 }
+
+#[cfg(feature = "file-backend")]
+/// The format of a Fabric event fact under `fabric/events/`.
+const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
 
 #[cfg(feature = "file-backend")]
 /// One claim of `identity` at `key` of `records`: the filesystem's own atomic link of the finished row

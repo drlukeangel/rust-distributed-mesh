@@ -363,7 +363,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         _ => cfg.mesh.clone(),
     };
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
-    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, status: status_storage, connections: open_connections, builds: journal, round_actions, finish_writes, writes_to } = storage.open(&scope, embedding_round_actions).await?;
+    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, connections: open_connections, builds: journal, round_actions, finish_writes, writes_to } = storage.open(&scope, embedding_round_actions).await?;
     storage_step.record("writes_to", writes_to.as_str());
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
     let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::on(journal.clone()));
@@ -888,14 +888,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         }
                     }));
                 }
-                // The status rows of this admin's mesh (`status.storage`): written by
-                // the mesh's seat holder, folded into what this admin applied when it takes the seat.
-                records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
-                // The ready-for-traffic event's row among this mesh's status rows is the durable fact that the fabric
+                // The facts on this admin's mesh's births, on every mesh and on the fabric: folded into
+                // what this admin applied when it becomes its mesh's primary.
+                records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
+                // The fabric's ready-for-traffic fact on the fabric store is the durable fact that the fabric
                 // first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"): an
                 // admin booting on a root that holds it knows it whatever status it hears next (a resize puts the
                 // fabric back to pending). The Fabric row is published at the first state-commit, before it.
-                records.first_ready.read_from(&*status_storage, &cfg.fabric_id, None).await.map_err(storage_err)?;
+                records.first_ready.read_from(&*fabric_storage, &cfg.fabric_id).await.map_err(storage_err)?;
                 records.set_book(membership.book.clone());
                 let builds = Arc::new(
                     FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone()), wiring.catch_up_seam.take())
@@ -1035,7 +1035,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     .with_contexts(attempt_contexts.clone())
                                     .with_first_ready(
                                         records.first_ready.clone(),
-                                        status_storage.clone(),
+                                        fabric_storage.clone(),
                                     )
                                     .with_claims(mesh_claims.clone()),
                                 );
@@ -1149,7 +1149,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     command_frame_seam: wiring.command_frame_seam.clone(),
                                     operation_effects: Default::default(),
                                     stopped: Default::default(),
-                                    status_storage: status_storage.clone(),
+                                    meshes_storage: mesh_storage.clone(),
+                                    fabric_storage: fabric_storage.clone(),
                                     nodes_storage: nodes_storage.clone(),
                                     me: name.clone(),
                                     node_id: node_id.clone(),
@@ -1296,7 +1297,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let _ = handover_slot.set(handover.clone());
                             let runner = Arc::new(AdminRunner {
                                 connections: Some(connections_storage.clone()),
-                                status_storage: status_storage.clone(),
+                                nodes_storage: nodes_storage.clone(),
                                 mesh_storage: mesh_storage.clone(),
                                 fabric_storage: fabric_storage.clone(),
                                 provider: provider_dyn.clone(),
@@ -1544,7 +1545,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }),
                                     primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
                                     issuer: issuer.clone(),
-                                    status_storage: Some(status_storage.clone()),
+                                    nodes: Some(nodes_storage.clone()),
                                     row: Arc::new({
                                         let rows = nodes_storage.clone();
                                         move |name: PathName| {
@@ -2045,8 +2046,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // gossip or readiness.
                                     {
                                         let declarer = declarer.clone();
-                                        let (digest, topology, records, me_id, incarnation, client, resolver, book, authority, status_storage) =
-                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), book.clone(), authority.clone(), status_storage.clone());
+                                        let (digest, topology, records, me_id, incarnation, client, resolver, book, authority, fabric_reads) =
+                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), book.clone(), authority.clone(), fabric_storage.clone());
                                         let rounds = rounds_slot.clone();
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
@@ -2064,12 +2065,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
-                                                // The fabric-primary owes the ready-for-traffic event from the durable fact: its mesh's
-                                                // status rows on the store root, read here, latch the handle the derivation reads.
+                                                // The fabric-primary owes the ready-for-traffic event from the durable fact: the
+                                                // fabric store, read here, latches the handle the derivation reads.
                                                 if view.holds_fabric_seat(&me_id) {
-                                                    if let Err(e) = declarer.read_first_ready(&*status_storage, &view).await {
+                                                    if let Err(e) = declarer.read_first_ready(&*fabric_reads, &view).await {
                                                         tracing::info_span!("rdm.node_admin.fabric.reject.via-ready-row-unreadable", node = %me, fabric_id = %view.fabric.id, status = view.fabric.status.name(), detail = %e)
-                                                            .in_scope(|| tracing::info!("the ready-for-traffic row of the fabric could not be read from this mesh's status rows: this round owes from the latch and the view"));
+                                                            .in_scope(|| tracing::info!("the ready-for-traffic fact of the fabric could not be read from the fabric store: this round owes from the latch and the view"));
                                                     }
                                                 }
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
@@ -2100,7 +2101,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     book: book.clone(),
                                                     provider: runner.provider.clone(),
                                                     nodes_storage: nodes_storage.clone(),
-                                                    status_storage: status_storage.clone(),
                                                     door: build_slot.clone(),
                                                     client: Some(node_rpc.client.clone()),
                                                     builds: control.builds.clone(),
@@ -2141,7 +2141,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let (
                                                         topology,
                                                         records,
-                                                        status_storage,
+                                                        silence_nodes,
                                                         runner,
                                                         me,
                                                         me_id,
@@ -2150,7 +2150,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     ) = (
                                                         control.topology.clone(),
                                                         records.clone(),
-                                                        status_storage.clone(),
+                                                        nodes_storage.clone(),
                                                         runner.clone(),
                                                         name.clone(),
                                                         node_id.clone(),
@@ -2271,7 +2271,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                     // A refusal is spanned where it happened (`offline::put_silence_status`); the memo
                                                     // keeps the last status that stands, and nothing below waits on this row.
-                                                    if crate::offline::put_silence_status(&*status_storage, &node, status).await.is_ok() {
+                                                    if crate::offline::put_silence_status(&*silence_nodes, &node, status).await.is_ok() {
                                                         written.insert(node.node_id.clone(), fact);
                                                     }
                                                 };
@@ -2410,7 +2410,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             name.clone(),
                                             node_id.clone(),
                                             issuer.clone(),
-                                            status_storage.clone(),
+                                            nodes_storage.clone(),
                                             node_rpc.client.clone(),
                                             Arc::new(move |bytes: Vec<u8>| {
                                                 if let Some(own) = own_cert.get() {
