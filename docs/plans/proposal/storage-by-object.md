@@ -41,6 +41,13 @@ A reader folds the rows of one object into its view; a cycle reset deletes the b
 keeps its operation effects, as today. A tombstone removes one key, never an object's other facts. The
 object's topics are compacted by key (Q140, below), so the newest row of each key is what survives.
 
+**Durability before `Applied`.** A birth's `declared` facts are written straight to the store, never
+through the bootstrap scratchpad, so an `Applied` declaration survives a crash before state-commit
+(Q54; today `status_storage.rs` opens `declared` to the disk while every other row waits in the
+scratchpad). The move keeps that boundary: the node store writes `declared` durably and answers `Applied`
+only after, whichever writer holds the pen, the acting fabric-primary included. No declaration is
+acknowledged from a buffer.
+
 **The writer of a mesh's and its nodes' facts** is that mesh's mesh-primary; while the mesh has no
 primary it is the fabric-primary ([node-mesh-join.md](../../architecture/lifecycles/node-mesh-join.md) names it the
 accepting primary then; [mesh-create.md](../../architecture/lifecycles/mesh-create.md) has it set the first node-admin's
@@ -73,9 +80,12 @@ executor is not it (Q122: it takes no role; it writes only its own attempt's ope
 record is ever read, and no issue is ever confused with a receipt by a copy.
 
 ### Q141 A: the date on the node row is the receipt (Luke, 2026-10-23)
-A renewal writes the cert's dates once, when the node answers, from what it answered. An unanswered renewal
-writes nothing; the row's `renew_at`, already passed, renews it on the next tick. A successor primary folds
-the one row. Page text, approved, to land with the code:
+A renewal writes the cert's dates once, when the node answers. `CertRenewed` and `IssuerUpdated` carry the
+birth and the expiry of the cert installed, nothing else (`rdm-core/src/status.rs`), so the issuer matches
+the answer to the cert it issued for that birth with that expiry and writes that cert's `issued_at`,
+`expires_at` and `renew_at`, which it has from the issue; an answer naming an expiry the issuer did not
+issue writes nothing. No wire change. An unanswered renewal writes nothing; the row's `renew_at`, already
+passed, renews it on the next tick. A successor primary folds the one row. Page text, approved, to land with the code:
 
 `lifecycles/node-cert-renew.md`, Row:
 - old: "The issuer puts the birth's cert row, keyed by the birth and `issued_at`, before it sends (`issued_at`, `expires_at`, `renew_at`), and puts the receipt row under the same key on the receipt; the newest issue and whether it has a receipt are the birth's renewal state"
