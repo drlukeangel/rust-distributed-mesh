@@ -420,9 +420,16 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let admin_fulls: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-full").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1").collect();
     assert!(!admin_fulls.is_empty(), "mesh1's primary put forwarded fulls into its Mesh");
     let deltas_forwarded: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1" && attr(sp, "mesh") == "mesh2" && at(sp) >= t_change_a && at(sp) < t_stop).collect();
-    // Five real changes in mesh2: held; released, at which the held node re-enters through node.mesh.join
-    // and is published Pending and then ReadyForTraffic (node-mesh-join.md step 10, Q87); held again.
-    assert_eq!(deltas_forwarded.len(), 5, "five real changes in mesh2 (held; released: Pending, ReadyForTraffic; held again): five deltas from the forwarding primary");
+    // The real changes in mesh2: held; released, at which the held node re-enters through node.mesh.join
+    // and is published Pending and then ReadyForTraffic (node-mesh-join.md step 10, Q87); held again. The
+    // forwarder emits one delta from the version it last published to the one it holds (gossip.md
+    // invariant 31): the deltas chain with no hole and end at the version the member installed, and the
+    // three changes apart in time are three deltas at least (Pending and ReadyForTraffic may share one
+    // aggregate round, one version).
+    let mut chain: Vec<(u64, u64)> = deltas_forwarded.iter().map(|sp| (num(sp, "base_version"), num(sp, "topology_version"))).collect();
+    chain.sort();
+    assert!(chain.len() >= 3, "held, released and held again are three deltas at least from the forwarding primary: {chain:?}");
+    assert!(chain.windows(2).all(|w| w[0].1 == w[1].0), "the forwarded deltas chain with no hole: {chain:?}");
     let bumps = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| attr(sp, "node") == "mesh2.admin.1").count();
 
     let result = json!({

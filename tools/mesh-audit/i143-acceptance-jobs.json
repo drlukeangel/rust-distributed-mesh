@@ -731,10 +731,10 @@
           "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation"
         },
         {
-          "name": "a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created",
+          "name": "a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict",
           "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict"
         },
         {
           "name": "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost",

@@ -843,7 +843,9 @@ async fn silent_case(run: &Run) {
     let mut reads = Vec::new();
     let mut outcomes = Vec::new();
     for _ in 0..2 {
-        let probe = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);
+        // A short budget: the hold ends inside the silent window. Past the second unreached tickle round
+        // node investigation decides, and a verdict other than reached re-creates the node (Q111).
+        let probe = run.estate.probe(&["get", "--target", &exact, "--budget-ms", "1500", "--key", "77"]);
         reads.push(json!({"proc_state": proc_state(pid).map(String::from), "cpu_ticks": cpu_ticks(pid), "outcome": probe["outcome"]}).to_string());
         outcomes.push(probe);
     }

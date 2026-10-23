@@ -41,6 +41,8 @@ struct Args {
     no_route: bool,
     /// Failpoint: write half the request, then reset it with 499 (`NotSent(FrameNotSent)`).
     cut_before_finish: bool,
+    /// `--budget-ms`: the call's overall budget, when it is not the default.
+    budget_ms: Option<u64>,
     /// `declare`: the authority the node declares to (`path:`/`exact:`), the state, and the
     /// testkit-only overrides.
     to: Option<String>,
@@ -67,6 +69,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut admin_birth, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
     let mut no_route = false;
     let mut cut_before_finish = false;
+    let mut budget_ms = None;
     let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
     let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
     let mut pass_history = 0u32;
@@ -84,6 +87,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--via" => via = Some(take("--via")?),
             "--no-route" => no_route = true,
             "--cut-before-finish" => cut_before_finish = true,
+            "--budget-ms" => budget_ms = Some(take("--budget-ms")?.parse().map_err(|e| format!("--budget-ms: {e}"))?),
             "--to" => to = Some(take("--to")?),
             "--state" => state = Some(take("--state")?),
             "--as-node-id" => as_node_id = Some(take("--as-node-id")?),
@@ -114,6 +118,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         via,
         no_route,
         cut_before_finish,
+        budget_ms,
         to,
         state,
         as_node_id,
@@ -324,7 +329,10 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
             resolver.resolve(&carrier).map(|c| rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name })
         }
     };
-    let opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
+    let mut opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
+    if let Some(ms) = a.budget_ms {
+        opts.budget = rdm_transport::Budget::Overall(std::time::Duration::from_millis(ms));
+    }
     let (out, leg): (RpcOutcome<ProofReply>, &str) = match route {
         Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), "via-peer"),
         Ok(route) => match resolver.resolve(&target) {
