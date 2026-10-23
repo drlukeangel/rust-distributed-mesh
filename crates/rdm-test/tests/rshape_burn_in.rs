@@ -5235,12 +5235,25 @@ async fn partition_run(cell: &str, shape: Shape) {
     }
     let side = |m: &str| -> Vec<String> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
-    let before: BTreeMap<String, (String, String)> = st.nodes.iter().map(|n| (s(&n["name"]), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect();
-    let mut pids = BTreeMap::new();
-    for n in &st.nodes {
-        let name = s(&n["name"]);
-        pids.insert(name.clone(), node_pid(&f, &name).await);
-    }
+    let before: BTreeMap<String, String> = st.nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    // At most one primary per (mesh, node type) and one fabric-primary among the ready births of a view.
+    let one_primary = |view: &[Value]| -> Result<(), String> {
+        let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready-for-traffic") {
+            seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(s(&n["name"]));
+        }
+        let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        match seen.iter().find(|(_, v)| v.len() > 1) {
+            Some((k, v)) => Err(format!("two primaries of {k:?}: {v:?}")),
+            None if fps.len() > 1 => Err(format!("two fabric-primaries: {fps:?}")),
+            None => Ok(()),
+        }
+    };
+    let view_of = |name: &str| {
+        let path = path_of(name);
+        let estate = &f.estate;
+        async move { estate.node_views_at(&path).await.map(|v| v.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect::<Vec<Value>>()) }
+    };
     let fabric_build_before = s(&st.fabric["build_id"]);
     let (g1, b1, b2, g2) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.broker.1".to_string(), "mesh2.gateway.1".to_string());
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
@@ -5280,12 +5293,18 @@ async fn partition_run(cell: &str, shape: Shape) {
     assert_eq!(local1.out["call_outcome"], "reply", "mesh1 serves within itself under the cut: {}", local1.out);
     assert_eq!(local2.out["call_outcome"], "reply", "mesh2 serves within itself under the cut: {}", local2.out);
     assert!(cross.out["outcome"] == "Reply" && cross.out["call_outcome"] != "reply", "nothing crosses the cut: {}", cross.out);
+    // Held for two staleness floors more, past mesh investigation's decision step: every view an admin
+    // answers holds at most one primary per (mesh, node type) and one fabric-primary. Which side's births
+    // survive is not pinned (Q4): recovery follows node investigation's verdict.
     let mut views_during = Vec::new();
-    for name in &admin_names {
-        let view = f.estate.node_values_at(name).await;
-        let own = side(&s(&st.nodes.iter().find(|n| n["name"] == name.as_str()).unwrap()["mesh"]));
-        assert!(holds_all_ready(&view, &own), "{name} still holds its own mesh ready during the cut: {view:#?}");
-        views_during.push(json!({"admin": name, "fabric_primary": view.iter().find(|n| n["is_fabric_primary"] == true).map(|n| n["name"].clone()), "seats": advertised_primaries_of(&view)}));
+    let sample_until = Instant::now() + window * 2;
+    while Instant::now() < sample_until {
+        for name in &admin_names {
+            let Some(view) = view_of(name).await else { continue };
+            one_primary(&view).unwrap_or_else(|e| panic!("during the cut, {name}'s view: {e}"));
+            views_during.push(json!({"t_ms": (now_ns() - cut_at) / 1_000_000, "admin": name, "fabric_primary": view.iter().find(|n| n["is_fabric_primary"] == true).map(|n| n["name"].clone()), "seats": advertised_primaries_of(&view)}));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     events.push(json!({"event": "partitioned", "held_for_ms": (held_at - cut_at) / 1_000_000, "same_mesh_calls": [local1.out["call_outcome"], local2.out["call_outcome"]], "cross_mesh_call": cross.out["call_outcome"], "views": views_during}));
 
@@ -5294,10 +5313,32 @@ async fn partition_run(cell: &str, shape: Shape) {
     let healed_at = now_ns();
     drop(cut);
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
+    // Healed: every pre-cut path.name holds exactly one live ReadyForTraffic birth in every admin's view, the
+    // same birth in each (a new NodeId where its recovery re-created it).
+    let converged = wait_for("every admin holds one live birth per pre-cut path, the same in each", Duration::from_secs(180), || async {
+        let mut want: Option<BTreeMap<String, String>> = None;
+        for name in &admin_names {
+            let view = view_of(name).await?;
+            one_primary(&view).ok()?;
+            let mut at = BTreeMap::new();
+            for p in &everyone {
+                let live: Vec<&Value> = view.iter().filter(|n| n["name"] == p.as_str() && n["status"] == "ready-for-traffic").collect();
+                if live.len() != 1 {
+                    return None;
+                }
+                at.insert(p.clone(), s(&live[0]["node_id"]));
+            }
+            if want.as_ref().is_some_and(|w| *w != at) {
+                return None;
+            }
+            want = Some(at);
+        }
+        want
+    })
+    .await;
+    let renewed: Vec<String> = converged.iter().filter(|(p, id)| before.get(*p) != Some(*id)).map(|(p, _)| p.clone()).collect();
     let st2 = a.stable(&mut f, "healed", &both(2), &mut inv).await;
-    for name in &admin_names {
-        wait_for(&format!("{name} holds every pre-cut member ready after the heal"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(name).await, &everyone).then_some(()) }).await;
-    }
+    let (nb1, nb2) = (st2.nodes.iter().find(|x| x["name"] == b1.as_str()).cloned().unwrap(), st2.nodes.iter().find(|x| x["name"] == b2.as_str()).cloned().unwrap());
     let mut redial = Vec::new();
     for (from, to) in [(&g1, &b2), (&g2, &b1)] {
         let until = Instant::now() + Duration::from_secs(60);
@@ -5314,13 +5355,8 @@ async fn partition_run(cell: &str, shape: Shape) {
         }
     }
     let after_ops = [originate_op(&f, &mut a, &g1, &nb2, "after-heal"), originate_op(&f, &mut a, &g2, &nb1, "after-heal")];
-    for n in &st2.nodes {
-        let name = s(&n["name"]);
-        assert_eq!(before.get(&name), Some(&(s(&n["node_id"]), s(&n["incarnation_id"]))), "{name} is the same birth after the heal");
-        assert!(pid_alive(pids[&name]), "{name} (pid {}) lived through the cut", pids[&name]);
-    }
     assert_eq!(s(&st2.fabric["build_id"]), fabric_build_before, "the fabric's accepted Build is the one it held before the cut");
-    events.push(json!({"event": "healed", "redial": redial, "after_ledger_ops": after_ops, "healed_at_ns": healed_at}));
+    events.push(json!({"event": "healed", "redial": redial, "after_ledger_ops": after_ops, "healed_at_ns": healed_at, "converged": converged, "new_node_ids_at": renewed}));
     a.events.extend(events.iter().cloned());
     let (adm, wm) = (admins.clone(), window_ms);
     let verified_at = now_ns();
@@ -5349,15 +5385,19 @@ async fn partition_run(cell: &str, shape: Shape) {
             .map(|sp| s(&sp["attributes"]["node"]))
             .collect();
         assert!(silent_own.is_empty(), "no admin lost its own mesh: {silent_own:?}");
+        // Recovery follows node investigation's verdict (Q111): every recovery submitted through cut and heal,
+        // and every create's fence, names a verdict other than `reached`.
         let life = lifecycle_marks(spans, marks.0, marks.3);
-        assert!(life.is_empty(), "no death, tombstone, departure, rebirth or terminate through cut and heal: {life:?}");
+        for sp in spans.iter().filter(|sp| start_ns(sp) >= marks.0 && start_ns(sp) <= marks.3 && (sp["name"] == "rdm.node_admin.build.update.via-node-recovery" || (sp["name"] == "rdm.node_admin.deployment.delete.via-fence" && sp["attributes"]["outcome"] == "unreached"))) {
+            assert_ne!(sp["attributes"]["verdict"], "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");
+        }
         let tv = topology_versions(spans);
         for (publisher, seq) in &tv {
             assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{publisher}: a topology_version never goes backward (a stale source version overwrote nothing): {seq:?}");
         }
         let created: BTreeSet<String> = named(spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
         assert_eq!(created, BTreeSet::from([f.build_id.clone()]), "no Build was accepted through cut and heal: recovered unchanged topology opens no new Build");
-        inv.holds("C9/C10: under the A/B cut each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins; after the heal every admin holds every member ready on the computed seats, every birth is the one that was cut, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
+        inv.holds("C9/C10: under the A/B cut each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins, every view holds one primary per cohort and recovery follows the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
         json!({"refeed_attempts": att.len(), "lifecycle_marks": life.len(), "topology_version_publishers": tv.len()})
     })
     .await;
@@ -5370,12 +5410,14 @@ fn advertised_primaries_of(view: &[Value]) -> Value {
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
 /// rule install; no node is cut from a member of its own mesh). Each admin hands each peer-mesh admin to its
 /// backbone channel again once per repair window (only after the coverage was stale for the window), no admin
-/// loses its own mesh; a gateway reaches its mesh's broker, nothing reaches across, each admin still holds its own
-/// mesh ready. The cut is dropped: every admin holds every pre-cut member ready on the computed seats with one
-/// fabric-primary, a gateway reaches the other mesh's broker again and the call is answered by its exact birth,
-/// every node is the same birth (NodeId, incarnation, process) and the fabric's accepted Build is unchanged.
-/// What must NOT happen: a reply across the cut, a death, tombstone, departure, rebirth or provider terminate, a
-/// topology_version going backward, a new Build for an unchanged topology, a second fabric-primary.
+/// loses its own mesh; a gateway reaches its mesh's broker, nothing reaches across. For two staleness floors
+/// past the decision step every view an admin answers holds at most one primary per (mesh, node type) and one
+/// fabric-primary; a recovery the cut opens follows node investigation's verdict (never `reached`), and which
+/// side's births survive is not pinned (Q4). The cut is dropped: every pre-cut path.name holds exactly one live
+/// ReadyForTraffic birth, the same in every admin's view (a new NodeId where it was re-created), a gateway
+/// reaches the other mesh's broker again and the fabric's accepted Build is unchanged.
+/// What must NOT happen: a reply across the cut, two primaries of one cohort or two fabric-primaries in a view,
+/// a topology_version going backward, a new Build for an unchanged topology.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_partition_heal_recovers_coverage_and_routes() {
     partition_run("mock_partition_heal_recovers_coverage_and_routes", any_tier()).await;

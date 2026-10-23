@@ -1804,6 +1804,7 @@ impl Driver {
             attempts: [0, acted_during.len() as u64],
             exact_runtime_alive: alive,
             replaced_during: replaced,
+            held_past_floor: false,
         });
         let mut rec = Reconciliation::default();
         if is_rpc {

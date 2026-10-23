@@ -41,7 +41,8 @@ pub const NO_PROGRESS_CONSEQUENCE: &str = "wedge_detector_requires_stalled_progr
 pub const NO_ROUTING_CONSEQUENCE: &str = "wedge_detector_requires_routing_consequence";
 /// The public control effect is missing, or the seats diverge from what the public candidates compute.
 pub const NO_CONTROL_CONSEQUENCE: &str = "wedge_detector_requires_control_consequence";
-/// A runtime that was alive and silent was replaced, re-attempted or re-born: silence is not death.
+/// A runtime that was alive and silent was replaced, re-attempted or re-born before it was unheard past
+/// the staleness floor (past it, node investigation re-creates it: node-recovery.md step 3, Q111).
 pub const SILENT_RUNTIME_JUDGED_DEAD: &str = "wedge_detector_never_judges_a_running_silent_runtime_dead";
 /// The injection was never released, or the hold did not end.
 pub const NO_RELEASE: &str = "wedge_detector_requires_release";
@@ -207,6 +208,10 @@ pub struct Control {
     pub exact_runtime_alive: bool,
     /// The hold ended with the work replaced: a new attempt, a new incarnation or a retire.
     pub replaced_during: bool,
+    /// The held birth was unheard past the staleness floor: node investigation reads it held and
+    /// re-creates it at its path (node-recovery.md step 3, Q111), so its replacement is the recovery, not
+    /// a silent runtime judged dead.
+    pub held_past_floor: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -438,11 +443,11 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
                 proved.push("control");
             }
             let reborn = c.incarnation[0] != c.incarnation[1] || c.incarnation[1] != c.incarnation[2];
-            if c.exact_runtime_alive && (c.replaced_during || reborn || c.attempts[0] != c.attempts[1]) {
+            if c.exact_runtime_alive && !c.held_past_floor && (c.replaced_during || reborn || c.attempts[0] != c.attempts[1]) {
                 out.push(rej(
                     SILENT_RUNTIME_JUDGED_DEAD,
                     format!(
-                        "the exact runtime was alive and silent, and the control plane replaced it: replaced={}, incarnations {:?}, attempts {:?}",
+                        "the exact runtime was alive and silent, not yet unheard past the staleness floor, and the control plane replaced it: replaced={}, incarnations {:?}, attempts {:?}",
                         c.replaced_during, c.incarnation, c.attempts
                     ),
                 ));

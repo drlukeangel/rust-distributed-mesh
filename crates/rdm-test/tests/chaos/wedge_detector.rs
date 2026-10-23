@@ -109,6 +109,7 @@ fn healthy(family: Family) -> Evidence {
         attempts: [1, 1],
         exact_runtime_alive: true,
         replaced_during: false,
+        held_past_floor: false,
     });
     e.release = Some(Release { acked: true, hold_ended: true });
     e.recovery = Some(Recovery { work_complete: true, marker_after: build_marker("complete", 1, &["AllocateIdentity".to_string(), "Complete".to_string()]) });
@@ -672,6 +673,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         attempts: [attempts[0], during_marker_attempt],
         exact_runtime_alive: alive,
         replaced_during: replaced,
+        held_past_floor: false,
     });
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
@@ -783,6 +785,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
         attempts,
         exact_runtime_alive: alive,
         replaced_during: inc_before != inc_during || attempts[0] != attempts[1],
+        held_past_floor: false,
     });
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
@@ -881,6 +884,7 @@ async fn silent_case(run: &Run) {
         attempts: [attempt_before, attempt_during],
         exact_runtime_alive: alive,
         replaced_during: replaced,
+        held_past_floor: false,
     });
     let mut rec = Reconciliation::default();
     rec.check("the value stored before the freeze is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-freeze"}), kept.to_string());

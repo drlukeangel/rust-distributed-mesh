@@ -228,6 +228,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         attempts: [attempt_before, attempt_during],
         exact_runtime_alive: alive,
         replaced_during: replaced,
+        held_past_floor: false,
     });
     let mut rec = Reconciliation::default();
     rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-fault"}), kept.to_string());

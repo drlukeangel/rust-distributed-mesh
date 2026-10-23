@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const CELL: &str = "container_network_partitions_heals_preserves_live_runtimes";
+const CELL: &str = "container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_per_path";
 const NODE_CELL: &str = "container_node_unheard_heals_serves_same_birth";
 
 /// What is silenced: every container of the peer mesh without the fabric-primary seat, or one rpc
@@ -244,29 +244,115 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
     json!({"name": sp["name"], "trace_id": sp["trace_id"], "span_id": sp["span_id"], "parent_span_id": sp["parent_span_id"], "service": sp["service"], "start_unix_nano": start(sp), "attributes": attrs})
 }
 
-/// CONTRACT (#2784): on a real Docker estate of two meshes (two node-admins and two rpc nodes
-/// each), every container of the peer mesh that does not hold the fabric-primary seat is silenced
-/// against the rest of the estate (a packet filter in each container's own network namespace) and
-/// later released. While it is silenced: `docker inspect` shows each of those containers still
-/// running (same id, same init, no restart, no exit) and attached to the fabric network; the other
-/// mesh's view marks every one of them unheard; a Direct call to one of them ends `NotSent`
-/// (deadline), a ViaPeer call through a node of the other mesh ends `NotSent` naming the
-/// carrier's lost edge (`CarrierEdgeLost`, every time, never `Indeterminate`), a NoActiveRoute call is
-/// `NotSent`, and no serve span exists for them; the advertised seats equal what the public
-/// candidates compute, the fabric-primary stays put, and the Build gains no attempt and
-/// the current build_id does not move; the control plane creates, retires and re-births nothing. After
-/// the release every silenced node is back as the same birth (same incarnation, same container),
-/// every admin's view holds the same births and every mesh ready-for-traffic, and a Direct and a
-/// ViaPeer call to the silenced node are served by the same birth with the value stored before the
-/// cut (the healthy control, run before the cut as well). What must NOT happen: a container
-/// stopped, removed or replaced, a node declared dead and re-born, a terminate, a retire, or an
-/// election move because of the silence.
+/// CONTRACT (#2784; Q4, as ruled for the process partition cell; Q111, Q122): on a real Docker estate of
+/// two meshes (two node-admins and two rpc nodes each), every container of the mesh that does not hold
+/// the fabric-primary is silenced against the rest of the estate (a packet filter in each container's
+/// own network namespace) past mesh investigation's decision step, then released. Throughout, every view
+/// sampled holds at most one primary per (mesh, node_type) and at most one fabric-primary, and the
+/// fabric-primary stays put. Recovery of the cut mesh's nodes follows node investigation's verdict: every
+/// recovery submitted for one of them names a verdict other than `reached`. After the release every
+/// pre-cut path.name has exactly one live ReadyForTraffic birth and every ready admin's view holds the same
+/// birth at each path (new node ids are expected); the current build_id is the Build it was. Which side's
+/// births survive is not pinned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn container_network_partitions_heals_preserves_live_runtimes() {
-    if crate::own_process::delegated(module_path!(), "container_network_partitions_heals_preserves_live_runtimes") {
+async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_per_path() {
+    if crate::own_process::delegated(module_path!(), CELL) {
         return;
     }
-    run_isolation(CELL, Cut::PeerMesh).await;
+    assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
+    let dir = acceptance_dir(CELL);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut estate = Estate::bootstrap(owner(CELL), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
+    let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
+    let nodes = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
+    let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("the view names a fabric primary");
+    let kept_mesh = fabric_primary.split('.').next().unwrap().to_string();
+    let cut_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
+    estate.enter(&Estate::path(&fabric_primary)).await;
+    estate.until_fabric_ready_at(&Estate::path(&fabric_primary), Duration::from_secs(120)).await;
+    let isolated_names: Vec<String> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str()).map(|n| s(&n["name"])).collect();
+    assert_eq!(isolated_names.len(), 4, "{cut_mesh} holds its four members: {isolated_names:?}");
+    let pre_ids: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+
+    let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).await.expect("the exact containers and addresses are resolved before the cut");
+    silenced.install().expect("the cut mesh's containers are silenced");
+    let cut_at = now_nanos();
+    // One primary per cohort and one fabric-primary in every view sampled, past the decision step.
+    let one_primary = |ns: &[Value]| -> Result<(), String> {
+        let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        for n in ns.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready-for-traffic") {
+            seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(s(&n["name"]));
+        }
+        let fps: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        match seen.iter().find(|(_, v)| v.len() > 1) {
+            Some((k, v)) => Err(format!("two primaries of {k:?}: {v:?}")),
+            None if fps.len() > 1 => Err(format!("two fabric-primaries: {fps:?}")),
+            None => Ok(()),
+        }
+    };
+    let floor = rdm_core::cadence::staleness_floor();
+    let mut samples = Vec::new();
+    let until = std::time::Instant::now() + floor * 4;
+    while std::time::Instant::now() < until {
+        let views = estate.node_values().await;
+        one_primary(&views).unwrap_or_else(|e| panic!("during the cut, the fabric-primary's view: {e}"));
+        let fp_now = views.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
+        assert!(fp_now.is_empty() || fp_now == fabric_primary, "the fabric-primary stays put: {fp_now}");
+        samples.push(json!({"t_ms": (now_nanos() - cut_at) / 1_000_000, "views": views.iter().map(|n| format!("{}={}/{}", s(&n["name"]), s(&n["status"]), s(&n["node_id"]))).collect::<Vec<_>>()}));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    silenced.lift().expect("every container's packet filter is restored");
+    let healed_at = now_nanos();
+
+    // Healed: every pre-cut path.name holds exactly one live ReadyForTraffic birth in every ready admin's view,
+    // the same birth in each.
+    let converged = wait_for("every ready admin holds one live birth per pre-cut path, the same in each", Duration::from_secs(180), || async {
+        let views = estate.node_values().await;
+        let admins = ready_admins(&views);
+        let at = |ns: &[Value]| -> Option<BTreeMap<String, String>> {
+            let mut m = BTreeMap::new();
+            for name in &all {
+                let live: Vec<&Value> = ns.iter().filter(|n| s(&n["name"]) == *name && n["status"] == "ready-for-traffic").collect();
+                if live.len() != 1 {
+                    return None;
+                }
+                m.insert(name.clone(), s(&live[0]["node_id"]));
+            }
+            Some(m)
+        };
+        let want = at(&views)?;
+        for admin in &admins {
+            let theirs = nodes_at(&estate, admin).await?;
+            one_primary(&theirs).ok()?;
+            if at(&theirs)? != want {
+                return None;
+            }
+        }
+        Some((want, admins))
+    })
+    .await;
+    // The node at the fabric-primary's path.name may be a new birth (which side's births survive is not
+    // pinned): the estate is entered there again before it is read.
+    estate.enter(&Estate::path(&fabric_primary)).await;
+    let fabric_after = fabric_json(&estate).await;
+    assert_eq!(s(&fabric_after["build_id"]), build_id, "the current build_id is the Build it was: {fabric_after}");
+    estate.stop().await;
+    let spans = estate.spans();
+    let recoveries: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .filter(|sp| start(sp) >= cut_at && isolated_names.contains(&attr(sp, "node").to_string()))
+        .map(|sp| span_row(sp, &["node", "node_id", "verdict", "submitter", "outcome"]))
+        .collect();
+    for r in &recoveries {
+        assert_ne!(r["attributes"]["verdict"], "reached", "a recovery follows node investigation's verdict, never `reached`: {r}");
+    }
+    let renewed: Vec<String> = converged.0.iter().filter(|(p, id)| pre_ids.get(*p) != Some(*id)).map(|(p, _)| p.clone()).collect();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({
+        "cell": CELL, "kept_mesh": kept_mesh, "cut_mesh": cut_mesh, "fabric_primary": fabric_primary, "cut_unix_nano": cut_at, "healed_unix_nano": healed_at,
+        "samples": samples, "converged": converged.0, "agreeing_admins": converged.1, "new_node_ids_at": renewed, "recoveries": recoveries,
+    })).unwrap()).unwrap();
 }
 
 /// CONTRACT (#2784): the same cut on ONE rpc node of the peer mesh without the seat. The node alone
@@ -526,6 +612,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         attempts: [attempt_before, attempt_during],
         exact_runtime_alive: provider_alive_during,
         replaced_during: inc_during != target_inc || attempt_during != attempt_before || s(&fabric_during["build_id"]) != fabric_build,
+        held_past_floor: false,
     });
     let mut containers_after: BTreeMap<String, String> = BTreeMap::new();
     for n in &isolated_names {
@@ -1125,10 +1212,10 @@ fn fabric_primary_of(nodes: &[Value]) -> String {
 /// a birth (Docker id + Fabric label + node label + start time), never on a name alone, and the
 /// rectifier recovers the current birth. A container under another start time, another node's
 /// label or another Fabric's label is refused by name with the container untouched. A paused rpc
-/// node is alive and silent: the daemon acknowledges the pause, the view stops calling it ready,
-/// calls to it never complete, and no replacement, re-attempt or new birth follows; the unpause
-/// returns the SAME birth in the SAME container, which serves the value stored before the pause
-/// (the semantic wedge detector judges it). A killed rpc node and a killed node-admin that is
+/// node is alive and silent: the daemon acknowledges the pause and calls to it never complete; unheard
+/// past the staleness floor, node investigation reads it held and its mesh-primary re-creates it at its
+/// path with a new NodeId under the same Build (node-recovery.md step 3, Q111), which serves (the semantic
+/// wedge detector judges it). A killed rpc node and a killed node-admin that is
 /// neither mesh-primary nor fabric-primary are terminal by the daemon's observed exit only, and each
 /// is a lost member of a mesh with a live mesh-primary (node-recovery.md, mesh-recovery.md:8-9): its
 /// mesh-primary submits the recovery as the next attempt of the SAME Build (reason recovery,
@@ -1136,7 +1223,7 @@ fn fabric_primary_of(nodes: &[Value]) -> String {
 /// NodeId and incarnation in a new container at the same path.name over the inherited data dir
 /// through the create pipeline (every step a child of it), the old NodeId never follows the path, and exactly one
 /// container serves each path. What must NOT happen: a command reaching a container
-/// the fact does not name, a paused container replaced, a Build minted for drift, the
+/// the fact does not name, a paused container replaced before the floor, a Build minted for drift, the
 /// fabric-primary node-admin touched, or a mesh left without a node-admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth() {
@@ -1187,7 +1274,9 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     assert_eq!(container_faults::inspect(&hold_c.id).unwrap().status, "running", "nothing was sent: the container still runs");
     assert!(hold_c.check().is_ok(), "the exact container is untouched");
 
-    // ---- Hold: docker pause of the exact container, judged by the semantic detector.
+    // ---- Hold: docker pause of the exact container, judged by the semantic detector. Unheard past the
+    // staleness floor, node investigation reads it held (`os-stopped`) and its mesh-primary re-creates it
+    // at its path with a new NodeId under the current Build (node-recovery.md step 3, Q111).
     let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:pause-{hold}"));
     let nodes_pre = estate.node_values().await;
     let (seats_before, detail_before) = seats(&nodes_pre);
@@ -1195,7 +1284,6 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let paused = hold_c.apply(Fault::Pause).expect("the exact container is paused");
     assert_eq!(paused.status_after, "paused");
     ev.primitive = Some(Primitive { armed: true, ack: serde_json::to_value(&paused).unwrap() });
-    let silent_view = wait_for(&format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), || async { estate.node_value_opt(&hold).await.filter(|n| n["status"] != "ready-for-traffic") }).await;
     let mut reads = Vec::new();
     let mut outcomes = Vec::new();
     for _ in 0..2 {
@@ -1204,24 +1292,26 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
         reads.push(json!({"status": i.status, "pid": i.pid, "cpu_ticks": rdm_test::process_faults::cpu_ticks(i.pid as u32), "outcome": probe["outcome"]}).to_string());
         outcomes.push(probe);
     }
-    let held_at_last_read = container_faults::inspect(&hold_c.id).unwrap().status == "paused";
-    ev.fault = Some(FaultAck { held: true, names: Some(json!({"container": hold_c.id, "started_at": hold_c.started_at, "view_status": silent_view["status"]})), held_at_last_read });
-    ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
-    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
-    let nodes_during = estate.node_values().await;
-    let (seats_during, detail_during) = seats(&nodes_during);
-    let during = nodes_during.iter().find(|n| n["name"] == hold.as_str()).cloned();
-    let attempt_during = estate.attempt_of_build(&build_id).await;
-    let alive = hold_c.check().is_ok();
-    let replaced = during.as_ref().is_none_or(|n| n["node_id"] != hold_n["node_id"]);
-    let released = hold_c.apply(Fault::Unpause).expect("the pause is released");
-    ev.release = Some(Release { acked: true, hold_ended: released.status_after == "running" });
-    let back = wait_for(&format!("{hold} back as its own birth"), floor * 2 + Duration::from_secs(30), || async {
-        estate.node_value_opt(&hold).await.filter(|n| n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready-for-traffic")
+    // The node at the held path, re-created: a new NodeId ready there.
+    let silent_view = wait_for(&format!("{hold} re-created at its path"), floor * 4 + Duration::from_secs(60), || async {
+        estate.node_value_opt(&hold).await.filter(|n| n["node_id"] != hold_n["node_id"] && n["status"] == "ready-for-traffic")
     })
     .await;
-    let kept = estate.probe(&["get", "--target", &hold_exact, "--key", "83"]);
-    ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"status": container_faults::inspect(&hold_c.id).unwrap().status, "outcome": kept["outcome"]}).to_string() });
+    let held_at_last_read = container_faults::inspect(&hold_c.id).unwrap().status == "paused";
+    ev.fault = Some(FaultAck { held: true, names: Some(json!({"container": hold_c.id, "started_at": hold_c.started_at, "re_created_as": silent_view["node_id"]})), held_at_last_read });
+    ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
+    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("calls {}", outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
+    let nodes_during = estate.node_values().await;
+    let (seats_during, detail_during) = seats(&nodes_during);
+    let attempt_during = estate.attempt_of_build(&build_id).await;
+    let alive = hold_c.check().is_ok();
+    let released = hold_c.apply(Fault::Unpause).expect("the pause is released");
+    ev.release = Some(Release { acked: true, hold_ended: released.status_after == "running" });
+    // The re-created node serves at the path.
+    let new_exact = format!("exact:{}", s(&silent_view["node_id"]));
+    let put = estate.probe(&["put", "--target", &new_exact, "--key", "84", "--value", "after-recreate"]);
+    let kept = estate.probe(&["get", "--target", &new_exact, "--key", "84"]);
+    ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"put": put["outcome"], "outcome": kept["outcome"]}).to_string() });
     let nodes_after = estate.node_values().await;
     let (seats_after, detail_after) = seats(&nodes_after);
     ev.control = Some(Control {
@@ -1230,16 +1320,17 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
         fabric_primary: [fp_before.clone(), fabric_primary_of(&nodes_during), fabric_primary_of(&nodes_after)],
         fabric_home: fp_before,
         authority_may_move: false,
-        incarnation: [s(&hold_n["incarnation_id"]), during.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
+        incarnation: [s(&hold_n["incarnation_id"]), s(&silent_view["incarnation_id"]), s(&silent_view["incarnation_id"])],
         attempts: [attempt_before, attempt_during],
         exact_runtime_alive: alive,
-        replaced_during: replaced,
+        replaced_during: true,
+        held_past_floor: true,
     });
     let mut rec = Reconciliation::default();
-    rec.check("the value stored before the pause is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-fault"}), kept.to_string());
-    rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == hold_n["incarnation_id"] && kept["reply"]["executing_node"] == hold_n["node_id"], kept.to_string());
-    rec.check("the exact container is the one that was paused (same id, same start)", ExactContainer::of(&estate, &hold).await.as_ref() == Ok(&hold_c), format!("{hold_c:?}"));
-    rec.check("the Build gained no attempt", estate.attempt_of_build(&build_id).await == attempt_before, format!("attempt {attempt_before}"));
+    rec.check("the re-created node serves at the path", kept["reply"]["result"] == json!({"found": true, "value": "after-recreate"}), kept.to_string());
+    rec.check("a new NodeId at the path, never the paused birth", silent_view["node_id"] != hold_n["node_id"], silent_view.to_string());
+    rec.check("the paused birth is in no view", !nodes_after.iter().any(|n| n["node_id"] == hold_n["node_id"]), format!("{nodes_after:?}"));
+    rec.check("no Build was minted", estate.accepted_build_id().await == build_id, build_id.to_string());
     rec.check("the seats equal the public candidates' after the release", seats_after, detail_after);
     ev.reconciliation = Some(rec);
 
@@ -1283,7 +1374,8 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     estate.settled_views(&[("mesh1", 3, 3)]).await;
     let nodes_end = estate.node_values().await;
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
-    let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"])].contains(id)).collect();
+    // The paused node was re-created at its path too (the hold's segment above).
+    let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"]), s(&hold_n["node_id"])].contains(id)).collect();
     assert!(untouched.iter().all(|id| survivors_after.contains(*id)), "no other node was replaced: before {survivors_before:?} after {survivors_after:?}");
     let seats_end = seats(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
@@ -1361,67 +1453,61 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&own).unwrap()).unwrap();
 }
 
-const HELD_CELL: &str = "container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value";
+const HELD_CELL: &str = "container_node_silenced_past_the_floor_is_terminated_and_re_created_at_once";
 
-/// CONTRACT (R-FM1, node-recovery.md step 4; i143 Q50's flame): an rpc node whose container runs but is
-/// silenced against the rest of the estate past the held-running hold (`RDM_HUNG_HOLD_FLOORS`) is held
-/// running by its mesh-primary, surfaced on `node.get`; when the hold expires its exact container is
-/// terminated (`TerminateRuntime`), the provider's exit proof is taken, and the mesh-primary recovers the
-/// path as a new birth (a new node.id) over the inherited data dir: ready for traffic, serving the value
-/// stored before the silence. Must NOT happen: a terminate before the hold expires, a recovery without
-/// the terminate, the old container left running, or the stored value lost.
+/// CONTRACT (node-recovery.md step 3, Q111; i143 Q50's flame): an rpc node whose container runs but is
+/// silenced against the rest of the estate is unheard past the staleness floor; its mesh-primary's node
+/// investigation reads it `running`, and the recovery at once terminates its exact container
+/// (`TerminateRuntime`, nothing waits for a proof) and re-creates the path as a new birth (a new node.id)
+/// over a newly allocated data dir (R-FM2: the inherited one only when the verdict is `exited`): ready for
+/// traffic, serving. Must NOT happen: a recovery without the terminate, the old container left running, or
+/// a second recovery of the birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value() {
+async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_once() {
     if crate::own_process::delegated(module_path!(), HELD_CELL) {
         return;
     }
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
     let dir = acceptance_dir(HELD_CELL);
     std::fs::create_dir_all(&dir).unwrap();
-    let hold_floors = 2u32;
-    let mut estate = Estate::bootstrap_with_env(owner(HELD_CELL), "fabric1", "mesh1", &[("RDM_HUNG_HOLD_FLOORS", "2")]).await;
+    let mut estate = Estate::bootstrap(owner(HELD_CELL), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let nodes = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("the view names a fabric primary");
-    // The held node holds no cohort seat: its termination moves none.
+    // The silenced node holds no cohort seat: its termination moves none.
     let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] != true).cloned().expect("an rpc node that holds no seat");
-    let (name, id, inc) = (s(&target["name"]), s(&target["node_id"]), s(&target["incarnation_id"]));
-    let put = estate.probe(&["put", "--target", &format!("exact:{id}"), "--key", "held", "--value", "before-hold"]);
-    assert_eq!(put["outcome"], "Reply", "{put}");
-    assert_eq!(put["reply"]["incarnation_id"], inc.as_str(), "{put}");
+    let (name, id) = (s(&target["name"]), s(&target["node_id"]));
+    let old_dir = s(&target["data_dir"]);
     let container = estate.container_of(&name).await.unwrap_or_else(|| panic!("{name}: no running container"));
 
     // The silence, never lifted: the terminate ends the container that holds it.
     let silenced = container_faults::prepare_silence(&estate, &[name.clone()], &fabric_primary).await.expect("the exact container and its addresses are resolved before the cut");
     silenced.install().expect("the node's container is silenced");
     let cut_at = now_nanos();
-    let held = wait_for(&format!("{name} surfaces held_running on node.get"), crate::node_recovery_due(), || async {
-        estate.node_value_opt(&name).await.filter(|n| n["node_id"] == id.as_str() && n["held_running"]["since"].as_u64().unwrap_or(0) > 0)
-    })
-    .await;
-    let recovered = wait_for(&format!("{name} recovered as a new birth after the hold expired"), Duration::from_secs(180), || async {
+    let floor = rdm_transport::membership::staleness_floor();
+    let recovered = wait_for(&format!("{name} re-created as a new birth"), floor * 4 + Duration::from_secs(120), || async {
         let n = estate.node_value_opt(&name).await?;
-        (n["status"] == "ready-for-traffic" && n["node_id"] != id.as_str() && n["held_running"].is_null()).then_some(n)
+        (n["status"] == "ready-for-traffic" && n["node_id"] != id.as_str()).then_some(n)
     })
     .await;
     let old = container_faults::inspect(&container);
-    assert!(old.as_ref().map_or(true, |i| !i.running), "the held birth's container no longer runs: {old:?}");
-    let value = estate.probe(&["get", "--target", &format!("path:{name}"), "--key", "held"]);
-    assert_eq!(value["reply"]["result"], json!({"found": true, "value": "before-hold"}), "the new birth serves the store of the data dir it inherited: {value}");
+    assert!(old.as_ref().map_or(true, |i| !i.running), "the silenced birth's container no longer runs: {old:?}");
+    assert_ne!(s(&recovered["data_dir"]), old_dir, "re-created over a newly allocated data dir: {recovered}");
+    let put = estate.probe(&["put", "--target", &format!("path:{name}"), "--key", "after", "--value", "re-created"]);
+    let value = estate.probe(&["get", "--target", &format!("path:{name}"), "--key", "after"]);
+    assert_eq!(value["reply"]["result"], json!({"found": true, "value": "re-created"}), "the new birth serves: {put} {value}");
     assert_eq!(value["reply"]["executing_node"], recovered["node_id"], "the new birth serves it: {value}");
 
     estate.stop().await;
     let spans = estate.spans();
-    let floor = rdm_transport::membership::staleness_floor();
-    let hold = floor * hold_floors;
     let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "node") == name && attr(sp, "step") == "TerminateRuntime" && attr(sp, "outcome") == "complete").collect();
     assert_eq!(terminated.len(), 1, "{name}'s exact container is terminated once: {terminated:#?}");
     let after_ns = start(terminated[0]).saturating_sub(cut_at);
-    assert!(Duration::from_nanos(after_ns) >= hold, "the terminate waits out the hold ({hold:?}): {:?} after the cut", Duration::from_nanos(after_ns));
     let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "node") == name && attr(sp, "node_id") == id && attr(sp, "outcome").starts_with("complete")).collect();
-    assert_eq!(recovery.len(), 1, "one recovery of the terminated birth: {recovery:#?}");
+    assert_eq!(recovery.len(), 1, "one recovery of the silenced birth: {recovery:#?}");
+    assert_eq!(attr(recovery[0], "verdict"), "running", "node investigation read the silenced container running: {:#}", recovery[0]["attributes"]);
     assert!(terminated[0]["trace_id"] == recovery[0]["trace_id"] && attr(terminated[0], "attempt") == attr(recovery[0], "attempt"), "the terminate is a step of the recovery's attempt: {:#} {:#}", terminated[0]["attributes"], recovery[0]["attributes"]);
     let trace = s(&terminated[0]["trace_id"]);
-    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({"cell": HELD_CELL, "node": name, "old_node_id": id, "new_node_id": recovered["node_id"], "held_running": held["held_running"], "terminate_after_ms": after_ns / 1_000_000, "hold_ms": hold.as_millis() as u64, "trace": trace})).unwrap()).unwrap();
-    println!("held past the hold: terminate {}ms after the cut, flame http://192.168.68.99:16687/trace/{trace}", after_ns / 1_000_000);
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({"cell": HELD_CELL, "node": name, "old_node_id": id, "new_node_id": recovered["node_id"], "terminate_after_ms": after_ns / 1_000_000, "trace": trace})).unwrap()).unwrap();
+    println!("silenced past the floor: terminate {}ms after the cut, flame http://192.168.68.99:16687/trace/{trace}", after_ns / 1_000_000);
 }
