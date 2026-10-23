@@ -96,8 +96,10 @@ A renewal writes the cert's dates once, when the node answers. `CertRenewed` and
 birth and the expiry of the cert installed, nothing else (`rdm-core/src/status.rs`), so the issuer matches
 the answer to the cert it issued for that birth with that expiry and writes that cert's `issued_at`,
 `expires_at` and `renew_at`, which it has from the issue; an answer naming an expiry the issuer did not
-issue writes nothing. No wire change. An unanswered renewal writes nothing; the row's `renew_at`, already
-passed, renews it on the next tick. A successor primary folds the one row. Page text, approved, to land with the code:
+issue writes nothing. No wire change. An unanswered renewal writes nothing: the stored expiry stays as it was, the row's `renew_at`, already
+passed, stays overdue, and the next tick renews again. An issuer that answered the node but was lost
+before it wrote is the same case: nothing was written, so the next tick renews again, and the node
+installs the newer cert. A successor primary does the same from the one stored row. Page text, approved, to land with the code:
 
 `lifecycles/node-cert-renew.md`, Row:
 - old: "The issuer puts the birth's cert row, keyed by the birth and `issued_at`, before it sends (`issued_at`, `expires_at`, `renew_at`), and puts the receipt row under the same key on the receipt; the newest issue and whether it has a receipt are the birth's renewal state"
