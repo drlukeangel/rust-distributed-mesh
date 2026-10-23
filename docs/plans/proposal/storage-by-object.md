@@ -69,6 +69,16 @@ node-admin's signing cert are issued and their dates written by the fabric-prima
 primary exists (`cert_renewal.rs::renewed_by` today). One writer per key still holds: each key has
 exactly one, named here; an implementation refuses nothing a named writer writes.
 
+### Outside the map, by design
+
+A node-admin's own `self` row and the launch handles of the runtimes it launched live in its own data
+dir, beside `node-key`, `ca-secret` and `fabric-ca`: a restarting admin reads them before it opens any
+store, to learn which fabric and mesh it belongs to, and cannot read a topic whose fabric it does not yet
+know. They are a bootstrap seed, not a record of the fabric; what the fabric needs to know of a birth's
+runtime is on the node in `nodes.storage`. Every record RDM keeps of the fabric is in one of the five
+stores above, and each store is one rafka topic. `ops.nodes.offline` is rafka's own and `topology-nodes`
+is the nodes projection, neither a store.
+
 ### What moves, row by row (`crates/rdm-admin/src/status_storage.rs`)
 
 | Row today | Goes to | Writer |
