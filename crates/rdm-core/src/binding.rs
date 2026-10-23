@@ -51,6 +51,12 @@ pub struct Binding {
 }
 
 impl Binding {
+    /// This binding against the provider that launches it: a container provider needs the image it
+    /// runs bound, a process provider none (the startup set's check, for one binding).
+    pub fn check_image(&self, provider: ProviderImage) -> Result<(), BindingError> {
+        BindingSet::check_image(self, provider)
+    }
+
     /// The file this binding names, hashed now: its sha256 when the file is there, executable and
     /// carries the bound hash; a missing file and a hash mismatch are refused by name.
     pub fn verify(&self) -> Result<String, BindingError> {

@@ -275,7 +275,7 @@ impl AdminRunner {
             let binding = built_in_binding(node.kind, &t.executable).await.map_err(|e| format!("node.create:{node}: {e}"))?;
             return Ok(LaunchTemplate { binding: Some(binding), ..t });
         };
-        verify_binding(&binding, node.kind, from).await.map_err(|e| format!("node.create:{node}: the executable the {from} names is refused; nothing is launched: {e}"))?;
+        verify_binding(&binding, node.kind, self.fabric_provider, from).await.map_err(|e| format!("node.create:{node}: the executable the {from} names is refused; nothing is launched: {e}"))?;
         tracing::info!(launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, "launching from the explicit executable binding");
         let executable = binding.executable.clone();
         self.template_launching(node.kind, &node.mesh, executable, Some(binding)).await
@@ -1293,11 +1293,15 @@ pub(crate) async fn resolve_bound(bindings: &rdm_core::binding::Validated, kind:
 /// A binding a Build or a node row names, checked at the launch that runs it: its launch id is the
 /// node's kind, and its file is re-hashed now (on the blocking pool, as [`resolve_bound`]). A missing
 /// file and a hash that differs are refused by name.
-pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: NodeKind, from: &str) -> Result<(), String> {
+pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: NodeKind, provider: ProviderKind, from: &str) -> Result<(), String> {
     let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
     if binding.launch_id != kind.name() {
         span.record("outcome", "refused");
         return Err(format!("the binding is for launch id `{}`, the node is a `{}`", binding.launch_id, kind.name()));
+    }
+    if let Err(e) = binding.check_image(super::boot::provider_image(provider)) {
+        span.record("outcome", "refused");
+        return Err(e.to_string());
     }
     let started = std::time::Instant::now();
     let b = binding.clone();
@@ -1320,6 +1324,31 @@ async fn built_in_binding(kind: NodeKind, executable: &std::path::Path) -> Resul
 mod tests {
     use super::*;
     use rdm_core::binding::{Binding, BindingSet, Candidate, Expect, ProviderImage};
+
+    /// CONTRACT (e12.s91; node-rpc-envelope.md "the executable binding the Build fixes ... verified at
+    /// launch"): a binding a recipe step or a row names is checked against the provider that launches it,
+    /// as the startup set is. An image under the process provider, and no image or another image under
+    /// the container provider, are refused by name before anything is hashed; no image under the process
+    /// provider and the runtime image under the container provider pass.
+    #[tokio::test]
+    async fn a_step_binding_is_refused_by_name_when_its_image_is_not_the_providers() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("step-image-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("rdm-rpc-node");
+        std::fs::write(&exe, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sha256 = rdm_core::binding::sha256_file(&exe).unwrap();
+        let b = |image: Option<&str>| Binding { launch_id: NodeKind::RpcNode.name().into(), executable: exe.clone(), sha256: sha256.clone(), image: image.map(String::from) };
+        let image = crate::deployment::container::RUNTIME_IMAGE;
+        assert_eq!(verify_binding(&b(None), NodeKind::RpcNode, ProviderKind::Process, "build").await, Ok(()));
+        assert_eq!(verify_binding(&b(Some(image)), NodeKind::RpcNode, ProviderKind::Container, "build").await, Ok(()));
+        for (binding, provider) in [(b(Some(image)), ProviderKind::Process), (b(None), ProviderKind::Container), (b(Some("another:image")), ProviderKind::Container)] {
+            let want = binding.check_image(super::super::boot::provider_image(provider)).unwrap_err().to_string();
+            assert_eq!(verify_binding(&binding, NodeKind::RpcNode, provider, "build").await, Err(want), "{provider:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// CONTRACT (Q30): a launch's executable hash never holds a task its worker woke. The hash reads
     /// the whole file; a task the launching task woke just before waits in that worker's LIFO slot,
