@@ -526,6 +526,11 @@ pub struct SnapshotReceiver {
     held: HashMap<String, Held>,
     /// Sources a delta named before any snapshot of them was held: desynchronized, with no baseline.
     unbased: BTreeMap<String, Gap>,
+    /// The highest version of each source a delta reached while it was dropped with its source
+    /// already desynchronized (a pull in flight): a copy installed older than it is still behind (gossip.md §3.3, Q130: "A node
+    /// that installs a pulled copy older than a delta it dropped while the pull was in flight pulls
+    /// again"). Only the version is kept, never the delta.
+    dropped: BTreeMap<String, u64>,
 }
 
 impl SnapshotReceiver {
@@ -626,7 +631,13 @@ impl SnapshotReceiver {
         let retained = if from_read { same.and_then(|h| h.publication.clone()) } else { Some(publication) };
         self.unbased.remove(&mesh);
         self.pending.retain(|k, p| !(k.mesh == mesh && k.publisher == publisher && (p.version < version || (k.owner == owner && p.version == version))));
-        self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: None, publication: retained, last_delta });
+        // A copy older than a delta dropped while the source was desynchronized is still behind it:
+        // the source stays desynchronized, and its holder pulls again (Q130).
+        let behind = self.dropped.get(&mesh).copied().filter(|d| *d > version);
+        if behind.is_none() {
+            self.dropped.remove(&mesh);
+        }
+        self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: behind.map(|d| Gap::Version { held: version, base: d }), publication: retained, last_delta });
         Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, new_revision, resumed, refreshed }))
     }
 
@@ -641,8 +652,18 @@ impl SnapshotReceiver {
         self.take_delta(mesh, source, base, version, delta)
     }
 
-    /// A delta: applied only at exactly its base.
+    /// A delta: applied only at exactly its base. One dropped because its source was already
+    /// desynchronized (its pull in flight) leaves its version as the floor that pull must reach.
     pub fn take_delta(&mut self, mesh: &str, source: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
+        let moved = self.take_delta_at_base(mesh, source, base_version, topology_version, delta);
+        if matches!(moved, Moved::Desynced { gap: Gap::AlreadyDesynced, .. }) {
+            let floor = self.dropped.entry(mesh.to_string()).or_insert(topology_version);
+            *floor = (*floor).max(topology_version);
+        }
+        moved
+    }
+
+    fn take_delta_at_base(&mut self, mesh: &str, source: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
         let Some(h) = self.held.get_mut(mesh) else {
             let already = self.unbased.contains_key(mesh);
             self.unbased.entry(mesh.to_string()).or_insert(Gap::NoBaseline);
@@ -696,6 +717,7 @@ impl SnapshotReceiver {
     pub fn remove(&mut self, mesh: &str) {
         self.held.remove(mesh);
         self.unbased.remove(mesh);
+        self.dropped.remove(mesh);
     }
 
     /// The version held of `mesh` and its publisher.
@@ -937,6 +959,29 @@ mod tests {
         held.apply(&stopped.delta_to(&deleted));
         assert!(held.in_flight().is_empty(), "the departure ended the birth's stop overlay: {:?}", held.in_flight());
         assert!(held.same_topology(&deleted), "the receiver holds the publisher's full");
+    }
+
+    /// CONTRACT (gossip.md §3.3, Q130: "A node that installs a pulled copy older than a delta it
+    /// dropped while the pull was in flight pulls again"; the red of `node_delete` at e6s8-1918053cb:
+    /// mesh1.rpc.1 dropped mesh2's delta 9 -> 10 while its pull was in flight, installed v9 from that
+    /// pull and resumed as current): a source desynchronized by a gap, then sent a delta it drops,
+    /// stays desynchronized when the read installs a copy older than that delta, and resumes only at a
+    /// copy that reaches it. Must NOT happen: the older read clearing the gap.
+    #[test]
+    fn a_read_older_than_a_delta_dropped_while_it_was_in_flight_leaves_the_source_desynchronized() {
+        let p = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let mut rx = SnapshotReceiver::default();
+        assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
+        // The 7 -> 8 delta is lost; 8 -> 9 shows the gap, 9 -> 10 is dropped while the pull is in flight.
+        assert!(matches!(rx.take_delta("mesh1", &p, 8, 9, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 7, base: 8 }, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &p, 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::AlreadyDesynced, .. }));
+        // The pull answers v9, read before its server installed v10.
+        assert!(matches!(rx.take_chunk_against(chunk(&p, 9), true, None), Taken::Installed(_)));
+        assert_eq!(rx.desynced().into_iter().map(|(m, _)| m).collect::<Vec<_>>(), vec!["mesh1".to_string()], "a read older than the dropped delta leaves the source behind: it pulls again");
+        // The next pull answers v10: the source resumes.
+        assert!(matches!(rx.take_chunk_against(chunk(&p, 10), true, None), Taken::Installed(_)));
+        assert!(rx.desynced().is_empty(), "a read that reaches the dropped delta resumes the source");
+        assert_eq!(rx.held_version("mesh1").map(|(_, v)| v), Some(10));
     }
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {

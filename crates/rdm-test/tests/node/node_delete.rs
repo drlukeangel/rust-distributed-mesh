@@ -89,7 +89,14 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert!(victim_dir.is_dir(), "the delete keeps the victim's data dir: {victim_dir:?}");
     assert!(victim_dir.join("node-key").is_file(), "the delete keeps the victim's endpoint key in its data dir: {victim_dir:?}");
 
-    estate.holds_departure(WITNESS_NODE, "mesh2", &victim_id).await;
+    // Every ordinary node of the peer mesh, not only its primary, holds mesh2 at the version that
+    // carries the departure (gossip.md §3.3, Q130): a node whose pull came back older than a delta it
+    // dropped while the pull was in flight pulls again until it does.
+    for node in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").map(|n| s(&n["name"])) {
+        estate.holds_departure(&node, "mesh2", &victim_id).await;
+        let held = estate.probe(&["resolve", "--target", &format!("path:{node}"), "--query", &exact_victim]);
+        assert_eq!(resolution(&held), "gone", "{node} holds the departure of {VICTIM}: {held}");
+    }
     let gone = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
     assert_eq!(resolution(&gone), "gone", "{gone}");
     let path = estate.probe(&["resolve", "--target", WITNESS, "--query", &format!("path:{VICTIM}")]);

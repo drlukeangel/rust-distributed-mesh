@@ -3147,19 +3147,27 @@ impl Membership {
     pub fn top_ups(&self, fetch: TopUpFetch) -> impl std::future::Future<Output = ()> + Send + 'static {
         let me = self.clone();
         async move {
+            let pacing = crate::delivery::Pacing::from_cadences();
+            let mut again = 0u32;
             loop {
                 // One attempt per signal: a delta heard on a desynchronized source signals again,
-                // so a top-up that failed is attempted when the primary next speaks, never in a loop.
-                me.view.desync.notified().await;
-                let gaps = me.desynced_sources();
-                if !gaps.is_empty() {
-                    me.top_up(&fetch, gaps).await;
+                // so a top-up that failed is attempted when the primary next speaks. A pull that
+                // installed a copy older than a delta dropped while it was in flight pulls again
+                // (gossip.md §3.3, Q130), on the one backoff rule.
+                if again == 0 {
+                    me.view.desync.notified().await;
+                } else {
+                    tokio::time::sleep(pacing.after(again)).await;
                 }
+                let gaps = me.desynced_sources();
+                again = if !gaps.is_empty() && me.top_up(&fetch, gaps).await { again + 1 } else { 0 };
             }
         }
     }
 
-    async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) {
+    /// One pull of `gaps`: `true` when it installed a copy of a source older than a delta that
+    /// source dropped while the pull was in flight, so the source is still behind.
+    async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) -> bool {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
         let node = self.view.current_name();
@@ -3168,7 +3176,7 @@ impl Membership {
             Err(no) => {
                 tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), seat_holder = %no.holder().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
                     .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
-                return;
+                return false;
             }
         };
         // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
@@ -3176,12 +3184,13 @@ impl Membership {
         if self.book.own.lock().unwrap().as_deref() == Some(primary.node.node_id.as_str()) {
             tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary = %primary.node.name, reason = "this-node-is-the-mesh-primary")
                 .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
-            return;
+            return false;
         }
         let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
         match fetch(self.clone(), primary.clone(), names).await {
             Ok(done) => {
                 let still: Vec<String> = self.desynced_sources().into_iter().map(|(m, _)| m).collect();
+                let behind = done.installed.iter().any(|(m, _)| still.contains(m));
                 tracing::info_span!(
                     "rdm.mesh.entry.update.via-top-up",
                     node = %node,
@@ -3191,12 +3200,15 @@ impl Membership {
                     served_by = %primary.node.name,
                     installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
+                    pulls_again = behind,
                 )
                 .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));
+                behind
             }
             Err(e) => {
                 tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary = %primary.node.name, reason = "pull-refused", error = %e)
                     .in_scope(|| tracing::info!("the Mesh's primary did not answer the top-up"));
+                false
             }
         }
     }
