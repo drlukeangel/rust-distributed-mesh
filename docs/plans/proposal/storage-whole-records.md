@@ -46,7 +46,7 @@ writes only the records its own attempt's operations require (Q122), as today.
 |---|---|---|---|---|
 | Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
 | Mesh record | mesh id | id, name, dead; the states entered (Pending, ReadyForTraffic, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
-| Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates; `predecessor`, the exact birth this node replaced, written at its create from the recovery attempt that named it (`inherited_by` points the other way and is not followed backwards). The record keeps the facts of its current incarnation and its predecessor's, nothing older: the Build journal keeps the history, and a record rewritten on every silence mark stays small | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
+| Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates; `predecessor`, the exact birth this node replaced, written at its create from the recovery attempt that named it (`inherited_by` points the other way and is not followed backwards). The record keeps the facts of its current incarnation and of the one a restart replaced (`RDM_SUPERSEDES`), nothing older; the predecessor is another node with its own record: the Build journal keeps the history, and a record rewritten on every silence mark stays small | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
 
 Outside the records, unchanged: the fabric name's claim, each mesh's in-flight row and each node's name
 claim (`NameHeld { by: node.id }`, node-name-update.md) are claims, an insert that fails when the key is
@@ -54,6 +54,13 @@ held, raced by design and never updated; the node's name claim is the path.name-
 moves and recovery uses to find the record at a path.name, so a rename is a claim move plus one record
 write; the Build journal; a node's connections log; an admin's own row, contacts and launch handles in its
 data dir.
+
+The tags index is RDM's to keep, not the store's: today `put_node_row` reads the previous row inside the store
+to move the tag entries (storage.rs:1457-1462), a read before a write and logic in the provider. RDM
+computes the index moves from its cached record before the write and the store writes the index entries
+blindly. A record write that succeeds while an index write fails keeps the pending index moves on the
+writer until the index acknowledges them; the retry never recomputes an empty difference from the
+already-updated cache.
 
 A record's facts stay independent inside it, keyed by their full identity: one declared entry per state
 (a late Pending never removes ReadyForTraffic; the reader takes the greatest), one effect per
@@ -64,13 +71,20 @@ on the cached record and keeps its effects; the record is then written whole.
 
 - **Mesh ReadyForTraffic.** Today the fabric-primary writes it on the mesh-primary's report. Under one
   writer per object the mesh-primary writes it on its own mesh's record when the fabric-primary answers
-  its `DeclareMeshState` `Applied`: the fabric-primary decides, the writer records. Mesh Pending is written
+  its `DeclareMeshState` `Applied`: the fabric-primary decides, the writer records. This changes what
+  `Applied` guarantees, and the pages say so (Q144): the fabric-primary's `Applied` confirms its decision;
+  the mesh's ReadyForTraffic is durable when the mesh-primary's record write succeeds; the declaration stays
+  owed until that write succeeds, under the one delivery rule; a successor mesh-primary that loads Pending
+  with every planned birth ready declares again, and a repeated declaration receives `Applied` again even
+  though the first was accepted. Mesh Pending is written
   by the mesh's first admin on its `ApplyMeshState` (today's receiver), Leaving and Dead by the
   mesh-primary, Dead at mesh-left by the fabric-primary when no primary survived.
 - **Fabric events.** Written by the fabric-primary on the fabric record; a mesh-primary applying
   `ApplyFabricEvent` writes nothing (as at 749c796f5).
 - **Member cert dates.** A member's: its mesh-primary, the issuer, on `CertRenewed`. A mesh-primary's
-  own (issued by the fabric-primary): the mesh-primary, on its own record, when it installs the cert.
+  own (issued by the fabric-primary, fabric-certs.md:79): the mesh-primary, on its own record, when it
+  installs the cert; the fabric-primary schedules its renewal from the dates it issued and the expiry the
+  reply confirmed, kept in its own cache, the same rule as the signing certs below.
 - **Signing cert dates.** A node-admin's: its mesh-primary, on that admin's record: its own at its
   install; another admin's when that admin's `IssuerUpdated` returns through it as the carrier. The
   fabric-primary schedules renewals from the dates it issued and the expiry the reply confirmed, kept in
@@ -89,8 +103,8 @@ that dies before its first state-commit is abandoned (Q74), so a node record on 
 | Store | Calls |
 |---|---|
 | `fabric.storage` | `fabric() -> Option<FabricRecord>`; `put_fabric(&FabricRecord)`; the name claim as today |
-| `mesh.storage` | `mesh(name) -> Option<MeshRecord>`; `meshes() -> Vec<MeshRecord>`; `put_mesh(&MeshRecord)`; the in-flight claim as today |
-| `nodes.storage` | `node(node_id) -> Option<NodeRecord>`; `node_at(path.name) -> Option<NodeRecord>` (the path index); `nodes(mesh) -> Vec<NodeRecord>`; `put_node(&NodeRecord)`; `tagged(label)` (the tags index); `remove_node(node_id)` (a name's release); the data-dir rows as today |
+| `mesh.storage` | `mesh(mesh_id) -> Option<MeshRecord>`; `mesh_named(name) -> Option<MeshRecord>` (the name claim's lookup); `meshes() -> Vec<MeshRecord>`; `put_mesh(&MeshRecord)`; `claim_mesh_name(name, mesh_id)` / `release_mesh_name(name)` (new: today the record stored at its name is the claim, `claim_mesh`, storage.rs:136; rafka keys Mesh by id, so the record moves to its id and the name becomes a claim like the node's); the in-flight claim as today |
+| `nodes.storage` | `node(node_id) -> Option<NodeRecord>`; `node_at(path.name) -> Option<NodeRecord>` (the path index); `nodes(mesh) -> Vec<NodeRecord>`; `put_node(&NodeRecord)`; `tagged(label)` (the tags index, written from the moves RDM computes); `claim_node_name(path.name, node_id)` / `release_node_name(path.name)` (new: today the row stored at the path.name is the claim, `claim_node_row`, storage.rs:927; the claim is the path.name-to-id lookup); `remove_node(node_id)` releases nothing: a deleted record stands and is read by id, and a name is released only by `release_node_name`; the admin's own row, its runtimes and its contacts, as today |
 
 Every per-fact call of 749c796f5 goes: `put_node_declared`, `remove_node_declared`, `node_declared`,
 `put_node_operation`, `node_operations`, `remove_node_operation`, `put_node_silence`, `node_silences`,
@@ -116,7 +130,7 @@ and is read by id.
 
 `lifecycles/states.md:35`
 - old: "| mesh ReadyForTraffic | the fabric-primary | its mesh-primary's report that every planned birth is ready |"
-- new: "| mesh ReadyForTraffic | the fabric-primary decides, the mesh-primary records it on its mesh's record | its mesh-primary's report that every planned birth is ready, answered `Applied` |"
+- new: "| mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |"
 
 `lifecycles/states.md:82-84`
 - old: "The reason is that before state-commit the Fabric row, each mesh's Mesh row and its members' Node rows live only in their writers' scratchpads, so a primary change or a row written in that window is lost with its writer or cannot be read by its successor."
@@ -160,7 +174,7 @@ and is read by id.
 
 `node-identity-and-state.md` §2.8, "It is written at Day 0 and at state-commit"
 - old: "Nothing writes the row again until [fabric.delete](lifecycles/fabric-delete.md)."
-- new: "The identity is never written again; the record's events are appended as they happen, by the fabric-primary, and the record is written whole."
+- new: "The identity is never written again; the record is rewritten whole with each fabric event, by the fabric-primary."
 
 `storage-by-object.md` "Keys, writers, fold" (36-48): replaced by this proposal's "The rule", "The
 objects" and "Durability" sections; its map's rafka topics stand.
@@ -182,4 +196,8 @@ objects" and "Durability" sections; its map's rafka topics stand.
 - Q54: Applied answered, the writer killed before state-commit, the declared state read back from the
   Node record by its successor;
 - a renewal answered, unanswered, and answered but lost before the write;
-- mesh ReadyForTraffic recorded by the mesh-primary on the fabric-primary's `Applied`.
+- mesh ReadyForTraffic recorded by the mesh-primary on the fabric-primary's `Applied`; the mesh-primary
+  killed after receiving `Applied` and before its write, the successor declares again, receives `Applied`
+  again and records ReadyForTraffic (Q144);
+- a record write that succeeds while a tag-index write fails: the retry writes the pending index moves,
+  and the index matches the record afterwards.
