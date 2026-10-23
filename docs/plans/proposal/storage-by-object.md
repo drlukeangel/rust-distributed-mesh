@@ -3,13 +3,13 @@
 ### Problem
 `status.storage` holds rows of every kind: mesh status, fabric events, a birth's declared state, an
 operation effect, a silence, a lost or unreadable data dir, member certs and their receipts, mesh issuers
-and their receipts. rafka mirrors that drawer as `<system_org>.ops.admin-rows`. Neither is an object. A dead
+and their receipts. It is not an object (rafka's `ops.admin-rows`, its mirror, is dead). A dead
 runtime's end is held nowhere (the routing job's two exited containers at dc3661eb4).
 
 ### Rule
 One store per object. A row lives on the object it describes, written by that object's writer (the
 fabric-primary for the fabric, Builds and its own mesh; each mesh-primary for its own mesh and its
-nodes). A store keeps no row about another object. `status.storage` and `ops.admin-rows` go.
+nodes). A store keeps no row about another object. `status.storage` goes.
 
 ### The map
 
@@ -29,7 +29,7 @@ nodes). A store keeps no row about another object. `status.storage` and `ops.adm
   silence to `ops.nodes.offline`; a mesh issuer (with receipts) to `ops.meshes`.
 - New: a runtime's end on its birth in `ops.nodes`, written by the delete; the provider then removes the
   exited runtime.
-- `ops.admin-rows` and `status.storage` are removed. Old records are read once on upgrade and written to
+- `status.storage` is removed. Old records are read once on upgrade and written to
   their object (durable format moved).
 
 ### Open
