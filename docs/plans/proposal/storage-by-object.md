@@ -173,9 +173,11 @@ Step 4: old "The row records the last receipt. The old issuer expires on its own
 
 ### Before any row moves
 - **Retention first (Q140).** `ops.nodes` and `ops.builds` are delete, 7 days, and not compacted (rafka-v2
-  `gateway/tests/functional/store_plane_policy_at_birth.rs:120-128` asserts exactly that, and that only
-  fabrics and meshes override). A node row or Build record moved there today expires a week after its last
-  write. Both planes become compacted by key, in rafka-v2, with a cell that proves it, before any row moves.
+  `gateway/tests/functional/store_plane_policy_at_birth.rs:120-128`). `ops.nodes` is an event topic behind
+  rafka-v2's entity store, which keeps the latest record per node, so compaction is not the requirement
+  there; the requirement is a cell showing a node unchanged for longer than the retention reads back whole
+  after a restart. `ops.builds` must give a Build record the same survival, by compaction or the same kind
+  of store, shown the same way. Both cells are i141's and come before any row moves.
 
 ### Open
 - `ops.nodes.offline` is folded into `ops.nodes` (Luke, 2026-10-23): rafka's `NodeOfflineRecord` (one observer's
