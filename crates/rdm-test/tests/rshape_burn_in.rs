@@ -3907,10 +3907,11 @@ impl Drop for Held {
 /// held runtime leaves the stop the executor sent unanswered until then.
 const STOP_NODE_SEND_BOUND: Duration = Duration::from_secs(5);
 
-/// The exact runtime of a held node is held, never taken for dead: while it is held the node stays
-/// listed under its NodeId in every admin's view, no Build is accepted and no attempt is opened for
-/// it, a call to it ends in a typed uncertain outcome (never a reply, never a replacement), and
-/// once released the very same runtime serves again.
+/// A held node is re-created at its path (node-recovery.md step 3, Q111): while its exact runtime is held a
+/// call to it ends in a typed uncertain outcome (never a reply); unheard past the staleness floor, its
+/// mesh-primary's node investigation reads it held (`os-stopped`) and re-creates it at the same path.name
+/// with a new NodeId under the current Build, which then serves; the held birth's NodeId is listed in no
+/// view again, and no Build is minted.
 async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
@@ -3918,7 +3919,6 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
     let ci = op_to(f, a, &n, None, "control", "before-hold");
     assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the healthy same-family control: {}", a.traffic.ops[ci].1.out);
     let fabric_build = s(&st.fabric["build_id"]);
-    let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap());
     let (mut held, hold_ack) = Held::hold(node, &rt);
     let hold_ns = now_ns();
     progress(&format!("{node} held: {hold_ack}"));
@@ -3927,50 +3927,38 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
     let held_call = a.traffic.ops[hi].1.out.clone();
     let held_bucket = bucket(&held_call);
     assert_ne!(held_bucket, Bucket::Reply, "{node}: a held runtime answered: {held_call}");
-    // The silence window: two staleness windows with the node held. Silence is not death.
-    let window = 2 * std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
-    let until = Instant::now() + Duration::from_millis(window);
-    let mut looks = Vec::new();
-    while Instant::now() < until {
-        let views = admin_views_of(a, f, node).await;
-        for v in &views {
-            assert!(v["lists_path"] == true && v["node_id"] == json!(node_id), "{node}: an admin stopped listing the held node under its NodeId within the silence window: {v}");
-        }
-        let fabric = a.fabric(f).await.unwrap_or(Value::Null);
-        assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the current build_id moved while the node was held: {fabric}");
-        looks.push(json!({"t_ns": now_ns(), "statuses": views.iter().map(|v| v["status"].clone()).collect::<Vec<_>>()}));
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    let attempt_during = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap());
-    assert_eq!(attempt_during, attempt_before, "{node}: an attempt was opened for the Build while the node was held: {attempt_before:?} -> {attempt_during:?}");
-    let release_ack = held.release();
-    let release_ns = now_ns();
-    // Bounded recovery from the release: the same incarnation, ready, answering.
+    // Re-created at its path: a new NodeId ready there, under the same current Build.
+    let floor_ms = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
+    let bound = Duration::from_millis(4 * floor_ms + 60_000);
     let t = Instant::now();
     let ready = loop {
         let ns = a.nodes_now(f).await;
-        if let Some(x) = ns.into_iter().find(|x| x["name"] == node && x["status"] == "ready-for-traffic" && x["incarnation_id"] == inc.as_str() && x["node_id"] == node_id.as_str()) {
+        if let Some(x) = ns.into_iter().find(|x| x["name"] == node && x["status"] == "ready-for-traffic" && x["node_id"] != node_id.as_str()) {
             break x;
         }
-        assert!(t.elapsed() < Duration::from_secs(30), "{node} was not ready again under its own incarnation 30 s after the hold was released");
+        assert!(t.elapsed() < bound, "{node} was not re-created at its path within {bound:?} of the hold");
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
-    let ri = op_to(f, a, &ready, None, "after-hold", "after-hold");
+    let recreated_ms = t.elapsed().as_millis() as u64;
+    let fabric = a.fabric(f).await.unwrap_or(Value::Null);
+    assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the recovery minted no Build: {fabric}");
+    for v in admin_views_of(a, f, node).await {
+        assert!(v["node_id"] != json!(node_id), "{node}: an admin still lists the held birth after its re-creation: {v}");
+    }
+    let ri = op_to(f, a, &ready, None, "after-hold", "after-recreate");
     let after_call = a.traffic.ops[ri].1.out.clone();
-    assert_eq!(after_call["reply"]["result"], json!({"stored": true}), "{node}: served again after the release: {after_call}");
-    assert_eq!(after_call["reply"]["incarnation_id"], json!(inc), "{node}: served by the same birth: {after_call}");
-    let recovery_ms = t.elapsed().as_millis() as u64;
-    let rt_after = exact_runtime(f, node).await;
-    assert!(rt.is(&rt_after), "{node}: the runtime that serves after the release is the one that was held: {:?} vs {:?}", rt.record(), rt_after.record());
+    assert_eq!(after_call["reply"]["result"], json!({"stored": true}), "{node}: the re-created node serves: {after_call}");
+    assert_eq!(after_call["reply"]["incarnation_id"], ready["incarnation_id"], "{node}: served by the re-created birth: {after_call}");
+    let release_ack = held.release();
     let rec = json!({
-        "node": node, "node_id": node_id, "incarnation_id": inc, "hold_ack": hold_ack, "hold_ns": hold_ns, "release_ack": release_ack, "release_ns": release_ns, "silence_window_ms": window,
-        "call_to_held_node": {"bucket": format!("{held_bucket:?}"), "reason": held_call["reason"], "outcome": held_call["outcome"]}, "attempt_before": attempt_before, "attempt_during": attempt_during,
-        "fabric_build_id": fabric_build, "looks": looks, "recovery_ms": recovery_ms, "runtime_before": rt.record(), "runtime_after": rt_after.record(),
+        "node": node, "node_id": node_id, "incarnation_id": inc, "hold_ack": hold_ack, "hold_ns": hold_ns, "release_ack": release_ack,
+        "call_to_held_node": {"bucket": format!("{held_bucket:?}"), "reason": held_call["reason"], "outcome": held_call["outcome"]},
+        "fabric_build_id": fabric_build, "recreated_ms": recreated_ms, "new_node_id": ready["node_id"], "runtime_held": rt.record(),
     });
     inv.holds(
-        &format!("{node} held by exact-runtime {} (acknowledged by the provider): for {window} ms it stayed listed under its NodeId in every admin's view, no Build or attempt was opened for it, a call to it ended {held_bucket:?}; released (acknowledged), the same runtime and birth served again after {recovery_ms} ms", if provider() == "container" { "pause" } else { "SIGSTOP" }),
+        &format!("{node} held by exact-runtime {} (acknowledged by the provider): a call to it ended {held_bucket:?}; it was re-created at its path as {} after {recreated_ms} ms under the same Build, which then served", if provider() == "container" { "pause" } else { "SIGSTOP" }, s(&ready["node_id"])),
         true,
-        json!({"node_id": node_id, "silence_window_ms": window, "recovery_ms": recovery_ms, "call": rec["call_to_held_node"]}),
+        json!({"node_id": node_id, "new_node_id": ready["node_id"], "recreated_ms": recreated_ms, "call": rec["call_to_held_node"]}),
     );
     rec
 }
@@ -4385,7 +4373,7 @@ async fn retire_run(cell: &str, shape: Shape) {
         assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name} runs the bound bytes: {o}");
         retired_runtimes.push(o);
     }
-    let gone_ok: BTreeSet<String> = BTreeSet::from([broker.clone(), gateway.clone()]);
+    let gone_ok: BTreeSet<String> = BTreeSet::from([broker.clone(), gateway.clone(), compute.clone()]);
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &gone_ok);
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
     a.history.push(primaries_row("final", &nodes_end, &fabric_end));
@@ -4518,11 +4506,11 @@ async fn retire_run(cell: &str, shape: Shape) {
 /// value stored; every operation ends in exactly one typed bucket, an Indeterminate put is reported
 /// applied or not and never re-sent; the old birth's runtime is terminal in the provider, its NodeDeleted
 /// names the exact birth, and the NodeId stays out of every admin's view for a staleness window. A
-/// compute's exact runtime is then held (SIGSTOP, or `docker pause`; acknowledged by the provider):
-/// for two staleness windows it stays listed under its NodeId, no Build or attempt is opened, a call to it
-/// ends in a typed uncertain outcome; released, the same runtime and birth serve again. What must NOT
-/// happen: a retired node's work applied after its refusal, a held runtime taken for dead, an
-/// Indeterminate put re-sent, a retired NodeId back in a view.
+/// compute's exact runtime is then held (SIGSTOP, or `docker pause`; acknowledged by the provider): a call
+/// to it ends in a typed uncertain outcome, and unheard past the floor it is re-created at its path with
+/// a new NodeId under the same Build (node-recovery.md step 3, Q111), which serves. What must NOT happen:
+/// a retired node's work applied after its refusal, an Indeterminate put re-sent, a retired or re-created
+/// NodeId back in a view, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof() {
     retire_run("mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof", any_tier()).await;
