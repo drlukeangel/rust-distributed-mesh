@@ -2632,7 +2632,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (drives, drive_env) = (drives.clone(), drive_env.clone());
                                         let drift_time = rafka_time.clone();
                                         let drift_nodes = nodes_storage.clone();
-                                        let drift_authority = authority.clone();
                                         let ladder = ladder.clone();
                                         let park = park_gate.clone();
                                         let drift_seam = wiring.drift_seam.take();
