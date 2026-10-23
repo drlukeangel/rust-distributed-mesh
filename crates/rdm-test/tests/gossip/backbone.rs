@@ -416,6 +416,9 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     drop(isolation);
+    // The estate was entered at the fabric-primary's first birth, which the isolated admin's fabric
+    // recovery may have re-created: it is entered again through a node-admin the cut never touched.
+    estate.enter(&"mesh2.admin.1".parse().unwrap()).await;
     // Healed: every pre-cut path.name holds exactly one live ReadyForTraffic birth, the same in every
     // admin's view (a new NodeId where its recovery re-created it).
     let converged = wait_for("every admin holds one live birth per pre-cut path, the same in each", Duration::from_secs(180), || async {
