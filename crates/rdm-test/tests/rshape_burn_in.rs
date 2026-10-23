@@ -3940,6 +3940,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     let recreated_ms = t.elapsed().as_millis() as u64;
+    let recreated_ns = now_ns();
     let fabric = a.fabric(f).await.unwrap_or(Value::Null);
     assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the recovery minted no Build: {fabric}");
     for v in admin_views_of(a, f, node).await {
@@ -3953,7 +3954,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
     let rec = json!({
         "node": node, "node_id": node_id, "incarnation_id": inc, "hold_ack": hold_ack, "hold_ns": hold_ns, "release_ack": release_ack,
         "call_to_held_node": {"bucket": format!("{held_bucket:?}"), "reason": held_call["reason"], "outcome": held_call["outcome"]},
-        "fabric_build_id": fabric_build, "recreated_ms": recreated_ms, "new_node_id": ready["node_id"], "runtime_held": rt.record(),
+        "fabric_build_id": fabric_build, "recreated_ms": recreated_ms, "recreated_ns": recreated_ns, "new_node_id": ready["node_id"], "runtime_held": rt.record(),
     });
     inv.holds(
         &format!("{node} held by exact-runtime {} (acknowledged by the provider): a call to it ended {held_bucket:?}; it was re-created at its path as {} after {recreated_ms} ms under the same Build, which then served", if provider() == "container" { "pause" } else { "SIGSTOP" }, s(&ready["node_id"])),
@@ -4445,17 +4446,19 @@ async fn retire_run(cell: &str, shape: Shape) {
     );
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([f.build_id.clone(), s(&rb["build_id"]), s(&rg["build_id"])]), "the Builds accepted are the formation and the two retirements; holding a runtime accepted none");
-    // C17 post hoc: nothing in the control plane acted on the held node while it was held.
-    let (h0, h1) = (hold["hold_ns"].as_u64().unwrap(), hold["release_ns"].as_u64().unwrap());
+    // C17 post hoc (Q111): the held birth was recovered on node investigation's verdict, never `reached`.
+    let (h0, h1) = (hold["hold_ns"].as_u64().unwrap(), hold["recreated_ns"].as_u64().unwrap());
     let hid = s(&hold["node_id"]);
-    let acted: Vec<String> = ["rdm.node_admin.build.update.via-proven-drift", "rdm.node_admin.node.delete.via-build", "rdm.node_admin.node.create.via-build", "rdm.node_admin.node.update.via-build", "rdm.node_admin.node.delete.via-node-deleted", "rdm.node_admin.node.update.via-node-deleting", "rdm.node_admin.node.update.via-node-restarting"]
-        .iter()
-        .flat_map(|fam| named(&spans, fam).into_iter().filter(|sp| start_ns(sp) >= h0 && start_ns(sp) <= h1 && (sp["attributes"]["node"] == compute.as_str() || sp["attributes"]["node_id"] == hid.as_str())).map(|sp| format!("{} @{}", sp["name"], start_ns(sp))).collect::<Vec<_>>())
+    let recoveries: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .filter(|sp| start_ns(sp) >= h0 && start_ns(sp) <= h1 && sp["attributes"]["node_id"] == hid.as_str())
+        .map(|sp| sp["attributes"].clone())
         .collect();
-    assert!(acted.is_empty(), "{compute}: the control plane acted on the held node while it was held (silence taken for death): {acted:?}");
-    let proven: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start_ns(sp) >= h0 && start_ns(sp) <= h1).collect();
-    assert!(proven.is_empty(), "a proven-drift attempt opened while the compute was held: {proven:?}");
-    inv.holds("C17: while the compute's exact runtime was held no proven-drift attempt, retire, restart, create or NodeDeleted touched it; after the release the same runtime and birth served again", true, json!({"held_ns": [h0, h1], "control_plane_acts_on_it": 0}));
+    assert!(!recoveries.is_empty(), "{compute}: no recovery was submitted for the held birth before its re-creation");
+    for r in &recoveries {
+        assert!(r["verdict"] != "reached" && !s(&r["verdict"]).is_empty(), "{compute}: a recovery follows node investigation's verdict, never `reached`: {r}");
+    }
+    inv.holds("C17: the compute's held exact runtime was recovered on node investigation's verdict (never `reached`) and re-created at its path under the same Build, which then served", true, json!({"held_ns": [h0, h1], "recoveries": recoveries}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -5358,7 +5361,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     assert_eq!(s(&st2.fabric["build_id"]), fabric_build_before, "the fabric's accepted Build is the one it held before the cut");
     events.push(json!({"event": "healed", "redial": redial, "after_ledger_ops": after_ops, "healed_at_ns": healed_at, "converged": converged, "new_node_ids_at": renewed}));
     a.events.extend(events.iter().cloned());
-    let (adm, wm) = (admins.clone(), window_ms);
+    let (adm, wm, renewed_paths) = (admins.clone(), window_ms, renewed.clone());
     let verified_at = now_ns();
     let marks = (cut_at, held_at, healed_at, verified_at);
     close_run(f, a, inv, nodes, launches, primaries, connections, &["C9", "C10"], json!({"events": events}), move |f, spans, inv| {
@@ -5366,9 +5369,16 @@ async fn partition_run(cell: &str, shape: Shape) {
         // attempt per window per pair, with the neighbours kept (no mesh channel fell back to no-neighbour).
         let att = refeeds(spans, marks.0);
         let mesh_of = |n: &str| adm.iter().find(|(x, _)| x == n).map(|(_, m)| m.clone());
+        // Within one mesh, a re-feed is of or by a birth the cut's recovery re-created: its mesh-mates still
+        // hold the terminated birth while the executor's NodeDeleting cannot cross the cut (gossip.md section 6).
+        let mesh_seg = |n: &str| n.split('.').next().unwrap_or("").to_string();
         for sp in att.iter().filter(|sp| start_ns(sp) <= marks.3) {
             let (obs, peer) = (s(&sp["attributes"]["node"]), s(&sp["attributes"]["peer_node"]));
-            assert!(mesh_of(&obs).is_some() && mesh_of(&peer).is_some() && mesh_of(&obs) != mesh_of(&peer), "only a peer mesh's node-admin is re-fed across the cut: {sp}");
+            if mesh_seg(&obs) == mesh_seg(&peer) {
+                assert!(renewed_paths.contains(&obs) || renewed_paths.contains(&peer), "a re-feed within one mesh is of or by a path its recovery re-created ({renewed_paths:?}): {sp}");
+                continue;
+            }
+            assert!(mesh_of(&obs).is_some() && mesh_of(&peer).is_some(), "only a peer mesh's node-admin is re-fed across the cut: {sp}");
             assert!(sp["attributes"]["coverage_age_ms"].as_str().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0) >= wm, "a member is re-fed only after its coverage was stale for the window: {sp}");
         }
         let held_ns = marks.1 - marks.0;
