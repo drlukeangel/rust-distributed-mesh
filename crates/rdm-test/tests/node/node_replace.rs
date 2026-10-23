@@ -2265,3 +2265,109 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
 }
 
 
+
+/// The executable `node`'s process runs, as the OS names it.
+async fn exe_of(estate: &Estate, node: &str) -> std::path::PathBuf {
+    let pid = estate.pid_of(node).await;
+    std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node} (pid {pid}): /proc exe: {e}"))
+}
+
+/// The reason of the Failed frame a recipe ends with.
+async fn failed_recipe(nodes: &Nodes, steps: Vec<RecipeStep>) -> String {
+    let got = frames(nodes.recipe(steps).await.expect("the recipe was accepted")).await;
+    match got.last() {
+        Some(Frame::Failed { reason, .. }) => reason.clone(),
+        other => panic!("the recipe ended {other:?}, not Failed: {got:?}"),
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md "Build recipe": "Create names the node and the executable binding the
+/// Build fixes for it (launch id, hash); the executing admin launches that binding, verified at launch,
+/// whichever admin runs or resumes the step"; node-replace.md step 3: "The Build fixes the bin on the
+/// recipe's Create step, so every admin that runs or resumes the step launches that one, and the row
+/// records it beside `config`"; node-recovery.md "Retained": "config and the executable (both seeded
+/// from the deleted row: a recovered node runs the bin its row records, never the recovering
+/// admin's)"): mesh1's admin is started on binding set A (`rpc_node` = the built rpc node) and mesh2's
+/// on set B (`rpc_node` = a copy at another path), and each mesh's members run their admin's own. The
+/// same Create binding, a third copy that neither set names, is the Create step of a replace recipe
+/// of `mesh1.rpc.1` (run by mesh1's admin) and of `mesh2.rpc.1` (run by mesh2's admin): both
+/// successors run that copy. `mesh1.rpc.1` is then killed and recovered over its inherited data dir,
+/// and `mesh2.rpc.1` held (SIGSTOP) and recovered over a newly allocated one: each recovered node runs
+/// the copy its row records, not its recovering admin's binding. A Create step naming a file that is
+/// not there, and one naming the copy with a hash its bytes do not have, end Failed by name, nothing
+/// launched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery() {
+    use rdm_client::binding::{sha256_file, Binding};
+    let sha = candidate_sha();
+    let set_a = binding_set(&sha);
+    let estate = Estate::bootstrap_external(owner("a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery"), "fabric1", "mesh1", &set_a, &sha, &["rpc_node"])
+        .await
+        .expect("binding set A is accepted");
+    let rpc_a = set_a.bindings.iter().find(|b| b.launch_id == "rpc_node").cloned().expect("set A binds rpc_node");
+    // Two copies of the rpc node's bytes at their own paths: set B's, and the one the Build fixes.
+    let execs = estate.root.join("execs");
+    std::fs::create_dir_all(&execs).unwrap();
+    let copy = |name: &str| {
+        let p = execs.join(name);
+        std::fs::copy(&rpc_a.executable, &p).unwrap();
+        p
+    };
+    let (rpc_b, fixed) = (copy("rpc-node-set-b"), copy("rpc-node-fixed"));
+    let binding = Binding { launch_id: "rpc_node".into(), sha256: sha256_file(&fixed).unwrap(), executable: fixed.clone(), image: None };
+    // mesh1 on set A; then the binding file names set B, which mesh2's admin, launched next, starts on.
+    let estate = born_at(estate, &[("mesh1", 1, 2)], Duration::from_secs(60)).await.0;
+    let mut set_b = set_a.clone();
+    set_b.bindings.iter_mut().filter(|b| b.launch_id == "rpc_node").for_each(|b| b.executable = rpc_b.clone());
+    let file = estate.external.as_ref().expect("an external estate").file.clone();
+    std::fs::write(&file, serde_json::to_vec_pretty(&set_b).unwrap()).unwrap();
+    let shape = [("mesh1", 1, 2), ("mesh2", 1, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, Duration::from_secs(90)).await;
+    estate.until_fabric_ready(SETTLE).await;
+    assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, rpc_a.executable, "mesh1's admin launches set A's rpc node");
+    assert_eq!(exe_of(&estate, "mesh2.rpc.2").await, rpc_b, "mesh2's admin launches set B's rpc node");
+
+    let nodes = objects(&estate).await;
+    let with_binding = |node: &PathName, b: &Binding| -> Vec<RecipeStep> {
+        replace_recipe(node).into_iter().map(|s| match s {
+            RecipeStep::Create { node, .. } => RecipeStep::Create { node, executable: Some(b.clone()) },
+            other => other,
+        }).collect()
+    };
+    for node in ["mesh1.rpc.1", "mesh2.rpc.1"] {
+        let path: PathName = node.parse().unwrap();
+        let got = frames(nodes.recipe(with_binding(&path, &binding)).await.expect("the recipe was accepted")).await;
+        assert_eq!(got.last(), Some(&Frame::Complete), "the replace of {node}: {got:?}");
+        let n = until_node_where(&estate, node, &format!("{node} ready"), SETTLE, ready).await;
+        assert_eq!(exe_of(&estate, node).await, fixed, "{node}'s successor runs the executable its Build fixed, not its admin's: {n}");
+    }
+
+    // Recovery over the inherited data dir: the exited birth's row records the executable.
+    let before = estate.node_value("mesh1.rpc.1").await;
+    let dir = estate.data_dir("mesh1.rpc.1").await;
+    estate.kill_node("mesh1.rpc.1").await;
+    let after = until_new_birth(&estate, "mesh1.rpc.1", &before, SETTLE).await;
+    assert_eq!((after["endpoint_id"].clone(), estate.data_dir("mesh1.rpc.1").await), (before["endpoint_id"].clone(), dir), "recovered over the inherited data dir");
+    assert_eq!(exe_of(&estate, "mesh1.rpc.1").await, fixed, "the node recovered over its inherited dir runs the executable its row records, not set A's");
+
+    // Recovery over a newly allocated data dir: a held member is terminated and created afresh.
+    let before = estate.node_value("mesh2.rpc.1").await;
+    let dir = estate.data_dir("mesh2.rpc.1").await;
+    assert_eq!(exact_runtime(&estate, "mesh2.rpc.1").await.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
+    let after = until_new_birth(&estate, "mesh2.rpc.1", &before, SETTLE).await;
+    assert!(after["endpoint_id"] != before["endpoint_id"] && estate.data_dir("mesh2.rpc.1").await != dir, "recovered over a newly allocated data dir: {after}");
+    assert_eq!(exe_of(&estate, "mesh2.rpc.1").await, fixed, "the node recovered over a new dir runs the executable its row records, not set B's");
+
+    // The refusals, by name, nothing launched.
+    let absent = Binding { executable: execs.join("not-there"), ..binding.clone() };
+    let reason = failed_recipe(&nodes, vec![RecipeStep::Create { node: "mesh1.rpc.7".parse().unwrap(), executable: Some(absent) }]).await;
+    assert!(reason.contains("not-there") && reason.contains("cannot be read"), "a missing file is refused by name: {reason}");
+    let mismatched = Binding { sha256: "0".repeat(64), ..binding.clone() };
+    let reason = failed_recipe(&nodes, vec![RecipeStep::Create { node: "mesh1.rpc.8".parse().unwrap(), executable: Some(mismatched) }]).await;
+    assert!(reason.contains("rpc-node-fixed") && reason.contains("the binding expects"), "a hash mismatch is refused by name: {reason}");
+    for node in ["mesh1.rpc.7", "mesh1.rpc.8"] {
+        assert!(!estate.node_values().await.iter().any(|n| n["name"] == node), "nothing is launched at {node}");
+    }
+    estate.shutdown().await;
+}

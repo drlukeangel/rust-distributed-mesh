@@ -316,7 +316,7 @@ impl NodeRows {
     /// the node holds already is left as it is. `allocated`: what the create allocated for the birth,
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
     /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
-    pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<Claimed, RowRefused> {
+    pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor) -> Result<Claimed, RowRefused> {
         let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
@@ -350,7 +350,7 @@ impl NodeRows {
                 };
                 span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
-                self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span, "writer-check").await
+                self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, executable, of, &span, "writer-check").await
             },
             span.clone(),
         )
@@ -364,7 +364,7 @@ impl NodeRows {
     /// `node.create`'s name claim with an explicit `node_type` (normalizing `""` to `"node"`,
     /// refusing any value outside the shared identifier grammar by name `node_type`, and copying
     /// the exited node's `node_type` on recovery).
-    pub async fn claim_with_node_type(&self, name: &PathName, node_id: &NodeId, node_type: &str, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<(Claimed, String), RowRefused> {
+    pub async fn claim_with_node_type(&self, name: &PathName, node_id: &NodeId, node_type: &str, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor) -> Result<(Claimed, String), RowRefused> {
         let me = self.held_name_now();
         let normalized = rdm_core::status::normalize_node_type(node_type);
         if let Some(reason) = rdm_core::status::node_type_refusal(&normalized) {
@@ -381,7 +381,7 @@ impl NodeRows {
         } else {
             None
         };
-        let claimed = self.claim(name, node_id, operation, allocated, of).await?;
+        let claimed = self.claim(name, node_id, operation, allocated, executable, of).await?;
         let effective = inherited_type.unwrap_or(normalized);
         self.written.hold_node_type(node_id, effective.clone());
         Ok((claimed, effective))
@@ -412,8 +412,8 @@ impl NodeRows {
         }
         let known = self.written.known_row(&*self.storage, &record.mesh, &record.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
         let from = known.as_ref().map_or_else(|| record.name.clone(), |r| r.name.clone());
-        let (config, tags, app_types) = known.map(|r| (r.config, r.tags, r.app_types)).unwrap_or_else(|| (record.config.clone(), Default::default(), None));
-        match move_row(&*self.storage, &me, record, config, tags, app_types, &from, to).await {
+        let (config, tags, app_types, executable) = known.map(|r| (r.config, r.tags, r.app_types, r.executable)).unwrap_or_else(|| (record.config.clone(), Default::default(), None, None));
+        match move_row(&*self.storage, &me, record, config, tags, app_types, executable, &from, to).await {
             Ok((_, Some(written))) => {
                 self.written.hold(&written);
                 Ok(written)
@@ -491,7 +491,7 @@ impl NodeRows {
         let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
         let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
-        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
+        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, None, ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => row,
         };
         if let Some(held) = &row.app_types {
@@ -596,7 +596,10 @@ impl NodeRows {
                 let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{me}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know")));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, app_types: self.written.row_of(node_id).and_then(|r| r.app_types), inherited_by: None };
+                // The executable stays on the Deleted row, as the config does: the node created next at
+                // the name runs it (node-recovery.md "Retained").
+                let executable = self.written.known_row(&*self.storage, &name.mesh, node_id).await.ok().flatten().and_then(|r| r.executable);
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, app_types: self.written.row_of(node_id).and_then(|r| r.app_types), inherited_by: None, executable };
                 match crate::storage::claim_node_row(&*self.storage, &row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
@@ -630,11 +633,11 @@ impl NodeRows {
     /// ([`WrittenRows::known_row`]), so a node renamed while stopped (told nothing of it, R12) keeps
     /// its one row where the rename put it, whatever name a view still lists it at.
     #[allow(clippy::too_many_arguments)]
-    async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+    async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
         let claimed = match self.written.known_row(&*self.storage, &name.mesh, node_id).await {
             Ok(Some(held)) => Claimed::HeldByNode(held),
             Ok(None) => {
-                let claimed = seeded_put(&*self.storage, me, name, node_id, status, own, allocated, of, span, prefix).await?;
+                let claimed = seeded_put(&*self.storage, me, name, node_id, status, own, allocated, executable, of, span, prefix).await?;
                 match &claimed {
                     Claimed::Written { row, .. } | Claimed::HeldByNode(row) => self.written.hold(row),
                 }
@@ -730,7 +733,7 @@ impl NodeRows {
             }
             // A recovery's claim precedes its birth's arrival (the create claims before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, ClaimFor::Create, span, "").await?,
+            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, None, ClaimFor::Create, span, "").await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, me, row, "rebuild").await {
@@ -801,7 +804,7 @@ fn push_awaited(awaited: &mut String, step: &str) {
 /// [`NodeRows::put_seeded`]'s one write, by `me` into `storage`: the row of `node_id` at `name`, its
 /// config and tags seeded as that method says. A row the same node holds already is left as it is.
 #[allow(clippy::too_many_arguments)]
-async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
     let mut awaited = prefix.to_string();
     span.record("awaiting", "read-previous-row");
     let previous = storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
@@ -835,11 +838,13 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
         .map(|p| p.tags.clone())
         .unwrap_or_default();
     let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
+    // The executable beside the config: the one the create launches (`executable`), else the seed's.
+    let executable = executable.cloned().or_else(|| seed.as_ref().and_then(|p| p.executable.clone()));
     if let Some(p) = &seed {
         span.record("seeded_from", p.node_id.as_str());
     }
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
-    let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, app_types: None, inherited_by: None };
+    let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, app_types: None, inherited_by: None, executable };
     span.record("awaiting", "put-node-row");
     let put = crate::storage::claim_node_row(storage, &row).await;
     push_awaited(&mut awaited, "put-node-row");
@@ -1017,7 +1022,7 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, n
         ),
     };
     let mut guard = ClaimGuard { span: span.clone(), done: false };
-    let r = tracing::Instrument::instrument(seeded_put(storage, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, of, &span, ""), span.clone()).await;
+    let r = tracing::Instrument::instrument(seeded_put(storage, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, None, of, &span, ""), span.clone()).await;
     guard.done = true;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));
@@ -1042,7 +1047,7 @@ pub enum RenameRefused {
 /// [`Moved::ReleasePending`]: nothing is rolled back and no second row is written. The one writer of a
 /// rename (R13: `node.name.update` is one write path): `node.name.update` at the node's mesh-primary
 /// (`crate::node_name_update`) moves here. Answers what it did and the row written, if it wrote one.
-pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, app_types: Option<crate::storage::AppTypes>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
+pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, app_types: Option<crate::storage::AppTypes>, executable: Option<rdm_core::binding::Binding>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
     if from == to {
         return Ok((Moved::Renamed, None));
     }
@@ -1058,7 +1063,7 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
             Err(why) => (Moved::ReleasePending { why }, held),
         });
     }
-    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), app_types, inherited_by: None };
+    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), app_types, inherited_by: None, executable };
     crate::storage::claim_node_row(storage, &row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
     // The new name is the node's: it lets go of the old key.
     match crate::storage::release_node_row(storage, from, &record.node_id).await {

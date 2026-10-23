@@ -161,6 +161,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // the tags index), stay the row's while it stands at the same key.
     let renamed_from = known.as_ref().and_then(|r| r.renamed_from.clone().filter(|_| r.name == subject.name));
     let inherited_by = known.as_ref().and_then(|r| r.inherited_by.clone().filter(|_| r.name == subject.name));
+    let executable = known.as_ref().and_then(|r| r.executable.clone());
     let config = known.map(|r| r.config).unwrap_or_else(|| subject.config.clone());
     let (tags, done) = match change {
         Change::Create(labels) => {
@@ -187,7 +188,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // Nothing to change writes nothing: a label carried is a key already put, one not carried a key
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
-    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by, app_types: door.written().row_of(node_id).and_then(|r| r.app_types) };
+    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by, app_types: door.written().row_of(node_id).and_then(|r| r.app_types), executable };
     match crate::storage::claim_node_row(&*storage, &row).await {
         Ok(Ok(())) => {
             door.written().hold(&row);

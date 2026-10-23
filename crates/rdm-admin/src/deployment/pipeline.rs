@@ -859,6 +859,10 @@ pub struct LaunchTemplate {
     pub fabric_id: rdm_core::FabricId,
     /// The executable every launch runs.
     pub executable: PathBuf,
+    /// The binding `executable` is the file of, as the create launching from this template runs it:
+    /// its name claim records it on the node's row ([`crate::storage::NodeRow::executable`]).
+    /// `None` for a template no create launches from.
+    pub binding: Option<rdm_core::binding::Binding>,
     /// Members to join gossip through: `(public key, address)`.
     pub seeds: Vec<(String, SocketAddr)>,
     /// The admin these launches are made by: the target of each birth's `JoinNode`.
@@ -1621,7 +1625,7 @@ impl DeploymentPipeline<'_> {
                 // row's tags with its config.
                 let of = claim_for;
                 step_span.record("awaiting", "claim");
-                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated), of)
+                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), of)
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 done_awaits.push("claim");
@@ -2663,6 +2667,7 @@ mod tests {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         }
     }
 

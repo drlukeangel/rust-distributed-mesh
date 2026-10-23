@@ -413,7 +413,7 @@ pub async fn reconcile_drift(
     // The create of a node-admin into a live mesh is a one-step recipe on the existing carrier
     // (`BuildChange::Recipe`; no new wire variant): the node the create names pins the birth the view
     // holds there, so a later loss of the same path is a different action.
-    let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rdm_core::build::RecipeStep::Create { node: admin.clone() }], t);
+    let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rdm_core::build::RecipeStep::Create { node: admin.clone(), executable: None }], t);
     let (key, scope, action) = if let Some(admin) = recover_admin {
         match create_of(admin) {
             Ok(action) => (vec![admin.to_string()], admin.to_string(), Some(action)),

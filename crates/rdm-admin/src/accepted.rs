@@ -304,7 +304,7 @@ pub(crate) fn recipe_action(steps: Vec<RecipeStep>, observed: &Topology) -> Resu
             }
         }
         match step {
-            RecipeStep::Create { node } => {
+            RecipeStep::Create { node, .. } => {
                 made.insert(node.clone());
             }
             RecipeStep::Update { name, .. } => {
@@ -327,7 +327,7 @@ pub(crate) fn recipe_births(steps: &[RecipeStep], pinned: &[(PathName, PinnedBir
     for (i, step) in steps.iter().enumerate() {
         let unknown = || BuildReject::RecipeNodeUnknown { step: i as u32 + 1, node: step.node().to_string() };
         let birth = match step {
-            RecipeStep::Create { node } => {
+            RecipeStep::Create { node, .. } => {
                 at.insert(node.clone(), None);
                 None
             }
@@ -1239,7 +1239,7 @@ mod tests {
             RecipeStep::LeaveMesh { node: node.clone() },
             RecipeStep::Update { node: node.clone(), name: node.renamed() },
             RecipeStep::Stop { node: node.renamed() },
-            RecipeStep::Create { node: node.clone() },
+            RecipeStep::Create { node: node.clone(), executable: None },
         ]
     }
 

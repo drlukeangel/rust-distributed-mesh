@@ -154,6 +154,14 @@ pub enum RecipeStep {
     Create {
         /// The `path.name` the node is created at.
         node: PathName,
+        /// The executable binding the Build fixes for the node (node-rpc-envelope.md "Build recipe";
+        /// node-replace.md step 3): whichever admin runs or resumes the step launches it, re-hashed at
+        /// the launch, and the node's row records it beside `config`. Absent, the node runs the
+        /// executable its seeding row records (the predecessor's, a recovered node's), and only a
+        /// node no row records one for takes its kind's binding from the admin that launches it.
+        /// A record written before the step carried it decodes with none.
+        #[serde(default)]
+        executable: Option<crate::binding::Binding>,
     },
     /// node.stop of the live node at `node`: it is stopped, its process and data kept.
     Stop {
@@ -199,7 +207,7 @@ impl RecipeStep {
     /// The `path.name` the step acts on when it runs.
     pub fn node(&self) -> &PathName {
         match self {
-            Self::Create { node } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } | Self::DeleteConnections { node } | Self::LeaveMesh { node } => node,
+            Self::Create { node, .. } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } | Self::DeleteConnections { node } | Self::LeaveMesh { node } => node,
         }
     }
 }

@@ -314,8 +314,8 @@ fn writer_view(records: &[Node], primary: Option<&str>, fabric_primary: Option<N
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
-        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
+        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
+        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
     }
 }
 
@@ -379,6 +379,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
@@ -524,6 +525,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-deleted-incomplete", build_id = %build_id.log(), operation = %outer);
@@ -613,6 +615,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-delete-completion", build_id = %build_id.log(), operation = %outer);
@@ -724,7 +727,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
         // A live mesh2.admin.1 holds its name: a second birth's claim is refused.
-        let second = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, ClaimFor::Create).await;
+        let second = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, None, ClaimFor::Create).await;
         // Seated and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -740,7 +743,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let statuses = status.mesh_statuses().await.unwrap();
         let dead_held = status.mesh_status_held_of("mesh2", &rdm_admin::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
         // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, ClaimFor::Create).await;
+        let again = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, None, ClaimFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
     });
     let (statuses, dead_held) = statuses;
@@ -837,6 +840,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
@@ -988,6 +992,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let lost_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &lost_published, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let amended_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &amended_published, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -1502,10 +1507,10 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
+            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
+            assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
         }
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1790,6 +1795,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let cut = CutBuilds { inner: &builds, cut: Mutex::new(Some(("NodeDeleted", format!("node.delete:{FAILING}")))) };
         let cut_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &lost_departures, builds: &cut, template: &template, timeouts: Timeouts::default() };

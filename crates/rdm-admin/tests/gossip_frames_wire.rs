@@ -217,7 +217,8 @@ fn facts() -> Vec<BuildFact> {
                     RecipeStep::LeaveMesh { node: node.clone() },
                     RecipeStep::Update { node: node.clone(), name: node.renamed() },
                     RecipeStep::Stop { node: node.renamed() },
-                    RecipeStep::Create { node: node.clone() },
+                    // The executable the Build fixes rides the positional wire with every field written.
+                    RecipeStep::Create { node: node.clone(), executable: Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/opt/rpc-node".into(), sha256: "ab".repeat(32), image: None }) },
                     RecipeStep::Delete { node: node.renamed() },
                 ],
                 pinned: vec![(node, pin)],

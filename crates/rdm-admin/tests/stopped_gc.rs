@@ -112,7 +112,7 @@ fn replace_recipe(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
             RecipeStep::LeaveMesh { node: node.clone() },
             RecipeStep::Update { node: node.clone(), name: node.renamed() },
             RecipeStep::Stop { node: node.renamed() },
-            RecipeStep::Create { node: node.clone() },
+            RecipeStep::Create { node: node.clone(), executable: None },
             RecipeStep::Delete { node: node.renamed() },
         ],
         pinned: vec![(node, rdm_admin::build::PinnedBirth { node_id: b.1.clone(), incarnation: b.2.clone() })],

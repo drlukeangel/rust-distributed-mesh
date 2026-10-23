@@ -204,7 +204,7 @@ impl BuildOperation {
     /// other operation.
     pub fn created_node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::RecipeStep { step: rdm_core::build::RecipeStep::Create { node }, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => Some(node),
             _ => None,
         }
     }
@@ -233,7 +233,7 @@ impl BuildOperation {
 pub fn recipe_step_key(step: &rdm_core::build::RecipeStep) -> String {
     use rdm_core::build::RecipeStep as S;
     match step {
-        S::Create { node } => format!("node.create:{node}"),
+        S::Create { node, .. } => format!("node.create:{node}"),
         S::Stop { node } => format!("node.stop:{node}"),
         S::Update { node, .. } => format!("node.update:{node}"),
         S::Start { node } => format!("node.start:{node}"),
@@ -533,7 +533,7 @@ mod tests {
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = "mesh2.admin.1".parse().unwrap();
         assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Create { node: node.clone() }, birth: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Create { node: node.clone(), executable: None }, birth: None }.created_node(), Some(&node));
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Stop { node: node.clone() }, birth: None }.created_node(), None);
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Start { node: node.clone() }, birth: None }.created_node(), None);
         assert_eq!(BuildOperation::RestartNode { node: node.clone() }.created_node(), None);

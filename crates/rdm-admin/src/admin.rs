@@ -2037,7 +2037,7 @@ mod tests {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
             let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
+            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
             depart(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let status = crate::status_storage::MemoryStatusStorage::default();
@@ -2087,7 +2087,7 @@ mod tests {
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap();
+        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
         let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new(), is_primary: None, is_fabric_primary: None };
         // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
         for d in [&last, &member, &fp] {
@@ -2128,12 +2128,12 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-leaving-mesh-admin-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let created: PathName = "mesh2.admin.2".parse().unwrap();
-        let refused = rows.claim(&created, &NodeId::mint(), "node.create:mesh2.admin.2", None, crate::node_rows::ClaimFor::Create).await;
+        let refused = rows.claim(&created, &NodeId::mint(), "node.create:mesh2.admin.2", None, None, crate::node_rows::ClaimFor::Create).await;
         assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost holder still writes mesh2's rows: {refused:?}");
         depart(&book, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         let born = NodeId::mint();
-        match rows.claim(&created, &born, "node.create:mesh2.admin.2", None, crate::node_rows::ClaimFor::Create).await {
+        match rows.claim(&created, &born, "node.create:mesh2.admin.2", None, None, crate::node_rows::ClaimFor::Create).await {
             Ok(crate::node_rows::Claimed::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Pending)),
             other => panic!("the fabric-primary claims the created admin's name once the lost holder's exit is held: {other:?}"),
         }
@@ -2605,9 +2605,9 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
         crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap();
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, &held.node.name, &to).await.unwrap();
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, None, &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
@@ -2622,7 +2622,7 @@ mod tests {
         // name): only the view names the birth by its row.
         assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
         // The row moved back (node-replace.md Rollback): the next projection reads it there.
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, &to, &held.node.name).await.unwrap();
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, None, &to, &held.node.name).await.unwrap();
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
@@ -2918,11 +2918,11 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
         crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap();
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), "mesh1.rpc.1".parse::<PathName>().unwrap());
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, &held.node.name, &base).await.unwrap();
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, &base, &base.renamed()).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, None, &held.node.name, &base).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, None, &base, &base.renamed()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
         let probed = Arc::new(ProbedRows {
             inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()),

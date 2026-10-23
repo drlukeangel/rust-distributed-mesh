@@ -45,8 +45,17 @@ pub struct Binding {
     /// Lowercase hex sha256 of the executable's bytes.
     pub sha256: String,
     /// The image the executable must run in (a container provider); absent for a host process.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Always written (a recipe's Create step carries the binding on the positional Build wire).
+    #[serde(default)]
     pub image: Option<String>,
+}
+
+impl Binding {
+    /// The file this binding names, hashed now: its sha256 when the file is there, executable and
+    /// carries the bound hash; a missing file and a hash mismatch are refused by name.
+    pub fn verify(&self) -> Result<String, BindingError> {
+        BindingSet::check_file(self)
+    }
 }
 
 /// The binding file.

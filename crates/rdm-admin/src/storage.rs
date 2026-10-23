@@ -425,6 +425,14 @@ pub struct NodeRow {
     /// Immutable application declaration, scoped to the exact incarnation that reported it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_types: Option<AppTypes>,
+    /// The executable binding the node runs, beside its config (node-replace.md step 3: "the row
+    /// records it beside `config`"): written at the create's claim with the binding that create
+    /// launches, kept by every later write of the row, a `Deleted` row's included, and seeded from the
+    /// previous row like the config, so a node recovered at the path runs the bin its row records,
+    /// never the recovering admin's (node-recovery.md "Retained"). A row written before it was
+    /// recorded carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<rdm_core::binding::Binding>,
 }
 
 /// The application's declaration held beside its node row.
@@ -1065,7 +1073,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1149,7 +1157,7 @@ mod tests {
         let mut record = crate::model::Node::allocated(from.name.clone());
         record.node_id = from.node_id.clone();
         record.status = from.status;
-        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, &from.name, &to.name).await.unwrap();
+        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, None, &from.name, &to.name).await.unwrap();
         assert_eq!(file.node_row_at(&from.name).await.unwrap(), None, "the old key is let go");
         assert_eq!(file.node_row_at(&to.name).await.unwrap(), Some(to.clone()), "the row the node held there is left as it is");
         assert_eq!(file.node_row_name("mesh1", &from.node_id).await.unwrap(), Some(to.name.clone()), "the row the node holds is named in the id index");
@@ -1400,7 +1408,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1448,7 +1456,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_its_writer_and_nothing_is_written() {
         let d = crate::test_support::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

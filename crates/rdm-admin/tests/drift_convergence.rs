@@ -290,7 +290,7 @@ impl OperationRunner for Runner {
         use rdm_admin::build_state::BuildStateAdapter as _;
         let created;
         let op = match op {
-            BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node }, .. } => {
+            BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => {
                 created = BuildOperation::CreateNode { node: node.clone(), over: None };
                 &created
             }
@@ -1952,7 +1952,7 @@ fn one_step_create_of(action: &Option<rdm_admin::accepted::AttemptAction>) -> Op
     use rdm_core::build::RecipeStep;
     match action {
         Some(rdm_admin::accepted::AttemptAction::Recipe { steps, .. }) => match steps.as_slice() {
-            [RecipeStep::Create { node }] => Some(node.to_string()),
+            [RecipeStep::Create { node, .. }] => Some(node.to_string()),
             _ => None,
         },
         _ => None,

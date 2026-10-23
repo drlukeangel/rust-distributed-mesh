@@ -356,6 +356,7 @@ impl Prepared {
                 allocated: None,
                 renamed_from: None,
                 app_types: None, inherited_by: None,
+                executable: None,
             };
             nodes.put_node_row(&row).await.unwrap();
             if history == History::ReadyForTraffic {

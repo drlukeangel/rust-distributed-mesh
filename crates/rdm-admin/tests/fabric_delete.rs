@@ -163,10 +163,11 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 allocated: None,
                 renamed_from: None,
                 app_types: None, inherited_by: None,
+                executable: None,
             })
             .await
             .unwrap();
-        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
+        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
         let h = handle(&n.name.to_string(), 50_000);
         storage
             .put_runtime(&RuntimeRow {
@@ -266,6 +267,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         issuing: None,
         roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        binding: None,
     };
     let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &*builds, template: &template, timeouts: Timeouts::default() };
 
@@ -514,6 +516,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let delete = |b: RosterBirth| {
@@ -609,6 +612,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         // The unreached admin's node.delete, the fabric-primary its executor.
@@ -671,6 +675,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let manifest = members_exited(&builds, &key_m2, "mesh2.admin.2", &leaving, &me_a2, rt_a2.clone(), &records_for_leave, &known, |n: Node| {

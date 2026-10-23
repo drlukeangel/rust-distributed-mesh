@@ -91,7 +91,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         }
         // A recipe step is executed as the op it calls: a create as node.create, every other step as
         // the node op on its node (the mesh-primary of the node's mesh writes its row, R13).
-        BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node }, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => mesh_executor(&node.mesh, None, t),
         BuildOperation::RecipeStep { step, .. } => node_op_executor(step.node(), op, t),
         // A member node of any kind is born by its own mesh's primary admin (the fabric primary when
         // the mesh has none): the rule names no role, so a product's kinds get the same executor as
@@ -670,7 +670,7 @@ mod tests {
             let node: PathName = n.parse().unwrap();
             BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Update { name: node.renamed(), node }, birth: None }
         };
-        let make = |n: &str| BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node: n.parse().unwrap() }, birth: None };
+        let make = |n: &str| BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node: n.parse().unwrap(), executable: None }, birth: None };
         assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a recipe's update of a member is its mesh primary's, the writer of its row");
         assert_eq!(who(&rename(m2), &t3), p2, "a recipe's update of a non-primary admin is its mesh primary's");
         assert_eq!(who(&rename(p2), &moved), m2, "a recipe's update of a former mesh primary after its node.connections.delete moved the seat is the new mesh primary's");

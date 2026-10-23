@@ -197,9 +197,10 @@ async fn rename(
             return rdm_core::reply::status::not_ready(format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name));
         };
         let app_types = known.as_ref().and_then(|r| r.app_types.clone());
+        let executable = known.as_ref().and_then(|r| r.executable.clone());
         let (config, tags) = known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default()));
         span.record("keys", config.len() as u64).record("tags", crate::node_rows::labels(&tags).as_str());
-        let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, app_types, &from, &to).await {
+        let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, app_types, executable, &from, &to).await {
             Ok((m, written)) => {
                 if let Some(row) = &written {
                     door.written().hold(row);

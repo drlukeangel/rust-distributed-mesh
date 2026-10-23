@@ -229,16 +229,14 @@ impl AdminRunner {
     /// fabric knows (a recovered mesh is reconstructed as itself, never anew).
 
     pub(crate) async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
-        let known = mesh_id_of(&self.records, &self.topology, &*self.mesh_storage, mesh).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
-        let mut t = self.template.clone();
-        t.launcher.name = self.held_name();
-        t.executable = match &self.bindings {
+        let (executable, binding) = match &self.bindings {
             // Explicit mode: the bound executable, re-hashed now; an unbound kind is refused, never
             // launched from the built-in set.
             Some(b) => {
                 let r = resolve_bound(b, kind).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
                 tracing::info!(launch_id = %r.launch_id, executable = %r.executable.display(), sha256 = %r.sha256, candidate = %r.candidate.sha, "launching from the explicit executable binding");
-                r.executable
+                let binding = rdm_core::binding::Binding { launch_id: r.launch_id, executable: r.executable.clone(), sha256: r.sha256, image: r.image };
+                (r.executable, Some(binding))
             }
             // The built-in set: the node-admin, and the one node executable every other node_type
             // runs, taking its node_type from the launch (rafka-node-base `run_launched`). The rpc
@@ -249,9 +247,56 @@ impl AdminRunner {
                     NodeKind::RpcNode => "rdm-rpc-node",
                     _ => "rdm-node",
                 };
-                self.bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+                (self.bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)), None)
             }
         };
+        self.template_launching(kind, mesh, executable, binding).await
+    }
+
+    /// The template a node.create of `node` launches from (node-rpc-envelope.md "Build recipe";
+    /// node-replace.md step 3; node-recovery.md "Retained"): the binding `requested` names (a recipe's
+    /// Create step, which the Build fixes), else the one the node's seeding row records (the row at
+    /// the path, else its `<name>.old` row: the predecessor's, the exited birth's), else, for a node no
+    /// row records one for, its kind's binding at this admin. A binding the step or a row names is
+    /// re-hashed now: a missing file and a hash that differs are refused by name and nothing is
+    /// launched. The template carries the binding, so the create's name claim records it on the row.
+    pub(crate) async fn create_template(&self, node: &PathName, requested: Option<&rdm_core::binding::Binding>) -> Result<LaunchTemplate, String> {
+        let chosen = match requested {
+            Some(b) => Some((b.clone(), "build")),
+            None => self.recorded_executable(node).await?.map(|b| (b, "row")),
+        };
+        let Some((binding, from)) = chosen else {
+            let t = self.template_for(node.kind, &node.mesh).await?;
+            if t.binding.is_some() {
+                return Ok(t);
+            }
+            let binding = built_in_binding(node.kind, &t.executable).await.map_err(|e| format!("node.create:{node}: {e}"))?;
+            return Ok(LaunchTemplate { binding: Some(binding), ..t });
+        };
+        verify_binding(&binding, node.kind, from).await.map_err(|e| format!("node.create:{node}: the executable the {from} names is refused; nothing is launched: {e}"))?;
+        let executable = binding.executable.clone();
+        self.template_launching(node.kind, &node.mesh, executable, Some(binding)).await
+    }
+
+    /// The executable binding the row a create of `node` is seeded from records (the claim's seed,
+    /// [`crate::node_rows::NodeRows::claim`]): the row at the path, else its `<name>.old` row.
+    async fn recorded_executable(&self, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
+        let Some(rows) = self.records.contacts.get() else { return Ok(None) };
+        let at = rows.node_row_at(node).await.map_err(|e| format!("node.create:{node}: the row at {node} could not be read for its executable: {e}"))?;
+        let seed = match at {
+            Some(row) => Some(row),
+            None => rows.node_row_at(&node.renamed()).await.map_err(|e| format!("node.create:{node}: the row at {} could not be read for its executable: {e}", node.renamed()))?,
+        };
+        Ok(seed.and_then(|row| row.executable))
+    }
+
+    /// [`Self::template_for`] launching `executable`, `binding` its binding when one is known.
+    async fn template_launching(&self, kind: NodeKind, mesh: &str, executable: PathBuf, binding: Option<rdm_core::binding::Binding>) -> Result<LaunchTemplate, String> {
+        let known = mesh_id_of(&self.records, &self.topology, &*self.mesh_storage, mesh).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
+        let mut t = self.template.clone();
+        t.launcher.name = self.held_name();
+        t.executable = executable;
+        t.binding = binding;
         if kind == NodeKind::NodeAdmin {
             t.env.extend(self.admin_env.clone());
         }
@@ -433,8 +478,9 @@ impl AdminRunner {
     }
 
     /// node.create of `node`, its name claimed for `claim_for` (a plain create, or a replace
-    /// successor's at the name its predecessor released).
-    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, before_ready: Option<crate::deployment::pipeline::BeforeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+    /// successor's at the name its predecessor released), launching `executable` when the Build fixed
+    /// one ([`Self::create_template`]).
+    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, before_ready: Option<crate::deployment::pipeline::BeforeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
         match self.revise_predecessor(node).await {
             // The member answers: it is commanded back, never created over (node-recovery.md step 3).
             FenceOutcome::Alive => return Ok(()),
@@ -452,7 +498,7 @@ impl AdminRunner {
             }
             FenceOutcome::Clear { gone: None } => {}
         }
-        let mut template = self.template_for(node.kind, &node.mesh).await?;
+        let mut template = self.create_template(node, executable).await?;
         if node.kind == NodeKind::NodeAdmin {
             template = self.with_issuing_material(template, &node.mesh).await?;
         }
@@ -587,10 +633,11 @@ impl AdminRunner {
             t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
         };
         let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
-        // The launch is the kind's template, as every create's: the new node's config is seeded
-        // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told
+        // The launch runs the executable the exited birth's row records, on both arms (node-recovery.md
+        // "Retained": never the recovering admin's): the new node's config and executable are seeded
+        // from that Deleted row by the create's name claim (`NodeRows::claim`), and the config is told
         // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
-        let mut template = self.template_for(node.kind, &node.mesh).await?;
+        let mut template = self.create_template(node, None).await?;
         if node.kind == NodeKind::NodeAdmin {
             template = self.with_issuing_material(template, &node.mesh).await?;
         }
@@ -950,7 +997,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
                 self.create_over(&*builds, build_id, attempt, node, from).instrument(span).await
             }
-            BuildOperation::CreateNode { node, over: None } => self.create_node(build_id, attempt, node, crate::node_rows::ClaimFor::Create).await,
+            BuildOperation::CreateNode { node, over: None } => self.create_node(build_id, attempt, node, None, crate::node_rows::ClaimFor::Create).await,
             BuildOperation::RestartNode { node } => {
                 // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
                 // proven exited is node recovery's (node-recovery.md).
@@ -990,7 +1037,7 @@ impl AdminRunner {
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a recipe's
     /// create step, whose claim is a replace successor's), its name claimed for `claim_for`.
-    async fn create_node(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+    async fn create_node(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt);
         async {
@@ -999,7 +1046,7 @@ impl AdminRunner {
             // before it is asked to be Ready; only with that certainty does the shape proceed (e4.s11).
             let first_admin = self.topology.read().await.first_admin_of(node);
             let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
-            self.create(build_id, attempt, node, before_ready, claim_for).await
+            self.create(build_id, attempt, node, executable, before_ready, claim_for).await
         }
         .instrument(span)
         .await
@@ -1020,8 +1067,8 @@ impl AdminRunner {
         let me = self.held_name();
         let node = step.node();
         let key = crate::build::recipe_step_key(step);
-        if let S::Create { node } = step {
-            return self.create_node(build_id, attempt, node, crate::node_rows::ClaimFor::Successor).await;
+        if let S::Create { node, executable } = step {
+            return self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Successor).await;
         }
         let birth = match birth {
             Some(b) => b.clone(),
@@ -1212,6 +1259,32 @@ pub(crate) async fn resolve_bound(bindings: &rdm_core::binding::Validated, kind:
     span.record("outcome", if resolved.is_ok() { "hashed" } else { "refused" });
     span.in_scope(|| tracing::info!("the bound executable's bytes are hashed against its binding"));
     resolved
+}
+
+/// A binding a Build or a node row names, checked at the launch that runs it: its launch id is the
+/// node's kind, and its file is re-hashed now (on the blocking pool, as [`resolve_bound`]). A missing
+/// file and a hash that differs are refused by name.
+pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: NodeKind, from: &str) -> Result<(), String> {
+    let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+    if binding.launch_id != kind.name() {
+        span.record("outcome", "refused");
+        return Err(format!("the binding is for launch id `{}`, the node is a `{}`", binding.launch_id, kind.name()));
+    }
+    let started = std::time::Instant::now();
+    let b = binding.clone();
+    let checked = crate::blocking::blocking_io(move || b.verify()).await;
+    span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+    span.record("outcome", if checked.is_ok() { "hashed" } else { "refused" });
+    span.in_scope(|| tracing::info!("the executable's bytes are hashed against the binding the create launches"));
+    checked.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The built-in executable `kind` launches at this admin, as a binding: its file hashed now, so the
+/// row of the node created from it records exactly these bytes.
+async fn built_in_binding(kind: NodeKind, executable: &std::path::Path) -> Result<rdm_core::binding::Binding, String> {
+    let path = executable.to_path_buf();
+    let sha256 = crate::blocking::blocking_io(move || rdm_core::binding::sha256_file(&path)).await.map_err(|e| format!("the built-in executable {} could not be hashed: {e}", executable.display()))?;
+    Ok(rdm_core::binding::Binding { launch_id: kind.name().into(), executable: executable.to_path_buf(), sha256, image: None })
 }
 
 #[cfg(test)]

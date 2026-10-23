@@ -2154,6 +2154,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             &NodeId::mint(),
             "node.create:mesh1.rpc.2",
             None,
+            None,
             rdm_admin::node_rows::ClaimFor::Create,
         )
         .await

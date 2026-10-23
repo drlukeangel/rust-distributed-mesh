@@ -1188,6 +1188,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 issuing: None,
                                 roots: data_connections.roots(),
                                 connections_delete_deadline: cfg.connections_delete_deadline,
+                                binding: None,
                             };
                             let mut registry = HookRegistry::new();
                             for (spec, hook) in wiring.hooks.drain(..) {

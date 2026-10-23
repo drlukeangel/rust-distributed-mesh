@@ -278,6 +278,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
         issuing: None,
         roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        binding: None,
     }
 }
 

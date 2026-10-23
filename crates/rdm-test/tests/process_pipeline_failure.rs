@@ -45,6 +45,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            binding: None,
         };
         struct Never;
         #[async_trait::async_trait]
