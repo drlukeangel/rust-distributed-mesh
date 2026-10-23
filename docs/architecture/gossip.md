@@ -568,7 +568,6 @@ NODE -> OWN MESH            Digest heartbeat, full local facts, <= 2 s
 MESH PRIMARY -> BACKBONE    Members, the complete Mesh with loads, versioned, anti-entropy + change
 PEER PRIMARY -> OWN MESH    MembersDelta, base_version -> topology_version, no loads, on change
 ORDINARY NODE -> OWN PRIMARY   top-up: pull the current full fabric topology it holds
-MESH PRIMARY -> SOURCE PRIMARY top-up: pull that Mesh's current projection on a gap in it
 ```
 
 **Forwarded topology carries topology, never liveness.** An ordinary node retains
@@ -1014,7 +1013,7 @@ At minimum:
 25. a delta whose `base_version` the receiver does not hold desynchronizes that source's projection, and the node tops up from its own mesh-primary; nothing is requested over gossip;
 26. a forwarder that becomes the primary publishes a full before any delta; a new source primary is a new revision and its first delta is never applied before its full;
 27. a full missing a chunk is never applied, on the backbone or inside a Mesh; the held projection and the held source version survive until a complete snapshot or a top-up, and no delta is derived from an incomplete one;
-28. a stale copy is repaired by the holder's own pull on a noticed gap, never by a periodic push; a mesh-primary pulls a source Mesh's projection from that Mesh's primary;
+28. a stale copy is repaired by the holder's own pull on a noticed gap, never by a periodic push; a mesh-primary's sources are the backbone's complete Members snapshots, replaced by the source's next publication;
 29. the forwarded cross-Mesh projection carries no loads while the backbone aggregate does;
 30. two heartbeats of one birth are ordered by `digest_seq` alone: a stalled or repeated Rafka-time never makes a newer heartbeat look older;
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
