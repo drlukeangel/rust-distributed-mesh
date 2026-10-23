@@ -27,8 +27,7 @@ nodes). A store keeps no row about another object. Every RDM store maps onto a t
 
 Ruled by Luke, 2026-10-23: the rule; `ops.admin-rows` dead; shutdown is a state of the fabric; the births are
 the Build's state; the contacts are on the node; the mesh has no issuer, a node-admin's signing cert dates
-are on its node row; only cert dates are stored; Q141 A (below). None of Q139, Q140 or Q141 is in
-`docs/plans/rulings/INDEX.md` yet: they are recorded there before any page text below lands.
+are on its node row; only cert dates are stored; Q141 A (below). Q139, Q140 and Q141 are recorded in `docs/plans/rulings/INDEX.md` (2026-10-23).
 
 ### Keys, writers, fold
 
@@ -119,7 +118,6 @@ Step 4: old "The row records the last receipt. The old issuer expires on its own
   `gateway/tests/functional/store_plane_policy_at_birth.rs:120-128` asserts exactly that, and that only
   fabrics and meshes override). A node row or Build record moved there today expires a week after its last
   write. Both planes become compacted by key, in rafka-v2, with a cell that proves it, before any row moves.
-- **The rulings recorded.** Q139 (withdrawn), Q140 and Q141 go into the rulings index with Luke's words.
 
 ### Open
 - `ops.nodes.offline` is rafka's own (`NodeOfflineRecord`: one observer's offline episode of one node, with a
