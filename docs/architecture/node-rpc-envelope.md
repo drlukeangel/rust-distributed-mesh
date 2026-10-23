@@ -1429,6 +1429,7 @@ pub enum BuildRequest {
         intent: Vec<Vec<u8>>,
         operations: Vec<Vec<u8>>,
         hand_off_to: Option<String>,
+        mesh: Option<String>, // the attempt's mesh for a drift attempt, numbered (build_id, mesh, attempt); none for a topology attempt (Q118)
     },
     Get { build_id: String },
     Delete { build_id: String },
