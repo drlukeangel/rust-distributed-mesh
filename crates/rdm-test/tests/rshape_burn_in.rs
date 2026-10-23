@@ -5644,11 +5644,21 @@ fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<Strin
     }
     let term = |node: &str, scope: &str, at: u64| starts.get(&(node.to_string(), scope.to_string())).map(|v| v.iter().filter(|t| **t <= at).count()).unwrap_or(0);
     let mut groups: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    let mut last: BTreeMap<(String, String, String), u64> = BTreeMap::new();
     for sp in sends {
         let (node, scope, changed_at) = (s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]));
         let t = term(&node, &scope, start_ns(sp));
-        *groups.entry((node, scope, format!("{changed_at}#{t}"))).or_default() += 1;
+        let key = (node, scope, format!("{changed_at}#{t}"));
+        let at = last.entry(key.clone()).or_default();
+        *at = (*at).max(start_ns(sp));
+        *groups.entry(key).or_default() += 1;
     }
+    // The sender lost the seat it published for after the message's last send: its own election named another
+    // mesh-primary of the scope's mesh then (the seats a checkpoint read may predate that).
+    let lost_after = |sender: &str, scope: &str, after: u64| {
+        let mesh = scope.strip_prefix("mesh:").unwrap_or("");
+        named(spans, "rdm.mesh.election.resolve.via-mesh-primary").into_iter().any(|sp| sp["attributes"]["observer"] == sender && sp["attributes"]["mesh"] == mesh && start_ns(sp) > after && sp["attributes"]["winner_path"] != sender)
+    };
     let mut newest: BTreeMap<(String, String), u64> = BTreeMap::new();
     for (sender, scope, changed_at) in groups.keys() {
         let at = changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap_or_else(|_| panic!("status send changed_at_rafka_ms '{changed_at}' is not a number"));
@@ -5658,7 +5668,7 @@ fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<Strin
     let messages = groups.len();
     let odd = groups
         .into_iter()
-        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && seats.contains(sender) && newest[&(sender.clone(), scope.clone())] == changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap()))
+        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && seats.contains(sender) && !lost_after(sender, scope, last[&(sender.clone(), scope.clone(), changed_at.clone())]) && newest[&(sender.clone(), scope.clone())] == changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap()))
         .collect();
     (odd, messages)
 }
