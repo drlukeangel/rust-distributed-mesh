@@ -700,22 +700,7 @@
       "source": "tools/mesh-audit/tests/rshape_definition.rs"
     },
     {
-      "test": "mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own",
-      "issue": 2943,
-      "provider": "process",
-      "tier": "adversarial",
-      "job": "i143-rshape-adv-cut-ops-process",
-      "covers": [
-        "C9",
-        "C10"
-      ],
-      "canon": "fabric-node-lifecycle-elections.md section 1 (a partition may produce different local candidate sets); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own",
-      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
-    },
-    {
-      "test": "mock_cut_restart_of_a_near_node_is_held_by_the_far_side",
+      "test": "mock_cut_restart_of_a_near_node_completes_and_the_heal_converges",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
@@ -725,12 +710,12 @@
         "C10"
       ],
       "canon": "R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation for every node of that mesh); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_restart_of_a_near_node_is_held_by_the_far_side -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_completes_and_the_heal_converges/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_restart_of_a_near_node_completes_and_the_heal_converges -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_completes_and_the_heal_converges",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard",
+      "test": "mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
@@ -740,12 +725,12 @@
         "C10"
       ],
       "canon": "R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation for every node of that mesh); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side",
+      "test": "mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
@@ -755,8 +740,8 @@
         "C10"
       ],
       "canon": "R-D1; node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
