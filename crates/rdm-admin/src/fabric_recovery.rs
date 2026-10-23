@@ -193,6 +193,11 @@ impl FabricRecoveryDoor {
 
     async fn run_in(self: &Arc<Self>, span: &tracing::Span, target: &Primary) -> String {
         let mut investigated = false;
+        // A re-create was submitted for the lost birth: only then is one owed again after a submit that
+        // ended without the node. A reached birth is commanded back, never re-created (Q111); if it is not
+        // heard again within a staleness floor, the next investigation decides again.
+        let mut submitted = false;
+        let mut next_look = std::time::Instant::now();
         // The re-create is owed until its attempt completes, under the one backoff rule: a submit that ends
         // without the node is made again after a delay that doubles, never on every pass.
         let mut done = false;
@@ -229,7 +234,7 @@ impl FabricRecoveryDoor {
                 }
                 (_, Some(_)) => return "the lost birth is heard again: its record names it".into(),
                 // The lost birth is still in the view: node investigation decides (Q111).
-                (Some(node), None) if !investigated => {
+                (Some(node), None) if !investigated && std::time::Instant::now() >= next_look => {
                     investigated = true;
                     let finding = self.looker.look(&view, &node).await;
                     span.record("verdict", finding.name());
@@ -239,8 +244,11 @@ impl FabricRecoveryDoor {
                                 let held = Node { status: NodeStatus::PendingReconnect, ..node.clone() };
                                 heard_again.command(&held, inc).await;
                             }
+                            investigated = false;
+                            next_look = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
                         }
                         (_, Some(inspected)) => {
+                            submitted = true;
                             done = self.submit(&node, &inspected, &mut next_submit, &mut backoff, ceiling).await;
                         }
                         (_, None) => {}
@@ -248,7 +256,7 @@ impl FabricRecoveryDoor {
                 }
                 // Gone from the view and not re-created yet (a replacement executor, or a re-create that
                 // ended without the node): the attempt resumes from its receipts.
-                (Some(node), None) if !done && std::time::Instant::now() >= next_submit => {
+                (Some(node), None) if submitted && !done && std::time::Instant::now() >= next_submit => {
                     // Investigated already: its re-create is owed again after a submit that ended without it.
                     let inspected = crate::deployment::provider::Inspected::Unavailable("re-create owed after a submit that ended without the node".into());
                     done = self.submit(&node, &inspected, &mut next_submit, &mut backoff, ceiling).await;
@@ -258,6 +266,7 @@ impl FabricRecoveryDoor {
                     node.node_id = target.node_id.clone();
                     node.incarnation_id = Some(target.incarnation.clone());
                     let inspected = crate::deployment::provider::Inspected::Unavailable("gone from the view".into());
+                    submitted = true;
                     done = self.submit(&node, &inspected, &mut next_submit, &mut backoff, ceiling).await;
                 }
                 _ => {}

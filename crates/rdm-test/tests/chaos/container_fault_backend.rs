@@ -351,6 +351,13 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     for r in &recoveries {
         assert_ne!(r["attributes"]["verdict"], "reached", "a recovery follows node investigation's verdict, never `reached`: {r}");
     }
+    // fabric-recovery.md, node-investigation.md (Q111): a lost fabric-primary the investigation reached is
+    // commanded back through node.mesh.join, never re-created: a fabric recovery whose verdict is
+    // `reached` submits no re-create in its run.
+    for run in named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| attr(sp, "verdict") == "reached") {
+        let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["trace_id"] == run["trace_id"]).collect();
+        assert!(recreated.is_empty(), "fabric recovery reached the lost fabric-primary and re-created it anyway: {run} {recreated:#?}");
+    }
     let renewed: Vec<String> = converged.0.iter().filter(|(p, id)| pre_ids.get(*p) != Some(*id)).map(|(p, _)| p.clone()).collect();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({
         "cell": CELL, "kept_mesh": kept_mesh, "cut_mesh": cut_mesh, "fabric_primary": fabric_primary, "cut_unix_nano": cut_at, "healed_unix_nano": healed_at,

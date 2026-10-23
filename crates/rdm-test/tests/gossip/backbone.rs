@@ -457,6 +457,13 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     for sp in named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| start(sp) >= cut_at) {
         assert_ne!(attr(sp, "verdict"), "reached", "a recovery follows node investigation's verdict, never `reached`: {sp}");
     }
+    // fabric-recovery.md (Q111): a lost fabric-primary the investigation reached is commanded back, never
+    // re-created: a fabric recovery whose verdict is `reached` submits no re-create in its run.
+    let spans = estate.spans();
+    for run in named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| attr(sp, "verdict") == "reached") {
+        let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["trace_id"] == run["trace_id"]).collect();
+        assert!(recreated.is_empty(), "fabric recovery reached the lost fabric-primary and re-created it anyway: {run} {recreated:#?}");
+    }
     // The Build submitted at the fabric-primary the healed fabric names completes.
     let healed = estate.node_values().await;
     let fp_path: PathName = s(&healed.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the healed fabric names a fabric-primary: {healed:?}"))["name"]).parse().unwrap();
