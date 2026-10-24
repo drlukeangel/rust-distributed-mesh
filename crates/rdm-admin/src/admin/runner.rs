@@ -610,7 +610,11 @@ impl AdminRunner {
         let (unreached, handle) = self.exited_birth("node.delete", node, from).await?;
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: unreached, handle, unreached: true };
-        let terminal = self.pipeline_with(&template, builds).retire(&req).await.map_err(crate::executor::RunEnd::from)?;
+        let pipeline = self.pipeline_with(&template, builds);
+        // Fabric recovery's backbone arm terminates nothing in the mesh (fabric-recovery.md step 3, Q148;
+        // node-delete.md): its delete reads the exact runtime, writes the row deleted and releases the name.
+        let terminal = if backbone_attempt(builds, build_id, attempt, node).await { pipeline.delete_from_backbone(&req).await } else { pipeline.retire(&req).await };
+        let terminal = terminal.map_err(crate::executor::RunEnd::from)?;
         let held = self.handles.lock().unwrap().get(node).is_some_and(|(n, _)| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         if held {
             self.handles.lock().unwrap().remove(node);
@@ -1359,6 +1363,14 @@ async fn built_in_binding(kind: NodeKind, executable: &std::path::Path, provider
         ProviderKind::Container => Some(crate::deployment::container::RUNTIME_IMAGE.to_string()),
     };
     Ok(rdm_core::binding::Binding { launch_id: kind.name().into(), executable: executable.to_path_buf(), sha256, image })
+}
+
+/// Whether attempt `attempt` of `build_id` is fabric recovery's backbone re-create of `node` (its lane's
+/// action, or the fabric lane's, is a `Recover` from the backbone, fabric-recovery.md step 3, Q148).
+async fn backbone_attempt(builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> bool {
+    let Ok(p) = builds.read_build(build_id).await else { return false };
+    let backbone = |a: Option<&crate::accepted::AttemptAction>| matches!(a, Some(crate::accepted::AttemptAction::Recover { path, backbone: true, .. }) if path == node);
+    backbone(p.lanes.get(&node.mesh).and_then(|l| l.attempt_actions.get(&attempt))) || backbone(p.attempt_actions.get(&attempt))
 }
 
 #[cfg(test)]

@@ -857,7 +857,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
 
     // What mesh2's primary wrote before it was lost: mesh2's in-flight row for attempt 1, then the
     // attempt's open carrying the member's recovery. Its claim was never written.
-    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap(), create_only: false };
+    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap(), backbone: false };
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() };
     assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
@@ -1002,7 +1002,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
 
     // The resubmit: mesh2's in-flight row for attempt 2, then attempt 2's open carrying the same
     // recovery. Its claim was never written: the primary was lost between the two.
-    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone(), create_only: false };
+    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone(), backbone: false };
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into() };
     assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds

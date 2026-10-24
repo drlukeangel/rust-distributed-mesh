@@ -255,11 +255,12 @@ pub enum AttemptAction {
         node_id: NodeId,
         /// The exited birth.
         from_incarnation: IncarnationId,
-        /// Fabric recovery's backbone arm (fabric-recovery.md step 3, Q142): the re-create is a
-        /// node.create alone, over a newly allocated data dir; an executor outside the mesh deletes and
-        /// terminates nothing in it, and a path.name whose record stands refuses the create `NameHeld`.
+        /// Fabric recovery's backbone arm (fabric-recovery.md step 3, Q142, Q148): it terminates nothing
+        /// in the mesh. Its node.delete of the exact lost birth writes that birth's row deleted with no
+        /// `TerminateRuntime` and releases the name, then node.create at the path.name; a delete that
+        /// finds another birth at the path writes nothing.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        create_only: bool,
+        backbone: bool,
     },
     /// Delete the stopped exact birth a rename left at `<path>.old` (node-delete.md): its stop steps
     /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
@@ -680,15 +681,9 @@ fn plan_with(
     // generic loop, and no other member is swept. Each is planned whatever the view holds at
     // the path (the exited birth unheard, nothing, or the new node mid-attempt) until the receipts say
     // it is done, so a later attempt runs only what is left and never deletes again.
-    if let Some(AttemptAction::Recover { path, node_id, from_incarnation, create_only }) = action {
+    if let Some(AttemptAction::Recover { path, node_id, from_incarnation, .. }) = action {
         let exited = crate::build::ExitedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let done = progress.recovery;
-        if *create_only {
-            if done < RecoveryProgress::Recovered {
-                ops.push(BuildOperation::CreateNode { node: path.clone(), over: None });
-            }
-            return BuildPlan { operations: ops };
-        }
         if done < RecoveryProgress::Deleted {
             ops.push(BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()) });
         }
@@ -1256,7 +1251,7 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
         let exited = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let recover = AttemptAction::Recover { path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone(), create_only: false };
+        let recover = AttemptAction::Recover { path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone(), backbone: false };
         let mut o = mn();
         o.nodes.retain(|x| x.name != path && x.name.to_string() != "mesh1.rpc.2" && x.name.to_string() != "mesh1.admin.2");
         let want = vec![
@@ -1268,21 +1263,23 @@ mod tests {
         assert!(plan(&cur, &o, None).operations.len() >= 3);
     }
 
-    /// CONTRACT (fabric-recovery.md step 3, Q142: "From the backbone the re-create is a node.create alone:
-    /// an executor outside the mesh terminates nothing in it"): fabric recovery's backbone attempt plans
-    /// the node.create at the path over a newly allocated data dir, and never the delete whose first step
-    /// is TerminateRuntime; its action survives the Build topic's wire. Must NOT happen: a RetireNode, or
-    /// a create over the lost birth's data dir, in a backbone attempt.
+    /// CONTRACT (fabric-recovery.md step 3, Q142, Q148: "its node.delete of the exact lost birth writes
+    /// that birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the
+    /// path.name"): fabric recovery's backbone attempt plans the same two operations as every recovery,
+    /// the delete keyed on the lost birth, then the create; what differs is its delete's runtime step,
+    /// which the action carries, and the action crosses the Build topic as itself. Must NOT happen: a
+    /// backbone attempt planned without its delete, so a path.name whose row stands is never freed.
     #[test]
-    fn a_backbone_recovery_plans_a_create_alone_and_never_a_delete() {
+    fn a_backbone_recovery_plans_the_delete_of_the_lost_birth_then_the_create() {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.admin.1".parse().unwrap();
         let lost = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let backbone = AttemptAction::Recover { path: path.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation.clone(), create_only: true };
+        let backbone = AttemptAction::Recover { path: path.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation.clone(), backbone: true };
         let o = mn();
-        assert_eq!(plan(&cur, &o, Some(&backbone)).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None }]);
-        let own_mesh = AttemptAction::Recover { path: path.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation.clone(), create_only: false };
-        assert_eq!(plan(&cur, &o, Some(&own_mesh)).operations.first(), Some(&BuildOperation::RetireNode { node: path.clone(), exited: Some(lost) }), "the own-mesh arm still deletes first");
+        assert_eq!(
+            plan(&cur, &o, Some(&backbone)).operations,
+            vec![BuildOperation::RetireNode { node: path.clone(), exited: Some(lost.clone()) }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost) }]
+        );
         let wire = crate::wire::action_round_trip(&backbone);
         assert_eq!(wire, backbone, "the backbone action crosses the Build topic as itself");
     }
@@ -1575,7 +1572,7 @@ mod tests {
             steps,
             last_failure: None,
             reason: AttemptReason::Recovery,
-            action: Some(AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone(), create_only: false }),
+            action: Some(AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone(), backbone: false }),
             attempt_actions: Default::default(),
             attempt_executors: Default::default(),
             opened: 0,

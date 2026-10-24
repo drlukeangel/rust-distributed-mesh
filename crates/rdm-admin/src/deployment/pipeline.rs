@@ -987,6 +987,10 @@ pub(crate) enum Terminate {
     /// node-runtime-inspect.md: "at the step's own instant, before it asks the provider to
     /// terminate"). Any other read terminates nothing and waits for nothing.
     Unreached,
+    /// Never: fabric recovery's backbone arm terminates nothing in a mesh it is outside of
+    /// (fabric-recovery.md step 3, Q148; node-delete.md). The step still reads the exact runtime at
+    /// its instant, and the receipt names that read, so the create's data dir follows it (`R-FM2`).
+    Backbone,
 }
 
 /// What a stop's wait step must have seen to complete.
@@ -2158,10 +2162,18 @@ impl DeploymentPipeline<'_> {
     pub async fn retire(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.retire_steps(req).instrument(span).await
+        self.retire_steps(req, Terminate::Unreached).instrument(span).await
     }
 
-    async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    /// Fabric recovery's backbone arm's node.delete of the exact lost birth (fabric-recovery.md step 3,
+    /// Q148): the unreached delete, its runtime read and never terminated.
+    pub async fn delete_from_backbone(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        self.retire_steps(req, Terminate::Backbone).instrument(span).await
+    }
+
+    async fn retire_steps(&self, req: &RetireRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
         let mut node = req.node.clone();
@@ -2186,7 +2198,7 @@ impl DeploymentPipeline<'_> {
             // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
             // reply or receipt is fabricated; `TerminateRuntime` first when its runtime runs at the
             // step's instant, and nothing waits for a proof of termination.
-            self.terminate_step_when(&mut run, &node, handle, Terminate::Unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
+            self.terminate_step_when(&mut run, &node, handle, unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
         } else if node.parked {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
@@ -2369,9 +2381,16 @@ impl DeploymentPipeline<'_> {
                     verdict: verdict.map(str::to_string),
                 })
             };
-            let verdict = if when == Terminate::Unreached {
+            let verdict = if when != Terminate::Always {
                 // node.runtime.inspect at the terminate's instant: its span is the evidence (node-runtime-inspect.md).
-                match self.inspected_at(node, handle, "terminate", "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates it on every read but os-stopped").await {
+                let why = if when == Terminate::Backbone {
+                    "fabric recovery's backbone arm reads the exact runtime at its instant and terminates nothing"
+                } else {
+                    "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates it on every read but os-stopped"
+                };
+                match self.inspected_at(node, handle, "terminate", why).await {
+                    DeploymentStatus::Running if when == Terminate::Backbone => return receipt(None, Some("running")),
+                    DeploymentStatus::Exited { code } if when == Terminate::Backbone => return receipt(code, Some("exited")),
                     DeploymentStatus::Running => Some("running"),
                     // Never skipped for an exited runtime: the provider's terminate removes what it
                     // left (node-recovery.md step 3, Q145); the receipt still names the read.

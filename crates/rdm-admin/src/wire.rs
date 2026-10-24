@@ -168,7 +168,7 @@ enum WireAction {
     Terminate { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
     /// Fabric recovery's backbone re-create, a node.create alone (Q142); appended, so every earlier
     /// variant keeps its position.
-    RecoverCreateOnly { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
+    RecoverFromBackbone { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -224,8 +224,8 @@ impl From<&AttemptAction> for WireAction {
             AttemptAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { path, node_id, from_incarnation, create_only: false } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { path, node_id, from_incarnation, create_only: true } => Self::RecoverCreateOnly { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { path, node_id, from_incarnation, backbone: false } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Delete { path, from_incarnation } => Self::Delete { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recipe { steps, pinned } => Self::Recipe { steps: steps.clone(), pinned: pinned.clone() },
             AttemptAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
@@ -239,8 +239,8 @@ impl From<WireAction> for AttemptAction {
             WireAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
-            WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, create_only: false },
-            WireAction::RecoverCreateOnly { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, create_only: true },
+            WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, backbone: false },
+            WireAction::RecoverFromBackbone { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, backbone: true },
             WireAction::Delete { path, from_incarnation } => Self::Delete { path, from_incarnation },
             WireAction::Recipe { steps, pinned } => Self::Recipe { steps, pinned },
             WireAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path, node_id, from_incarnation },

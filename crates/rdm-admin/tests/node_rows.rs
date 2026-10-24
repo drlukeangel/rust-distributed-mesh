@@ -14,7 +14,7 @@ use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::MemoryBuildStateAdapter;
 use rdm_admin::model::*;
-use rdm_admin::node_rows::{ClaimFor, NodeRows};
+use rdm_admin::node_rows::{ClaimFor, NodeRows, RowRefused};
 use rdm_admin::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rdm_admin::topology::Topology;
 use serde_json::{json, Value};
@@ -1615,6 +1615,34 @@ fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_h
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
     assert_eq!(created[1]["attributes"]["seeded_from"].as_str(), Some(exited.as_str()));
+}
+
+/// CONTRACT (fabric-recovery.md step 3, Q148: "a delete that finds another birth at the path writes
+/// nothing"): a recovery's node.delete of the lost birth replayed after its re-create claimed the
+/// `path.name` is refused `name-held`: the new node keeps its row, its name and its tags, and the lost
+/// birth's record is not written again. Must NOT happen: the replayed delete releases the name the
+/// new node holds or writes its row.
+#[test]
+fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() {
+    let cap = capture();
+    let (row, exited, born, blue) = cap.run(async {
+        let delete = "node.delete:mesh1.rpc.1";
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let mp = mesh_primary(&storage);
+        let exited = held(&mp, "mesh1.rpc.1").await;
+        storage.write_record(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+        mp.rows.deleted(&exited, delete).await.expect("the recovery's delete writes the Deleted row");
+        let born = NodeId::mint();
+        mp.rows.claim(&exited.name, &born, "node.create:mesh1.rpc.1", None, None, ClaimFor::Recovery).await.expect("the re-create claims the name");
+        let replayed = mp.rows.deleted(&exited, delete).await;
+        assert!(matches!(replayed, Err(RowRefused::NameHeld(ref h)) if h.by == born), "the replayed delete is refused by the replacement's claim: {replayed:?}");
+        assert_eq!(storage.name_claim(&exited.name).await.unwrap(), Some(born.clone()), "the replacement keeps the name");
+        (storage.record_at(&exited.name).await.unwrap(), exited.node_id, born, storage.tagged("blue").await.unwrap())
+    });
+    assert_eq!(row.as_ref().map(|r| (&r.node_id, r.status)), Some((&born, NodeStatus::Pending)), "the replacement's row stands: {row:?}");
+    assert_eq!(blue, [born.clone()].into(), "the label stays indexed under the replacement");
+    let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
+    assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted")), (Some(exited.as_str()), Some("name-held"))], "{deleted:#?}");
 }
 
 /// CONTRACT (e12.s41 / crit:e12.s41.1; proposal node-primary-update-fabric-mesh-and-node-type.md

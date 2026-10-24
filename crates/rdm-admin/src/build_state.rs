@@ -3285,7 +3285,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), create_only: false }),
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
         };
@@ -3357,7 +3357,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), create_only: false }),
+            action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), backbone: false }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
         };
@@ -3576,7 +3576,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), create_only: false }),
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), backbone: false }),
             opened_by: format!("{mesh}.admin.1"),
             opened_at_ms: 6,
         }

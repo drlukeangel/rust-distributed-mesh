@@ -863,7 +863,7 @@ impl ControlPlane {
                 });
                 return Err(Refusal::NotClaimant { mesh: path.mesh.clone(), fabric_primary, mesh_primary });
             }
-            let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), create_only: route == "fabric-recovery-backbone" };
+            let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: route == "fabric-recovery-backbone" };
             // A reported recovery whose attempt still runs under the reporter is reattached, never
             // claimed again (build.md: "A live run is reattached, never re-claimed"): the fabric-primary
             // lost its stream to the run, and the reporter's next report finds it.
