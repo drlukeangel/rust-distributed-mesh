@@ -31,7 +31,7 @@
 use crate::storage::ConnectionsStorage;
 pub use crate::connection_reconnect::{RECONCILER_TICK, RecoveryAttempt, RecoveryDial};
 use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rdm_core::reconnect::{first_failure, owed_retirements};
+use rdm_core::reconnect::{first_failure, owed_direct_restored};
 use rdm_core::{IncarnationId, PathName};
 use rdm_transport::{ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
@@ -438,7 +438,7 @@ impl ConnectionsWriter {
     /// The Proxy retirements this node owes now (connections.md §10), derived from the held
     /// projection's two latest rows per pair: never a queue.
     pub fn owed(&self) -> Vec<NodeConnection> {
-        owed_retirements(&self.inner.held.lock().unwrap(), local_now_ms())
+        owed_direct_restored(&self.inner.held.lock().unwrap(), local_now_ms())
     }
 
     /// Settle every Proxy retirement this node owes: each is written durably as
@@ -449,7 +449,7 @@ impl ConnectionsWriter {
         let _gate = self.inner.write_gate.lock().await;
         self.own_now();
         let at = self.stamp();
-        let owed = owed_retirements(&self.inner.held.lock().unwrap(), at);
+        let owed = owed_direct_restored(&self.inner.held.lock().unwrap(), at);
         let mut landed = 0;
         for row in owed {
             let span = tracing::info_span!(

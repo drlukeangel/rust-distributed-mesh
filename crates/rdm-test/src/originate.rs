@@ -396,7 +396,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                         own_active_proxies: held.own_active_proxies().into_iter().cloned().collect(),
                         own_latest_directs: held.own_latest_directs().into_iter().cloned().collect(),
                         active_len: held.active_len(),
-                        owed: rdm_core::reconnect::owed_retirements(&held, 0),
+                        owed: rdm_core::reconnect::owed_direct_restored(&held, 0),
                         fault_refused: seams.fault.refused(),
                     }
                 }

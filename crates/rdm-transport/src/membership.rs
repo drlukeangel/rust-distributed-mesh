@@ -1120,7 +1120,7 @@ impl SeatBook {
 
     /// The held record of `mesh`'s `kind` cohort primary seat (`node_admin`: its mesh-primary seat).
     pub fn cohort(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<Primary> {
-        self.inner.lock().unwrap().get(Seat::of_cohort(kind), mesh)
+        self.inner.lock().unwrap().get(Seat::of_node_type(kind), mesh)
     }
 
     /// Every other cohort's primary record held, by (mesh, kind).
@@ -5330,7 +5330,7 @@ impl DigestBook {
         let n = &d.node;
         let record = |revision| Primary { mesh: n.name.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
         if let Some(revision) = d.is_primary {
-            self.seats.take(Seat::of_cohort(n.name.kind), &record(revision));
+            self.seats.take(Seat::of_node_type(n.name.kind), &record(revision));
         }
         if let Some(revision) = d.is_fabric_primary {
             self.seats.take(Seat::FabricPrimary, &record(revision));

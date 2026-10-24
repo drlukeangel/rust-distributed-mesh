@@ -104,7 +104,7 @@ fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
 /// dials it (connections.md section 7); once a Direct fact stands but is Failed or Disconnected,
 /// the reconnect series owns the retry and no route is offered.
 #[test]
-fn a_complete_holder_with_no_direct_fact_dials_and_a_standing_failed_fact_does_not() {
+fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_does_not() {
     let (mut held, own, _carrier, dest) = estate();
     assert!(!held.holds_direct_fact(&own.name, &dest.name));
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false });
@@ -132,7 +132,7 @@ fn members(held: &mut ConnectionsHeld, ends: &[&ConnectionEnd]) -> Arc<StaticInc
 }
 
 #[test]
-fn a_stale_destination_incarnation_is_fenced() {
+fn a_stale_destination_incarnation_is_superseded() {
     let (mut held, own, carrier, dest) = estate();
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
@@ -147,7 +147,7 @@ fn a_stale_destination_incarnation_is_fenced() {
 }
 
 #[test]
-fn a_stale_carrier_incarnation_is_fenced() {
+fn a_stale_carrier_incarnation_is_superseded() {
     let (mut held, own, carrier, dest) = estate();
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
@@ -194,7 +194,7 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
 /// CONTRACT: a destination that departed (retired) is no current birth: the Direct fact toward it
 /// is not the current edge and a Proxy to it is fenced by name.
 #[test]
-fn a_direct_fact_and_a_proxy_naming_a_departed_destination_are_not_current() {
+fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {
     let (mut held, own, carrier, dest) = estate();
     let m = members(&mut held, &[&carrier, &dest]);
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
@@ -208,7 +208,7 @@ fn a_direct_fact_and_a_proxy_naming_a_departed_destination_are_not_current() {
 }
 
 #[test]
-fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_retired() {
+fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disconnected() {
     let (own, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 3, Some("d1")));
     let admin = end(NodeKind::NodeAdmin, 1, Some("a1"));
     let mut held = ConnectionsHeld::new();

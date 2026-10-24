@@ -7,7 +7,7 @@ use iroh::SecretKey;
 use rdm_core::connections::{
     ConnectionKind as CoreConnectionKind, ConnectionState, NodeConnection,
 };
-use rdm_core::reconnect::owed_retirements;
+use rdm_core::reconnect::owed_direct_restored;
 use rdm_core::status::ConnectionScope;
 use rdm_core::{ConnectionId, IncarnationId, NodeId, NodeKind};
 use rdm_transport::connections::{
@@ -256,8 +256,8 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_r
             "ALPN_B's Proxy must remain active when ALPN_A reconnects Direct"
         );
         assert!(
-            owed_retirements(&held, 999).is_empty(),
-            "owed_retirements must not retire ALPN_B's Proxy when only ALPN_A has Direct Connected"
+            owed_direct_restored(&held, 999).is_empty(),
+            "owed_direct_restored must not retire ALPN_B's Proxy when only ALPN_A has Direct Connected"
         );
     }
 

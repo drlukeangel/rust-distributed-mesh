@@ -152,7 +152,7 @@ pub fn first_failure_for(
 
 /// The Proxy retirements this source owes now: each own active Proxy whose `(source, destination, alpn)`
 /// has an active Direct on that same ALPN, as the `Proxy Disconnected(direct-restored)` entry to write at `now_ms`.
-pub fn owed_retirements(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
+pub fn owed_direct_restored(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
     held.own_active_proxies()
         .into_iter()
         .filter(|p| matches!(held.active_direct_for(&p.source.name, &p.destination.name, &p.alpn), Some(Some(edge)) if !held.names_superseded_destination(edge)))

@@ -558,7 +558,7 @@ impl HandoverDoor {
         // The record the operation moves: the fabric-primary's for node.fabric-primary.update, its type's
         // otherwise.
         let fabric_update = operation.starts_with("node.fabric-primary.update:");
-        let (seat, record) = if fabric_update { (Seat::FabricPrimary, book.fabric()) } else { (Seat::of_cohort(kind), book.cohort(&primary.mesh, kind)) };
+        let (seat, record) = if fabric_update { (Seat::FabricPrimary, book.fabric()) } else { (Seat::of_node_type(kind), book.cohort(&primary.mesh, kind)) };
         let Some(record) = record.filter(|r| !r.is_birth(&primary.node_id, &primary.incarnation)) else { return Ok(None) };
         if !book.replaced(seat, &primary.mesh, &primary.incarnation) {
             return Ok(None);

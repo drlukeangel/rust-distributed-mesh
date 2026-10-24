@@ -281,7 +281,7 @@ mod tests {
             let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &election.seats).await.unwrap();
             assert!((3..=4).contains(&taken), "{backend}: the mesh-primary's, the fabric-primary's and the rpc type's primary, the Deleted record's superseded: {taken}");
             let held = |role, revision, d: &MeshDigest| matches!(election.seats.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_transport::membership::SeatTaken::Same);
-            assert!(held(rdm_core::Seat::of_cohort(NodeKind::NodeAdmin), 3, &admin) && held(rdm_core::Seat::FabricPrimary, 1, &admin) && held(rdm_core::Seat::of_cohort(NodeKind::RpcNode), 2, &rpc), "{backend}: each recorded primary is held at its revision");
+            assert!(held(rdm_core::Seat::of_node_type(NodeKind::NodeAdmin), 3, &admin) && held(rdm_core::Seat::FabricPrimary, 1, &admin) && held(rdm_core::Seat::of_node_type(NodeKind::RpcNode), 2, &rpc), "{backend}: each recorded primary is held at its revision");
         }
     }
 

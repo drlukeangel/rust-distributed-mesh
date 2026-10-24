@@ -3,7 +3,7 @@
 
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
 use rdm_core::reconnect::{
-    deterministic_jitter, due, first_failure, next_failure, owed_retirements, reconnect_backoff, reconnect_plan, DIRECT_RESTORED,
+    deterministic_jitter, due, first_failure, next_failure, owed_direct_restored, reconnect_backoff, reconnect_plan, DIRECT_RESTORED,
 };
 use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 
@@ -96,7 +96,7 @@ fn a_direct_connected_ends_the_series() {
 }
 
 #[test]
-fn cutback_to_direct_happens_only_after_the_proxy_retirement_is_applied_and_a_failed_write_is_owed_again() {
+fn cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again() {
     let (own, carrier, dest) = (end(1, "o1"), end(2, "c1"), end(3, "d1"));
     let mut h = held_for(&own);
     h.apply(connected(&carrier, &dest, 10)).unwrap();
@@ -113,21 +113,21 @@ fn cutback_to_direct_happens_only_after_the_proxy_retirement_is_applied_and_a_fa
         logged_at_ms: 20,
     };
     h.apply(proxy).unwrap();
-    assert!(owed_retirements(&h, 25).is_empty(), "no Direct yet: nothing owed");
+    assert!(owed_direct_restored(&h, 25).is_empty(), "no Direct yet: nothing owed");
 
     h.apply(connected(&own, &dest, 30)).unwrap();
     assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until retired");
-    let owed = owed_retirements(&h, 31);
+    let owed = owed_direct_restored(&h, 31);
     assert_eq!(owed.len(), 1);
     assert_eq!((owed[0].state, owed[0].reason.as_deref()), (ConnectionState::Disconnected, Some(DIRECT_RESTORED)));
 
     // The write fails (never applied): the retirement is owed again, and the Proxy still routes.
-    assert_eq!(owed_retirements(&h, 40).len(), 1);
+    assert_eq!(owed_direct_restored(&h, 40).len(), 1);
     assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }));
 
     // The write lands: the Proxy is retired and new invocations go Direct.
-    h.apply(owed_retirements(&h, 50).remove(0)).unwrap();
-    assert!(owed_retirements(&h, 51).is_empty());
+    h.apply(owed_direct_restored(&h, 50).remove(0)).unwrap();
+    assert!(owed_direct_restored(&h, 51).is_empty());
     assert_eq!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
 }
 

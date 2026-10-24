@@ -194,7 +194,7 @@ pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshSto
         let Some(b) = r.newest_birth() else { continue };
         let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
         if let Some(revision) = b.is_primary {
-            taken += usize::from(matches!(seats.take(rdm_core::Seat::of_cohort(r.name.kind), &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
+            taken += usize::from(matches!(seats.take(rdm_core::Seat::of_node_type(r.name.kind), &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
         }
         if let Some(revision) = b.is_fabric_primary {
             taken += usize::from(matches!(seats.take(rdm_core::Seat::FabricPrimary, &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));

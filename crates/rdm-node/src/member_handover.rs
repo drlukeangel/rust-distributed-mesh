@@ -34,7 +34,7 @@ pub fn primary_of_type(node_type: &str) -> Option<Seat> {
     if node_type == FABRIC {
         return Some(Seat::FabricPrimary);
     }
-    NodeKind::ALL.into_iter().find(|k| k.node_type() == node_type).map(Seat::of_cohort)
+    NodeKind::ALL.into_iter().find(|k| k.node_type() == node_type).map(Seat::of_node_type)
 }
 
 /// The records `entries` name, each its successor at its revision, of the mesh `mesh_of` gives that

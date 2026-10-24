@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_codes_are_never_current() {
+    fn reserved_codes_are_never_current() {
         for r in RETIRED_CODES {
             assert_eq!(ResetCode::from_code(r.into()), None);
             assert!(!ResetCode::ALL.iter().any(|c| c.code() == r));

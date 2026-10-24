@@ -10,7 +10,7 @@
 use crate::common;
 use common::*;
 use rdm_core::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
-use rdm_core::reconnect::owed_retirements;
+use rdm_core::reconnect::owed_direct_restored;
 use rdm_core::{NodeKind, PathName};
 use rdm_transport::{Budget, CallOptions, ConnectedCall, PoolKey, RouteLeg};
 use rdm_core::outcome::RpcOutcome;
@@ -86,7 +86,7 @@ async fn an_indeterminate_alone_never_invalidates_a_proxy() {
     assert!(held_call.retire.is_none(), "a post-commit loss is not Proxy-health evidence (connections.md §8)");
     // The projection is the seam's read-only input: the Proxy is still valid, nothing is owed, and
     // the next new invocation still goes over it.
-    assert!(owed_retirements(&held, 1_000).is_empty(), "no retirement is owed after an Indeterminate");
+    assert!(owed_direct_restored(&held, 1_000).is_empty(), "no retirement is owed after an Indeterminate");
     let next = connected(&r, &held, &own, &r.b, b"after").await;
     assert_eq!(served_by(&next.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", next.outcome);
     assert!(matches!(next.route, EffectiveRoute::ViaPeer { .. }));
@@ -103,7 +103,7 @@ async fn a_direct_connected_creates_the_retirement_obligation_and_new_calls_cut_
     // The direct connection to B returns (whichever path opened it): Direct Connected beside the
     // active Proxy. The obligation exists at once; the Proxy stays effective until it is retired.
     held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 20)).unwrap();
-    let owed = owed_retirements(&held, 21);
+    let owed = owed_direct_restored(&held, 21);
     assert_eq!(owed.len(), 1, "one retirement is owed: {owed:?}");
     assert_eq!((owed[0].kind, owed[0].state, owed[0].reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
     let still = connected(&r, &held, &own, &r.b, b"still-proxied").await;
@@ -114,7 +114,7 @@ async fn a_direct_connected_creates_the_retirement_obligation_and_new_calls_cut_
     // The retirement lands durably (the owed row applied, as the writer's ACK would apply it): the
     // next new invocation is Direct.
     held.apply(owed.into_iter().next().unwrap()).unwrap();
-    assert!(owed_retirements(&held, 22).is_empty(), "nothing is owed once the retirement landed");
+    assert!(owed_direct_restored(&held, 22).is_empty(), "nothing is owed once the retirement landed");
     let cut = connected(&r, &held, &own, &r.b, b"direct").await;
     assert_eq!(served_by(&cut.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", cut.outcome);
     assert_eq!(cut.leg, RouteLeg::Direct);

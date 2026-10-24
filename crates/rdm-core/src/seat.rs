@@ -42,7 +42,7 @@ impl Seat {
 
     /// The primary seat of the `kind` cohort of a mesh: the mesh-primary seat for `node_admin`, the
     /// cohort's own seat for every other type.
-    pub fn of_cohort(kind: NodeKind) -> Self {
+    pub fn of_node_type(kind: NodeKind) -> Self {
         match kind {
             NodeKind::NodeAdmin => Self::MeshPrimary,
             other => Self::Cohort(other),
@@ -139,7 +139,7 @@ pub mod transfer {
             match self {
                 Self::FabricPrimary => super::Seat::FabricPrimary,
                 Self::MeshPrimary { .. } => super::Seat::MeshPrimary,
-                Self::Cohort { kind, .. } => super::Seat::of_cohort(*kind),
+                Self::Cohort { kind, .. } => super::Seat::of_node_type(*kind),
             }
         }
         /// The seat's name as it appears in spans and evidence.
@@ -154,25 +154,25 @@ pub mod transfer {
 mod tests {
     use super::*;
 
-    fn holder(node: &str, inc: &str, revision: u64) -> Primary {
+    fn primary(node: &str, inc: &str, revision: u64) -> Primary {
         Primary { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId::parse(&crate::ids::fixture_crockford60(inc)).unwrap(), revision }
     }
 
     #[test]
     fn a_later_revision_supersedes_and_the_same_record_or_an_older_one_does_not() {
-        let held = holder("200000000000", "a", 3);
-        assert!(holder("900000000000", "b", 4).supersedes(&held), "a later revision wins whatever the ids");
-        assert!(!holder("100000000000", "b", 2).supersedes(&held), "an older revision never replaces");
+        let held = primary("200000000000", "a", 3);
+        assert!(primary("900000000000", "b", 4).supersedes(&held), "a later revision wins whatever the ids");
+        assert!(!primary("100000000000", "b", 2).supersedes(&held), "an older revision never replaces");
         assert!(!held.clone().supersedes(&held), "the same record changes nothing");
     }
 
     #[test]
     fn two_births_that_took_one_vacancy_settle_on_the_lower_node_id() {
-        let first = holder("200000000000", "a", 5);
-        let rival = holder("100000000000", "b", 5);
+        let first = primary("200000000000", "a", 5);
+        let rival = primary("100000000000", "b", 5);
         assert!(rival.supersedes(&first));
         assert!(!first.supersedes(&rival));
         // The same node id, another birth: the record already held stands.
-        assert!(!holder("200000000000", "z", 5).supersedes(&first));
+        assert!(!primary("200000000000", "z", 5).supersedes(&first));
     }
 }
