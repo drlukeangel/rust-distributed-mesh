@@ -1142,7 +1142,14 @@ fn deleting_workflow_path(operation: &str) -> Option<&str> {
 /// receipt names: its output is the lifecycle operation of the node.delete of that birth,
 /// `(path, node_id, incarnation)`.
 pub(crate) fn recovery_deleted(s: &BuildStepReceipt) -> Option<(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)> {
-    if s.step != "NodeDeleted" || s.outcome != StepOutcome::Complete {
+    delete_step_birth(s, "NodeDeleted")
+}
+
+/// The birth a deleting workflow's completed `step` receipt names, for the two steps whose output is
+/// the lifecycle operation of the node.delete of that birth (`NodeDeleting`, `NodeDeleted`):
+/// `(path, node_id, incarnation)`.
+pub(crate) fn delete_step_birth(s: &BuildStepReceipt, step: &str) -> Option<(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)> {
+    if s.step != step || s.outcome != StepOutcome::Complete {
         return None;
     }
     let path = deleting_workflow_path(&s.operation)?.parse().ok()?;

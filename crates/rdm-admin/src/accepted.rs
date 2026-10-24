@@ -703,32 +703,67 @@ pub fn off_the_set(topology: &FabricTopology, recorded: &Recorded) -> Vec<PathNa
         .collect()
 }
 
-/// How far a roll's replacement of the member at `path` got in `steps` (proposal roll.md step 3: the
-/// receipts are keyed by path.name and step, so they name the member): the birth its `node.delete`
-/// deleted (the latest `NodeDeleted` naming one) when no `node.create` at the path completed at or
-/// after that attempt, the create over that birth being owed; and whether this Build created a node
-/// at the path that no later delete of it deleted (a replaced member's successor, or a path the roll
-/// added), which is never replaced again.
-fn roll_progress(steps: &[crate::build_state::BuildStepReceipt], path: &PathName) -> (Option<crate::build::ExitedBirth>, bool) {
+/// How far a roll's replacement of the member at `path` got (proposal roll.md step 3: "Interruptions
+/// resume from observed state"): read from the receipts, keyed by path.name and step so they name the
+/// member, and from the row at the path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RollProgress {
+    /// Nothing of this Build at the path: the member is replaced when its row is off the set.
+    Owed,
+    /// This Build's `node.delete` began on this birth (its `NodeDeleting`), wrote no `NodeDeleted`
+    /// receipt, and the row at the path still names the birth: the delete is finished, then the create.
+    Deleting(crate::build::ExitedBirth),
+    /// The predecessor deleted (its `NodeDeleted` receipted, or begun and its row no longer live: the
+    /// row at the path.name Deleted, the name free) and no create at the path completed since: the
+    /// remaining work is the create over that birth.
+    Deleted(crate::build::ExitedBirth),
+    /// This Build created a node at the path that no later delete of it deleted (a replaced member's
+    /// successor, or a path the roll added): never replaced again.
+    Created,
+}
+
+/// [`RollProgress`] of the member at `path` in `steps`, the latest delete of the path this Build began
+/// read against what `recorded` holds at the path.
+fn roll_progress(steps: &[crate::build_state::BuildStepReceipt], path: &PathName, recorded: &Recorded) -> RollProgress {
     let delete = format!("node.delete:{path}");
     let create = format!("node.create:{path}");
     let created_from = |from: u32| steps.iter().any(|s| s.operation == create && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from);
-    let deleted = steps
-        .iter()
-        .filter(|s| s.operation == delete)
-        .filter_map(|s| crate::build_state::recovery_deleted(s).filter(|(p, ..)| p == path).map(|(_, node_id, incarnation)| (s.attempt, crate::build::ExitedBirth { node_id, incarnation })))
-        .max_by_key(|(a, _)| *a);
-    match deleted {
-        Some((at, birth)) if !created_from(at) => (Some(birth), false),
-        Some(_) => (None, true),
-        None => (None, created_from(0)),
+    let latest = |step: &str| {
+        steps
+            .iter()
+            .filter(|s| s.operation == delete)
+            .filter_map(|s| crate::build_state::delete_step_birth(s, step).filter(|(p, ..)| p == path).map(|(_, node_id, incarnation)| (s.attempt, crate::build::ExitedBirth { node_id, incarnation })))
+            .max_by_key(|(a, _)| *a)
+    };
+    let (at, birth, deleted) = match (latest("NodeDeleted"), latest("NodeDeleting")) {
+        (Some((d, birth)), begun) if begun.as_ref().is_none_or(|(b, _)| *b <= d) => (d, birth, true),
+        // Begun and no `NodeDeleted` receipted after it: its `NodeDeleted` step writes the row Deleted
+        // before the receipt, so a row that no longer names the birth is the predecessor deleted.
+        (_, Some((b, birth))) => {
+            let row_live = recorded.get(path).is_some_and(|r| r.node_id == birth.node_id);
+            (b, birth, !row_live)
+        }
+        _ => return if created_from(0) { RollProgress::Created } else { RollProgress::Owed },
+    };
+    match (created_from(at), deleted) {
+        (true, _) => RollProgress::Created,
+        (false, true) => RollProgress::Deleted(birth),
+        (false, false) => RollProgress::Deleting(birth),
     }
 }
 
-/// The creates a roll owes over the members its deletes left at their paths, by path
-/// ([`roll_progress`]).
-fn roll_owed_creates(topology: &FabricTopology, steps: &[crate::build_state::BuildStepReceipt]) -> BTreeMap<PathName, crate::build::ExitedBirth> {
-    topology.meshes.values().flat_map(|m| m.nodes.iter()).filter_map(|p| roll_progress(steps, p).0.map(|b| (p.clone(), b))).collect()
+/// The creates a roll owes at the paths whose predecessor its delete began, by path, with the birth
+/// each is created over ([`roll_progress`]): the generic create never plans them.
+fn roll_owed_creates(topology: &FabricTopology, steps: &[crate::build_state::BuildStepReceipt], recorded: &Recorded) -> BTreeMap<PathName, crate::build::ExitedBirth> {
+    topology
+        .meshes
+        .values()
+        .flat_map(|m| m.nodes.iter())
+        .filter_map(|p| match roll_progress(steps, p, recorded) {
+            RollProgress::Deleting(b) | RollProgress::Deleted(b) => Some((p.clone(), b)),
+            RollProgress::Owed | RollProgress::Created => None,
+        })
+        .collect()
 }
 
 /// A roll's replacements still owed (proposal roll.md steps 3-5), in the order it replaces: mesh by
@@ -739,7 +774,8 @@ fn roll_owed_creates(topology: &FabricTopology, steps: &[crate::build_state::Bui
 /// node.primary.update, as every delete of a primary is; R5: a type's only node moves none), then
 /// `node.create` at the same path over that birth's kept data dir launching the set's binding of its
 /// kind. A member whose live row records the set's sha256, and one this Build already replaced or
-/// created, is left alone; a member deleted and not yet created is owed its create alone.
+/// created, is left alone; a member deleted and not yet created is owed its create alone, and one whose
+/// delete began and wrote no Deleted row is owed the rest of that delete, then the create.
 fn roll_operations(topology: &FabricTopology, observed: &Topology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt]) -> Vec<BuildOperation> {
     let Some(set) = &topology.bindings else { return Vec::new() };
     let mut ops = Vec::new();
@@ -753,19 +789,29 @@ fn roll_operations(topology: &FabricTopology, observed: &Topology, recorded: &Re
         }
         for p in order {
             let Some(binding) = set.of(p.kind) else { continue };
-            let (owed_create, replaced) = roll_progress(steps, p);
             let held = observed.node(p).filter(|n| (n.status.is_live() || n.parked) && n.incarnation_id.is_some());
             let on_set = |n: &crate::model::Node| recorded.get(p).is_some_and(|r| r.node_id == n.node_id && r.sha256.as_deref() == Some(binding.sha256.as_str()));
-            match (owed_create, held) {
+            match (roll_progress(steps, p, recorded), held) {
                 // The successor its create launched is live on the set's sha, its receipt never written:
                 // it is the member, and nothing remains for it.
-                (Some(birth), Some(n)) if n.node_id != birth.node_id && on_set(n) => {}
+                (RollProgress::Deleted(birth), Some(n)) if n.node_id != birth.node_id && on_set(n) => {}
                 // The predecessor deleted, the successor not yet created: the create alone is owed.
-                (Some(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
+                (RollProgress::Deleted(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
+                    ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(birth), executable: Some(binding.clone()) });
+                }
+                // The predecessor's delete began and its row still names it: the delete of that exact
+                // birth is finished, from the stop when the view holds it live or stopped, else targeted at
+                // its incarnation with its runtime read from its row (as a resumed delete whose birth the
+                // view no longer holds is), then the create over it.
+                (RollProgress::Deleting(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
+                    ops.push(match held {
+                        Some(_) => BuildOperation::RetireNode { node: p.clone(), exited: None },
+                        None => BuildOperation::DeleteNode { node: p.clone(), from_incarnation: birth.incarnation.clone() },
+                    });
                     ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(birth), executable: Some(binding.clone()) });
                 }
                 // Replaced or created by this Build: never replaced again.
-                (None, _) if replaced => {}
+                (RollProgress::Created, _) => {}
                 (_, Some(n)) if !on_set(n) => {
                     let incarnation = n.incarnation_id.clone().expect("a held birth names its incarnation");
                     ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None });
@@ -923,10 +969,11 @@ fn plan_with(
     // door refuses a fresh one, `node-not-live`), and its run resumes at the start (R-PV1). The action
     // owns its path: the generic create below never plans it a second time.
     // A roll's attempt (no action) owes its replacements after the topology's creates; a path whose
-    // predecessor a roll's delete removed is created by the roll, over that predecessor's data dir,
-    // never by the generic create below. Every create of a roll launches the set's binding.
+    // predecessor a roll's delete removed, or began to and its row still names, is created by the
+    // roll, over that predecessor's data dir, never by the generic create below. Every create of a
+    // roll launches the set's binding.
     let roll = roll.filter(|_| action.is_none());
-    let roll_owed = roll.map(|_| roll_owed_creates(topology, steps)).unwrap_or_default();
+    let roll_owed = roll.map(|recorded| roll_owed_creates(topology, steps, recorded)).unwrap_or_default();
     let restarted: Option<&PathName> = match action {
         Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && (n.status != NodeStatus::Leaving || n.parked)).map(|_| path),
         _ => None,
@@ -2012,6 +2059,58 @@ mod tests {
         let mut done = receipts;
         done.push(step(2, "node.create:mesh1.admin.2", "Complete", None));
         assert_eq!(roll_plan(&rolled, &live_again, &recorded, done), all[2..].to_vec(), "no member is replaced twice");
+    }
+
+    /// CONTRACT (proposal roll.md step 3: "Interruptions resume from observed state ...: predecessor
+    /// deleted and the successor not yet created (the row at the path.name is Deleted, recording the old
+    /// sha, the name free): the remaining work is the create"; "Each attempt computes remaining work as
+    /// the members whose row records a sha256 other than the set's"; step 4: the predecessor's
+    /// `node.delete`, then `node.create` "over the kept data dir"; R1): mesh2.rpc.1's delete began
+    /// (`NodeDeleting` of its birth, its `TerminateRuntime` receipted) and no `NodeDeleted` was receipted,
+    /// and the view no longer holds the birth live. Its row Deleted: the create alone is owed, over that
+    /// birth. Its row still live naming that birth: the delete of that exact birth is finished first
+    /// (targeted at its incarnation, as a resumed delete whose birth the view no longer holds is), then
+    /// the create over it. A view that still holds the birth Leaving plans the same.
+    /// Must NOT happen: the generic create at the path (over a newly allocated data dir), or two creates.
+    #[test]
+    fn a_rolls_delete_without_its_node_deleted_receipt_is_resumed_from_its_receipts_and_its_row() {
+        use crate::build_state::{BuildStepReceipt, StepOutcome};
+        use NodeStatus::ReadyForTraffic as R;
+        let cur = t(&[("mesh2", 2, 1)]);
+        let nodes = vec![n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false), n("mesh2.rpc.1", R, true)];
+        let o = observed(nodes, &["mesh2"]);
+        let rolled = compile(&cur, &TopologyChange::Roll { bindings: set("b") }, &o).unwrap();
+        let path: PathName = "mesh2.rpc.1".parse().unwrap();
+        let node = o.node(&path).unwrap().clone();
+        let birth = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() };
+        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.name.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.name.kind.name())) })).collect();
+        let step = |s: &str, output: Option<serde_json::Value>| BuildStepReceipt {
+            mesh: None,
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
+            attempt: 1,
+            operation: "node.delete:mesh2.rpc.1".into(),
+            step: s.into(),
+            outcome: StepOutcome::Complete,
+            output,
+            executor: None,
+        };
+        let op = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.delete:mesh2.rpc.1".into(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        let receipts = vec![step("NodeDeleting", Some(serde_json::to_value(op).unwrap())), step("StopNode", None), step("AwaitNodeLeft", None), step("TerminateRuntime", None)];
+        let create = BuildOperation::CreateNode { node: path.clone(), over: Some(birth.clone()), executable: rolled.binding_of(NodeKind::RpcNode).cloned() };
+        let mut gone = o.clone();
+        gone.nodes.retain(|n| n.name != path);
+        let mut leaving = o.clone();
+        leaving.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Leaving);
+        // The row Deleted (no live row at the path): the create alone, over the deleted birth.
+        for view in [&gone, &leaving] {
+            assert_eq!(roll_plan(&rolled, view, &recorded, receipts.clone()), vec![create.clone()], "the row Deleted: the remaining work is the create");
+        }
+        // The row still live, naming the birth on the old sha: the delete of that exact birth is finished, then the create.
+        recorded.insert(path.clone(), RecordedRow { node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
+        let finish = BuildOperation::DeleteNode { node: path.clone(), from_incarnation: birth.incarnation.clone() };
+        for view in [&gone, &leaving] {
+            assert_eq!(roll_plan(&rolled, view, &recorded, receipts.clone()), vec![finish.clone(), create.clone()], "the row live: the delete is finished, then the create");
+        }
     }
 
     /// CONTRACT (states.md "Resize and roll": "During a bin roll, a member still on its old

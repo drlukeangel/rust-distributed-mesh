@@ -68,7 +68,9 @@ fn rolled(estate: &Estate, set: &BindingSet, kinds: &[&str]) -> BindingSet {
 /// of `admins` still answering names. Every frame, and whether the stream ended `FabricPrimaryMoved`.
 async fn follow_roll(estate: &Estate, stream: rdm_client::BuildStream, admins: &[&str]) -> (Vec<BuildFrame>, bool) {
     let build = stream.build_id().clone();
-    let followed = rdm_client::follow_with(stream, |id, _from| async move {
+    // Bounded: a roll that never reaches its terminal fails the cell naming the Build, never holds the
+    // turn lock past the cell's own bound.
+    let followed = tokio::time::timeout(SETTLE * 3, rdm_client::follow_with(stream, |id, _from| async move {
         let deadline = tokio::time::Instant::now() + SETTLE;
         loop {
             for admin in admins {
@@ -89,8 +91,9 @@ async fn follow_roll(estate: &Estate, stream: rdm_client::BuildStream, admins: &
             assert!(tokio::time::Instant::now() < deadline, "no node-admin of {admins:?} named a fabric-primary that resubmitted Build {id}");
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-    })
+    }))
     .await
+    .unwrap_or_else(|_| panic!("roll {build} reached no terminal frame within {:?}", SETTLE * 3))
     .unwrap_or_else(|e| panic!("roll {build} could not be followed to its terminal: {e}"));
     match followed.frames.last() {
         Some(BuildFrame::Complete { .. }) => {}
@@ -366,6 +369,53 @@ async fn an_executor_lost_after_a_members_delete_leaves_its_create_alone_to_the_
     replaced_on(&estate, &before, &next, |n| n == NODE).await;
     let receipts = estate.carrier().await.get(&rdm_client::BuildId::parse(&build).unwrap()).await.unwrap_or_else(|e| panic!("build.get {build}: {e}")).steps;
     assert_eq!(receipts_of(&receipts, &format!("node.delete:{NODE}"), "NodeDeleted").len(), 1, "{NODE} is deleted once");
+    assert_eq!(receipts_of(&receipts, &format!("node.create:{NODE}"), "Complete").len(), 1, "{NODE} is created once");
+    estate.shutdown().await;
+}
+
+/// CONTRACT (proposal roll.md step 3, "Interruptions resume from observed state": "predecessor deleted
+/// and the successor not yet created (the row at the path.name is Deleted, recording the old sha, the
+/// name free): the remaining work is the create"; R1: "The successor is created over the predecessor's
+/// data dir"): the executor of mesh2's rpc node's replacement is held by its fault door inside the rpc
+/// node's `NodeDeleted` step, the runtime terminated and its row written Deleted but the receipt not
+/// yet durable, and killed once the fabric-primary's log holds the delete's `TerminateRuntime`. The
+/// birth is gone from the view and the Build holds `NodeDeleting` and no `NodeDeleted` of it. The next
+/// attempt reads the row and the receipts: the rpc node is created once at its path over the data dir
+/// that `TerminateRuntime` names, with its endpoint key, on the set, and it is not deleted again.
+/// Must NOT happen: the successor created over a newly allocated data dir or with a new endpoint key,
+/// the rpc node deleted again, or created twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_executor_lost_inside_a_members_delete_has_its_successor_created_over_the_kept_data_dir() {
+    let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
+    let (estate, set) = fabric_of("an_executor_lost_inside_a_members_delete_has_its_successor_created_over_the_kept_data_dir", &shape).await;
+    let next = rolled(&estate, &set, &["rpc_node"]);
+    let before = members(&estate).await;
+    let p = before.iter().find(|(n, m)| n.starts_with("mesh2.admin.") && m.view["is_primary"] == true).map(|(n, _)| n.clone()).expect("mesh2's primary");
+    let na2 = before.iter().find(|(n, m)| n.starts_with("mesh2.admin.") && m.view["is_primary"] != true).map(|(n, _)| n.clone()).expect("mesh2's other admin");
+    const NODE: &str = "mesh2.rpc.1";
+    let door = Door::at(&estate, &p).await;
+    door.arm("rpc-deleted-row", json!({"kind": "receipt", "step": "NodeDeleted", "operation": format!("node.delete:{NODE}")})).await;
+
+    let stream = estate.submit_change(Change::Roll { bindings: next.clone() }).await;
+    let build = stream.build_id().to_string();
+    let held = door.wait_held("rpc-deleted-row").await;
+    assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.delete:{NODE}")), "{p} is held inside the rpc node's NodeDeleted step: {held}");
+    let fp = estate.fabric_view_at(&Estate::path(&na2)).await.and_then(|v| v.fabric_primary).expect("mesh2's other admin names the fabric-primary");
+    estate.node_views_at(&fp).await.expect("the fabric-primary answers node.get");
+    build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{NODE}'s TerminateRuntime"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{NODE}") && r.step == "TerminateRuntime"))
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+    let record = record_of(&estate, "mesh2", &s(&before[NODE].view["node_id"]));
+    assert_eq!(record["record"]["status"], "deleted", "{NODE}'s row is written Deleted inside the held step: {record}");
+    estate.kill_node(&p).await;
+
+    // The successor is read first: one on a new data dir is never on the set, and the roll never completes.
+    replaced_on(&estate, &before, &next, |n| n == NODE).await;
+    tokio::time::timeout(SETTLE, follow_roll(&estate, stream, &["mesh1.admin.2", "mesh1.admin.1", "mesh2.admin.1", "mesh2.admin.2"]))
+        .await
+        .unwrap_or_else(|_| panic!("roll {build} did not complete within {SETTLE:?} of {NODE}'s successor being ready"));
+    let receipts = estate.carrier().await.get(&rdm_client::BuildId::parse(&build).unwrap()).await.unwrap_or_else(|e| panic!("build.get {build}: {e}")).steps;
+    assert_eq!(receipts_of(&receipts, &format!("node.delete:{NODE}"), "NodeDeleting").len(), 1, "{NODE} is deleted once: the next attempt does not delete it again");
     assert_eq!(receipts_of(&receipts, &format!("node.create:{NODE}"), "Complete").len(), 1, "{NODE} is created once");
     estate.shutdown().await;
 }
