@@ -23,11 +23,13 @@ node.delete or mesh.delete.
 Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data
 dir; on any other verdict, a newly allocated one (R-FM2).
 
-A node that comes back after it was re-created, and a second birth another executor made at the
-path.name across a cut, is a superseded birth: refused at
-[node.connections.admit](node-connections-admit.md) (`superseded-birth`). The node that refused it
-reports it to the fabric-primary, which terminates its runtime, and its mesh-primary writes its row
-deleted ([node.delete](node-delete.md)), which releases the name (Q142).
+A node that comes back after it was re-created is a deleted birth, and the book is its door: every
+node refuses its Digest by name ([gossip.md §3.1 receiver rules](../gossip.md#31-frame-catalog)), its
+mesh-primary reports it to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`), and
+the fabric-primary terminates its runtime under `node.terminate:<path>@<incarnation>`. No admit reason
+exists for it, and none is added. A second birth another executor made at the path.name across a cut is
+made a deleted birth by its mesh-primary, which writes its row deleted ([node.delete](node-delete.md),
+releasing the name) and reports it the same way (Q142).
 
 ## Operation contract
 

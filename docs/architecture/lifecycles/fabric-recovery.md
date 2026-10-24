@@ -56,8 +56,8 @@ the same order starts the workflow again, resuming the attempt from its recorded
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path.name
    with a new node.id: over the inherited data dir with the same endpoint key when the investigation's
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
-   otherwise (`R-FM2`). An old birth that comes back after that is refused at admission
-   ([node.mesh.join](node-mesh-join.md), `superseded-birth`) and its runtime is terminated (Q110).
+   otherwise (`R-FM2`). An old birth that comes back after that is a deleted birth: every book refuses its
+   Digest by name, its mesh-primary reports it, and the fabric-primary terminates its runtime (Q110).
    Nothing holds, and nothing waits for proof. From the backbone the re-create is a node.create alone: an
    executor outside the mesh terminates nothing in it, and a path.name whose row stands refuses the
    create `NameHeld`, so nothing is born there (Q142).
