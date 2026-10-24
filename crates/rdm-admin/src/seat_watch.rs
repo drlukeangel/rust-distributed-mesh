@@ -330,7 +330,9 @@ pub async fn run(w: Watch) {
 /// The fabric-primary's recovery of an unheard mesh-primary (node-recovery.md step 3), submitted at
 /// once and owed until it is opened: a submit refused (an attempt still holds the mesh) is made again
 /// after a delay that doubles, once per silence. The silence the verdict was read in lasts while this
-/// admin's view holds the exact birth, this admin is the fabric-primary, and the book has not heard the
+/// admin's view holds the exact birth silent (`PendingReconnect` or `Dead`: the mark never replaces a
+/// lifecycle state the mesh-primary recorded, `stopped` among them), this admin is the fabric-primary,
+/// and the book has not heard the
 /// birth since `since`, the instant the pass that read the verdict read its view (node-recovery.md
 /// step 1: the mark "ends when a digest of the exact birth arrives after it, when the birth answers its
 /// tickle, or when the view no longer holds that birth"). A birth heard again is reached (step 3): it
@@ -350,8 +352,8 @@ where
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(ceiling);
         let t = topology.read().await;
-        let held = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id);
-        if !held || !t.is_fabric_primary(me_id) || heard_since(book, node, since) {
+        let silent = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
+        if !silent || !t.is_fabric_primary(me_id) || heard_since(book, node, since) {
             break;
         }
     }
@@ -539,6 +541,30 @@ mod tests {
         let ended = tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, since)).await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth heard again after its refused submit is never submitted again (no recovery, no TerminateRuntime of the rejoined birth)");
         assert!(ended.is_ok(), "the owed submit ends with the silence");
+    }
+
+    /// CONTRACT (node-recovery.md step 1: the mark "never replaces a lifecycle state the node reported
+    /// and the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`)"): a refused recovery
+    /// whose birth the view now holds in such a state (`Leaving`, as the view shows a stopped birth) is never
+    /// submitted again.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_recovery_is_not_submitted_again_once_the_view_holds_the_birth_off_its_mark() {
+        let (fp, peer, t) = unheard_peer_primary();
+        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::membership::DigestBook::default());
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let (calls_ref, topology_ref, peer_id) = (&calls, &topology, peer.node_id.clone());
+        let submit = || {
+            let peer_id = peer_id.clone();
+            async move {
+                if calls_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    topology_ref.write().await.nodes.iter_mut().filter(|n| n.node_id == peer_id).for_each(|n| n.status = NodeStatus::Leaving);
+                }
+                Err("build-in-progress".to_string())
+            }
+        };
+        let ended = tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth the view holds stopping is never submitted again");
+        assert!(ended.is_ok(), "the owed submit ends with the mark");
     }
 
     /// CONTRACT (node-recovery.md step 3: "Any other verdict ...: the recovery below, at once"): a
