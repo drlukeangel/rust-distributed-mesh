@@ -58,7 +58,9 @@ the same order starts the workflow again, resuming the attempt from its recorded
    provider step found the old runtime exited, over a newly allocated data dir, `inherited = false`,
    otherwise (`R-FM2`). An old birth that comes back after that is refused at admission
    ([node.mesh.join](node-mesh-join.md), `superseded-birth`) and its runtime is terminated (Q110).
-   Nothing holds, and nothing waits for proof.
+   Nothing holds, and nothing waits for proof. From the backbone the re-create is a node.create alone: an
+   executor outside the mesh terminates nothing in it, and a path.name whose row stands refuses the
+   create `NameHeld`, so nothing is born there (Q142).
 4. **The fabric-primary is back.** When the node at the fabric-primary's path.name, returned or
    re-created, is ReadyForTraffic, the workflow restores it as mesh-primary and fabric-primary: the node
    installs both roles, acknowledges directly, and records them on its own row as the mesh's writer; its
