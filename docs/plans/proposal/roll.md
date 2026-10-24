@@ -232,13 +232,18 @@ a bootstrapped fabric replaced the bootstrap admin whatever it ran, against step
 moved the fabric-primary on every first roll. The same gap reaches node recovery today: a recovered
 bootstrap admin runs the recovering admin's binding, not its own, against node-recovery.md "Retained".
 
-R6: every claim records the binding its birth runs, as a create's claim records a launched node's: the
-Day-0 claim records the bootstrap admin's `node_admin` binding from its `RDM_EXECUTABLE_BINDINGS`, else
-its running executable hashed as the built-in binding; a built-in launch records the executable it
-resolved from `bin_dir`, hashed, the same way. The row then says what it runs, step 3 needs no
-exception, a roll replaces a member only when its row's sha differs from the set's, and recovery runs
-the bin the row records for every node. Not taken: striking step 2's sentence for the bootstrap admin
-so the first roll always replaces it, which is what the code does today.
+R6: every claim records the binding its birth runs, as a create's claim records a launched node's,
+and the row describes the executable actually running (Architect 1's condition, 2026-10-24). The
+Day-0 claim hashes the bootstrap admin's running executable (`current_exe`): with
+`RDM_EXECUTABLE_BINDINGS` set, that hash must equal the set's `node_admin` sha, else the start is
+refused by name (a valid binding file proves what was configured, not what started this process; the
+same rule as a launch re-hashing the file it runs, `binding.rs`), and the binding is recorded; with
+no set, the running executable's hash is recorded as the built-in binding. A built-in launch records
+the executable it resolved from `bin_dir`, hashed, the same way. The row then says what it runs,
+step 3 needs no exception, a roll replaces a member only when its row's sha differs from the set's,
+and recovery runs the bin the row records for every node. Rows written before the field keep step 3's
+rule and are replaced. Not taken: striking step 2's sentence for the bootstrap admin so the first roll
+always replaces it, which is what the code does today.
 
 ### Wire and storage
 
@@ -274,9 +279,12 @@ receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value an
   nothing for it; no member replaced twice;
 - after the roll, an ordinary `node.create` (a resize) from a replaced admin and from an unreplaced
   admin launches the set's binary, and a node recovery runs its row's;
-- a bootstrapped fabric rolled onto a set whose `node_admin` sha equals the bootstrap admin's: the
-  bootstrap admin is not replaced and the fabric-primary does not move; its row records its binding
-  from the Day-0 claim (R6); a built-in launch's row records its hashed executable;
+- R6, three cells: a bootstrapped fabric rolled onto a set whose `node_admin` sha equals the bootstrap
+  admin's running executable: not replaced, the fabric-primary does not move, its row recording the
+  binding from the Day-0 claim; rolled onto a set whose `node_admin` sha differs: replaced like any
+  admin; a bootstrap admin started with a set whose `node_admin` sha differs from its running
+  executable: refused by name at start, nothing bootstrapped; and a built-in launch's row records its
+  hashed executable;
 - the Build `Complete` only after the fabric's ready-for-traffic round;
 - refused `fabric-not-ready` before first ready-for-traffic; a sha that does not match, a launch id the
   topology uses with no binding, and a container fabric's set without the image, each refused by name
