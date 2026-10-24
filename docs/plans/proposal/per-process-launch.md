@@ -25,9 +25,10 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   `RAFKA_SYSTEM_KEY` on compute, gateway and broker, and `RAFKA_SIGNING_KEY_HEX` on gateway.
 - **The value.** Read once from the bootstrap admin's own environment at its start, as the fabric root is.
 - **Custody.** Every node-admin RDM launches is written every declared value beside the root, in one
-  launch variable (`RDM_DECLARED_SECRETS`: one entry per declared variable carrying its name, its kinds
-  and its value, entries joined as `RDM_LISTENERS` joins its own), so whichever admin runs a create can
-  launch the named kinds. A node-admin's process carries the app's variable itself only when
+  launch variable (`RDM_DECLARED_SECRETS`: a JSON document, `{"v":1,"declared":[{"name","kinds","value"}]}`,
+  so a value holding a separator, `=`, a newline or nothing at all round-trips; a document that does not
+  parse, names an unknown version or repeats a name is refused by name without echoing any of it), so
+  whichever admin runs a create can launch the named kinds. A node-admin's process carries the app's variable itself only when
   `node_admin` is a named kind. The landing adds the variable's row to CLAUDE.md's env table, with the
   rows for `RDM_TRANSPORT_ADDR` and `RDM_LISTENERS` the table lacks (D1).
 - **Fixed for the fabric's life.** The value is captured once, at the bootstrap. A replace and a roll
@@ -48,9 +49,10 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
 - **The container boundary, stated.** The container provider passes `spec.env` on the `docker run` argv
   as `-e K=V` (`container.rs:585-587`), so the daemon's container configuration and, briefly, the host's
   process table hold every value, RDM's four secrets included today. The landing passes each secret as
-  `-e K` with the value in the docker client's own environment, which keeps it off the argv and out of
-  the process table; the daemon's configuration still holds a container's environment, and that is the
-  accepted boundary: it is the daemon's record, not RDM's, the same for the root since day 0.
+  `-e K` with the value in the docker client's own environment, which keeps it off the command-line
+  arguments (the client's environment still holds it, as any launcher's does); the daemon's configuration
+  still holds a container's environment, and that is the accepted boundary: it is the daemon's record,
+  not RDM's, the same for the root since day 0.
 - **Amendment 1.** A declared name is removed from the inherited environment before the spec's env is
   applied, exactly as `RDM_*` is (`process.rs:388-397`). The spawn comment at `process.rs:388-391`,
   which says the child inherits nothing while it inherits the host environment, is corrected to what
@@ -72,9 +74,14 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   name colliding with an RDM or a pass-through name, and a name declared twice, are refused at start
   with nothing bootstrapped, the refusal naming the variable; a create run by a launched admin, not the
   bootstrap, sets the declared value; an admin started again from its data dir without a launcher
-  launches the named kinds with the value; a child that fails after printing a sentinel value leaves no
-  trace of it in the step's failure, its receipt or its span; no span, log, row, Build record or receipt
-  carries the value, checked against the run's span JSONL, node logs and store root.
+  launches the named kinds with the value; a value holding a separator, `=` and a newline, and an empty
+  value, round-trip through the custody document unchanged; a child that fails after printing a sentinel
+  value leaves no trace of it in the step's failure, its receipt or its span. The secrecy assertions,
+  stated so they can hold under the contract: a kind not named lacks the application variable in its
+  environment; an admin's environment and its data-dir file hold the custody document, which is
+  permitted; no RDM-generated diagnostic, receipt, span, row or Build record carries the value, checked
+  against the run's span JSONL, the admins' logs and the store root; the one application log the failing
+  child wrote its sentinel into is excluded from that check by name.
 
 #### 0.2 A product kind's listeners (Q151: A with A1's requirements)
 
@@ -110,7 +117,8 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   `FabricView.provider`; RDM's typed calls cannot carry a field the type lacks; the one setting §0.1 adds
   is refused at the admin's start, naming the setting and the fabric's provider.
 - **The "restart env override"** (§2): a restart keeps the process; a changed non-secret setting is a
-  `node.config.update`, a changed secret or executable is a replace or a roll.
+  `node.config.update`; a changed executable is a replace or a roll; a changed secret is a new fabric
+  (§0.1, fixed for the fabric's life).
 - **Non-secret per-node settings** (§1): the row's `config`, read by the role at its entry; Rafka moves
   `RAFKA_GATEWAY_CONFIG`, `RAFKA_KAFKA_CLIENT_HOST`, `RAFKA_STATEFUL` and the rest there.
 
@@ -209,9 +217,11 @@ So:
 
 - A changed **non-secret** setting is `node.config.update` (§1.3). A live node applies it at once through
   `ApplyNodeConfig`; a stopped node receives it in its next start's join answer. No restart is needed.
-- A changed **secret** or **executable** needs a new process, so a new birth: Rafka's replace recipe
+- A changed **executable** needs a new process, so a new birth: Rafka's replace recipe
   (node-replace.md), or a roll for an executable set (`docs/plans/proposal/roll.md`, landed). The new
-  birth's launch carries the current values.
+  birth's launch carries the fabric's captured values. (Superseded, 2026-10-24: this paragraph first put
+  a changed secret here too; §0.1 fixes a declared value for the fabric's life, so a changed secret is a
+  new fabric.)
 - [inferred] A restart has no moment at which it could read a new environment: the process never exits,
   and an environment is fixed when a process is launched. The "override" is impossible by the pages, not
   refused by a rule of R-D3's.
