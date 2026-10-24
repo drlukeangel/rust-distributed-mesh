@@ -101,20 +101,21 @@ async fn a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_
     two_mesh_climb(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)], &members).await;
 }
 
-/// CONTRACT: the mesh primary of a role-node mesh dies and its mesh's other admin takes the seat.
-/// Each role node of that mesh (broker, gateway, compute) sees the seat move to another birth, owes
-/// its state again (`via-authority-moved`, naming the new holder) and declares it to the new primary
-/// (`via-declare-own`, definitive), the same re-owe the rpc node makes.
+/// CONTRACT: the mesh-primary of a role-node mesh dies and the election names its mesh's other admin
+/// mesh-primary. Each role node of that mesh (broker, gateway, compute) sees the mesh-primary move to
+/// another birth, owes its state again (the `via-authority-moved` span, naming the new mesh-primary) and
+/// declares it to the new mesh-primary (`via-declare-own`, definitive), the same re-owe the rpc node
+/// makes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat() {
-    let test = "role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat";
+async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_names() {
+    let test = "role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_names";
     let mut estate = estate_with_roles(test, "answer:0").await;
     let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain(["broker.1", "gateway.1", "compute.1"].iter().map(move |n| format!("{m}.{n}")))).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The mesh that does not hold the fabric seat loses its primary.
+    // The mesh that is not the fabric-primary's loses its mesh-primary.
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let lost_mesh = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
     let old = nodes.iter().find(|n| n["mesh"] == lost_mesh && n["is_primary"] == true && n["kind"] == "node_admin").map(|n| s(&n["name"])).expect("a primary admin");
@@ -126,12 +127,14 @@ async fn role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat
         estate.kill_node(&old).await;
     }
     let roles: Vec<String> = ["broker.1", "gateway.1", "compute.1"].iter().map(|n| format!("{lost_mesh}.{n}")).collect();
-    // A role node's re-declaration to the seat's new holder is a call it makes: no object reports it, and the
-    // span the node records is the only place the fact lives.
+    // A role node's re-declaration to the new mesh-primary is a call it makes: no object reports it, and the
+    // span the node records is the only place the fact lives. Its `to` names the mesh-primary by path.name
+    // when the node's book holds its digest, else by its node id; the call is to that exact birth either
+    // way (rdm-node node.rs `declare_once`).
     wait_for("every role node of the mesh declared its state to the new primary", Duration::from_secs(90), || {
         let spans = estate.spans();
         let done = roles.iter().all(|r| {
-            named(&spans, "rdm.node_rpc.status.update.via-declare-own").iter().any(|d| s(&d["attributes"]["node"]) == *r && s(&d["attributes"]["to"]) == heir && flag(&d["attributes"]["definitive"]))
+            named(&spans, "rdm.node_rpc.status.update.via-declare-own").iter().any(|d| s(&d["attributes"]["node"]) == *r && (s(&d["attributes"]["to"]) == heir || s(&d["attributes"]["to"]) == heir_id) && flag(&d["attributes"]["definitive"]))
         });
         async move { done.then_some(()) }
     })
@@ -140,7 +143,7 @@ async fn role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat
     let spans = estate.spans();
     for r in &roles {
         let moved: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-authority-moved").into_iter().filter(|m| s(&m["attributes"]["node"]) == *r).collect();
-        assert!(moved.iter().any(|m| s(&m["attributes"]["to"]) == heir_id), "{r} saw the seat move to {heir} ({heir_id}): {:?}", moved.iter().map(|m| &m["attributes"]).collect::<Vec<_>>());
+        assert!(moved.iter().any(|m| s(&m["attributes"]["to"]) == heir_id), "{r} saw the mesh-primary move to {heir} ({heir_id}): {:?}", moved.iter().map(|m| &m["attributes"]).collect::<Vec<_>>());
     }
     estate.record_trace_url(&s(&named(&spans, "rdm.node_rpc.status.update.via-authority-moved").first().expect("a re-owe")["trace_id"]));
 }
@@ -670,8 +673,8 @@ fn refused<T>(what: &str, call: Result<T, CallEnd>) -> CallEnd {
 /// What must NOT happen: a primary moved while the Fabric row, the Mesh rows and the Node rows live only
 /// in their writers' scratchpads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt() {
-    let test = "a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
+async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt() {
+    let test = "a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
     let mut estate = estate_with(test, "hold").await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     // mesh2 holds two rpc nodes: the restart the cell admits once the fabric is ready is of the one holding no
