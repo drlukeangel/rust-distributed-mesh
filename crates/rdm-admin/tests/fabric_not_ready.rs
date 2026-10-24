@@ -226,9 +226,9 @@ async fn an_admin_booting_on_a_root_in_state_commit_refuses_and_one_booting_afte
     let status = MemoryFabricStorage::new();
 
     // The root: a different fabric's ready-for-traffic event, then this fabric's record with another event.
-    status.put_fabric(&FabricRecord { fabric_id: FabricId::mint(), name: "fabric0".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
+    status.put_fabric(&FabricRecord { fabric_id: FabricId::mint(), name: "fabric0".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
     r.cp.first_ready.read_from(&status, &fabric).await.unwrap();
-    status.put_fabric(&FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: vec!["shutdown-initiated:mesh1.admin.1".into()] }).await.unwrap();
+    status.put_fabric(&FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: vec!["shutdown-initiated:mesh1.admin.1".into()], provider: None }).await.unwrap();
     r.cp.first_ready.read_from(&status, &fabric).await.unwrap();
     let (workflow, at) = refused(r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await);
     assert_eq!((workflow.as_str(), at.as_str()), ("node.stop mesh1.rpc.1", "state-commit"), "no row of this fabric's ready-for-traffic: the fabric has not first reached it");
@@ -236,7 +236,7 @@ async fn an_admin_booting_on_a_root_in_state_commit_refuses_and_one_booting_afte
     // The ready-for-traffic row of the fabric stands: the next boot, hearing pending, knows.
     let booted = rig(ScopeStatus::Pending).await;
     let fabric = booted.cp.topology.read().await.fabric.id.clone();
-    status.put_fabric(&FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
+    status.put_fabric(&FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
     booted.cp.first_ready.read_from(&status, &fabric).await.unwrap();
     let opened = booted.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.expect("admitted: the row says the fabric first reached ready-for-traffic");
     assert_eq!(opened.attempt, 2);
@@ -260,7 +260,7 @@ async fn a_workflow_is_admitted_on_the_ready_for_traffic_row_on_the_store_root_w
     let (workflow, at) = refused(r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await);
     assert_eq!((workflow.as_str(), at.as_str()), ("node.stop mesh1.rpc.1", "state-sync"), "no ready-for-traffic row on the root: refused");
     let fabric = r.cp.topology.read().await.fabric.id.clone();
-    { let mut r = rows.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric, name: "fabric1".into(), events: Vec::new() }); r.events.push("ready-for-traffic".into()); rows.put_fabric(&r).await.unwrap(); }
+    { let mut r = rows.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric, name: "fabric1".into(), events: Vec::new(), provider: None }); r.events.push("ready-for-traffic".into()); rows.put_fabric(&r).await.unwrap(); }
     let opened = r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.expect("admitted: the root's row says the fabric first reached ready-for-traffic");
     assert_eq!(opened.attempt, 2);
     let ready = capture.spans("rdm.node_admin.fabric.update.via-first-ready");

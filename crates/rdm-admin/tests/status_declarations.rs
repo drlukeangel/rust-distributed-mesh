@@ -1856,7 +1856,7 @@ fn a_node_name_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_d
         let _node = left_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::StateCommit;
         let fabric_id = rig.topology.read().await.fabric.id.clone();
-        rdm_admin::fabric_storage::FabricStorage::put_fabric(&*rig.authority.fabric_storage, &rdm_admin::fabric_storage::FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
+        rdm_admin::fabric_storage::FabricStorage::put_fabric(&*rig.authority.fabric_storage, &rdm_admin::fabric_storage::FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "decided on the ready row on the root");
     });

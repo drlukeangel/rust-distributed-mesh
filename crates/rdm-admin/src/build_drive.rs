@@ -872,7 +872,7 @@ impl DriveEnv {
     /// next claim on it is refused naming this attempt.
     async fn release_mesh(&self, id: &BuildId, attempt: u32, executor: &PathName) {
         let me = self.held_name().await;
-        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string() };
+        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string(), claimant_node: None };
         if let Err(e) = self.door.claims.release_in_flight(&executor.mesh, &row).await {
             tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), attempt, mesh = %executor.mesh, node = %me, error = %e)
                 .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
@@ -1355,7 +1355,7 @@ impl DriveEnv {
         }
         // The ended attempt holds its executor's mesh no longer (R-BI7 caveat 3).
         if let Some(executor) = p.executor.as_deref().and_then(parse_path) {
-            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt: p.attempt, claimant: me.to_string() };
+            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt: p.attempt, claimant: me.to_string(), claimant_node: None };
             if let Err(e) = self.door.claims.release_in_flight(&executor.mesh, &row).await {
                 span.in_scope(|| tracing::info!(error = %e, mesh = %executor.mesh, "the ended attempt's in-flight row could not be released: the mesh stays held by it"));
             }

@@ -31,6 +31,11 @@ pub struct InFlight {
     pub attempt: u32,
     /// The admin that claimed it (a node-admin's path.name): the holder a refusal names.
     pub claimant: String,
+    /// The claimant's birth, by its node id, when the claimant names it: an adoption launch's claim
+    /// (Q156), where two launches at one path.name are two claimants. A claim that names none is its
+    /// path.name's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimant_node: Option<crate::model::NodeId>,
 }
 
 impl InFlight {
@@ -40,9 +45,18 @@ impl InFlight {
     }
 
     /// Whether `self` and `other` are the same attempt taken by the same claimant: a repeat take. The
-    /// same attempt taken by another claimant is held, never won (build.md §5.2, Q142).
+    /// same attempt taken by another claimant is held, never won (build.md §5.2, Q142); two births at
+    /// one path.name are two claimants (Q156).
     pub fn same_claim(&self, other: &InFlight) -> bool {
-        self.same_attempt(other) && self.claimant == other.claimant
+        self.same_attempt(other) && self.claimant == other.claimant && self.claimant_node == other.claimant_node
+    }
+
+    /// The claimant as a refusal names it: its path.name, and its node id when the claim names its birth.
+    pub fn claimant_named(&self) -> String {
+        match &self.claimant_node {
+            Some(node) => format!("{} (node {node})", self.claimant),
+            None => self.claimant.clone(),
+        }
     }
 }
 
@@ -61,7 +75,7 @@ mod tests {
     use crate::storage::MeshStorage;
 
     fn attempt(build_id: &BuildId, lane: Option<&str>, attempt: u32, claimant: &str) -> InFlight {
-        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into() }
+        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into(), claimant_node: None }
     }
 
     /// The same script against two claimants: whatever backs them, one attempt holds a mesh at a time.

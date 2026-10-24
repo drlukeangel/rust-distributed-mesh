@@ -140,7 +140,7 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
                 return rdm_core::reply::build_claim::build_in_progress(delete.build_id.to_string(), mesh.to_string(), None);
             }
         }
-        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()) };
+        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()), claimant_node: None };
         let decided = match builds.claim_in_flight(claim, claims, mesh, &row).await {
             // The same attempt another claimant took on the store: this claim lost (build.md §5.2, Q142).
             Ok(InFlightClaim::Held(held)) if held.same_attempt(&row) => return rdm_core::reply::build_claim::lost(held.claimant),

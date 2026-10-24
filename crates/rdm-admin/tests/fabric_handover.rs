@@ -334,7 +334,7 @@ async fn status_rows_of(a: &Admin, ready: bool) -> Arc<MemoryFabricStorage> {
     use rdm_admin::fabric_storage::{FabricRecord, FabricStorage};
     if ready {
         let fabric_id = a.door.topology.read().await.fabric.id.clone();
-        a.status.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
+        a.status.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
     }
     a.status.clone()
 }
@@ -913,7 +913,7 @@ fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_
         assert_eq!(f.p.finished(), 0, "no writes finished for the refused update");
         assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "P is still mesh-primary");
         let fabric_id = f.p.door.topology.read().await.fabric.id.clone();
-        rows.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
+        rows.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
         assert_eq!(send(&f.x, &f.p, command()).await, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] }, "decided on the root's ready row");
         let _ = &f.m;
     });

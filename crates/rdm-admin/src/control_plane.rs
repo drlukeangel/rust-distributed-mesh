@@ -346,6 +346,7 @@ impl ControlPlane {
             lane: Some(mesh.to_string()),
             attempt,
             claimant,
+            claimant_node: None,
         };
         if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
@@ -377,7 +378,7 @@ impl ControlPlane {
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's fabric-lane attempt could not be ended: the mesh stays held by it"));
             return Err(Refusal::State(e));
         }
-        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: None, attempt, claimant: claimant.to_string() };
+        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: None, attempt, claimant: claimant.to_string(), claimant_node: None };
         if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's fabric-lane attempt is ended and the mesh's in-flight row could not be released"));
@@ -965,7 +966,7 @@ impl ControlPlane {
             let open = if lane.is_some() { open } else { (current.state == BuildState::Pending && current.opened == current.attempt + 1 && current.attempt_actions.get(&current.opened) == Some(&action)).then_some(current.opened) };
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
-            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string() };
+            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), claimant_node: None };
             let standing = match self.claims.in_flight(&path.mesh).await {
                 Ok(standing) => standing.filter(|held| !held.same_claim(&row)),
                 Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),

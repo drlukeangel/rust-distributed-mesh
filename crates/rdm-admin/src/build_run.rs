@@ -992,7 +992,7 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
             }
         },
     };
-    let row = crate::mesh_claims::InFlight { build_id: opened.build_id.clone(), lane: opened.mesh.clone(), attempt: opened.attempt, claimant: me.to_string() };
+    let row = crate::mesh_claims::InFlight { build_id: opened.build_id.clone(), lane: opened.mesh.clone(), attempt: opened.attempt, claimant: me.to_string(), claimant_node: None };
     if let Err(e) = control.claims.release_in_flight(&mesh, &row).await {
         tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id.log(), lane = %mesh, attempt = opened.attempt, mesh = %mesh, node = %me, error = %e)
             .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));

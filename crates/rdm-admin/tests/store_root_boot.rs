@@ -363,7 +363,7 @@ impl Prepared {
             };
             nodes.write_record(&row).await.unwrap();
             if history == History::ReadyForTraffic {
-                { let mut r = fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new() }); r.events.push("ready-for-traffic".into()); fabric.put_fabric(&r).await.unwrap(); }
+                { let mut r = fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new(), provider: None }); r.events.push("ready-for-traffic".into()); fabric.put_fabric(&r).await.unwrap(); }
             }
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &incarnation).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
@@ -694,4 +694,326 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
 fn ready_event_on(file: &std::path::Path) -> Vec<std::path::PathBuf> {
     let held = std::fs::read(file).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).is_some_and(|v| v["record"]["events"].as_array().is_some_and(|e| e.iter().any(|x| x == "ready-for-traffic")));
     if held { vec![file.to_path_buf()] } else { Vec::new() }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The adoption launch (Q156; fabric-recovery.md "Nothing alive"): a node-admin launched at the lost
+// fabric-primary's path.name with no launcher, given the fabric id, its mesh and the store root.
+// ---------------------------------------------------------------------------------------------------
+
+/// The bound of an adoption launch's refusal, or of its claim and its first writes.
+const ADOPTS_WITHIN: Duration = Duration::from_secs(40);
+
+/// The span an adoption launch's claim of the fabric-recovery attempt leaves.
+const ADOPTION_CLAIM: &str = "rdm.node_admin.fabric.update.via-adoption-claim";
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// The custody a person holds and hands an adoption launch in its environment (fabric-certs.md §Custody):
+/// the fabric's root, the fabric CA under it, and mesh1's issuing material minted under that CA.
+fn custody_env(root: rdm_core::certs::SigningKey, ca: rdm_core::certs::CaKey) -> Vec<(&'static str, String)> {
+    let time = rdm_transport::clock::RafkaTime::unadopted();
+    time.adopt(now_ms());
+    let m = rdm_admin::certs::CertIssuer::with_root(root, ca, None, time).issuing_material("mesh1").expect("mesh1's issuing material").expect("a root holder hands issuing material");
+    vec![("RDM_CA_SECRET", m.root.0), ("RDM_FABRIC_CA_KEY", m.ca_key.0), ("RDM_ISSUING_KEY", m.key.0), ("RDM_ISSUING_CERT", m.cert)]
+}
+
+/// Custody under a root minted now: what a person holds for a prepared root, which holds no cert material.
+fn minted_custody() -> Vec<(&'static str, String)> {
+    let root = rdm_core::certs::mint_key();
+    let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, now_ms());
+    custody_env(root, ca)
+}
+
+/// The custody the data dir `dir` of a running fabric's Day-0 admin keeps (`ca-secret`, `fabric-ca`).
+fn custody_of(dir: &std::path::Path) -> Vec<(&'static str, String)> {
+    let root = rdm_core::certs::decode_key(std::fs::read_to_string(dir.join("ca-secret")).unwrap().trim()).unwrap();
+    let kept = std::fs::read_to_string(dir.join("fabric-ca")).unwrap();
+    let mut lines = kept.lines();
+    let (key, cert) = (lines.next().unwrap(), lines.next().unwrap());
+    let ca = rdm_core::certs::CaKey::from_parts(rdm_core::certs::decode_key(key).unwrap(), rdm_core::certs::decode_ca_cert(cert).unwrap());
+    custody_env(root, ca)
+}
+
+/// An adoption launch: `rdm-node-admin` at mesh1.admin.1 with no launcher, given `fabric_id`, mesh1 and
+/// `store`, on a fresh data dir `dir/<data_dir>`, with `extra` beside (a later value replaces an earlier).
+fn adopter(dir: &std::path::Path, data_dir: &str, store: &std::path::Path, fabric_id: &str, extra: &[(&str, String)]) -> Running {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-node-admin"));
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("RDM_DATA_DIR", dir.join(data_dir))
+        .env("RDM_STORE_DIR", store)
+        .env("RDM_EVIDENCE_DIR", dir)
+        .env("MESH_SPAWN_TYPE", "process")
+        .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0")
+        .env("RDM_NODE_NAME", "mesh1.admin.1")
+        .env("RDM_FABRIC_ID", fabric_id)
+        .env("RDM_MESH", "mesh1");
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
+    let pid = child.id();
+    Running { child, pid }
+}
+
+/// `running`'s exit status and stderr once it exits within `within`; `None` while it still runs then.
+fn exited_within(running: &mut Running, within: Duration) -> Option<(std::process::ExitStatus, String)> {
+    let until = Instant::now() + within;
+    loop {
+        if let Some(status) = running.child.try_wait().unwrap() {
+            let mut err = String::new();
+            std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+            return Some((status, err));
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The adoption claim span `pid` left under `dir`, once one is there within `within`.
+fn claim_of(dir: &std::path::Path, pid: u32, within: Duration) -> Option<serde_json::Value> {
+    let until = Instant::now() + within;
+    loop {
+        if let Some(s) = spans_of(dir, pid).into_iter().find(|s| s["name"] == ADOPTION_CLAIM) {
+            return Some(s);
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn attr_of(s: &serde_json::Value, k: &str) -> String {
+    s["attributes"][k].as_str().unwrap_or_default().to_string()
+}
+
+impl Prepared {
+    /// [`Prepared::at`] as a fabric whose one admin, the fabric-primary, is lost: its birth's row records
+    /// it its mesh's primary and the fabric-primary, and the Fabric record names its provider, `process`.
+    fn adoptable(name: &str) -> Self {
+        let root = Self::at(name, History::StateCommit);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let store = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
+            let writer = rdm_admin::model::IncarnationId::mint();
+            let nodes = rdm_admin::storage::FileNodesStorage::open(&root.dir.join("fixture"), &store, "mesh1", &writer).await.unwrap();
+            let mut row = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap().expect("the lost birth's row");
+            let birth = row.births.last_mut().unwrap();
+            (birth.is_primary, birth.is_fabric_primary) = (Some(1), Some(1));
+            nodes.write_record(&row).await.unwrap();
+        });
+        let record = root.fabric_row();
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+        v["record"]["provider"] = serde_json::json!("process");
+        std::fs::write(&record, serde_json::to_vec(&v).unwrap()).unwrap();
+        root
+    }
+
+    /// The row at mesh1.admin.1 and the row of `node_id`, read through the storage adapters.
+    fn row_and_node(&self, node_id: &str) -> (Option<rdm_admin::storage::NodeRow>, Option<rdm_admin::storage::NodeRow>) {
+        use rdm_admin::storage::NodesStorage as _;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
+            let nodes = rdm_admin::storage::FileNodesStorage::open(&self.dir.join("reader"), &root, "mesh1", &rdm_admin::model::IncarnationId::mint()).await.unwrap();
+            let at = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
+            let of = match rdm_admin::model::NodeId::parse(node_id) {
+                Ok(id) => nodes.node(&id).await.unwrap(),
+                Err(_) => None,
+            };
+            (at, of)
+        })
+    }
+}
+
+/// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "given the fabric id, its mesh and the store root,
+/// which must hold that fabric or the start is refused by name"): an adoption launch given a fabric id
+/// whose store root holds no Fabric record is refused by name, naming the id and the store root, at once.
+/// Must NOT happen: the launch taken for a Day 0 that creates the fabric under the given id (a Fabric
+/// record, a name claim or a Build written), or a refusal that does not name the id and the root.
+#[test]
+fn an_adoption_launch_whose_store_root_holds_no_such_fabric_is_refused_by_name_naming_the_id_and_the_root() {
+    let d = Day0::at("an_adoption_launch_whose_store_root_holds_no_such_fabric");
+    let fabric_id = rdm_admin::model::FabricId::mint().to_string();
+    let mut a = adopter(&d.dir, "adopter", &d.store, &fabric_id, &minted_custody());
+    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch neither refused nor ended: it ran, as a Day 0 of the given id would");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("refusing to start") && err.contains(&fabric_id) && err.contains(&d.store.display().to_string()) && err.contains("holds no Fabric record"), "the refusal names the fabric id and the store root: {err}");
+    assert!(!d.store.join(&fabric_id).join("fabric").join("record.json").exists(), "a Fabric record was written for the given id");
+    let claims: Vec<std::path::PathBuf> = std::fs::read_dir(d.store.join(rdm_admin::store_root::FABRIC_NAMES)).map(|e| e.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    assert!(claims.is_empty(), "the fabric's name was claimed: {claims:?}");
+}
+
+/// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "It is given the fabric root and CA, from its
+/// environment or an inherited data dir ... and refuses to start without them"): an adoption launch on a
+/// fresh data dir with no root in its environment is refused by name, naming `RDM_CA_SECRET`, before
+/// anything of the fabric is written. Must NOT happen: a root minted for it (a Day 0's), a claim, or the
+/// lost birth's row touched.
+#[test]
+fn an_adoption_launch_without_the_fabric_root_is_refused_by_name() {
+    let root = Prepared::adoptable("an_adoption_launch_without_the_fabric_root");
+    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &[]);
+    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch with no root did not end");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("RDM_CA_SECRET") && err.contains("no cert material"), "the refusal names the missing root: {err}");
+    assert!(!root.dir.join("adopter").join("ca-secret").exists(), "a root was minted for the adoption launch");
+    assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM), "the refused launch claimed");
+    let (at, _) = root.row_and_node("");
+    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
+}
+
+/// CONTRACT (Q156: "Day 0 has no RDM_NODE_NAME, mints the fabric id unless given, and a given id whose
+/// store root already holds a Fabric record is refused by name"): a Day 0 (no RDM_NODE_NAME) given the id
+/// of a fabric its store root already holds is refused by name, naming the id, the store root and what
+/// adopts a fabric (RDM_NODE_NAME), on a fresh data dir. Must NOT happen: the start taken as a Day 0 of
+/// that fabric, or a refusal that names the data dir rather than the fabric it was given.
+#[test]
+fn a_day0_given_a_fabric_id_whose_store_root_already_holds_that_fabric_is_refused_by_name() {
+    let root = Prepared::adoptable("a_day0_given_a_fabric_id_whose_store_root_already_holds_it");
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rdm-node-admin"));
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("RDM_DATA_DIR", root.dir.join("day0"))
+        .env("RDM_STORE_DIR", &root.store)
+        .env("RDM_EVIDENCE_DIR", &root.dir)
+        .env("MESH_SPAWN_TYPE", "process")
+        .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0")
+        .env("RDM_FABRIC_ID", root.fabric_id.to_string());
+    let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
+    let pid = child.id();
+    let mut day0 = Running { child, pid };
+    let (status, err) = exited_within(&mut day0, ADOPTS_WITHIN).expect("the Day 0 did not end");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(
+        err.contains("refusing to start") && err.contains("Day 0") && err.contains(&root.fabric_id.to_string()) && err.contains(&root.store.display().to_string()) && err.contains("RDM_NODE_NAME"),
+        "the refusal names Day 0, the given fabric id, the store root that holds it and the launch that adopts it: {err}"
+    );
+}
+
+/// CONTRACT (Q156: "the provider is the Fabric record's, a differing MESH_SPAWN_TYPE refused by name"):
+/// an adoption launch whose MESH_SPAWN_TYPE (container) differs from the provider the Fabric record names
+/// (process) is refused by name, naming both, before it claims anything. Must NOT happen: the launch
+/// running the fabric's nodes under another provider, or a claim.
+#[test]
+fn an_adoption_launch_whose_spawn_type_differs_from_the_fabric_records_provider_is_refused_by_name() {
+    let root = Prepared::adoptable("an_adoption_launch_whose_spawn_type_differs");
+    let mut env = minted_custody();
+    env.push(("MESH_SPAWN_TYPE", "container".into()));
+    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &env);
+    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch under another provider did not end");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("MESH_SPAWN_TYPE") && err.contains("container") && err.contains("process") && err.contains("Fabric record"), "the refusal names both providers: {err}");
+    assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM), "the refused launch claimed");
+}
+
+/// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "Before any recovery mutation other than the claim
+/// itself, it claims the fabric-recovery attempt of the current Build for that mesh; a second launch's
+/// claim loses and it exits. Concurrent adoption launches resolve to the same recovery attempt for the
+/// exact lost birth"; build.md §5.2, Q142): on a prepared root whose one admin, the fabric-primary, is
+/// lost and whose journal holds no attempt, two adoption launches are started at once, at the same
+/// path.name. One claim wins; the other is refused by name, naming the claimant that holds the attempt,
+/// and exits having deleted and claimed nothing. One birth stands at mesh1.admin.1, the winner's.
+/// Must NOT happen: both claims won (two births at one path), the loser's node.delete or name claim, or
+/// the loser's node.id holding any row.
+#[test]
+fn two_adoption_launches_claim_one_attempt_one_wins_and_the_other_is_refused_by_name() {
+    let root = Prepared::adoptable("two_adoption_launches_claim_one_attempt");
+    let custody = minted_custody();
+    let a = adopter(&root.dir, "adopter-a", &root.store, &root.fabric_id.to_string(), &custody);
+    let b = adopter(&root.dir, "adopter-b", &root.store, &root.fabric_id.to_string(), &custody);
+    let (ca, cb) = (claim_of(&root.dir, a.pid, ADOPTS_WITHIN), claim_of(&root.dir, b.pid, ADOPTS_WITHIN));
+    let (ca, cb) = (ca.expect("launch a made no adoption claim"), cb.expect("launch b made no adoption claim"));
+    let outcomes = [attr_of(&ca, "outcome"), attr_of(&cb, "outcome")];
+    assert_eq!(outcomes.iter().filter(|o| *o == "won").count(), 1, "one claim wins: {ca} {cb}");
+    assert_eq!((attr_of(&ca, "build_id"), attr_of(&ca, "attempt"), attr_of(&ca, "lane")), (attr_of(&cb, "build_id"), attr_of(&cb, "attempt"), attr_of(&cb, "lane")), "both launches resolved to the one attempt: {ca} {cb}");
+    let (mut winner, mut loser, won, lost) = if outcomes[0] == "won" { (a, b, ca, cb) } else { (b, a, cb, ca) };
+    let (status, err) = exited_within(&mut loser, ADOPTS_WITHIN).expect("the losing launch did not exit");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("refusing to start") && err.contains("lost") && err.contains(&attr_of(&won, "node_id")), "the loser is refused by name, naming the claimant holding the attempt: {err}");
+    let loser_spans = spans_of(&root.dir, loser.pid);
+    let written: Vec<&serde_json::Value> = loser_spans.iter().filter(|s| ["rdm.node_admin.node.delete.via-node-row", "rdm.node_admin.node.create.via-node-row"].contains(&s["name"].as_str().unwrap_or_default())).collect();
+    assert!(written.is_empty(), "the loser deleted or claimed: {written:?}");
+    let won_id = attr_of(&won, "node_id");
+    let until = Instant::now() + ADOPTS_WITHIN;
+    while root.row_and_node("").0.is_none_or(|r| r.node_id.to_string() != won_id) {
+        assert!(Instant::now() < until, "the winner {won_id} took no row at mesh1.admin.1: {:?}", root.row_and_node("").0);
+        assert!(winner.child.try_wait().unwrap().is_none(), "the winning launch exited");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (at, of_loser) = root.row_and_node(&attr_of(&lost, "node_id"));
+    assert!(at.as_ref().is_some_and(|r| r.node_id.to_string() == won_id && r.status != rdm_admin::model::NodeStatus::Deleted && r.births.len() <= 1), "one birth at mesh1.admin.1, the winner's: {at:?}");
+    assert!(of_loser.is_none(), "the loser's node.id holds a row: {of_loser:?}");
+    unsafe { libc::kill(winner.pid as i32, libc::SIGTERM) };
+    let _ = exited_within(&mut winner, ADOPTS_WITHIN);
+    println!("trace_id={}", won["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "runs node investigation on the lost birth: reached,
+/// or any node-admin answering before its first mutation, it is refused NameHeld and exits, closing the
+/// attempt through the failure path"): a fabric's one admin is alive but held by the operating system, so
+/// it answers nothing until the adoption launch at its path.name has claimed the fabric-recovery attempt;
+/// it is then let run. Its answer reaches the launch before its first mutation: the launch is refused
+/// NameHeld, naming the admin that answered, the attempt it claimed reads Failed on the Build journal and
+/// the mesh's in-flight row is released. Must NOT happen: the live fabric-primary's row deleted or its
+/// name taken, the attempt left open, or the launch running on as a second admin at the path.
+#[test]
+fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_and_nothing_is_deleted() {
+    let d = Day0::at("an_admin_answering_before_the_adopters_first_mutation");
+    let mut live = d.day0_until_ready(false);
+    let fabric_id = fabric_dirs(&d.store).first().cloned().expect("the Day-0 fabric");
+    let live_id: String = {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(d.data_dir.join("nodes").join("self.json")).unwrap()).unwrap();
+        v["record"]["node_id"].as_str().unwrap().to_string()
+    };
+    let custody = custody_of(&d.data_dir);
+    unsafe { libc::kill(live.pid as i32, libc::SIGSTOP) };
+    let mut a = adopter(&d.dir, "adopter", &d.store, &fabric_id, &custody);
+    let claim = claim_of(&d.dir, a.pid, ADOPTS_WITHIN);
+    unsafe { libc::kill(live.pid as i32, libc::SIGCONT) };
+    let claim = claim.expect("the adoption launch made no claim while the live admin was held");
+    assert_eq!(attr_of(&claim, "outcome"), "won", "{claim}");
+    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch ran on beside the live admin");
+    assert!(!status.success(), "{status:?} {err}");
+    assert!(err.contains("refusing to start") && err.contains("NameHeld") && err.contains("mesh1.admin.1"), "refused NameHeld, naming the admin that answered: {err}");
+    let spans = spans_of(&d.dir, a.pid);
+    let written: Vec<&serde_json::Value> = spans.iter().filter(|s| ["rdm.node_admin.node.delete.via-node-row", "rdm.node_admin.node.create.via-node-row"].contains(&s["name"].as_str().unwrap_or_default())).collect();
+    assert!(written.is_empty(), "the refused launch deleted or claimed a row: {written:?}");
+    let (row, in_flight, facts) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        use rdm_admin::build_state::BuildStateAdapter as _;
+        use rdm_admin::storage::MeshStorage as _;
+        let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
+        let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
+        let reader = rdm_admin::model::IncarnationId::mint();
+        let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &reader).await.unwrap();
+        let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &reader).await.unwrap();
+        let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader"), &reader).await.unwrap();
+        (nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
+    });
+    let row = row.expect("the live fabric-primary's row");
+    assert!(row.node_id.to_string() == live_id && row.status != rdm_admin::model::NodeStatus::Deleted && row.newest_birth().is_some_and(|b| b.is_fabric_primary.is_some()), "the live fabric-primary's row is intact: {row:?}");
+    assert!(in_flight.as_ref().is_none_or(|r| r.attempt.to_string() != attr_of(&claim, "attempt") || r.build_id.log().to_string() != attr_of(&claim, "build_id")), "the claimed attempt's in-flight row is released: {in_flight:?}");
+    let closed = facts.iter().any(|f| matches!(f, rdm_admin::build_state::BuildFact::Attempt(r) if r.build_id.log().to_string() == attr_of(&claim, "build_id") && r.attempt.to_string() == attr_of(&claim, "attempt") && r.mesh.as_deref() == Some("mesh1") && matches!(r.outcome, rdm_admin::build_state::AttemptOutcome::Failed { .. })));
+    assert!(closed, "the claimed attempt reads Failed on the journal: {facts:?}");
+    // The refused attempt owes no exit: two staleness floors on, the live fabric-primary opened no
+    // recovery of its own birth and the journal holds no attempt in mesh1's lane past the refused one.
+    let floor = Duration::from_millis(std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000));
+    std::thread::sleep(floor * 2);
+    let recoveries: Vec<serde_json::Value> = spans_of(&d.dir, live.pid).into_iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-recovery" && attr_of(s, "node_id") == live_id).collect();
+    assert!(recoveries.is_empty(), "the live fabric-primary opened a recovery of its own birth: {recoveries:?}");
+    let later = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        use rdm_admin::build_state::BuildStateAdapter as _;
+        let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
+        let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
+        let reader = rdm_admin::model::IncarnationId::mint();
+        rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-after"), &reader).await.unwrap().facts().await.unwrap()
+    });
+    let opened_after: Vec<&rdm_admin::build_state::BuildFact> = later.iter().filter(|f| matches!(f, rdm_admin::build_state::BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh1") && o.attempt.to_string() != attr_of(&claim, "attempt"))).collect();
+    assert!(opened_after.is_empty(), "an attempt in mesh1's lane was opened after the refused one: {opened_after:?}");
+    assert!(live.child.try_wait().unwrap().is_none(), "the live admin is still running");
+    d.stop(live);
+    println!("trace_id={}", claim["trace_id"].as_str().unwrap_or(""));
 }

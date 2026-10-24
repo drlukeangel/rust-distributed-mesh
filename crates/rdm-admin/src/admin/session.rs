@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// What [`refuse_contradictory_start`] is told a store root holding the fabric's record holds.
+pub(crate) const HOLDS_FABRIC: &str = "a Fabric record";
+
 /// A person-started admin that is not a restart (no row of its own in nodes.storage): what it
 /// is must be stated by its parameters, and contradictory inputs are refused by name. Day 0 is
 /// the start with no mesh, no seed and no flag on a data dir that holds nothing; a recovery start
@@ -13,6 +16,17 @@ pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>)
     }
     let dir = cfg.data_dir.display();
     let recovering = cfg.mesh_primary || cfg.fabric_primary;
+    // Day 0 given a fabric id whose store root already holds that Fabric's record (Q156): Day 0 creates a
+    // fabric and never adopts one, told apart from an adoption launch by intent, never by the store.
+    if !recovering && cfg.fabric_id_named && holds == Some(HOLDS_FABRIC) {
+        return Err(format!(
+            "Day 0 is given Fabric {} ({}) and the store root {} already holds that Fabric's record: Day 0 creates a fabric and never adopts one; a node-admin started into that fabric is an adoption launch, {} at the lost fabric-primary's path.name (fabric-recovery.md \"Nothing alive\")",
+            cfg.fabric_id,
+            rdm_core::launch::ENV_FABRIC_ID,
+            cfg.store_dir.join(cfg.fabric_id.to_string()).display(),
+            rdm_core::launch::ENV_NODE_NAME,
+        ));
+    }
     if let Some(what) = holds {
         return Err(format!(
             "{dir} holds {what} but no row for this admin in nodes.storage: it is neither a restart nor a fresh start, and this start will not take Day 0 or mint a Fabric, Build or MeshId over it"

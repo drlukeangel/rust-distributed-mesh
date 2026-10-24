@@ -422,7 +422,7 @@ impl BuildDoor {
             if let Err(e) = lane.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: Some(mesh.clone()) }).await {
                 return rdm_core::reply::build::not_ready(format!("{me}: the verdict of attempt {attempt} of {id} in mesh {mesh}'s lane could not be written: {e}"));
             }
-            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string() };
+            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string(), claimant_node: None };
             if let Err(e) = self.control.claims.release_in_flight(&mesh, &row).await {
                 tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), lane = %mesh, attempt, mesh = %mesh, node = %me, error = %e)
                     .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));

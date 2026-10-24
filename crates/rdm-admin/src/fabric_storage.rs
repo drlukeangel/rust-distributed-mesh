@@ -188,12 +188,18 @@ pub struct FabricRecord {
     /// The fabric events applied, each once.
     #[serde(default)]
     pub events: Vec<String>,
+    /// The deployment provider that runs the fabric's nodes: fabric policy, fixed by Day 0's
+    /// `MESH_SPAWN_TYPE` and written by the bootstrap admin with the record. An adoption launch takes
+    /// it from here and refuses a differing `MESH_SPAWN_TYPE` by name (Q156). A record written before
+    /// it was carried names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::model::ProviderKind>,
 }
 
 impl FabricRecord {
     /// The record of `identity`, no event applied yet.
     pub fn new(identity: FabricIdentity) -> Self {
-        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new() }
+        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new(), provider: None }
     }
 
     /// The fabric's identity.

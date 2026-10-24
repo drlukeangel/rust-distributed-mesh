@@ -46,6 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+pub(crate) mod adoption;
 mod boot;
 mod mesh_delete;
 mod projection;

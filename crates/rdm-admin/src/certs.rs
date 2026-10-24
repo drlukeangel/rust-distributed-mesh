@@ -185,10 +185,11 @@ fn ca_key(issuing: &IssuingMaterial, key: &IssuingKey) -> Result<CaKey, String> 
     Ok(CaKey::from_parts(secret, key.cert().ca.clone()))
 }
 
-/// Whether the node-admin `cfg` configures is day 0's bootstrap admin: no launch, no seeds and no
-/// recovery flag, so a person-started recovery never mints a root or a CA of its own.
+/// Whether the node-admin `cfg` configures is day 0's bootstrap admin: no launch, no adoption, no seeds
+/// and no recovery flag, so a person-started recovery or adoption launch never mints a root or a CA of
+/// its own: it is given them, from its environment or an inherited data dir, or refused by name (Q156).
 pub fn day_zero(cfg: &crate::admin::AdminConfig) -> bool {
-    cfg.launch.is_none() && cfg.seeds.is_empty() && !cfg.mesh_primary && !cfg.fabric_primary
+    cfg.launch.is_none() && cfg.adopt.is_none() && cfg.seeds.is_empty() && !cfg.mesh_primary && !cfg.fabric_primary
 }
 
 /// Keep `ca` as the fabric CA `data_dir` holds (`fabric-ca`: its key and its cert, hex, one per line),

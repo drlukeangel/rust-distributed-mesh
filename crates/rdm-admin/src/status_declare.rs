@@ -1168,7 +1168,7 @@ mod tests {
         assert!(!d.read_first_ready(&rows, &v).await.unwrap(), "no ready-for-traffic row of the fabric on the root");
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
         assert!(events(&d).is_empty(), "nothing owed before the fabric first reached ready-for-traffic");
-        rows.put_fabric(&FabricRecord { fabric_id: v.fabric.id.clone(), name: v.fabric.name.clone(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
+        rows.put_fabric(&FabricRecord { fabric_id: v.fabric.id.clone(), name: v.fabric.name.clone(), events: vec!["ready-for-traffic".into()], provider: None }).await.unwrap();
         assert!(d.read_first_ready(&rows, &v).await.unwrap(), "the root's row says the fabric first reached ready-for-traffic");
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
         assert_eq!(events(&d), vec![Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "owed at each mesh primary, decided on the root's row");

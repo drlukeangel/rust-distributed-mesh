@@ -50,6 +50,11 @@ pub struct AdminConfig {
     pub seeds: Vec<(String, SocketAddr)>,
     /// `RDM_FABRIC_ID` was given: the Fabric is named, not new.
     pub fabric_id_named: bool,
+    /// The adoption launch (Q156; fabric-recovery.md "Nothing alive"): `RDM_NODE_NAME` with no launcher
+    /// (no `RDM_NODE_ID`, no `RDM_LAUNCHER`), the lost fabric-primary's path.name. It adopts the fabric
+    /// `RDM_FABRIC_ID` names on the store root, its mesh `RDM_MESH`, and mints no fabric or mesh id; it is
+    /// a new birth with its own node.id. `None` for every other start.
+    pub adopt: Option<PathName>,
     /// The admin's data directory: its own runtime material only.
     pub data_dir: PathBuf,
     /// The fabric's shared store root (`RDM_STORE_DIR`, or its launch's): its stores open under
@@ -94,6 +99,10 @@ impl AdminConfig {
     /// is malformed.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rdm_core::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
+        let adopt = match &launch {
+            Some(_) => None,
+            None => adoption_from_env(&get)?,
+        };
         let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RDM_FABRIC")).unwrap_or_else(|| "fabric1".into());
         // A launched node is handed its Fabric's id; the bootstrap admin takes
         // `RDM_FABRIC_ID` when given, else its Fabric is new and it mints one.
@@ -182,6 +191,7 @@ impl AdminConfig {
                 None => rdm_core::launch::decode_seeds(&get(rdm_core::launch::ENV_SEEDS).unwrap_or_default())?,
             },
             fabric_id_named: launch.is_some() || get(rdm_core::launch::ENV_FABRIC_ID).is_some_and(|v| !v.trim().is_empty()),
+            adopt,
             mesh,
             mesh_id: launch
                 .as_ref()
@@ -199,6 +209,39 @@ impl AdminConfig {
             bindings,
         })
     }
+}
+
+/// The adoption launch `get` describes (Q156): `RDM_NODE_NAME` with no launch, which is told from
+/// Day 0 by that intent alone, never by what the store holds. It names a node-admin's path.name, the
+/// fabric it adopts (`RDM_FABRIC_ID`) and that path's mesh (`RDM_MESH`); a launcher, a recovery flag or
+/// a missing input is refused by name. `None` when `RDM_NODE_NAME` is not given: Day 0, or a restart on
+/// its own data dir.
+fn adoption_from_env(get: &impl Fn(&str) -> Option<String>) -> Result<Option<PathName>, String> {
+    use rdm_core::launch::{ENV_FABRIC_ID, ENV_FABRIC_PRIMARY, ENV_LAUNCHER, ENV_MESH_PRIMARY, ENV_NODE_NAME};
+    let given = |k: &str| get(k).filter(|v| !v.trim().is_empty());
+    let Some(name) = given(ENV_NODE_NAME) else { return Ok(None) };
+    let adoption = "an adoption launch (RDM_NODE_NAME with no launcher, fabric-recovery.md \"Nothing alive\")";
+    if let Some(launcher) = given(ENV_LAUNCHER) {
+        return Err(format!("{ENV_LAUNCHER}={launcher} is set without RDM_NODE_ID: a launched node is handed its node id by its launcher, and {adoption} has no launcher"));
+    }
+    let name: PathName = name.trim().parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?;
+    if name.kind != NodeKind::NodeAdmin {
+        return Err(format!("{ENV_NODE_NAME}={name} names a {}: {adoption} is a node-admin's, at the lost fabric-primary's path.name", name.node_type()));
+    }
+    if given(ENV_FABRIC_ID).is_none() {
+        return Err(format!("{ENV_FABRIC_ID} is required: {adoption} at {name} names the fabric it adopts, whose store root holds it; it mints none"));
+    }
+    match given("RDM_MESH") {
+        None => return Err(format!("RDM_MESH is required: {adoption} at {name} names its mesh, {}", name.mesh)),
+        Some(mesh) if mesh.trim() != name.mesh => return Err(format!("RDM_MESH={} and {ENV_NODE_NAME}={name}: {adoption} is of its path.name's mesh, {}", mesh.trim(), name.mesh)),
+        Some(_) => {}
+    }
+    for flag in [ENV_MESH_PRIMARY, ENV_FABRIC_PRIMARY] {
+        if rdm_core::launch::decode_flag(flag, get(flag))? {
+            return Err(format!("{flag} is set with {ENV_NODE_NAME}={name}: {adoption} is no recovery start on a data dir; it takes its role from the recorded primaries and the restore, never from a flag"));
+        }
+    }
+    Ok(Some(name))
 }
 
 /// The node's transport key in its data dir (minted on first use).

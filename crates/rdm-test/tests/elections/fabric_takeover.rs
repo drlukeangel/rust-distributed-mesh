@@ -426,3 +426,87 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         estate.record_trace_url(&s(&run["trace_id"]));
     }
 }
+
+/// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "No node-admin is alive, the fabric's other nodes
+/// alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a
+/// node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and
+/// the store root ... It adopts what the store holds and mints no fabric or mesh id; it is a new birth
+/// with its own node.id ... Before any recovery mutation other than the claim itself, it claims the
+/// fabric-recovery attempt of the current Build for that mesh ... Otherwise the claimed attempt releases
+/// the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as
+/// fabric-primary by step 4 once ReadyForTraffic"): a one-mesh fabric's sole node-admin, the
+/// fabric-primary, is killed while its two members serve. A person launches a node-admin at
+/// mesh1.admin.1 over a new data dir, handed the fabric id, mesh1, the store root and the custody in its
+/// environment. It claims the attempt before it writes anything else, releases the lost birth's name,
+/// takes it under a new node.id, joins the members, adopts rafka-time from one of them and is the
+/// fabric-primary and mesh1's primary; its attempt closed, it then grows mesh1 by a Build. Must NOT happen: a second fabric (a new fabric or mesh id on the
+/// store), a write of the lost birth's row before the claim, a member re-created, or a member declaring
+/// anything but ready-for-traffic after the loss.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name_that_becomes_fabric_primary() {
+    let test = "the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name";
+    let fp = "mesh1.admin.1";
+    let shape = [("mesh1", 1, 2)];
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, Duration::from_secs(60)).await;
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
+    let nodes = estate.node_values().await;
+    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
+    assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    let lost_id = s(&holder["node_id"]);
+    let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string());
+    let members: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
+    assert_eq!(members.len(), 2, "two members serve: {nodes:#?}");
+    let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
+    let store = rdm_test::estate::estate_store_dir(&estate.root);
+    let fabrics_before: Vec<String> = std::fs::read_dir(&store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+
+    let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    estate.kill_bootstrap();
+    let lost_at = now_ns();
+    let data_dir = estate.root.join("adopted-mesh1.admin.1");
+    let fabric_id = estate.fabric_id.clone();
+    let mut env: Vec<(&str, String)> = vec![("RDM_NODE_NAME", fp.into()), ("RDM_FABRIC_ID", fabric_id.clone()), ("RDM_MESH", "mesh1".into())];
+    env.extend(custody);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let adopted = estate.restart_admin_with(&data_dir, &env);
+    assert_eq!(adopted.to_string(), fp, "the launch is born at the lost fabric-primary's path.name");
+    estate.enter(&adopted).await;
+    let after = estate.settles_to(&shape, Duration::from_secs(120)).await;
+    let after: Vec<Value> = after.iter().map(|n| serde_json::to_value(n).unwrap()).collect();
+    let new = after.iter().find(|n| n["name"] == fp).cloned().expect("a node at mesh1.admin.1");
+    assert_ne!(s(&new["node_id"]), lost_id, "a new birth with its own node.id: {new}");
+    wait_for("the adopted node-admin is the fabric-primary and mesh1's primary", Duration::from_secs(60), || async {
+        let v = estate.node_values().await;
+        v.iter().any(|n| n["name"] == fp && s(&n["node_id"]) != lost_id && n["is_fabric_primary"] == true && n["is_primary"] == true).then_some(())
+    })
+    .await;
+    for (name, inc) in &members {
+        assert!(after.iter().any(|n| s(&n["name"]) == *name && s(&n["incarnation_id"]) == *inc && n["status"] == "ready-for-traffic"), "{name} keeps its birth {inc}, ready for traffic: {after:#?}");
+    }
+    assert_eq!(estate.mesh_view("mesh1").await.id.map(|i| i.to_string()), mesh_id, "mesh1 keeps its MeshId");
+    // The adoption's attempt closed at its Ready: the adopted fabric-primary runs the next Build on mesh1.
+    let grown = [("mesh1", 1, 3)];
+    estate.reconcile_shape("fabric1", &grown).await;
+    estate.settles_to(&grown, Duration::from_secs(120)).await;
+    let fabrics_after: Vec<String> = std::fs::read_dir(&store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(fabrics_after, fabrics_before, "no second fabric on the store");
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let claims: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-adoption-claim").into_iter().filter(|sp| at(sp) >= lost_at).collect();
+    assert!(claims.len() == 1 && attr(claims[0], "outcome") == "won" && attr(claims[0], "lost_node_id") == lost_id, "one claim of the fabric-recovery attempt for the lost birth, won: {claims:#?}");
+    let first_write = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node_id") == lost_id).map(at).min().expect("the lost birth's name released");
+    assert!(at(claims[0]) < first_write, "the claim precedes the release of the lost birth's name");
+    let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node") == fp).collect();
+    assert!(pulled.len() == 1 && attr(pulled[0], "source") == "pull", "rafka-time adopted from a live member: {pulled:#?}");
+    let left: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
+        .into_iter()
+        .filter(|sp| at(sp) >= lost_at && members.iter().any(|(m, _)| attr(sp, "node") == *m) && !attr(sp, "state").contains("ReadyForTraffic"))
+        .collect();
+    assert!(left.is_empty(), "no member left ready-for-traffic: {left:#?}");
+    println!("trace_id={}", claims[0]["trace_id"].as_str().unwrap_or(""));
+}

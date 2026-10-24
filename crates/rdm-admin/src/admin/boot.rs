@@ -398,7 +398,37 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
         }
     }
+    // The adoption launch (Q156; fabric-recovery.md "Nothing alive"): what the store holds is read with
+    // nothing written, and a store root that does not hold the fabric, its provider, the mesh or the lost
+    // fabric-primary at this path.name refuses the start by name. An inherited data dir gives it only its
+    // custody and its endpoint key, never its path.
+    let adoption = match &cfg.adopt {
+        None => None,
+        Some(name) => {
+            if let Some(own) = own_row.as_ref().filter(|own| own.name != *name) {
+                return Err(format!("refusing to start: {}: the adoption launch at {name} is on the data dir of {} ({}): an inherited data dir is the lost birth's own", cfg.data_dir.display(), own.name, own.node_id));
+            }
+            let a = match super::adoption::read(name, &cfg.fabric_id, &cfg.store_dir, cfg.spawn_type.as_deref(), &*fabric_storage, &*mesh_storage, &*nodes_storage, &*journal).await {
+                Ok(a) => a,
+                Err(e) => {
+                    let e = format!("refusing to start: {e}");
+                    storage_step.record("error", e.as_str());
+                    return Err(e);
+                }
+            };
+            storage_step.record("mesh_id", tracing::field::display(&a.mesh.mesh_id));
+            cfg.fabric = a.fabric.name.clone();
+            cfg.mesh_id = Some(a.mesh.mesh_id.clone());
+            // The provider is the Fabric record's (Q156): every provider this admin prepares is it.
+            cfg.spawn_type = Some(match a.provider {
+                ProviderKind::Process => "process".into(),
+                ProviderKind::Container => "container".into(),
+            });
+            Some(a)
+        }
+    };
     let inherited = match (&cfg.launch, own_row) {
+        _ if adoption.is_some() => adoption.as_ref().map(|a| a.lost.clone()),
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
                 format!("{}: nodes.storage holds this admin ({}) but fabric.storage holds no Fabric record", cfg.data_dir.display(), own.name)
@@ -422,7 +452,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     if inherited.is_none() {
         let holds = if fabric_storage.fabric().await.map_err(storage_err)?.is_some() {
-            Some("a Fabric record")
+            Some(super::session::HOLDS_FABRIC)
         } else if !mesh_storage.meshes().await.map_err(storage_err)?.is_empty() {
             Some("a mesh record")
         } else if !super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &own_mesh).await.map_err(storage_err)?.is_empty() || !nodes_storage.runtimes().await.map_err(storage_err)?.is_empty() {
@@ -459,8 +489,28 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // node over its inherited data dir"). A new node supersedes no birth (node-restart.md: a restart
     // alone keeps the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
+    // The fabric-recovery attempt an adoption launch claimed, held until it completes or fails.
+    let mut adoption_claim: Option<Arc<super::adoption::Claimed>> = None;
     let (name, node_id, incarnation, supersedes, mesh_addr, seeds) = match (&cfg.launch, &inherited) {
         (Some(l), _) => (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
+        (None, Some(lost)) if adoption.is_some() => {
+            // The adoption launch: a new birth with its own node.id, at the lost fabric-primary's path.name.
+            // Its claim of the fabric-recovery attempt is its first recovery mutation (Q156); a lost claim
+            // refuses the start by name, having written nothing else.
+            let node_id = NodeId::mint();
+            let a = adoption.as_ref().expect("an adoption launch read its store");
+            let claimed = super::adoption::claim(&lost.name, &node_id, a, &*journal, &*mesh_claims, &attempt_contexts, crate::admin::local_now_ms())
+                .instrument(boot.clone())
+                .await
+                .map_err(|e| format!("refusing to start: {e}"))?;
+            adoption_claim = Some(Arc::new(claimed));
+            // Its contacts are the births the store records, its own mesh first, the lost birth not among them.
+            let mut contacts = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &lost.name.mesh).await.map_err(storage_err)?;
+            contacts.retain(|c| c.node_id != lost.node_id);
+            contacts.sort_by_key(|c| (c.name.mesh != lost.name.mesh, c.name.to_string()));
+            let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).chain(cfg.seeds.iter().cloned()).collect();
+            (lost.name.clone(), node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), seeds)
+        }
         (None, Some(own)) => {
             let node_id = NodeId::mint();
             let step = tracing::info_span!(
@@ -655,6 +705,50 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             seeds = seed_addrs.len(),
         )
         .in_scope(|| tracing::info!("started to recover: Ready is held until the topology and the current Build are held"));
+    }
+    // The adoption launch's checks after its claim and before its first other mutation (Q156): node
+    // investigation of the lost birth, then whether any node-admin the store records answers. An answer
+    // refuses it NameHeld, the attempt closed through the failure path. Otherwise, as every own-mesh
+    // recovery of a node-admin, the lost birth's runtime is terminated on every read but os-stopped, its
+    // name released and taken by this birth.
+    if let Some(claimed) = &adoption_claim {
+        let provider = match &early {
+            Some((_, p)) => p.clone(),
+            None => return Err(format!("refusing to start: {}: no deployment provider prepared for the adoption of {} at {}", cfg.data_dir.display(), claimed.lost.node_id, claimed.lost.name)),
+        };
+        let answers = super::adoption::ProbeAnswers {
+            me: name.clone(),
+            me_id: node_id.clone(),
+            client: node_rpc.client.clone(),
+            resolver: node_rpc_resolver.clone(),
+            provider: provider.clone(),
+            nodes: nodes_storage.clone(),
+            meshes: mesh_storage.clone(),
+            fabric: crate::model::Fabric { id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), status: crate::model::ScopeStatus::Pending, provider: provider.kind() },
+        };
+        let checked = super::adoption::check(claimed, &answers).instrument(boot.clone()).await;
+        let released = match checked {
+            Err(refusal) => Err(refusal),
+            Ok(_) => async {
+                let lost = &claimed.lost;
+                let own_runtime = nodes_storage.runtime(&lost.node_id, &lost.incarnation_id).await.map_err(storage_err)?;
+                if let Some(handle) = own_runtime.as_ref().and_then(|r| crate::deployment::provider::adopt(&*provider, &r.runtime).ok()) {
+                    let mode = crate::deployment::provider::TerminationMode::Graceful { grace: crate::deployment::pipeline::Timeouts::default().stop_grace };
+                    crate::deployment::provider::terminate_unless_os_stopped(&*provider, &handle, mode)
+                        .await
+                        .map_err(|e| format!("{node_id} cannot terminate the lost birth {} ({}) at {}: {e}", lost.node_id, lost.incarnation_id.as_str(), lost.name))?;
+                }
+                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal).await
+            }
+            .instrument(boot.clone())
+            .await,
+        };
+        if let Err(refusal) = released {
+            if let Err(e) = super::adoption::fail(claimed, &*journal, &*mesh_claims, &refusal).await {
+                return Err(format!("refusing to start: {refusal}; and the claimed attempt could not be closed: {e}"));
+            }
+            return Err(format!("refusing to start: {refusal}"));
+        }
     }
     // No crate of RDM serves a route or opens an HTTP listener (rdm-crate-and-test-layout.md §2): the
     // admin's application contact (`admin_api_base`, config, never checked) names this admin's node id.
@@ -982,6 +1076,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         if let Err(held) = claim_fabric_name(&*fabric_storage, &fabric_identity, &node_id).await? {
                                             return Err(format!("refusing to start: this admin is configured for Fabric {}: {held}", cfg.fabric_id));
                                         }
+                                        // The fabric's provider, fixed by Day 0's MESH_SPAWN_TYPE, is the Fabric record's: an
+                                        // adoption launch takes it from there (Q156).
+                                        let provider = FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?.provider;
+                                        caches.update_fabric(&*fabric_storage, &cfg.fabric_id, None, |r| r.provider = Some(provider)).await.map_err(|e| format!("refusing to start: {e}"))?;
                                         attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                                         crate::build_state::accept(&*builds, &b0, None, &name.to_string(), "day-0").await.map_err(|e| e.to_string())?;
                                     }
@@ -1830,6 +1928,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let before_ready_state = before_ready_cell.clone();
                                         let (digest, book, provider, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), membership.clone());
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
+                                        // The adoption launch's attempt completes once it is ReadyForTraffic (Q156).
+                                        let adopted = adoption_claim.clone().map(|c| (c, journal.clone(), mesh_claims.clone()));
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
                                         let sweep_slot_gate = sweep_slot.clone();
                                         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
@@ -1925,6 +2025,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         build_id = %held_build,
                                                     )
                                                     .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
+                                                    if let Some((claimed, builds, claims)) = &adopted {
+                                                        if let Err(e) = super::adoption::complete(claimed, &node_id, &**builds, &**claims).await {
+                                                            tracing::warn!(node = %me, error = %e, "the adoption launch's attempt could not be completed");
+                                                        }
+                                                    }
                                                     break;
                                                 }
                                                 if reported.as_ref() != Some(&blocked) {
@@ -2172,7 +2277,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         },
                                                         recovery.clone(),
                                                         handover_slot.clone(),
-                                                        cfg.fabric_primary,
+                                                        cfg.fabric_primary || cfg.adopt.is_some(),
                                                     ),
                                                 );
                                                 {

@@ -1712,7 +1712,12 @@ impl BirthIndex {
             .filter_map(|((node_id, incarnation), (from, path))| {
                 let until = self.opens.get(lane).and_then(|o| o.range(from + 1..).next().copied()).unwrap_or(u32::MAX);
                 let (attempt, verdict) = self.verdicts.get(lane)?.range(from..until).next_back()?;
-                let Some(AttemptOutcome::Failed { reason , .. }) = verdict else { return None };
+                let Some(AttemptOutcome::Failed { reason, code }) = verdict else { return None };
+                // A recovery refused because the birth or a node-admin answered (NameHeld's code: an
+                // adoption launch's checks after its claim, Q156) owes no exit: the birth is alive.
+                if *code == rdm_core::outcome::Code::AlreadyExists {
+                    return None;
+                }
                 if self.recovery_of(&path, &node_id, &incarnation).is_some() {
                     return None;
                 }
@@ -3565,7 +3570,7 @@ mod tests {
         assert_eq!(read(&format!("fabric/builds/{b1}/1-result.json")), format!(r#"{{"format":"build-record/1","record":{{"seq":1,"fact":{{"fact":"attempt","build_id":"{b1}","attempt":1,"outcome":"converged"}}}}}}"#));
         use crate::storage::MeshStorage as _;
         let claims = crate::storage::FileMeshStorage::open(&root, &crate::model::IncarnationId::mint()).await.unwrap();
-        let row = crate::mesh_claims::InFlight { build_id: BuildId::parse(&b1).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into() };
+        let row = crate::mesh_claims::InFlight { build_id: BuildId::parse(&b1).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), claimant_node: None };
         assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
         assert_eq!(read("meshes/mesh2/claims/in-flight.json"), format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{b1}","attempt":1,"claimant":"mesh1.admin.1"}}}}"#));
     }
