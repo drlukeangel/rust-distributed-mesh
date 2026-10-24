@@ -719,7 +719,7 @@ async fn start_booted(
                                         let holder = membership.seats().mesh(&node.name.mesh);
                                         if authority_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().owed.is_none() {
                                             let state = node_state_of(*status.lock().unwrap());
-                                            tracing::info_span!("rdm.node_rpc.status.update.via-authority-moved", node = %membership.held_name(&node.name), state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
+                                            tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %membership.held_name(&node.name), state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
                                                 .in_scope(|| tracing::info!("the mesh's primary seat moved to another birth: this birth's state is owed to it"));
                                             owed.lock().unwrap().owe_again(state);
                                         }

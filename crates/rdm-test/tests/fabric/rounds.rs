@@ -103,7 +103,7 @@ async fn a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_
 
 /// CONTRACT: the mesh-primary of a role-node mesh dies and the election names its mesh's other admin
 /// mesh-primary. Each role node of that mesh (broker, gateway, compute) sees the mesh-primary move to
-/// another birth, owes its state again (the `via-authority-moved` span, naming the new mesh-primary) and
+/// another birth, owes its state again (the `via-mesh-primary-moved` span, naming the new mesh-primary) and
 /// declares it to the new mesh-primary (`via-declare-own`, definitive), the same re-owe the rpc node
 /// makes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -142,10 +142,10 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     estate.stop().await;
     let spans = estate.spans();
     for r in &roles {
-        let moved: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-authority-moved").into_iter().filter(|m| s(&m["attributes"]["node"]) == *r).collect();
+        let moved: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-mesh-primary-moved").into_iter().filter(|m| s(&m["attributes"]["node"]) == *r).collect();
         assert!(moved.iter().any(|m| s(&m["attributes"]["to"]) == heir_id), "{r} saw the mesh-primary move to {heir} ({heir_id}): {:?}", moved.iter().map(|m| &m["attributes"]).collect::<Vec<_>>());
     }
-    estate.record_trace_url(&s(&named(&spans, "rdm.node_rpc.status.update.via-authority-moved").first().expect("a re-owe")["trace_id"]));
+    estate.record_trace_url(&s(&named(&spans, "rdm.node_rpc.status.update.via-mesh-primary-moved").first().expect("a re-owe")["trace_id"]));
 }
 
 /// The two-mesh climb over meshes of `shape` (their node-admins and members), whose members are named
