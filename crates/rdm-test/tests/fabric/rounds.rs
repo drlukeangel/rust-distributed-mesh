@@ -466,7 +466,13 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert_eq!(after.iter().filter(|r| r.starts_with("mesh-records/")).count(), 2, "each mesh's record stands on the root: {after:#?}");
     for name in &want {
         let mesh = name.split('.').next().unwrap();
-        assert!(holds(&format!("nodes/{mesh}/contacts/{}.json", id_of[name])), "{mesh}'s primary published {name}'s Node row: {after:#?}");
+        let path = root.join(format!("nodes/{mesh}/records/{}.json", id_of[name]));
+        let addressed = || serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap_or_default()).ok().filter(|r| r["record"]["births"].as_array().and_then(|b| b.last()).is_some_and(|b| b["transport_addr"].is_string()));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while addressed().is_none() && std::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(addressed().is_some(), "{mesh}'s primary recorded {name}'s address on its Node record: {}", String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()));
     }
     assert!(holds("connections/mesh1.rpc.1/"), "mesh1.rpc.1 published the connection it originated and held: {after:#?}");
     for name in want.iter().filter(|n| *n != "mesh1.rpc.1") {
@@ -520,8 +526,8 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         assert_eq!(stores.contains("connections"), name == "mesh1.rpc.1", "only mesh1.rpc.1, which originated a connection, published connections rows: {name}: {stores}");
         if name.contains(".admin.") {
             // A Node record is written straight to the store (states.md :51, Q54): what a mesh's primary
-            // publishes is its Mesh record with its name claim, and its mesh's contacts.
-            assert!(stores.contains("mesh-records") && stores.contains("mesh-names") && stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record, its name claim and its mesh's contacts: {stores}");
+            // publishes is its Mesh record with its name claim; its members' addresses are on their Node records.
+            assert!(stores.contains("mesh-records") && stores.contains("mesh-names") && !stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record and its name claim: {stores}");
         }
         if name != "mesh1.admin.1" {
             // fabric/ has one writer, the fabric-primary (R14 item 2): no other node holds a row there.

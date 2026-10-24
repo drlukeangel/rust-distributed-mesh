@@ -1106,8 +1106,8 @@ async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &Writ
 /// is written or published:
 ///
 /// 1. node.delete of the inherited birth: its live row at the name written `Deleted`, its config and
-///    tags kept (one `rdm.node_admin.node.delete.via-node-row` span), and its contact dropped from its
-///    mesh's contacts (a deleted birth is no node to reach), a blind removal of its own key;
+///    tags kept (one `rdm.node_admin.node.delete.via-node-row` span): a `Deleted` record names no node
+///    to reach;
 /// 2. node.create's claim of the name under `node_id` ([`take_name`]), the row
 ///    `Pending`, its config and tags seeded from the `Deleted` row ([`ClaimFor::Recovery`]; one
 ///    `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`).
@@ -1144,7 +1144,6 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
         span.in_scope(|| tracing::info!("node.delete: the inherited birth's Deleted row decided; its record, config and tags stay"));
         r?;
     }
-    storage.remove_contact(&name.mesh, &inherited.node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the contact of the inherited birth {} could not be dropped from {}'s contacts: {e}", inherited.node_id, name.mesh)))?;
     own_claim(None, storage, written, name, node_id, operation, ClaimFor::Recovery).await
 }
 

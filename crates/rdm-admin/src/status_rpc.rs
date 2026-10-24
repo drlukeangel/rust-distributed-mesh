@@ -2548,21 +2548,6 @@ mod tests {
         async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtime(node_id, incarnation).await
         }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_contact(record).await
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_contact(mesh, node_id).await
-        }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }

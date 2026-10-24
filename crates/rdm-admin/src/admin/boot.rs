@@ -408,7 +408,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             Some("a Fabric record")
         } else if !mesh_storage.meshes().await.map_err(storage_err)?.is_empty() {
             Some("a mesh record")
-        } else if !nodes_storage.contacts().await.map_err(storage_err)?.is_empty() || !nodes_storage.runtimes().await.map_err(storage_err)?.is_empty() {
+        } else if !super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &own_mesh).await.map_err(storage_err)?.is_empty() || !nodes_storage.runtimes().await.map_err(storage_err)?.is_empty() {
             Some("a durable topology")
         } else {
             None
@@ -483,7 +483,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 .await
                 .map_err(|e| format!("refusing to start: {}: {} takes {} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name, own.node_id))?;
             let addr_of = |s: &str| own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a);
-            let mut contacts = nodes_storage.contacts().await.map_err(storage_err)?;
+            let mut contacts = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &own.name.mesh).await.map_err(storage_err)?;
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
             step.record("contacts", contacts.len());
@@ -788,13 +788,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // node the store names is re-created through node recovery, never waited for, so each is gone
                 // from every seat here.
                 if !rafka_time.is_adopted() {
-                    let contacts: Vec<crate::reenter::MapNode> = nodes_storage
-                        .contacts()
+                    let contacts: Vec<crate::reenter::MapNode> = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &cfg.mesh)
                         .await
                         .map_err(storage_err)?
                         .into_iter()
                         .filter(|r| r.node_id != node_id)
-                        .map(|r| crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None })
                         .collect();
                     let alone = inherited.is_some() || seed_addrs.is_empty();
                     let gone: Vec<IncarnationId> = contacts.iter().map(|c| c.incarnation.clone()).collect();
@@ -853,7 +851,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
                 // The primaries recorded on the node rows of the fabric's store root: an election input this admin
                 // enters with (elections §3), its own included. A record older than one held changes nothing.
-                crate::admin::rows_writer::take_recorded_primaries(&*nodes_storage, &cfg.fabric_id, membership.seats()).await.map_err(storage_err)?;
+                crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, membership.seats()).await.map_err(storage_err)?;
                 if let Some(own) = &inherited {
                     membership.book.seats.mark_gone(own.incarnation_id.clone());
                 }
@@ -973,7 +971,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
 
                             if inherited.is_some() && cfg.launch.is_none() {
                                 // An admin started on an inherited root has no maker: its durable map is the topology.
-                                let mut rows = nodes_storage.contacts().await.map_err(storage_err)?;
+                                let mut rows = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &cfg.mesh).await.map_err(storage_err)?;
                                 rows.retain(|r| r.node_id != node_id);
                                 if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&rows)).await {
                                     entry_map = Some(("durable-map", map));
@@ -998,9 +996,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // a create for every member.
                             if inherited.is_some() && cfg.launch.is_none() {
                                 let desired = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology);
-                                for r in nodes_storage.contacts().await.map_err(storage_err)? {
-                                    if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
-                                        let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None };
+                                for m in super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &cfg.mesh).await.map_err(storage_err)? {
+                                    if m.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&m.name)) {
                                         if let Some(res) = m.resolved() {
                                             node_rpc_resolver.apply(res, None);
                                         }
@@ -1455,12 +1452,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 gossip: None,
                                 data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
                             }));
-                            // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
-                            // the same logical node in the same Mesh.
+                            // The own row in the data dir: this birth and its Mesh, so a restart on this data dir is the
+                            // same logical node in the same Mesh.
                             {
                                 let d = digest.lock().unwrap().clone();
-                                nodes_storage
-                                    .put_own(&crate::storage::NodeRecord {
+                                storage
+                                    .put_own_row(&cfg.data_dir, &incarnation, &crate::storage::NodeRecord {
                                         node_id: node_id.clone(),
                                         fabric_id: cfg.fabric_id.clone(),
                                         name: name.clone(),
@@ -1474,20 +1471,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     })
                                     .await.map_err(storage_err)?;
                             }
-                            // nodes.storage contacts and mesh.storage: this admin's mesh's members and its Mesh row on the
-                            // fabric's shared root, written while this admin holds its mesh's primary seat (the writer
-                            // ladder; `MeshRowsWriter`), as bootstrap hints for a later restart of any node of the fabric.
-                            // A birth is written the moment the book first holds it or it changes (the book's own birth
-                            // watch, as the runtime rows are), and every member at once when the seat comes to this admin
-                            // (the view install's seat watch): a hint that waits on a timer is lost to a restart that comes
-                            // first. A contact whose node departed, or whose birth the book no longer holds at a path
-                            // another logical node now holds, is dropped (`dropped_contacts`). Nothing here is topology.
-                            let (own_seat_tx, own_seat) = tokio::sync::watch::channel(false);
+                            // The members' addresses and primaries on their Node records, and the Mesh row, on the
+                            // fabric's shared root: this admin's mesh's while it is its mesh's mesh-primary, and a mesh
+                            // with no primary's while it is the fabric-primary (the writer ladder; `MeshRowsWriter`), as
+                            // bootstrap hints for a later restart of any node of the fabric. A birth is written the moment
+                            // the book first holds it or it changes (the book's own birth watch, as the runtime rows are),
+                            // and every member at once when the writing comes to this admin (the view install's watch of
+                            // the meshes it writes): a hint that waits on a timer is lost to a restart that comes first. A
+                            // deleted node's record is `Deleted` and names no node to reach. Nothing here is topology.
+                            let (writes_tx, writes) = tokio::sync::watch::channel(std::collections::BTreeSet::<String>::new());
                             let contacts_task = {
                                 let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
-                                let writer = MeshRowsWriter::new(&name.to_string(), cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone());
+                                let writer = MeshRowsWriter::new(&name.to_string(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone());
                                 let park = park_gate.clone();
-                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, book, fabric_id, own_seat, park))
+                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, book, fabric_id, writes, park))
                             };
                             if let Some(a) = adoption {
                                 let digest = digest.clone();
@@ -1579,16 +1576,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let own = digest.clone();
                                 // For a mesh it holds no snapshot of, this admin answers from the births it stores.
                                 // The births it stores and the births its book holds now: what this admin knows of a mesh
-                                // does not wait on the contacts being written.
-                                let (contacts, meshes, held_book, held_fabric, held_me) = (nodes_storage.clone(), mesh_storage.clone(), book.clone(), cfg.fabric_id.clone(), node_id.clone());
+                                // does not wait on the records being written.
+                                let (stored_nodes, meshes, held_book, held_fabric, held_me, own_mesh) = (nodes_storage.clone(), mesh_storage.clone(), book.clone(), cfg.fabric_id.clone(), node_id.clone(), cfg.mesh.clone());
                                 let stored: crate::topology_read::StoredSource = Arc::new(move || {
-                                    let (contacts, meshes, held_book, held_fabric, held_me) = (contacts.clone(), meshes.clone(), held_book.clone(), held_fabric.clone(), held_me.clone());
+                                    let (stored_nodes, meshes, held_book, held_fabric, held_me, own_mesh) = (stored_nodes.clone(), meshes.clone(), held_book.clone(), held_fabric.clone(), held_me.clone(), own_mesh.clone());
                                     Box::pin(async move {
-                                        let rows = contacts.contacts().await.map_err(|e| e.to_string())?;
+                                        let rows = super::rows_writer::recorded_births(&*meshes, &*stored_nodes, &own_mesh).await.map_err(|e| e.to_string())?;
                                         let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
                                         let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = rows
                                             .into_iter()
-                                            .map(|r| (r.node_id.clone(), rdm_core::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr }))
+                                            .map(|r| (r.node_id.clone(), rdm_core::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation, transport_addr: r.transport_addr }))
                                             .collect();
                                         for d in held_births(&held_book, &held_fabric, &held_me) {
                                             nodes.insert(
@@ -2577,8 +2574,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
                                                 }
                                                 let mesh_primary = t.holds_mesh_seat(&mesh, &seat_node_id);
-                                                // The mesh's rows on the shared root follow this seat (`MeshRowsWriter`).
-                                                own_seat_tx.send_if_modified(|held| std::mem::replace(held, mesh_primary) != mesh_primary);
+                                                // The mesh's rows on the shared root follow its mesh-primary, and a mesh with no
+                                                // primary's follow the fabric-primary (`MeshRowsWriter`, `crate::node_rows::writes_for`).
+                                                let written: std::collections::BTreeSet<String> = t
+                                                    .members()
+                                                    .map(|n| n.mesh.clone())
+                                                    .filter(|m| *m != mesh && crate::node_rows::writes_for(&t, &seat_node_id, m))
+                                                    .chain(mesh_primary.then(|| mesh.clone()))
+                                                    .collect();
+                                                writes_tx.send_if_modified(|held| std::mem::replace(held, written.clone()) != written);
                                                 let fabric_primary = t.holds_fabric_seat(&seat_node_id);
                                                 // A role taken or given up this round is held from the anti-entropy until its
                                                 // seat is announced below: a role's first aggregate follows its seat record.

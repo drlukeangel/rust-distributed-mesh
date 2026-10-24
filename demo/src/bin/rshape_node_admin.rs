@@ -34,6 +34,10 @@ impl StorageBackend for ConsumerBackend {
         self.0.own_row(data_dir, writer).await
     }
 
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+        self.0.put_own_row(data_dir, writer, record).await
+    }
+
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
         // Where the boundaries write, as the boot's storage span records it: this backend, over the file
         // backend's own answer.

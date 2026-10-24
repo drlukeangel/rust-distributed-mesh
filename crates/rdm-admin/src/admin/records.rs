@@ -821,7 +821,7 @@ impl Records {
 
 impl TopologySink for Records {
     fn publish(&self, node: Node) {
-        // A publication writes no contact: a mesh's contacts are its primary's alone
+        // A publication writes no record: a mesh's members' addresses are its primary's to write
         // (`MeshRowsWriter`, the writer ladder).
         self.removed.lock().unwrap().remove(&(node.name.clone(), node.incarnation_id.clone()));
         self.nodes.lock().unwrap().insert(node.name.clone(), node);

@@ -42,8 +42,8 @@ pub struct StorageBoundaries {
     pub fabric: Arc<dyn FabricStorage>,
     /// `mesh.storage`: the Mesh rows, each mesh's in-flight row and status facts.
     pub meshes: Arc<dyn MeshStorage>,
-    /// `nodes.storage`: the admin's own row, the runtimes it started, every mesh's Node rows and
-    /// contacts, and the facts on each birth.
+    /// `nodes.storage`: the runtimes the admin started, every mesh's Node rows and the facts on each
+    /// birth, its address and primaries included.
     pub nodes: Arc<dyn NodesStorage>,
     /// `connections.storage`: the admin's own connections rows, by its `path.name`.
     pub connections: OpenConnections,
@@ -67,6 +67,11 @@ pub trait StorageBackend: Send + Sync {
     /// The admin's own row as its data dir holds it, read before any boundary opens: an inherited
     /// row names the Fabric and the mesh the boundaries open on (R-FI1). `None` for a new admin.
     async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError>;
+    /// Keep `record` as the admin's own row in its data dir, where [`Self::own_row`] reads it: the own
+    /// seed, written by the process born as `writer` once its birth and its Mesh are decided, so a
+    /// restart on this data dir is the same logical node in the same Fabric and Mesh (R-FI1). Its
+    /// address and primaries are on its node's record, written by its mesh-primary.
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
     /// Opens the five boundaries of `scope`; `embedding` is the embedding's own round actions, run
     /// after the backend's.
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String>;
@@ -98,6 +103,10 @@ impl StorageBackend for FileBackend {
 
     async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
         crate::storage::FileNodesStorage::own_in(data_dir, writer).await
+    }
+
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+        crate::storage::FileNodesStorage::put_own_in(data_dir, writer, record).await
     }
 
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
@@ -159,6 +168,11 @@ impl StorageBackend for MemoryBackend {
         Ok(None)
     }
 
+    /// A memory admin's data dir keeps no row: its next start is a new admin's.
+    async fn put_own_row(&self, _data_dir: &Path, _writer: &IncarnationId, _record: &NodeRecord) -> Result<(), StorageError> {
+        Ok(())
+    }
+
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
         let connections: OpenConnections = Arc::new(|_name: PathName| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
         // A memory write is one step under its store's lock: every write issued has finished.
@@ -208,6 +222,42 @@ mod tests {
         let o = backend.open(other, None).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
         assert!(o.nodes.runtimes().await.unwrap().is_empty(), "another data dir holds none of them");
         assert_eq!(o.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), None, "nor the attempt context");
+    }
+
+    /// CONTRACT (R-FI1: a restarting node-admin's own row names the Fabric whose root it opens, read
+    /// before any store opens): the own row is the admin's own seed in its data dir: the file backend
+    /// reads back what it was given there, by another process of the data dir too, and its nodes store,
+    /// opened over that data dir, holds no copy of it; another data dir holds none. A memory admin keeps
+    /// none: its next start is a new admin's. Must NOT happen: the own row kept anywhere but the data dir.
+    #[tokio::test]
+    async fn the_own_row_is_the_admins_own_seed_in_its_data_dir() {
+        let own = crate::storage::NodeRecord {
+            node_id: NodeId::mint(),
+            fabric_id: FabricId::mint(),
+            name: "mesh1.admin.1".parse().unwrap(),
+            mesh_id: crate::model::MeshId::mint(),
+            incarnation_id: IncarnationId::mint(),
+            endpoint_id: crate::model::EndpointId(iroh::SecretKey::generate().public().to_string()),
+            transport_addr: "127.0.0.1:41001".parse().unwrap(),
+            listeners: vec![("control".into(), "127.0.0.1:41002".parse().unwrap())],
+            is_primary: None,
+            is_fabric_primary: None,
+        };
+        let memory = MemoryBackend;
+        memory.put_own_row(Path::new("unused"), &own.incarnation_id, &own).await.unwrap();
+        assert_eq!(memory.own_row(Path::new("unused"), &IncarnationId::mint()).await.unwrap(), None, "a memory admin keeps no own row");
+        #[cfg(feature = "file-backend")]
+        {
+            let (store, data_dir, other) = (crate::test_support::tempdir("own-seed-store"), crate::test_support::tempdir("own-seed-data"), crate::test_support::tempdir("own-seed-other"));
+            let file = FileBackend::at(&store);
+            assert_eq!(file.own_row(&data_dir, &IncarnationId::mint()).await.unwrap(), None, "a new data dir holds no own row");
+            file.put_own_row(&data_dir, &own.incarnation_id, &own).await.unwrap();
+            assert_eq!(file.own_row(&data_dir, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the next process of the data dir reads it back whole");
+            assert_eq!(file.own_row(&other, &IncarnationId::mint()).await.unwrap(), None, "another data dir holds none");
+            let scope = StorageScope { data_dir: data_dir.clone(), fabric_id: own.fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() };
+            let opened = file.open(&scope, None).await.unwrap_or_else(|e| panic!("the boundaries open: {e}"));
+            assert!(opened.nodes.nodes("mesh1").await.unwrap().is_empty(), "the nodes store holds no copy of the own row");
+        }
     }
 
     /// CONTRACT (node-recovery.md: recovery retains the inherited data dir and creates a new node.id

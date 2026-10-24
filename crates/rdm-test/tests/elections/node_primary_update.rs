@@ -461,20 +461,20 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // is left, never when a span says so; the fabric is stopped only after.
     let Followed { first, broke, onward, kind, accepted } = tokio::time::timeout(Duration::from_secs(120), outer).await.expect("the caller read the recipe to its terminal within 120 s").expect("the caller's stream task");
     // Step 5: H, the mesh's writer from its answer on, records both primaries on its own row.
-    let contact = estate.fabric_store_root().join("nodes").join(&mesh).join("contacts").join(format!("{h_id}.json"));
+    let record = estate.fabric_store_root().join("nodes").join(&mesh).join("records").join(format!("{h_id}.json"));
     let last = std::sync::Mutex::new(None::<Value>);
     let recorded = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let row = std::fs::read(&contact).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-            if let Some(r) = row.as_ref().filter(|r| r["record"]["is_primary"].as_u64().is_some() && r["record"]["is_fabric_primary"].as_u64().is_some()) {
-                break r.clone();
+            let row = std::fs::read(&record).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            if let Some(b) = row.as_ref().and_then(|r| r["record"]["births"].as_array().and_then(|b| b.last()).cloned()).filter(|b| b["is_primary"].as_u64().is_some() && b["is_fabric_primary"].as_u64().is_some()) {
+                break b;
             }
             *last.lock().unwrap() = row;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{h_name} records is_primary and is_fabric_primary on its own row within 30 s; the row at {} last read: {:?}", contact.display(), last.lock().unwrap()));
+    .unwrap_or_else(|_| panic!("{h_name} records is_primary and is_fabric_primary on its own row within 30 s; the row at {} last read: {:?}", record.display(), last.lock().unwrap()));
     estate.stop().await;
     let spans = estate.spans();
     let one = |name: &str, f: &dyn Fn(&Value) -> bool| -> Value {
@@ -562,7 +562,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     }
     assert!(won.values().all(|w| w.len() == 1), "conflicting winners: {won:#?}");
     assert!(made.values().all(|c| *c == 1), "a birth made twice: {made:#?}");
-    eprintln!("{h_name}'s own row records both primaries: {}", recorded["record"]);
+    eprintln!("{h_name}'s own row records both primaries on its newest birth: {recorded}");
     estate.record_trace_url(updating["trace_id"].as_str().unwrap_or(""));
 }
 

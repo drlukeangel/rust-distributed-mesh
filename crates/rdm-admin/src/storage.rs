@@ -14,11 +14,12 @@
 //! - `mesh.storage`: each Mesh record at its id (its identity, Dead, the states it entered) and each
 //!   live mesh's name claim.
 //! - `nodes.storage`: each node's record at its id (its row and the facts of its births: declared
-//!   states, operation effects, silence, data-dir facts, cert dates), its name claim, the `path.name`
-//!   index and the tags index (R-TG1); the admin's own row (NodeId, path.name, the incarnation it
-//!   last ran, its transport identity), so a restart is the same logical node; and the last-known
-//!   births it heard, as bootstrap contacts (a stored contact is a hint: never topology, never death
-//!   proof).
+//!   states, operation effects, silence, data-dir facts, cert dates, the birth's address and the
+//!   primaries recorded for it), its name claim, the `path.name` index and the tags index (R-TG1); and
+//!   the runtimes this admin started, in its own data dir. A birth's address on its record is a hint:
+//!   never topology, never death proof. The admin's own row (NodeId, path.name, the incarnation it last
+//!   ran, its transport identity), so a restart is the same logical node, is its own seed in its data
+//!   dir, read and written by its storage backend (`crate::storage_backend::StorageBackend::own_row`).
 //! - `connections.storage`: the latest connection fact per (source, destination, kind).
 
 use async_trait::async_trait;
@@ -489,12 +490,44 @@ pub struct BirthFacts {
     /// A node-admin birth's signing cert dates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_cert: Option<SigningCertDates>,
+    /// The birth's fabric endpoint id, as its mesh's writer's book holds it (the mesh rows writer,
+    /// `crate::admin::rows_writer`): with [`Self::transport_addr`], where the birth is reached. A birth
+    /// its writer has not written it for carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_id: Option<EndpointId>,
+    /// The one address of the birth's Iroh endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_addr: Option<std::net::SocketAddr>,
+    /// Non-Iroh listeners.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
+    /// The revision at which this birth is its node type's primary in its mesh, when it is: the
+    /// election's result, recorded by the mesh-primary (node-identity-and-state.md §2.7); the write
+    /// records the role and does not grant it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<u64>,
+    /// The revision at which this birth is the fabric-primary, when it is, recorded on the node-admin's
+    /// own row by its mesh-primary (node-identity-and-state.md §2.8; node-primary-update.md: for a
+    /// fabric-primary that is its own mesh's primary, itself), as [`Self::is_primary`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_fabric_primary: Option<u64>,
 }
 
 impl BirthFacts {
     /// A birth that holds no fact yet.
     pub fn new(incarnation_id: IncarnationId, name: PathName) -> Self {
-        Self { incarnation_id, name, declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None }
+        Self { incarnation_id, name, declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, endpoint_id: None, transport_addr: None, listeners: Vec::new(), is_primary: None, is_fabric_primary: None }
+    }
+
+    /// The birth's address and the primaries recorded for it leave its facts: a birth whose exit is
+    /// proven is no node to reach and holds no primary (mesh-delete.md step 7, "Departed births resolve
+    /// Gone").
+    pub fn clear_address_and_primaries(&mut self) {
+        self.endpoint_id = None;
+        self.transport_addr = None;
+        self.listeners.clear();
+        self.is_primary = None;
+        self.is_fabric_primary = None;
     }
 
     /// The greatest state declared in the birth's current cycle.
@@ -527,8 +560,10 @@ pub const BIRTHS_KEPT: usize = 2;
 // ---------------------------------------------------------------- nodes.storage
 
 
-/// One birth as last known: the admin's own row, or a contact it heard. Its address facts only:
-/// the declared state and the silence status are on its node's record ([`NodeRow`]).
+/// The admin's own row: its own seed, kept in its data dir and read before any store opens
+/// (`crate::storage_backend::StorageBackend::own_row`), so a restarting node-admin is the same logical
+/// node in the same Fabric and Mesh. The facts of its births, its address and primaries included, are
+/// on its node's record ([`NodeRow`]), written by its mesh-primary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
     /// The node's minted id.
@@ -660,6 +695,12 @@ pub struct NodeRow {
     /// The facts of the node's births, at most [`BIRTHS_KEPT`], the newest last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub births: Vec<BirthFacts>,
+    /// The Mesh the node belongs to, by its minted id (node-identity-and-state.md §2.7: `Node.mesh_id`),
+    /// written by its mesh's writer with its births' addresses (`crate::admin::rows_writer`): a mesh
+    /// created again under the name is another mesh with another id (R-MN1). A record no writer has
+    /// written it on carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_id: Option<MeshId>,
     /// The exact birth this node replaced, written at its create from the recovery attempt that named
     /// it: what a birth recovered over a fresh data dir reads its predecessor's `data-dir-lost` through.
     /// `inherited_by` points the other way and is not followed backwards.
@@ -696,7 +737,12 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None }
+        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }
+    }
+
+    /// The facts of the node's newest birth, if the record keeps any.
+    pub fn newest_birth(&self) -> Option<&BirthFacts> {
+        self.births.last()
     }
 
     /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
@@ -747,6 +793,27 @@ impl NodeRow {
         }
         (held.difference(&self.tags).cloned().collect(), self.tags.clone())
     }
+}
+
+/// The live records of every mesh: [`records`] with a `Deleted` record skipped. Every read of the
+/// births a store root holds to reach (a restart's seeds, its durable map, the rafka-time peers, the
+/// stored topology) reads them here, each from a record's newest birth.
+pub async fn live_records(meshes: &dyn MeshStorage, nodes: &dyn NodesStorage, own_mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
+    Ok(records(meshes, nodes, own_mesh).await?.into_iter().filter(|r| r.status != crate::model::NodeStatus::Deleted).collect())
+}
+
+/// The records of every mesh: the records of each mesh `meshes` holds a record of, and of `own_mesh`
+/// (whose record a Day-0 admin's claim precedes), each mesh read once, a `Deleted` record included: a
+/// deleted birth's recorded primary stays an election input until a newer revision supersedes it
+/// (fabric-node-lifecycle-elections.md §3), as a lost primary's does through fabric recovery.
+pub async fn records(meshes: &dyn MeshStorage, nodes: &dyn NodesStorage, own_mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
+    let mut names: BTreeSet<String> = meshes.meshes().await?.into_iter().map(|m| m.name).collect();
+    names.insert(own_mesh.to_string());
+    let mut out = Vec::new();
+    for mesh in names {
+        out.extend(nodes.nodes(&mesh).await?);
+    }
+    Ok(out)
 }
 
 /// The greatest declared state of each birth the records keep, and the `path.name` it declared at.
@@ -821,8 +888,7 @@ pub async fn write_index_moves(nodes: &dyn NodesStorage, mesh: &str, node_id: &N
 }
 
 /// The durable record of the nodes: each node's record at its id with its name claim, its `path.name`
-/// index entry and its tags index rows; and, in this admin's own data dir, its own row, its contacts
-/// and the runtimes it started.
+/// index entry and its tags index rows; and, in this admin's own data dir, the runtimes it started.
 #[async_trait]
 pub trait NodesStorage: Send + Sync {
     /// Keep the runtime of one birth (a blind put of its own row).
@@ -831,16 +897,6 @@ pub trait NodesStorage: Send + Sync {
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
     /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError>;
-    /// This admin's own row; `None` before its first start completed.
-    async fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
-    /// Keep `record` as this admin's own row.
-    async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError>;
-    /// The births this admin last heard, by NodeId (bootstrap contacts).
-    async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError>;
-    /// Keep `record` as a contact, keyed by its node id.
-    async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
-    /// Forget the contact of the node `node_id` under `mesh` (its key).
-    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), StorageError>;
     /// The record of `node_id`: a point read of its key; `None` when none was ever written.
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
     /// The record the `path.name` index names at `name`: the node whose record was last written at it,
@@ -883,8 +939,6 @@ fn tag_key(label: &str, store: &str) -> Result<(), StorageError> {
 #[derive(Debug, Default)]
 pub struct MemoryNodesStorage {
     runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
-    own: Mutex<Option<NodeRecord>>,
-    contacts: Mutex<BTreeMap<NodeId, NodeRecord>>,
     records: Mutex<BTreeMap<NodeId, NodeRow>>,
     /// The `path.name` index: each name's last record.
     paths: Mutex<BTreeMap<String, NodeId>>,
@@ -905,24 +959,6 @@ impl NodesStorage for MemoryNodesStorage {
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
         Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
-    }
-    async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
-        Ok(self.own.lock().unwrap().clone())
-    }
-    async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        *self.own.lock().unwrap() = Some(record.clone());
-        Ok(())
-    }
-    async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        Ok(self.contacts.lock().unwrap().values().cloned().collect())
-    }
-    async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.contacts.lock().unwrap().insert(record.node_id.clone(), record.clone());
-        Ok(())
-    }
-    async fn remove_contact(&self, _mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
-        self.contacts.lock().unwrap().remove(node_id);
-        Ok(())
     }
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         Ok(self.records.lock().unwrap().get(node_id).cloned())
@@ -994,7 +1030,7 @@ const NODE_FORMAT: &str = "node-record/4";
 #[cfg(feature = "file-backend")]
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 #[cfg(feature = "file-backend")]
-const RECORD_FORMAT: &str = "node-row/2";
+const RECORD_FORMAT: &str = "node-row/3";
 #[cfg(feature = "file-backend")]
 const PATH_FORMAT: &str = "node-path/1";
 #[cfg(feature = "file-backend")]
@@ -1022,9 +1058,8 @@ struct NameEntry {
 #[cfg(feature = "file-backend")]
 /// One mesh's nodes on the fabric's store root, `nodes/<mesh>/`: its members' records
 /// (`records/<node id>.json`), the `path.name` index (`paths/<path.name>.json`), the name claims
-/// (`names/<path.name>.json`), the tags index (`tags/<label>/<node id>.json`: one directory per label,
-/// so a label's rows are read without reading any other's) and contacts (`contacts/<node id>.json`),
-/// written by that mesh's primary. The records, their indexes and the claims are opened straight to
+/// (`names/<path.name>.json`) and the tags index (`tags/<label>/<node id>.json`: one directory per
+/// label, so a label's rows are read without reading any other's), written by that mesh's primary. The records, their indexes and the claims are opened straight to
 /// the disk, never held in the scratchpad: a Node record carries the declared states, durable before
 /// the answer, before state-commit too (Q54).
 #[derive(Debug)]
@@ -1032,7 +1067,6 @@ struct MeshNodes {
     records: FileRecords,
     paths: FileRecords,
     names: FileRecords,
-    contacts: FileRecords,
     base: std::path::PathBuf,
     writer: IncarnationId,
     /// Each label's rows of the tags index this store has read or written, opened on first use.
@@ -1047,7 +1081,6 @@ impl MeshNodes {
             records: FileRecords::open(&base, "records", writer).await?,
             paths: FileRecords::open(&base, "paths", writer).await?,
             names: FileRecords::open(&base, "names", writer).await?,
-            contacts: root.records(&base, "contacts", writer).await?,
             base,
             writer: writer.clone(),
             labels: Mutex::new(BTreeMap::new()),
@@ -1056,7 +1089,7 @@ impl MeshNodes {
 
     /// Every store of this mesh opened so far.
     fn stores(&self) -> Vec<FileRecords> {
-        let mut all = vec![self.records.clone(), self.paths.clone(), self.names.clone(), self.contacts.clone()];
+        let mut all = vec![self.records.clone(), self.paths.clone(), self.names.clone()];
         all.extend(self.labels.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
         all
     }
@@ -1095,12 +1128,11 @@ impl MeshNodes {
 }
 
 #[cfg(feature = "file-backend")]
-/// The admin's own row and the runtimes it started in its data dir (`nodes/self.json`,
-/// `nodes/runtimes/`), and every mesh's node records, their indexes and claims, and its contacts under
+/// The runtimes the admin started in its data dir (`nodes/runtimes/`), beside its own row
+/// (`nodes/self.json`, [`Self::own_in`]), and every mesh's node records, their indexes and claims under
 /// `nodes/<mesh>/` of the fabric's store root (`crate::store_root`).
 #[derive(Debug)]
 pub struct FileNodesStorage {
-    own: FileRecords,
     runtimes: FileRecords,
     root: crate::store_root::StoreRoot,
     writer: IncarnationId,
@@ -1112,12 +1144,11 @@ pub struct FileNodesStorage {
 
 #[cfg(feature = "file-backend")]
 impl FileNodesStorage {
-    /// Open the store: the admin's own row and runtimes in `own_data_dir`, the nodes of `own_mesh`
+    /// Open the store: the admin's runtimes in `own_data_dir`, the nodes of `own_mesh`
     /// (and of every other mesh, on first use) under the fabric's store `root`, written by the
     /// process born as `writer`.
     pub async fn open(own_data_dir: &Path, root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         Ok(Self {
-            own: FileRecords::open(own_data_dir, "nodes", writer).await?,
             runtimes: FileRecords::open(own_data_dir, "nodes/runtimes", writer).await?,
             root: root.clone(),
             writer: writer.clone(),
@@ -1132,7 +1163,13 @@ impl FileNodesStorage {
         FileRecords::open(own_data_dir, "nodes", writer).await?.read("self", NODE_FORMAT).await
     }
 
-    /// Finishes every write of the node records, their indexes and contacts this store has issued, its
+    /// Keep `record` as the admin's own row in `own_data_dir`, where [`Self::own_in`] reads it, written
+    /// by the process born as `writer`.
+    pub async fn put_own_in(own_data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+        FileRecords::open(own_data_dir, "nodes", writer).await?.write("self", NODE_FORMAT, record).await
+    }
+
+    /// Finishes every write of the node records and their indexes this store has issued, its
     /// own mesh's and every other mesh's it opened (node-primary-update.md step 3).
     pub async fn finish_issued_writes(&self) {
         let opened: Vec<std::sync::Arc<MeshNodes>> = std::iter::once(self.mine.1.clone()).chain(self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned()).collect();
@@ -1182,25 +1219,6 @@ impl NodesStorage for FileNodesStorage {
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
         self.runtimes.read(&format!("{}--{}", node_id, incarnation.as_str()), RUNTIME_FORMAT).await
-    }
-    async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
-        self.own.read("self", NODE_FORMAT).await
-    }
-    async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.own.write("self", NODE_FORMAT, record).await
-    }
-    async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        let mut all = Vec::new();
-        for mesh in self.meshes_on_root().await? {
-            all.extend(self.mesh(&mesh).await?.contacts.list::<NodeRecord>(NODE_FORMAT).await?);
-        }
-        Ok(all)
-    }
-    async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.mesh(&record.name.mesh).await?.contacts.write(record.node_id.as_str(), NODE_FORMAT, record).await
-    }
-    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
-        self.mesh(mesh).await?.contacts.remove(node_id.as_str()).await.map(|_| ())
     }
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         if let Some(r) = self.mine.1.records.read(node_id.as_str(), RECORD_FORMAT).await? {
@@ -1365,11 +1383,6 @@ mod tests {
             async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> { self.inner.put_runtime(row).await }
             async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> { self.inner.runtimes().await }
             async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
-            async fn own(&self) -> Result<Option<NodeRecord>, StorageError> { self.inner.own().await }
-            async fn put_own(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_own(r).await }
-            async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> { self.inner.contacts().await }
-            async fn put_contact(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_contact(r).await }
-            async fn remove_contact(&self, m: &str, n: &NodeId) -> Result<(), StorageError> { self.inner.remove_contact(m, n).await }
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.node(n).await }
             async fn node_at(&self, n: &PathName) -> Result<Option<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.node_at(n).await }
             async fn nodes(&self, m: &str) -> Result<Vec<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.nodes(m).await }
@@ -1420,11 +1433,6 @@ mod tests {
             async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> { self.inner.put_runtime(row).await }
             async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> { self.inner.runtimes().await }
             async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
-            async fn own(&self) -> Result<Option<NodeRecord>, StorageError> { self.inner.own().await }
-            async fn put_own(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_own(r).await }
-            async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> { self.inner.contacts().await }
-            async fn put_contact(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_contact(r).await }
-            async fn remove_contact(&self, m: &str, n: &NodeId) -> Result<(), StorageError> { self.inner.remove_contact(m, n).await }
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.inner.node(n).await }
             async fn node_at(&self, n: &PathName) -> Result<Option<NodeRow>, StorageError> { self.inner.node_at(n).await }
             // The listing as it stood before the last write landed.
@@ -1463,11 +1471,6 @@ mod tests {
             async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> { self.inner.put_runtime(row).await }
             async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> { self.inner.runtimes().await }
             async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
-            async fn own(&self) -> Result<Option<NodeRecord>, StorageError> { self.inner.own().await }
-            async fn put_own(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_own(r).await }
-            async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> { self.inner.contacts().await }
-            async fn put_contact(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_contact(r).await }
-            async fn remove_contact(&self, m: &str, n: &NodeId) -> Result<(), StorageError> { self.inner.remove_contact(m, n).await }
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.inner.node(n).await }
             async fn node_at(&self, n: &PathName) -> Result<Option<NodeRow>, StorageError> { self.inner.node_at(n).await }
             async fn nodes(&self, m: &str) -> Result<Vec<NodeRow>, StorageError> { self.inner.nodes(m).await }
@@ -1513,21 +1516,6 @@ mod tests {
         }
         async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.0.runtime(node_id, incarnation).await
-        }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_contact(record).await
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_contact(mesh, node_id).await
         }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
@@ -1606,22 +1594,20 @@ mod tests {
         let d = crate::test_support::tempdir("storage");
         let mesh = MeshRecord::new(MeshId::mint(), "mesh1");
         let (own, peer) = (node("mesh1.admin.1"), node("mesh1.rpc.1"));
+        let runtime = RuntimeRow { node_id: peer.node_id.clone(), name: peer.name.clone(), incarnation_id: peer.incarnation_id.clone(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(), data_dir: None };
         let (up, down) = (fact(ConnectionState::Connected), fact(ConnectionState::Disconnected));
         let check = async |m: &dyn MeshStorage, n: &dyn NodesStorage, c: &dyn ConnectionsStorage, fresh: bool| {
             if fresh {
                 assert_eq!(m.mesh(&mesh.mesh_id).await.unwrap(), None);
-                assert_eq!(n.own().await.unwrap(), None);
                 assert_eq!(crate::storage::claim_mesh(&*m, None, &mesh).await.unwrap(), Ok(MeshClaim::Written { over: None }));
-                n.put_own(&own).await.unwrap();
-                n.put_contact(&peer).await.unwrap();
+                n.put_runtime(&runtime).await.unwrap();
                 c.put_connection(&up).await.unwrap();
                 c.put_connection(&down).await.unwrap();
             }
             assert_eq!(m.mesh(&mesh.mesh_id).await.unwrap(), Some(mesh.clone()));
             assert_eq!(m.mesh_named("mesh1").await.unwrap(), Some(mesh.clone()), "the name claim's lookup names the record");
             assert_eq!(m.meshes().await.unwrap(), [mesh.clone()]);
-            assert_eq!(n.own().await.unwrap(), Some(own.clone()));
-            assert_eq!(n.contacts().await.unwrap(), [peer.clone()]);
+            assert_eq!(n.runtimes().await.unwrap(), [runtime.clone()]);
             assert_eq!(c.connections().await.unwrap(), [down.clone()], "the latest fact per (source, destination, kind)");
         };
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
@@ -1630,10 +1616,13 @@ mod tests {
         check(&FileMeshStorage::open(&root, &w).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), &FileConnectionsStorage::open(&root, &me, &w).await.unwrap(), true).await;
         let (m, n, c) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), FileConnectionsStorage::open(&root, &me, &w).await.unwrap());
         check(&m, &n, &c, false).await;
-        n.remove_contact(&peer.name.mesh, &peer.node_id).await.unwrap();
         c.remove_connection(&down.index()).await.unwrap();
-        assert!(n.contacts().await.unwrap().is_empty() && c.connections().await.unwrap().is_empty());
-        assert_eq!(peer.gossip_addr().map(|a| a.id.to_string()), Some(peer.endpoint_id.0.clone()));
+        assert!(c.connections().await.unwrap().is_empty());
+        // The own row is the admin's own seed in its data dir, read before any store opens.
+        assert_eq!(FileNodesStorage::own_in(&d, &w).await.unwrap(), None);
+        FileNodesStorage::put_own_in(&d, &w, &own).await.unwrap();
+        assert_eq!(FileNodesStorage::own_in(&d, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the own row is read back by the next process");
+        assert_eq!(own.gossip_addr().map(|a| a.id.to_string()), Some(own.endpoint_id.0.clone()));
         std::fs::write(root.dir().join("mesh-records").join(format!("{}.json", mesh.mesh_id)), br#"{"format":"mesh-record/9","record":{}}"#).unwrap();
         assert!(matches!(m.mesh(&mesh.mesh_id).await, Err(StorageError::Unrecognised { .. })));
     }
@@ -1721,7 +1710,7 @@ mod tests {
 
     /// CONTRACT (R14 items 1 and 2; acceptance "two mesh-primaries write their own meshes' rows at
     /// once on one shared root without touching each other's keys"): each mesh-primary writes its
-    /// mesh's record and its members' node records and contacts under its own mesh's keys, at once, on
+    /// mesh's record and its members' node records under its own mesh's keys, at once, on
     /// one root; neither writes a key under the other's mesh, its own data dir holds none of them, and
     /// each reads the other's records from the shared root.
     #[tokio::test]
@@ -1743,7 +1732,6 @@ mod tests {
             for name in [format!("{mesh}.admin.1"), format!("{mesh}.rpc.1"), format!("{mesh}.rpc.2")] {
                 let r = row(&name);
                 w.update(n, &r.node_id, Some(r.clone()), |_| ()).await.unwrap();
-                n.put_contact(&node(&name)).await.unwrap();
                 ids.push(format!("{}.json", r.node_id));
             }
             ids.sort();
@@ -1752,15 +1740,14 @@ mod tests {
         let (ids1, ids2) = tokio::join!(writes(&n1, &m1, "mesh1"), writes(&n2, &m2, "mesh2"));
         for (mesh, ids) in [("mesh1", ids1), ("mesh2", ids2)] {
             assert_eq!(keys(&root.dir().join("nodes").join(mesh).join("records")), ids, "{mesh}'s records, keyed by node id, under its own mesh");
-            assert_eq!(keys(&root.dir().join("nodes").join(mesh).join("contacts")).len(), 3, "{mesh}'s contacts");
         }
         assert_eq!(keys(&root.dir().join("mesh-records")).len(), 2, "one record per mesh");
         for data in [&data1, &data2] {
-            assert!(!data.join("mesh-records").exists() && !data.join("nodes").join("records").exists() && !data.join("nodes").join("contacts").exists(), "{} holds a shared record", data.display());
+            assert!(!data.join("mesh-records").exists() && !data.join("nodes").join("records").exists(), "{} holds a shared record", data.display());
         }
         assert!(n1.node_at(&"mesh2.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's record from the shared root");
         assert!(n2.node_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's record from the shared root");
-        assert_eq!(n1.contacts().await.unwrap().len(), 6, "a restart reads every mesh's contacts");
+        assert_eq!(live_records(&m1, &n1, "mesh1").await.unwrap().len(), 6, "a restart reads every mesh's records");
     }
 
     /// CONTRACT (R-TG1: "node.get with a tag filter names a label and answers every node carrying it,

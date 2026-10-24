@@ -199,23 +199,262 @@ mod tests {
         assert_eq!(mesh1(&t), Some((Some(id), ScopeStatus::Dead)), "a deleted mesh whose last admin is stopped stays deleted, under its id");
     }
 
-    /// CONTRACT (mesh-delete.md step 7: "Departed births resolve Gone"; R-MN1: "a mesh created again
-    /// is a new mesh"): a contact is a bootstrap hint for a birth this admin holds, never a record of
-    /// one that is gone. A birth the book holds departed (node.delete's NodeDeleted, or mesh-left,
-    /// which departs every birth of the removed mesh) is dropped from the contacts, so a maker's
-    /// stored map never hands a removed mesh's births to the first admin of a mesh created again
-    /// under the same name. A contact replaced at its path by another logical node is dropped as
-    /// before; a contact of a birth that is simply not held now (silent, not departed) is kept.
-    #[test]
-    fn a_departed_births_contact_is_dropped_and_a_silent_ones_is_kept() {
-        let record = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: d.fabric_id.clone(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new(), is_primary: None, is_fabric_primary: None };
-        let (departed, silent, replaced, successor) = (digest("mesh2.rpc.1", MemberStatus::Leaving), digest("mesh2.rpc.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic));
-        let written: HashMap<NodeId, crate::storage::NodeRecord> = [&departed, &silent, &replaced].into_iter().map(|d| (d.node.node_id.clone(), record(d))).collect();
-        let mut dropped = dropped_contacts(&written, std::slice::from_ref(&successor), |id| id == &departed.node.node_id);
-        dropped.sort();
-        let mut want = vec![departed.node.node_id.clone(), replaced.node.node_id.clone()];
-        want.sort();
-        assert_eq!(dropped, want, "the departed birth's and the replaced birth's contacts go; the silent one's stays");
+    /// A memory and a file nodes store, each beside its own mesh store, on a root of its own: the two
+    /// backends a cell over the records runs on.
+    async fn record_stores(name: &str) -> Vec<(&'static str, Arc<dyn crate::storage::NodesStorage>, Arc<dyn crate::storage::MeshStorage>)> {
+        #[allow(unused_mut)]
+        let mut stores: Vec<(&'static str, Arc<dyn crate::storage::NodesStorage>, Arc<dyn crate::storage::MeshStorage>)> = vec![("memory", Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::storage::MemoryMeshStorage::default()))];
+        #[cfg(feature = "file-backend")]
+        {
+            let d = crate::test_support::tempdir(name);
+            let root = crate::store_root::StoreRoot::at(&d.join("root"));
+            stores.push(("file", Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap())));
+        }
+        let _ = name;
+        stores
+    }
+
+    /// `d` with the primaries its book holds for it: `is_primary`, `is_fabric_primary`.
+    fn primaries(mut d: MeshDigest, is_primary: Option<u64>, is_fabric_primary: Option<u64>) -> MeshDigest {
+        d.is_primary = is_primary;
+        d.is_fabric_primary = is_fabric_primary;
+        d
+    }
+
+    /// The primaries the records on `nodes` hold, taken into a book that holds none.
+    async fn primaries_recorded(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage) -> usize {
+        rows_writer::take_recorded_primaries(meshes, nodes, "mesh1", &DigestBook::default().seats).await.unwrap()
+    }
+
+    /// The node ids of the births the records on `nodes` name to reach.
+    async fn births_named(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage) -> Vec<NodeId> {
+        rows_writer::recorded_births(meshes, nodes, "mesh1").await.unwrap().into_iter().map(|b| b.node_id).collect()
+    }
+
+    /// CONTRACT (the store root's births are read off the Node records: each record's newest birth gives
+    /// the node id, name, endpoint, address, incarnation and primaries its mesh's writer recorded on it;
+    /// node-identity-and-state.md §2.7, the record; elections §3: the recorded primary is an election
+    /// input), on either backend. Every read a restart makes of the births the store holds answers from
+    /// the records: the clean-dir refusal (a birth the records name to reach is a durable topology; an
+    /// empty root names none), recovery's gossip seeds and rafka-time's peers and the `PendingReconnect`
+    /// publication and the stored topology (`recorded_births`: every live record whose newest birth
+    /// carries an address, every mesh's, the mesh-primary's own included), the durable map on an
+    /// inherited root (`TopologySource::DurableMap` over the same births), and the recorded primaries an
+    /// election starts from, the own one included (`take_recorded_primaries`), a `Deleted` record's
+    /// included: a deleted birth's recorded primary stays an input until a newer revision supersedes it
+    /// (elections §3; the role moves before a primary is deleted, node-primary-update.md). Must NOT
+    /// happen: a `Deleted` record's birth read as a node to reach, or a record whose birth carries no
+    /// address yet read as a seed.
+    #[tokio::test]
+    async fn every_read_of_the_births_a_store_holds_answers_from_the_node_records_on_either_backend() {
+        for (backend, nodes, meshes) in record_stores("births-from-records").await {
+            assert!(rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap().is_empty(), "{backend}: an empty root holds no durable topology");
+            let admin = primaries(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), Some(3), Some(1));
+            let rpc = primaries(digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), Some(2), None);
+            let unaddressed = digest("mesh1.rpc.2", MemberStatus::Pending);
+            // The rpc type's primary before its role moved to mesh1.rpc.1 at the next revision.
+            let deleted = primaries(digest("mesh1.rpc.3", MemberStatus::ReadyForTraffic), Some(1), None);
+            let other = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+            for d in [&admin, &rpc, &unaddressed, &deleted, &other] {
+                claimed(&*nodes, d).await;
+            }
+            let mut mesh1 = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
+            let mut mesh2 = MeshRowsWriter::new("mesh2.admin.1", "mesh2", mesh_id("mesh2"), nodes.clone(), meshes.clone(), Default::default());
+            mesh1.round(&[admin.clone(), rpc.clone(), deleted.clone()], &writing(&["mesh1"]), |_| false).await;
+            mesh2.round(std::slice::from_ref(&other), &writing(&["mesh2"]), |_| false).await;
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &deleted.node.name, &deleted.node.node_id, None).await.ok().expect("the deleted node's record");
+            // The live records of every mesh: no Deleted one.
+            let live: std::collections::BTreeSet<String> = crate::storage::live_records(&*meshes, &*nodes, "mesh1").await.unwrap().into_iter().map(|r| r.name.to_string()).collect();
+            assert_eq!(live, ["mesh1.admin.1", "mesh1.rpc.1", "mesh1.rpc.2", "mesh2.admin.1"].into_iter().map(String::from).collect(), "{backend}: the live records of every mesh");
+            // The clean-dir refusal, seeds, rafka-time's peers, the PendingReconnect publication and the stored topology.
+            let mut births = rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap();
+            births.sort_by_key(|b| b.name.to_string());
+            let want: Vec<crate::reenter::MapNode> = [&admin, &rpc, &other]
+                .into_iter()
+                .map(|d| crate::reenter::MapNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
+                .collect();
+            assert_eq!(births, want, "{backend}: each live record's newest birth at the address its writer recorded, every mesh's; no Deleted record's, none with no address");
+            // The durable map on an inherited root.
+            assert_eq!(crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&births)).await.unwrap(), want, "{backend}: the durable map is the births the records hold");
+            // The recorded primaries, the own one included.
+            let election = DigestBook::default();
+            let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &election.seats).await.unwrap();
+            assert!((3..=4).contains(&taken), "{backend}: the mesh-primary's, the fabric-primary's and the rpc type's primary, the Deleted record's superseded: {taken}");
+            let held = |role, revision, d: &MeshDigest| matches!(election.seats.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_transport::membership::SeatTaken::Same);
+            assert!(held(rdm_core::Seat::of_cohort(NodeKind::NodeAdmin), 3, &admin) && held(rdm_core::Seat::FabricPrimary, 1, &admin) && held(rdm_core::Seat::of_cohort(NodeKind::RpcNode), 2, &rpc), "{backend}: each recorded primary is held at its revision");
+        }
+    }
+
+    /// CONTRACT (mesh-delete.md step 7: "Departed births resolve Gone"; node-delete.md step 3: the
+    /// deleted node's record is `Deleted`; a record keeps the facts of its current birth and of the one a
+    /// restart replaced, the newest last): a birth that left is no seed and no primary once its
+    /// record's next write lands, on either backend. A restarted node's record takes its new birth's
+    /// facts as its newest: the replaced birth is no seed and its primaries are no election input, and
+    /// once the writer records the new birth's address that birth is the seed. A deleted node's record
+    /// is `Deleted`: its address is not read, and its recorded primary stays an election input until a
+    /// newer revision supersedes it (elections §3), as a lost primary's does through fabric recovery.
+    /// Must NOT happen: a replaced or a deleted birth handed to a restart as a node to reach, or a
+    /// replaced birth taken as a recorded primary.
+    #[tokio::test]
+    async fn a_birth_that_left_is_no_seed_and_no_primary_after_its_records_next_write() {
+        for (backend, nodes, meshes) in record_stores("birth-that-left").await {
+            let admin = primaries(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), Some(3), None);
+            let rpc = primaries(digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), Some(2), None);
+            for d in [&admin, &rpc] {
+                claimed(&*nodes, d).await;
+            }
+            let written = crate::record_cache::Caches::default();
+            let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), written.clone());
+            writer.round(&[admin.clone(), rpc.clone()], &writing(&["mesh1"]), |_| false).await;
+            assert_eq!(births_named(&*meshes, &*nodes).await.len(), 2, "{backend}: both births are seeds");
+            assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 2, "{backend}: both primaries are recorded");
+            // mesh1.rpc.1 restarts: its record's next write is its new birth's declared state.
+            let restarted = MeshDigest { node: MeshNode { incarnation: IncarnationId::mint(), supersedes: Some(rpc.node.incarnation.clone()), ..rpc.node.clone() }, is_primary: None, ..rpc.clone() };
+            written.nodes.update(&*nodes, &rpc.node.node_id, None, |r| r.birth_mut(&restarted.node.incarnation, &restarted.node.name).declared.insert(rdm_core::status::NodeState::Pending)).await.unwrap();
+            assert_eq!(births_named(&*meshes, &*nodes).await, vec![admin.node.node_id.clone()], "{backend}: the replaced birth is no seed");
+            assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 1, "{backend}: the replaced birth's primary is no election input");
+            writer.round(&[admin.clone(), restarted.clone()], &writing(&["mesh1"]), |_| false).await;
+            let seeds = rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap();
+            assert!(seeds.iter().any(|b| b.node_id == rpc.node.node_id && b.incarnation == restarted.node.incarnation), "{backend}: the new birth is the seed once its address is recorded: {seeds:?}");
+            // mesh1.admin.1 is deleted: its record is Deleted.
+            crate::node_rows::write_deleted(&*nodes, &written.nodes, &admin.node.name, &admin.node.node_id, None).await.ok().expect("the deleted node's record");
+            assert_eq!(births_named(&*meshes, &*nodes).await, vec![rpc.node.node_id.clone()], "{backend}: the deleted node's birth is no seed");
+            assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 1, "{backend}: its recorded primary stays an input until a newer revision supersedes it");
+        }
+    }
+
+    /// CONTRACT (R13: the fabric-primary writes the rows of a mesh with no primary, as its acting
+    /// primary, `crate::node_rows::writes_for`; node-identity-and-state.md §2.7): the fabric-primary's
+    /// rows writer writes the address and the primaries its book holds onto the records of a mesh with no
+    /// primary, like any other mesh it writes, each record naming that mesh's id, and claims no name of
+    /// that mesh: the Mesh row is its own primary's (or the fabric-primary's `create-mesh`). Once that
+    /// mesh has a primary again, the fabric-primary writes none of its records. On either backend.
+    #[tokio::test]
+    async fn the_fabric_primary_writes_the_addresses_of_a_mesh_with_no_primary_onto_its_records() {
+        for (backend, nodes, meshes) in record_stores("acting-addresses").await {
+            let fp = primaries(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), Some(1), Some(1));
+            let orphan = primaries(digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic), Some(4), None);
+            for d in [&fp, &orphan] {
+                claimed(&*nodes, d).await;
+            }
+            let counting = Arc::new(CountingNodes(nodes.clone(), Default::default()));
+            let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), counting.clone(), meshes.clone(), Default::default());
+            writer.round(&[fp.clone(), orphan.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
+            let b = newest_of(&*nodes, &orphan).await.unwrap_or_else(|| panic!("{backend}: mesh2's member's record carries its birth"));
+            assert_eq!((b.endpoint_id.as_ref(), b.transport_addr, b.is_primary), (Some(&orphan.node.endpoint_id), Some(orphan.node.transport_addr), Some(4)), "{backend}: the acting primary writes the address and the primaries its book holds");
+            assert_eq!(nodes.node(&orphan.node.node_id).await.unwrap().and_then(|r| r.mesh_id), Some(mesh_id("mesh2")), "{backend}: the record names its own mesh's id");
+            let named: Vec<String> = meshes.meshes().await.unwrap().into_iter().map(|m| m.name).collect();
+            assert_eq!(named, vec!["mesh1".to_string()], "{backend}: the acting primary claims no name of the mesh it acts for");
+            assert!(rows_writer::recorded_births(&*meshes, &*nodes, "mesh2").await.unwrap().iter().any(|m| m.node_id == orphan.node.node_id), "{backend}: no reader is left without it");
+            // mesh2 has a primary again: the fabric-primary writes none of its records.
+            let before = counting.1.load(std::sync::atomic::Ordering::SeqCst);
+            let moved = MeshDigest { node: MeshNode { transport_addr: "127.0.0.1:41999".parse().unwrap(), ..orphan.node.clone() }, ..orphan.clone() };
+            writer.round(&[fp.clone(), moved], &writing(&["mesh1"]), |_| false).await;
+            assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), before, "{backend}: a mesh it no longer writes is not written");
+        }
+    }
+
+    /// CONTRACT (storage-whole-records.md: one writer per record, each record written whole from the
+    /// writer's copy; R13, `crate::node_rows::writes_for`): a mesh whose mesh-primary this admin's book
+    /// holds by another birth is that primary's to write, even in a round whose writing set, read from a
+    /// view that has not caught up, still names the mesh. Must NOT happen: the fabric-primary writes a
+    /// record of a mesh whose primary is already writing it, its older copy replacing what that primary
+    /// wrote (rounds: mesh2.admin.1's ReadyForTraffic lost to the fabric-primary's `is_primary` write).
+    #[tokio::test]
+    async fn the_fabric_primary_writes_no_record_of_a_mesh_its_book_holds_a_mesh_primary_for() {
+        for (backend, nodes, meshes) in record_stores("acting-until-held").await {
+            let fp = primaries(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), Some(1), Some(1));
+            let held = primaries(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), Some(1), None);
+            let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+            for d in [&fp, &held, &member] {
+                claimed(&*nodes, d).await;
+            }
+            let counting = Arc::new(CountingNodes(nodes.clone(), Default::default()));
+            let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), counting.clone(), meshes.clone(), Default::default());
+            writer.round(std::slice::from_ref(&fp), &writing(&["mesh1"]), |_| false).await;
+            let before = counting.1.load(std::sync::atomic::Ordering::SeqCst);
+            writer.round(&[fp.clone(), held.clone(), member.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
+            assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), before, "{backend}: no record of mesh2, whose mesh-primary the book holds, is written");
+            assert!(newest_of(&*nodes, &held).await.and_then(|b| b.transport_addr).is_none(), "{backend}: mesh2's primary's record is its own to write");
+        }
+    }
+
+    /// The election's node of the birth `d` names, at `status`.
+    fn elected_node(d: &MeshDigest, status: NodeStatus) -> crate::model::Node {
+        let mut n = crate::model::Node::allocated(d.node.name.clone());
+        n.node_id = d.node.node_id.clone();
+        n.incarnation_id = Some(d.node.incarnation.clone());
+        n.status = status;
+        n
+    }
+
+    /// The node-admin `nodes` resolve as `mesh`'s primary.
+    fn mesh_primary_of(nodes: &[crate::model::Node], mesh: &str) -> Option<NodeId> {
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::NodeAdmin).map(|n| n.node_id.clone())
+    }
+
+    /// CONTRACT (elections §3: the recorded primary is an election input, "the recorded primary, not yet
+    /// heard -> it waits"; the Q122 line: the node-admin type of a mesh whose unheard mesh-primary was
+    /// also the fabric-primary elects no node-admin until fabric recovery's restore; node-delete.md step
+    /// 3: the deleted birth's record stays; Q149 arm A): the node-admin re-created at the lost
+    /// fabric-primary's path.name takes the lost birth's recorded primaries off its `Deleted` record at
+    /// boot, so a standby's ReadyForTraffic digest heard before its entry elects nobody; the restore at
+    /// revision 2 names the re-created birth. Must NOT happen: a transient standby winner.
+    #[tokio::test]
+    async fn a_re_created_admin_holds_the_lost_primarys_deleted_record_and_elects_no_node_admin_until_the_restore() {
+        for (backend, nodes, meshes) in record_stores("lost-primary-held").await {
+            let lost = primaries(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), Some(1), Some(1));
+            let standby = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
+            for d in [&lost, &standby] {
+                claimed(&*nodes, d).await;
+            }
+            let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
+            writer.round(&[lost.clone(), standby.clone()], &writing(&["mesh1"]), |_| false).await;
+            // Fabric recovery's node.delete of the lost birth: its record is Deleted, its births kept.
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &lost.node.name, &lost.node.node_id, None).await.ok().expect("the lost birth's Deleted record");
+            // The re-created birth: its boot read first, then the standby's ReadyForTraffic heard before its entry.
+            let book = DigestBook::default();
+            rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &book.seats).await.unwrap();
+            let recreated = digest("mesh1.admin.1", MemberStatus::Pending);
+            let mut view = vec![elected_node(&recreated, NodeStatus::Pending), elected_node(&standby, NodeStatus::ReadyForTraffic)];
+            crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&book, &Records::default()));
+            assert_eq!(mesh_primary_of(&view, "mesh1"), None, "{backend}: the lost primary's record holds the election: no node-admin is elected");
+            assert!(view.iter().all(|n| !n.is_fabric_primary), "{backend}: nor fabric-primary");
+            // Fabric recovery's restore at revision 2.
+            let restored = rdm_core::Primary { mesh: "mesh1".into(), node_id: recreated.node.node_id.clone(), incarnation: recreated.node.incarnation.clone(), revision: 2 };
+            book.seats.take(rdm_core::Seat::MeshPrimary, &restored);
+            book.seats.take(rdm_core::Seat::FabricPrimary, &restored);
+            let mut view = vec![elected_node(&recreated, NodeStatus::ReadyForTraffic), elected_node(&standby, NodeStatus::ReadyForTraffic)];
+            crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&book, &Records::default()));
+            assert_eq!(mesh_primary_of(&view, "mesh1"), Some(recreated.node.node_id.clone()), "{backend}: the restore names the re-created birth");
+        }
+    }
+
+    /// CONTRACT (elections §3: a recorded primary is held only when it supersedes the one held;
+    /// node-primary-update.md: the role moves to the successor at the next revision before the
+    /// predecessor is deleted; Q149 arm A): in a mesh whose deleted former primary's record still carries
+    /// its older `is_primary`, the boot read holds the successor's later revision whatever order the
+    /// records are read in, and the election names the successor. Must NOT happen: the Deleted record
+    /// pins the election to its obsolete holder.
+    #[tokio::test]
+    async fn a_deleted_former_primarys_older_record_never_overrides_its_successors() {
+        for (backend, nodes, meshes) in record_stores("deleted-older-primary").await {
+            let former = primaries(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), Some(1), None);
+            let successor = primaries(digest("mesh1.admin.2", MemberStatus::ReadyForTraffic), Some(2), None);
+            let other = digest("mesh1.admin.3", MemberStatus::ReadyForTraffic);
+            for d in [&former, &successor, &other] {
+                claimed(&*nodes, d).await;
+            }
+            let mut writer = MeshRowsWriter::new("mesh1.admin.2", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
+            writer.round(&[former.clone(), successor.clone(), other.clone()], &writing(&["mesh1"]), |_| false).await;
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &former.node.name, &former.node.node_id, None).await.ok().expect("the former primary's Deleted record");
+            let book = DigestBook::default();
+            rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &book.seats).await.unwrap();
+            assert_eq!(book.seats.meshes().get("mesh1").map(|p| (p.node_id.clone(), p.revision)), Some((successor.node.node_id.clone(), 2)), "{backend}: the successor's later revision is held");
+            let mut view = vec![elected_node(&successor, NodeStatus::ReadyForTraffic), elected_node(&other, NodeStatus::ReadyForTraffic)];
+            crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&book, &Records::default()));
+            assert_eq!(mesh_primary_of(&view, "mesh1"), Some(successor.node.node_id.clone()), "{backend}: the election names the successor");
+        }
     }
 
     /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; lifecycles/node-name-update.md: "Config on the
@@ -237,7 +476,7 @@ mod tests {
         assert_eq!(crate::deployment::pipeline::NodeObserver::ready(&observer, &node).await, Ok(()));
     }
 
-    /// A nodes store that counts the contact writes made through it.
+    /// A nodes store that counts the record writes made through it.
     #[cfg(feature = "file-backend")]
     struct CountingNodes(Arc<dyn crate::storage::NodesStorage>, std::sync::atomic::AtomicUsize);
 
@@ -253,23 +492,6 @@ mod tests {
         async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.0.runtime(node_id, incarnation).await
         }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.0.put_contact(record).await
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.0.remove_contact(mesh, node_id).await
-        }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
@@ -280,6 +502,7 @@ mod tests {
             self.0.nodes(mesh).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_node(row).await
         }
         async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
@@ -305,7 +528,7 @@ mod tests {
         }
     }
 
-    /// A nodes store whose contact writes the store refuses while `refusing` is set, counting each
+    /// A nodes store whose record writes the store refuses while `refusing` is set, counting each
     /// refusal and each write it acknowledged.
     struct RefusingNodes {
         inner: Arc<dyn crate::storage::NodesStorage>,
@@ -325,27 +548,6 @@ mod tests {
         async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtime(node_id, incarnation).await
         }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
-                self.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                return Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/contacts/{}", record.name.mesh, record.node_id), reason: "No space left on device (os error 28)".into() });
-            }
-            self.inner.put_contact(record).await?;
-            self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_contact(mesh, node_id).await
-        }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }
@@ -356,7 +558,13 @@ mod tests {
             self.inner.nodes(mesh).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node(row).await
+            if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+                self.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.name.mesh, row.node_id), reason: "No space left on device (os error 28)".into() });
+            }
+            self.inner.put_node(row).await?;
+            self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         }
         async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node(mesh, node_id).await
@@ -381,19 +589,37 @@ mod tests {
         }
     }
 
+    /// The record of `d`'s node as its create's claim writes it, before any address is on it.
+    async fn claimed(nodes: &dyn crate::storage::NodesStorage, d: &MeshDigest) {
+        crate::node_rows::write_record(nodes, &crate::storage::NodeRow::new(d.node.name.clone(), d.node.node_id.clone(), NodeStatus::Pending)).await.unwrap().unwrap();
+    }
+
+    /// The newest birth `nodes` holds on `d`'s node's record, when that birth is `d`'s.
+    async fn newest_of(nodes: &dyn crate::storage::NodesStorage, d: &MeshDigest) -> Option<crate::storage::BirthFacts> {
+        nodes.node(&d.node.node_id).await.unwrap().and_then(|r| r.newest_birth().cloned()).filter(|b| b.incarnation_id == d.node.incarnation)
+    }
+
+    /// The meshes a writer writes: `meshes`.
+    fn writing(meshes: &[&str]) -> std::collections::BTreeSet<String> {
+        meshes.iter().map(|m| m.to_string()).collect()
+    }
+
     /// The mesh-primary's rows writer over `nodes`, for `book`, run as boot runs it: it is mesh-primary.
     async fn rows_written_over(nodes: Arc<dyn crate::storage::NodesStorage>) {
         let refusing = Arc::new(RefusingNodes { inner: nodes, refusing: true.into(), refused: Default::default(), acknowledged: Default::default() });
         let book = DigestBook::default();
         let (admin, rpc) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic));
         assert!(book.record(admin.clone()) && book.record(rpc.clone()));
+        for d in [&admin, &rpc] {
+            claimed(&*refusing.inner, d).await;
+        }
         // The election's result this admin holds: itself mesh-primary at 3, mesh1.rpc.1 its type's primary at 2.
         let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
         book.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
         book.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 2));
-        let writer = MeshRowsWriter::new("mesh1.admin.1", fabric1(), "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
-        let (_seat, own_seat) = tokio::sync::watch::channel(true);
-        let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, book.clone(), fabric1(), own_seat, crate::stop_gate::StopGate::new()));
+        let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
+        let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
+        let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, book.clone(), fabric1(), writes, crate::stop_gate::StopGate::new()));
         let at = |n: std::sync::atomic::Ordering| (refusing.refused.load(n), refusing.acknowledged.load(n));
         tokio::time::timeout(Duration::from_secs(10), async {
             while at(std::sync::atomic::Ordering::SeqCst).0 < 2 {
@@ -407,17 +633,20 @@ mod tests {
         let (births, primaries) = (*book.birth_changes().borrow(), *book.seats.subscribe().borrow());
         refusing.refusing.store(false, std::sync::atomic::Ordering::SeqCst);
         tokio::time::timeout(Duration::from_secs(30), async {
-            while refusing.inner.contacts().await.unwrap().len() < 2 {
+            let addressed = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.is_some_and(|b| b.transport_addr.is_some());
+            while !(addressed(&admin).await && addressed(&rpc).await) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .expect("the mesh-primary writes its owed rows on its own clock once the store recovers, with no topology change");
         assert_eq!((*book.birth_changes().borrow(), *book.seats.subscribe().borrow()), (births, primaries), "no birth or primary changed while the rows were owed");
-        let rows = refusing.inner.contacts().await.unwrap();
-        let row = |d: &MeshDigest| rows.iter().find(|r| r.node_id == d.node.node_id).cloned().expect("the member's row is written");
-        assert_eq!((row(&admin).is_primary, row(&admin).is_fabric_primary), (Some(3), None), "the mesh-primary's own row records is_primary at its revision");
-        assert_eq!((row(&rpc).is_primary, row(&rpc).is_fabric_primary), (Some(2), None), "the rpc node's row records is_primary at its revision");
+        let row = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.expect("the member's record carries its birth");
+        let (a, r) = (row(&admin).await, row(&rpc).await);
+        assert_eq!((a.endpoint_id.as_ref(), a.transport_addr), (Some(&admin.node.endpoint_id), Some(admin.node.transport_addr)), "the mesh-primary's own record carries its birth's address");
+        assert_eq!((a.is_primary, a.is_fabric_primary), (Some(3), None), "the mesh-primary's own row records is_primary at its revision");
+        assert_eq!((r.is_primary, r.is_fabric_primary), (Some(2), None), "the rpc node's row records is_primary at its revision");
+        assert_eq!(refusing.inner.node(&rpc.node.node_id).await.unwrap().and_then(|r| r.mesh_id), Some(mesh_id("mesh1")), "the record names its mesh by id");
         task.abort();
     }
 
@@ -443,51 +672,58 @@ mod tests {
         rows_written_over(Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap())).await;
     }
 
-    #[cfg(feature = "file-backend")]
-    fn contact_names(dir: &std::path::Path) -> usize {
-        std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count()).unwrap_or(0)
-    }
-
     /// CONTRACT (R14 item 2, the writer ladder node-identity-and-state.md §4.3; #3070 "the contacts
-    /// family must follow the ladder"): on one shared root, a mesh's contacts and its Mesh row are
-    /// written by that mesh's primary alone, for its own members alone. A seated and an unseated
-    /// admin of mesh1 run over the same held births at once: the unseated one writes nothing, the
-    /// seated one writes mesh1's members (itself included) and mesh1's Mesh row, never mesh2's. The
-    /// seat moves: the new holder writes the replaced member's new contact and drops the old one,
-    /// and the old holder writes nothing more. A launched birth's publication writes no contact.
+    /// family must follow the ladder"): on one shared root, a mesh's members' addresses on their records
+    /// and its Mesh row are written by that mesh's primary alone, for its own members alone. mesh1's
+    /// primary and another admin of mesh1 run over the same held births at once: the other writes
+    /// nothing, the primary writes the address of each of mesh1's members (itself included) onto its
+    /// record, and mesh1's Mesh row, never mesh2's. The primary role moves to the other admin while
+    /// mesh1.rpc.1 is replaced by a new node at its path.name (its record `Deleted`, the new node's
+    /// claimed): the new mesh-primary writes the new member's address, the store's births name it and
+    /// not the deleted one, and the old mesh-primary writes nothing more. A launched birth's publication
+    /// writes no record.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn a_meshs_contacts_and_mesh_row_are_written_by_its_primary_alone_on_the_shared_root() {
-        let d = crate::test_support::tempdir("contacts-ladder");
+    async fn a_meshs_member_addresses_and_mesh_row_are_written_by_its_primary_alone_on_the_shared_root() {
+        let d = crate::test_support::tempdir("addresses-ladder");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
             async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh1", &IncarnationId::mint()).await.unwrap()), Default::default())) }
         };
-        let (p_nodes, q_nodes) = (store("mesh1.admin.1").await, store("mesh1.admin.2").await);
+        let (p_nodes, q_nodes, claims) = (store("mesh1.admin.1").await, store("mesh1.admin.2").await, store("claims").await);
         let (p_meshes, q_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
             (Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()));
         let (p, q, rpc, other) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.admin.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
+        for m in [&p, &q, &rpc, &other] {
+            claimed(&*claims, m).await;
+        }
         let held = vec![p.clone(), q.clone(), rpc.clone(), other.clone()];
-        let mut pw = MeshRowsWriter::new("mesh1.admin.1", fabric1(), "mesh1", mesh_id("mesh1"), p_nodes.clone(), p_meshes, Default::default());
-        let mut qw = MeshRowsWriter::new("mesh1.admin.2", fabric1(), "mesh1", mesh_id("mesh1"), q_nodes.clone(), q_meshes, Default::default());
-        tokio::join!(pw.round(&held, true, |_| false), qw.round(&held, false, |_| false));
-        let contacts = root.dir().join("nodes").join("mesh1").join("contacts");
-        assert_eq!(contact_names(&contacts), 3, "mesh1's primary writes its three members");
-        assert_eq!(contact_names(&root.dir().join("nodes").join("mesh2").join("contacts")), 0, "mesh1's primary writes no mesh2 contact");
-        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "an unseated admin writes no contact");
+        let mut pw = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), p_nodes.clone(), p_meshes, Default::default());
+        let mut qw = MeshRowsWriter::new("mesh1.admin.2", "mesh1", mesh_id("mesh1"), q_nodes.clone(), q_meshes.clone(), Default::default());
+        let (primary, not_primary) = (writing(&["mesh1"]), writing(&[]));
+        tokio::join!(pw.round(&held, &primary, |_| false), qw.round(&held, &not_primary, |_| false));
+        for m in [&p, &q, &rpc] {
+            assert_eq!(newest_of(&*claims, m).await.and_then(|b| b.transport_addr), Some(m.node.transport_addr), "mesh1's primary writes {}'s address", m.node.name);
+        }
+        assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 3, "mesh1's primary writes its three members' records");
+        assert_eq!(newest_of(&*claims, &other).await, None, "mesh1's primary writes nothing of mesh2's");
+        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "an admin that is not its mesh's primary writes no record");
         let mesh_rows: Vec<String> = std::fs::read_dir(root.dir().join("mesh-records")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
         assert_eq!(mesh_rows, [format!("{}.json", mesh_id("mesh1"))], "mesh1's primary writes mesh1's record alone");
-        // The seat moves to Q; mesh1.rpc.1 is replaced by a new node at its path.name.
+        // Q becomes mesh1's primary; mesh1.rpc.1 is replaced by a new node at its path.name.
+        crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &rpc.node.name, &rpc.node.node_id, None).await.ok().expect("the replaced node's record is Deleted");
         let recovered = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        claimed(&*claims, &recovered).await;
         let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
         let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
-        tokio::join!(pw.round(&held, false, |_| false), qw.round(&held, true, |_| false));
+        tokio::join!(pw.round(&held, &not_primary, |_| false), qw.round(&held, &primary, |_| false));
         assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old holder writes nothing once the seat moved");
-        let now = crate::storage::NodesStorage::contacts(&*q_nodes).await.unwrap();
+        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "the new mesh-primary writes the one record that differs: the new member's");
+        let now: Vec<NodeId> = rows_writer::recorded_births(&*q_meshes, &*q_nodes, "mesh1").await.unwrap().into_iter().map(|b| b.node_id).collect();
         assert_eq!(now.len(), 3, "{now:?}");
-        assert!(now.iter().any(|c| c.node_id == recovered.node.node_id) && !now.iter().any(|c| c.node_id == rpc.node.node_id), "the new holder replaced the member's contact");
-        // A launched birth's publication writes no contact.
+        assert!(now.contains(&recovered.node.node_id) && !now.contains(&rpc.node.node_id), "the store's births name the new member at the path, never the deleted one");
+        // A launched birth's publication writes no record.
         let records = Records::default();
         let _ = records.contacts.set(q_nodes.clone());
         let writes = q_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
@@ -495,7 +731,7 @@ mod tests {
         for _ in 0..3 {
             tokio::task::yield_now().await;
         }
-        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), writes, "a publication wrote a contact");
+        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), writes, "a publication wrote a record");
     }
 
     /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "claims the mesh's name at the key
@@ -504,11 +740,11 @@ mod tests {
     /// as `name-taken`, naming the holder; it is never renamed, and the id never moves"; CLAUDE.md:
     /// the claim is the first durable write of a create, nothing is written for the entity until it
     /// wins): on one shared root, mesh A's primary claims `mesh2` and writes its row and its member's
-    /// contact. A second mesh under the same name (another MeshId) has its primary's rounds refused by
-    /// name: the row still names A, the second primary writes no contact, and it claims once per seat
-    /// tenure: one `rdm.node_admin.mesh.create.via-mesh-row` span `name-held` naming A, however many
-    /// rounds run. Must NOT happen: the second mesh's put overwriting A's row, its contacts written
-    /// beside a refused claim, or a refused claim tried again on every birth change.
+    /// address on its record. A second mesh under the same name (another MeshId) has its primary's
+    /// rounds refused by name: the row still names A, the second primary writes no record, and it claims
+    /// once per seat tenure: one `rdm.node_admin.mesh.create.via-mesh-row` span `name-held` naming A,
+    /// however many rounds run. Must NOT happen: the second mesh's put overwriting A's row, its records
+    /// written beside a refused claim, or a refused claim tried again on every birth change.
     // @feature: mesh-lifecycle
     #[cfg(feature = "file-backend")]
     #[tokio::test]
@@ -519,23 +755,24 @@ mod tests {
             let (data, root) = (d.join(data), root.clone());
             async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &IncarnationId::mint()).await.unwrap()), Default::default())) }
         };
-        let (a_nodes, b_nodes) = (store("a.admin").await, store("b.admin").await);
+        let (a_nodes, b_nodes, claims) = (store("a.admin").await, store("b.admin").await, store("claims").await);
         let (a_meshes, b_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
             (Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()));
         let (first, second) = (mesh_id("mesh2"), MeshId::mint());
         let (a_admin, b_admin) = (digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
+        claimed(&*claims, &a_admin).await;
         let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let mut aw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", first.clone(), a_nodes.clone(), a_meshes.clone(), Default::default());
-        aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
+        let mut aw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", first.clone(), a_nodes.clone(), a_meshes.clone(), Default::default());
+        aw.round(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*a_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "mesh A's primary claims mesh2 and writes its row");
-        assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "mesh A's primary writes its member's contact once its claim won");
-        let mut bw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", second.clone(), b_nodes.clone(), b_meshes.clone(), Default::default());
+        assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "mesh A's primary writes its member's record once its claim won");
+        let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", second.clone(), b_nodes.clone(), b_meshes.clone(), Default::default());
         for _round in 0..2 {
-            bw.round(std::slice::from_ref(&b_admin), true, |_| false).await;
+            bw.round(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
         }
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*b_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "the second mesh's claim of a live name writes no row: mesh2's row still names mesh A");
-        assert_eq!(b_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the second mesh's primary writes no contact beside its refused claim");
+        assert_eq!(b_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the second mesh's primary writes no record beside its refused claim");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default())).collect();
         assert_eq!(
@@ -939,7 +1176,8 @@ mod tests {
     /// Dead mesh row as released"; states.md: dead is final, a mesh id is never reissued): mesh A's
     /// primary claims `mesh2`; the removal writes A's row Dead (`dead-written`, a repeat
     /// `already-dead`); mesh2 created again under a new MeshId has its primary claim the name over the
-    /// Dead row, the span naming the Dead mesh it took it over, and its contact is written. A's own
+    /// Dead row, the span naming the Dead mesh it took it over, and its member's address is written on its
+    /// record (the removed mesh's admin's record `Deleted` by its node.delete). A's own
     /// later tenure claims nothing live again (`mesh-dead`). Must NOT happen: the recreated mesh
     /// refused by the removed mesh's row, or the removed mesh's id written live again.
     // @feature: mesh-lifecycle
@@ -952,31 +1190,35 @@ mod tests {
             let (data, root) = (d.join(data), root.clone());
             async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &IncarnationId::mint()).await.unwrap()), Default::default())) }
         };
-        let (a_nodes, b_nodes) = (store("a.admin").await, store("b.admin").await);
+        let (a_nodes, b_nodes, claims) = (store("a.admin").await, store("b.admin").await, store("claims").await);
         let meshes: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap());
         let (removed, recreated) = (mesh_id("mesh2"), MeshId::mint());
         let (a_admin, b_admin) = (digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
+        claimed(&*claims, &a_admin).await;
         let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-over-dead");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         // Mesh A's primary holds one copy of its mesh's record: its claims and its removal start from it.
         let caches = crate::record_cache::Caches::default();
-        let mut aw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", removed.clone(), a_nodes.clone(), meshes.clone(), caches.clone());
-        aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
+        let mut aw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", removed.clone(), a_nodes.clone(), meshes.clone(), caches.clone());
+        aw.round(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("dead-written"), "the removal writes mesh A's row Dead");
         assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("already-dead"), "a repeat of the removal writes nothing");
         // Mesh A's primary takes a new tenure: its id is Dead and is never written live again.
-        let contacts_before = a_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
-        aw.round(std::slice::from_ref(&a_admin), false, |_| false).await;
-        aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
+        let records_before = a_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
+        aw.round(std::slice::from_ref(&a_admin), &writing(&[]), |_| false).await;
+        aw.round(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, &removed).await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }), "the removed mesh's later tenure writes nothing live");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its Dead record released the name");
-        assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), contacts_before, "nor any contact");
-        let mut bw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
-        bw.round(std::slice::from_ref(&b_admin), true, |_| false).await;
+        assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), records_before, "nor any record");
+        // The removed mesh's admin's node.delete wrote its record Deleted; the recreated mesh's admin claimed the name.
+        crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &a_admin.node.name, &a_admin.node.node_id, None).await.ok().expect("the removed mesh's admin's record is Deleted");
+        claimed(&*claims, &b_admin).await;
+        let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
+        bw.round(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
         let row = crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap();
         assert_eq!(row, Some(crate::storage::MeshRecord { mesh_id: recreated.clone(), name: "mesh2".into(), dead: false, states: Default::default() }), "the recreated mesh's row holds mesh2 under its new MeshId");
-        let contacts: Vec<NodeId> = crate::storage::NodesStorage::contacts(&*b_nodes).await.unwrap().into_iter().map(|c| c.node_id).collect();
-        assert_eq!(contacts, vec![b_admin.node.node_id.clone()], "the recreated mesh's primary writes its member's contact once its claim won, and drops the removed mesh's at the path.name it now holds");
+        let births: Vec<NodeId> = rows_writer::recorded_births(&*meshes, &*b_nodes, "mesh2").await.unwrap().into_iter().map(|c| c.node_id).collect();
+        assert_eq!(births, vec![b_admin.node.node_id.clone()], "the recreated mesh's primary writes its member's address once its claim won, and the removed mesh's Deleted record at the path.name names no node");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("over").cloned().unwrap_or_default())).collect();
         assert_eq!(
@@ -1054,21 +1296,6 @@ mod tests {
         async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Unrecognised { file: format!("runtimes/{node_id}--{}.json", incarnation.as_str()), reason: "format runtime/9 is not one this build reads".into() })
         }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_contact(record).await
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_contact(mesh, node_id).await
-        }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
@@ -1127,21 +1354,6 @@ mod tests {
                 return Err(crate::storage_error::StorageError::Io { file: format!("runtimes/{node_id}--{}.json", incarnation.as_str()), reason: "Input/output error (os error 5)".into() });
             }
             self.inner.runtime(node_id, incarnation).await
-        }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_contact(record).await
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_contact(mesh, node_id).await
         }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
@@ -2155,27 +2367,27 @@ mod tests {
     /// CONTRACT (R-MN1: a mesh removal deletes every roster birth, and a mesh created again under
     /// the name is a new mesh; mesh-delete.md step 7: at mesh-left the fabric-primary is the acting
     /// primary of a mesh that has none left, and departed births resolve Gone; R14 item 2: a mesh's
-    /// contacts are its primary's rows; `dropped_contacts`: a departed birth's contact is dropped, so
-    /// a maker's stored map never hands it to a mesh created again under the same name): mesh-left
-    /// drops the contact of every birth its proof set names from the removed mesh's contacts, so
-    /// the stored map the fabric-primary answers a recreated mesh's first admin with names none of
-    /// them. Must NOT happen: mesh_identity::canonical_ids at :208 (trace
-    /// a6f24e5914ac3658d302079ddb0c28f0): the recreated mesh2.admin.1's entry sweep pings the removed
-    /// mesh's births (via-entry-sweep-no-reply), handed by the maker's stored map from the contacts
-    /// nobody dropped (rdm.mesh.topology.serve.via-read stored 1, stored_nodes 5).
+    /// records are its primary's rows): mesh-left takes the address and primaries of every birth its
+    /// proof set names off its node's record, so the stored map the fabric-primary answers a recreated
+    /// mesh's first admin with names none of them; another mesh's record is untouched. Must NOT happen:
+    /// mesh_identity::canonical_ids at :208 (trace a6f24e5914ac3658d302079ddb0c28f0): the recreated
+    /// mesh2.admin.1's entry sweep pings the removed mesh's births (via-entry-sweep-no-reply), handed by
+    /// the maker's stored map from addresses nobody took off (rdm.mesh.topology.serve.via-read stored 1,
+    /// stored_nodes 5).
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn mesh_left_drops_the_removed_meshs_contacts_of_every_birth_its_proof_set_names() {
+    async fn mesh_left_takes_the_address_of_every_birth_its_proof_set_names_off_its_record() {
         use crate::storage::NodesStorage;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        crate::node_rows::write_record(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap().unwrap();
-        let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new(), is_primary: None, is_fabric_primary: None };
-        // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
+        // mesh2's primary wrote its members' addresses on their records while it was mesh2's primary; mesh1's own stays.
         for d in [&last, &member, &fp] {
-            storage.put_contact(&contact(d)).await.unwrap();
+            let mut row = crate::storage::NodeRow::new(d.node.name.clone(), d.node.node_id.clone(), NodeStatus::ReadyForTraffic);
+            let b = row.birth_mut(&d.node.incarnation, &d.node.name);
+            (b.endpoint_id, b.transport_addr, b.is_primary) = (Some(d.node.endpoint_id.clone()), Some(d.node.transport_addr), Some(1));
+            crate::node_rows::write_record(&*storage, &row).await.unwrap().unwrap();
         }
         depart(&book, &records, &last).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
@@ -2185,12 +2397,16 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             crate::mesh_delete::mesh_left_rows(records.node_rows().as_deref(), &crate::storage::MemoryMeshStorage::default(), &records.caches, &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last), exited_receipt(&member)]).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
         }
-        let held: Vec<String> = storage.contacts().await.unwrap().into_iter().map(|c| c.name.to_string()).collect();
-        assert_eq!(held, vec!["mesh1.admin.1".to_string()], "no contact of the removed mesh's births stands; another mesh's is untouched");
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        assert!(rows_writer::recorded_births(&meshes, &*storage, "mesh2").await.unwrap().is_empty(), "no address of the removed mesh's births stands");
+        assert_eq!(rows_writer::take_recorded_primaries(&meshes, &*storage, "mesh2", &DigestBook::default().seats).await.unwrap(), 0, "nor any primary of them");
+        let mesh1: Vec<String> = rows_writer::recorded_births(&meshes, &*storage, "mesh1").await.unwrap().into_iter().map(|b| b.name.to_string()).collect();
+        assert_eq!(mesh1, vec!["mesh1.admin.1".to_string()], "another mesh's record is untouched");
+        assert!(storage.node(&last.node.node_id).await.unwrap().is_some_and(|r| r.birth(&last.node.incarnation).is_some()), "the record keeps the birth's other facts");
         let spans = capture.named("rdm.node_admin.node.remove.via-mesh-left-contact");
         assert_eq!(spans.len(), 1, "{spans:?}");
         let dropped = spans[0].attributes.get("dropped").cloned().unwrap_or_default();
-        assert!(dropped.contains("mesh2.admin.1") && dropped.contains("mesh2.rpc.1"), "the span names each birth whose contact is dropped: {dropped}");
+        assert!(dropped.contains("mesh2.admin.1") && dropped.contains("mesh2.rpc.1"), "the span names each birth whose address is taken off: {dropped}");
         eprintln!("span rdm.node_admin.node.remove.via-mesh-left-contact trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
     }
 
@@ -2690,7 +2906,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         crate::node_rows::move_row(&primary, &Default::default(), &"mesh1.admin.1".parse().unwrap(), &record, &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
@@ -2945,21 +3161,6 @@ mod tests {
         async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtime(node_id, incarnation).await
         }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_contact(record).await
-        }
-        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_contact(mesh, node_id).await
-        }
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.read(&self.id_reads);
             self.inner.node(node_id).await
@@ -3021,7 +3222,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), "mesh1.rpc.1".parse::<PathName>().unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.name, &base).await.unwrap();

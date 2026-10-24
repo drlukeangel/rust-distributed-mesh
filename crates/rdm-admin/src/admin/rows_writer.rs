@@ -3,25 +3,10 @@
 use super::*;
 
 /// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
-/// carried in an installed topology read. These are the contacts a restarted admin can try, and the
-/// births a maker serves a joining admin for a mesh it holds no snapshot of.
+/// carried in an installed topology read: the births a maker serves a joining admin for a mesh it
+/// holds no snapshot of, beside the ones its records hold.
 pub(crate) fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDigest> {
     book.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
-}
-
-/// The contacts this admin drops from nodes.storage, of `written`, the contacts it holds, given
-/// `held`, the births its book holds and `departed`, whether the book holds a node departed: a
-/// contact whose node departed (node.delete's NodeDeleted, or mesh-left, which departs every birth
-/// of the removed mesh: mesh-delete.md step 7, "Departed births resolve Gone"), and a contact whose
-/// birth the book no longer holds, at a path another logical node now holds. A contact is a
-/// bootstrap hint for a birth that may still answer; a departed one never does, and a maker's
-/// stored map never hands it to a mesh created again under the same name (R-MN1).
-pub(crate) fn dropped_contacts(written: &HashMap<NodeId, crate::storage::NodeRecord>, held: &[MeshDigest], departed: impl Fn(&NodeId) -> bool) -> Vec<NodeId> {
-    written
-        .values()
-        .filter(|w| departed(&w.node_id) || (!held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name)))
-        .map(|w| w.node_id.clone())
-        .collect()
 }
 
 /// The durable runtime row of the exact birth `(node_id, incarnation)` of `node`, read by its key
@@ -44,28 +29,28 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
     }
 }
 
-/// A mesh's contacts and its Mesh row on the fabric's shared store root, written by that mesh's
-/// primary alone, for its own members alone (R14 item 2; the writer ladder,
-/// node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's primary's). A
-/// round that does not hold the seat writes nothing. A round that takes it first claims the mesh's
-/// name ([`crate::storage::claim_mesh`]) and writes the Mesh row (node-identity-and-state.md
-/// §2.7): nothing else of the mesh is written until the claim wins, and a name another mesh's live
-/// row holds leaves the mesh's rows unwritten for the tenure, named. Then it reads what the shared
-/// root holds for the mesh, writes each member whose held birth differs and drops a contact whose
-/// node departed or whose path.name another node now holds (`dropped_contacts`). A contact is a
-/// restart's hint, never topology.
+/// A mesh's members' addresses and primaries on their Node records, and its Mesh row, on the fabric's
+/// shared store root, written by that mesh's primary alone, for its own members alone (R14 item 2; the
+/// writer ladder, node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's
+/// primary's), and by the fabric-primary for the members of a mesh with no primary, as it writes their
+/// records (R13, `crate::node_rows::writes_for`). A round that writes no mesh writes nothing. The first
+/// round that writes its own mesh claims the mesh's name ([`crate::storage::claim_mesh`]) and
+/// writes the Mesh row (node-identity-and-state.md §2.7): nothing else of the mesh is written until the
+/// claim wins, and a name another mesh's live row holds leaves the mesh's rows unwritten for the tenure,
+/// named. Then each member birth's endpoint, address and the primaries the book holds for it are
+/// written onto the newest facts of its node's record, from the copy this admin holds, whole
+/// (storage-whole-records.md, "The rule"), only when they differ. A birth leaves its record's births by
+/// the record's own rule ([`crate::storage::BIRTHS_KEPT`]), and a deleted node's record is `Deleted`:
+/// neither is read as a node to reach. An address is a restart's hint, never topology.
 pub(crate) struct MeshRowsWriter {
     /// The admin's `path.name`, the writer its spans name.
     pub(crate) me: String,
-    pub(crate) fabric_id: FabricId,
     pub(crate) mesh: String,
     pub(crate) mesh_id: MeshId,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
     /// The records this admin writes, as it holds them.
     pub(crate) caches: crate::record_cache::Caches,
-    /// What this seat tenure knows the shared root holds for the mesh's contacts; `None` outside a tenure.
-    pub(crate) written: Option<HashMap<NodeId, crate::storage::NodeRecord>>,
     /// The claim of the mesh's name this seat tenure decided: `None` outside a tenure or before the
     /// store answered it; `Some(Ok)` once it won; `Some(Err)` when it was refused (another mesh's
     /// live row holds the name, or this mesh is Dead): the mesh's rows stay unwritten for the tenure.
@@ -73,83 +58,72 @@ pub(crate) struct MeshRowsWriter {
 }
 
 impl MeshRowsWriter {
-    pub(crate) fn new(me: &str, fabric_id: FabricId, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
-        Self { me: me.to_string(), fabric_id, mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, written: None, claim: None }
+    pub(crate) fn new(me: &str, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
+        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, claim: None }
     }
 
     /// One round over the births `held` (every birth of the fabric this admin holds, itself
-    /// included, each with the primaries its book holds for it), `seated` when this admin is its mesh's
-    /// mesh-primary now, `departed` whether the book holds a node departed. Returns whether a row is
-    /// owed: a write or a read the store did not acknowledge, which the caller retries on its own
-    /// clock under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth
-    /// or a primary change.
-    pub(crate) async fn round(&mut self, held: &[MeshDigest], seated: bool, departed: impl Fn(&NodeId) -> bool) -> bool {
-        if !seated {
-            self.written = None;
+    /// included, each with the primaries its book holds for it), `writes` the meshes whose rows this
+    /// admin writes now (its own mesh while it is its mesh-primary; a mesh with no primary while it is
+    /// the fabric-primary), `departed` whether the book holds a node departed. Returns whether a row is
+    /// owed: a write or a read the store did not acknowledge, or a member whose record is not written
+    /// yet (its create's claim or its arrival writes it), which the caller retries on its own clock
+    /// under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth or a
+    /// primary change.
+    pub(crate) async fn round(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, departed: impl Fn(&NodeId) -> bool) -> bool {
+        if !writes.contains(&self.mesh) {
             self.claim = None;
-            return false;
-        }
-        if self.claim.is_none() {
+        } else if self.claim.is_none() {
             // A store that did not answer decides nothing: the next round asks again.
             self.claim = claim_mesh_name(&*self.meshes, &self.caches, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
             if self.claim.is_none() {
                 return true;
             }
         }
-        if !matches!(self.claim, Some(Ok(()))) {
-            return false;
-        }
-        if self.written.is_none() {
-            match self.nodes.contacts().await {
-                Ok(rows) => self.written = Some(rows.into_iter().filter(|c| c.name.mesh == self.mesh).map(|c| (c.node_id.clone(), c)).collect()),
-                Err(e) => {
-                    tracing::info!(mesh = %self.mesh, error = %e, "the mesh's contacts could not be read; none is written this round");
-                    return true;
-                }
-            }
-        }
+        let own = matches!(self.claim, Some(Ok(())));
         let mut owed = false;
-        let written = self.written.as_mut().expect("read above");
-        // A departed birth is never written: its contact is dropped below and stays dropped.
-        let members: Vec<MeshDigest> = held.iter().filter(|d| d.node.name.mesh == self.mesh && !departed(&d.node.node_id)).cloned().collect();
-        for d in &members {
-            let r = crate::storage::NodeRecord {
-                node_id: d.node.node_id.clone(),
-                fabric_id: self.fabric_id.clone(),
-                name: d.node.name.clone(),
-                mesh_id: self.mesh_id.clone(),
-                incarnation_id: d.node.incarnation.clone(),
-                endpoint_id: d.node.endpoint_id.clone(),
-                transport_addr: d.node.transport_addr,
-                listeners: Vec::new(),
-                is_primary: d.is_primary,
-                is_fabric_primary: d.is_fabric_primary,
-            };
-            // The contact is what is held, put whole, the primaries recorded on it; the declared state
-            // and the silence status are their own rows in status.storage, never carried on it. It is
-            // marked written only on the store's acknowledgement.
-            if written.get(&r.node_id) == Some(&r) {
-                continue;
-            }
-            match self.nodes.put_contact(&r).await {
-                Ok(()) => {
-                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %r.name, node_id = %r.node_id, is_primary = ?r.is_primary, is_fabric_primary = ?r.is_fabric_primary, outcome = "written")
-                        .in_scope(|| tracing::info!("the node's row is put whole, the primaries the book holds recorded on it"));
-                    written.insert(r.node_id.clone(), r);
-                }
+        // Another mesh whose mesh-primary this admin's book holds is that primary's to write (one writer per
+        // record, storage-whole-records.md): the writing set comes from a view that can still show it with
+        // none, and a whole write from this admin's older copy would replace what its primary wrote.
+        let primaried: std::collections::BTreeSet<&str> = held
+            .iter()
+            .filter(|d| d.node.name.mesh != self.mesh && d.node.name.kind == crate::model::NodeKind::NodeAdmin && d.is_primary.is_some() && !departed(&d.node.node_id))
+            .map(|d| d.node.name.mesh.as_str())
+            .collect();
+        // A departed birth is never written: its node's record is written `Deleted` by its delete.
+        for d in held.iter().filter(|d| !departed(&d.node.node_id) && writes.contains(&d.node.name.mesh) && !primaried.contains(d.node.name.mesh.as_str()) && (d.node.name.mesh != self.mesh || own)) {
+            let mesh_id = if d.node.name.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
+            // The birth's address and the primaries the book holds, put whole on its record from the copy
+            // this admin holds; a `Deleted` record is left as it stands.
+            let written = self
+                .caches
+                .nodes
+                .update(&*self.nodes, &d.node.node_id, None, |r| {
+                    if r.status == crate::model::NodeStatus::Deleted {
+                        return false;
+                    }
+                    let before = r.clone();
+                    if mesh_id.is_some() {
+                        r.mesh_id = mesh_id.clone();
+                    }
+                    let b = r.birth_mut(&d.node.incarnation, &d.node.name);
+                    b.endpoint_id = Some(d.node.endpoint_id.clone());
+                    b.transport_addr = Some(d.node.transport_addr);
+                    b.is_primary = d.is_primary;
+                    b.is_fabric_primary = d.is_fabric_primary;
+                    *r != before
+                })
+                .await;
+            match written {
+                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
+                    .in_scope(|| tracing::info!("the node's record is put whole, the birth's address and the primaries the book holds recorded on it")),
+                Ok(Some(false)) => {}
+                Ok(None) => owed = true,
                 Err(e) => {
                     owed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %r.name, node_id = %r.node_id, is_primary = ?r.is_primary, is_fabric_primary = ?r.is_fabric_primary, outcome = "owed", error = %e)
-                        .in_scope(|| tracing::info!("the store did not acknowledge the node's row: it is owed and written again under the one backoff rule"));
+                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
+                        .in_scope(|| tracing::info!("the store did not acknowledge the node's record: it is owed and written again under the one backoff rule"));
                 }
-            }
-        }
-        let dropped: Vec<crate::storage::NodeRecord> = dropped_contacts(written, &members, &departed).into_iter().filter_map(|id| written.get(&id).cloned()).collect();
-        for r in dropped {
-            if self.nodes.remove_contact(&r.name.mesh, &r.node_id).await.is_ok() {
-                written.remove(&r.node_id);
-            } else {
-                owed = true;
             }
         }
         owed
@@ -157,12 +131,12 @@ impl MeshRowsWriter {
 }
 
 /// The mesh rows writer's loop: a round over what `book` holds of `fabric` each time a birth or a
-/// primary record changes there or `own_seat` (whether this admin is its mesh's mesh-primary) moves,
-/// each birth carrying the primaries the book holds for it. A row the store did not acknowledge is
-/// owed: the round runs again on this writer's own clock under the one backoff rule (node-rpc.md §43),
-/// never waiting for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each
-/// round takes its turn of `park`.
-pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook, fabric: FabricId, mut own_seat: tokio::sync::watch::Receiver<bool>, park: crate::stop_gate::StopGate) {
+/// primary record changes there or `writes` (the meshes whose rows this admin writes) moves, each birth
+/// carrying the primaries the book holds for it. A row the store did not acknowledge is owed: the round
+/// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
+/// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each round takes its
+/// turn of `park`.
+pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, park: crate::stop_gate::StopGate) {
     let mut births = book.birth_changes();
     let mut primaries = book.seats.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
@@ -172,7 +146,7 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook,
         let turn = park.turn("mesh-rows").await;
         births.borrow_and_update();
         primaries.borrow_and_update();
-        let seated = *own_seat.borrow_and_update();
+        let meshes = writes.borrow_and_update().clone();
         let held: Vec<MeshDigest> = book
             .all()
             .into_iter()
@@ -182,7 +156,7 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook,
                 d
             })
             .collect();
-        let owed = writer.round(&held, seated, |id| book.is_departed(id.as_str())).await;
+        let owed = writer.round(&held, &meshes, |id| book.is_departed(id.as_str())).await;
         owed_rounds = if owed { owed_rounds + 1 } else { 0 };
         drop(turn);
         let again = async {
@@ -194,25 +168,35 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook,
         tokio::select! {
             changed = births.changed() => if changed.is_err() { return },
             changed = primaries.changed() => if changed.is_err() { return },
-            changed = own_seat.changed() => if changed.is_err() { return },
+            changed = writes.changed() => if changed.is_err() { return },
             () = again => {}
         }
     }
 }
 
-/// Hold the primaries the node rows of `fabric` on the store root record (`is_primary`,
-/// `is_fabric_primary`), the own row's included: an election input (elections §3), each held only when
-/// it supersedes the record held. The rows record the role; the election decides it.
-pub(crate) async fn take_recorded_primaries(nodes: &dyn crate::storage::NodesStorage, fabric: &FabricId, seats: &rdm_transport::membership::SeatBook) -> Result<usize, crate::storage_error::StorageError> {
-    let mut rows = nodes.contacts().await?;
-    rows.extend(nodes.own().await?);
+/// Every birth the live records of every mesh hold an address for (`crate::storage::live_records`),
+/// each record's newest birth: the map a restarting admin reaches its fabric through (its gossip
+/// seeds, its durable map, the peers it takes rafka-time from, the births it publishes not yet
+/// reached) and a maker's stored topology. A record whose newest birth carries no address names no
+/// node to reach.
+pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str) -> Result<Vec<crate::reenter::MapNode>, crate::storage_error::StorageError> {
+    Ok(crate::storage::live_records(meshes, nodes, own_mesh).await?.iter().filter_map(crate::reenter::MapNode::of_record).collect())
+}
+
+/// Hold the primaries the node records on the store root record (`is_primary`, `is_fabric_primary` on
+/// each record's newest birth, a `Deleted` record's included: [`crate::storage::records`]), the own
+/// record's included: an election input (elections §3), each
+/// held only when it supersedes the record held. The records record the role; the election decides it.
+/// The store root is the fabric's own, so every record on it is of this fabric.
+pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, seats: &rdm_transport::membership::SeatBook) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
-    for r in rows.iter().filter(|r| &r.fabric_id == fabric) {
-        let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: r.incarnation_id.clone(), revision };
-        if let Some(revision) = r.is_primary {
+    for r in crate::storage::records(meshes, nodes, own_mesh).await? {
+        let Some(b) = r.newest_birth() else { continue };
+        let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
+        if let Some(revision) = b.is_primary {
             taken += usize::from(matches!(seats.take(rdm_core::Seat::of_cohort(r.name.kind), &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
         }
-        if let Some(revision) = r.is_fabric_primary {
+        if let Some(revision) = b.is_fabric_primary {
             taken += usize::from(matches!(seats.take(rdm_core::Seat::FabricPrimary, &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
         }
     }

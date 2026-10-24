@@ -14,7 +14,7 @@
 //!    mesh-primary's tickle, then the provider's exact exit proof, then recovery only on proof.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
-use crate::storage::NodeRecord;
+use crate::storage::NodeRow;
 use rdm_transport::membership::Membership;
 use rdm_transport::{Budget, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
@@ -47,6 +47,24 @@ pub(crate) struct MapNode {
 }
 
 impl MapNode {
+    /// The birth `record` names to reach: its newest birth, at the address its writer recorded on it
+    /// (`crate::admin::rows_writer::MeshRowsWriter`). A record whose newest birth carries no address
+    /// names none. A stored record says nothing of who lives: the birth is settled and not ready.
+    pub(crate) fn of_record(record: &NodeRow) -> Option<Self> {
+        let b = record.newest_birth()?;
+        Some(Self {
+            node_id: record.node_id.clone(),
+            name: record.name.clone(),
+            endpoint_id: b.endpoint_id.clone()?,
+            transport_addr: b.transport_addr?,
+            incarnation: b.incarnation_id.clone(),
+            transition: None,
+            ready: false,
+            data_dir: None,
+            admin_api_base: None,
+        })
+    }
+
     pub(crate) fn resolved(&self) -> Option<ResolvedNode> {
         Some(ResolvedNode {
             node_id: self.node_id.clone(),
@@ -74,7 +92,7 @@ impl MapNode {
         node
     }
 
-    fn gossip_addr(&self) -> Option<iroh::EndpointAddr> {
+    pub(crate) fn gossip_addr(&self) -> Option<iroh::EndpointAddr> {
         let key = self.endpoint_id.0.parse::<iroh::PublicKey>().ok()?;
         Some(iroh::EndpointAddr::new(key).with_ip_addr(self.transport_addr))
     }
@@ -131,8 +149,9 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
 
 /// Where a topology is read from.
 pub(crate) enum TopologySource<'a> {
-    /// This admin's durable map (nodes.storage), with no maker.
-    DurableMap(&'a [NodeRecord]),
+    /// This admin's durable map (the births the node records hold, `crate::admin::rows_writer::
+    /// recorded_births`), with no maker.
+    DurableMap(&'a [MapNode]),
     /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E), which installs
     /// nothing (the map is for reaching nodes, not for holding them), and this admin joins the mesh channel with it as the seed.
     LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership, me: &'a PathName, me_id: &'a NodeId, time: &'a rdm_transport::clock::RafkaTime, adopt_time: bool },
@@ -143,10 +162,7 @@ pub(crate) enum TopologySource<'a> {
 /// whose installed read is mapped by [`map_of_read`].
 pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, String> {
     match source {
-        TopologySource::DurableMap(rows) => Ok(rows
-            .iter()
-            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
-            .collect()),
+        TopologySource::DurableMap(rows) => Ok(rows.to_vec()),
         TopologySource::LocalNode { node, client, membership, me, me_id, time, adopt_time } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
             let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership.node(), None, None)

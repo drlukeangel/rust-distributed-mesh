@@ -330,7 +330,7 @@ impl Prepared {
                 is_primary: None,
                 is_fabric_primary: None,
             };
-            nodes.put_own(&own).await.unwrap();
+            rdm_admin::storage::FileNodesStorage::put_own_in(&data_dir, &incarnation, &own).await.unwrap();
             let mut runtime = rdm_core::RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
             runtime.locator = rdm_core::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
             nodes
@@ -343,9 +343,10 @@ impl Prepared {
                 })
                 .await
                 .unwrap();
-            // The birth's row at its path.name and its contact among mesh1's members, as its mesh's writer
-            // left them: the name is held by this node.id.
-            nodes.put_contact(&own).await.unwrap();
+            // The birth's row at its path.name, its address on its newest birth, as its mesh's writer left
+            // them: the name is held by this node.id.
+            let mut birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
+            (birth.endpoint_id, birth.transport_addr) = (Some(own.endpoint_id.clone()), Some(own.transport_addr));
             let row = rdm_admin::storage::NodeRow {
                 name: own.name.clone(),
                 node_id: node_id.clone(),
@@ -356,8 +357,9 @@ impl Prepared {
                 renamed_from: None,
                 app_types: None, inherited_by: None,
                 executable: None,
-                births: Vec::new(),
+                births: vec![birth],
                 predecessor: None,
+                mesh_id: Some(mesh_id.clone()),
             };
             nodes.write_record(&row).await.unwrap();
             if history == History::ReadyForTraffic {
@@ -404,7 +406,7 @@ impl Prepared {
     }
 
     /// Read through the storage adapters once the admin has ended: the row at mesh1.admin.1 and the
-    /// node.ids mesh1's contacts name.
+    /// node.ids whose live records' newest births carry an address, every mesh's.
     fn rows_after(&self) -> (Option<rdm_admin::storage::NodeRow>, Vec<String>) {
         use rdm_admin::storage::NodesStorage as _;
         tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -412,7 +414,8 @@ impl Prepared {
             let reader = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &reader).await.unwrap();
             let row = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
-            let contacts = nodes.contacts().await.unwrap().into_iter().map(|c| c.node_id.to_string()).collect();
+            let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &reader).await.unwrap();
+            let contacts = rdm_admin::storage::live_records(&meshes, &nodes, "mesh1").await.unwrap().into_iter().filter(|r| r.newest_birth().is_some_and(|b| b.transport_addr.is_some())).map(|r| r.node_id.to_string()).collect();
             (row, contacts)
         })
     }
@@ -504,7 +507,7 @@ const BOOTS_WITHIN: Duration = Duration::from_secs(10);
 /// root opens (the storage step names that fabric id and mesh1's id, `inherited_root = true`) and boots
 /// as a new node over it (`node.create.via-inherited-root`): a node.id and an incarnation it mints, the
 /// inherited birth named beside them, no supersedes lineage, no contact. It deletes the inherited birth
-/// (its row at mesh1.admin.1 `Deleted`, its contact dropped) and then claims mesh1.admin.1 under its own
+/// (its row at mesh1.admin.1 `Deleted`, so its birth's address names no node) and then claims mesh1.admin.1 under its own
 /// node.id, the row's config and tags seeded from the Deleted row. It takes the zero-contact recovery path
 /// at once, reloads the accepted Build from the inherited journal (`fabric.update.via-inherited-root`
 /// naming that Build), writes its own row under its new node.id and incarnation with the same FabricId
@@ -579,7 +582,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let config: Vec<(String, String)> = row.config.into_iter().collect();
     let tags: Vec<String> = row.tags.into_iter().collect();
     assert_eq!((config, tags), (INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), INHERITED_TAGS.iter().map(|t| t.to_string()).collect()), "config and tags seeded from the Deleted row");
-    assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth's contact is dropped: {contacts:?}");
+    assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth is no node to reach: its record is Deleted: {contacts:?}");
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
 }
 

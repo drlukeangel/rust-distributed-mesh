@@ -253,7 +253,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
@@ -290,7 +290,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
@@ -352,6 +352,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             executable: None,
             births: Vec::new(),
             predecessor: None,
+            mesh_id: None,
         };
         let door = JoinDoor {
             nodes: None,
@@ -420,7 +421,7 @@ fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::collections::BTreeMap<String, String>>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         let mut door = door_over(joins.clone(), Arc::default(), row);
         door.install = Arc::new(move |d| log.lock().unwrap().push(d.config.clone()));
         let _reported = joins.expect(dep.clone());
@@ -449,7 +450,7 @@ fn a_join_over_the_types_bound_is_malformed_by_name_and_never_a_member() {
         let installed = Arc::new(Mutex::new(Vec::new()));
         let dep = deployed();
         let reported = joins.expect(dep.clone());
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         let mut door = door_over(joins, installed.clone(), row);
         let declarations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         door.types = Arc::new({let declarations=declarations.clone(); move |_, _| {declarations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);Box::pin(async{Ok(())})}});
@@ -475,7 +476,7 @@ fn an_exact_birth_cannot_change_its_declared_types_on_a_repeated_join() {
     cap.run(async {
         let dep=deployed();let joins=Arc::new(Joins::default());let reported=joins.expect(dep.clone());
         let installed=Arc::new(Mutex::new(Vec::new()));
-        let row=rdm_admin::storage::NodeRow{name:dep.name.clone(),node_id:dep.node_id.clone(),status:rdm_admin::model::NodeStatus::Pending,config:Default::default(),tags:Default::default(),allocated:None,renamed_from:None,inherited_by:None,app_types:Some(rdm_admin::storage::AppTypes{incarnation:dep.incarnation.clone(),types:["app.one".to_string()].into()}),executable:None,births:Vec::new(),predecessor:None};
+        let row=rdm_admin::storage::NodeRow{name:dep.name.clone(),node_id:dep.node_id.clone(),status:rdm_admin::model::NodeStatus::Pending,config:Default::default(),tags:Default::default(),allocated:None,renamed_from:None,inherited_by:None,app_types:Some(rdm_admin::storage::AppTypes{incarnation:dep.incarnation.clone(),types:["app.one".to_string()].into()}),executable:None,births:Vec::new(),predecessor:None,mesh_id:None};
         let door=door_over(joins,installed.clone(),row);
         let digest=digest_of(&dep,"127.0.0.1:34567");
         let changed=door.serve(dep.endpoint_id.clone(),JoinRequest::JoinNode{digest:(&digest).into(),types:vec!["app.two".into()]}).await;
@@ -500,7 +501,7 @@ fn the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no
     cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         let mut door = door_over(joins.clone(), installed.clone(), row);
         let order: Arc<Mutex<Vec<String>>> = Arc::default();
         door.pending = {

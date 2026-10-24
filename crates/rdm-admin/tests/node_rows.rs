@@ -121,7 +121,7 @@ async fn held(mp: &MeshPrimary, name: &str) -> Node {
 }
 
 fn row_of(n: &Node) -> NodeRow {
-    NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }
+    NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }
 }
 
 /// CONTRACT: `node.delete` leaves the node's row at its `path.name` with status `Deleted`, its
@@ -139,7 +139,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
         mp.rows.deleted(&victim, "node.delete:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         (storage.record_at(&victim.name).await.unwrap(), victim.node_id)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }), "the row says Deleted and keeps the record and the config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the row says Deleted and keeps the record and the config");
     let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -174,7 +174,7 @@ fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_no
         let after = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
         (row, storage.record_at(&victim.name).await.unwrap(), victim.node_id, rabbit, red, born, after)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }), "the Deleted row keeps the record, the config and the tags");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the Deleted row keeps the record, the config and the tags");
     assert!(rabbit.is_empty() && red.is_empty(), "the tags index names the deleted node under neither label: rabbit {rabbit:?}, red {red:?}");
     let born_row = born_row.expect("the new node's row");
     assert_eq!((born_row.config, born_row.tags), (tier("gold"), Default::default()), "a plain create is seeded the config and carries its create spec's tags, none");
@@ -201,13 +201,13 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.write_record(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
         mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "node.create:mesh1.rpc.2", None, None, ClaimFor::Create).await.expect("the name is free of live rows");
         (storage.record_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }), "the new birth holds the row and the Deleted row's config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the new birth holds the row and the Deleted row's config");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -227,7 +227,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
     let (deleted, next_row, born) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let name: PathName = "mesh1.rpc.2".parse().unwrap();
-        storage.write_record(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
         mp.rows.claim(&name, &born, "node.create:mesh1.rpc.2", None, None, ClaimFor::Create).await.expect("the name is free of live rows");
@@ -260,7 +260,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
     let (row, born, held) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
-        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         storage.write_record(&held).await.unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
@@ -288,7 +288,7 @@ fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_
     let name: PathName = "mesh1.admin.1".parse().unwrap();
     let (refused, row, held, written, me) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
-        let held = NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let held = NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         storage.write_record(&held).await.unwrap();
         let me = NodeId::mint();
         let refused = rdm_admin::node_rows::claim_day0_name(&*storage, &Default::default(), &name, &me).await;
@@ -319,14 +319,14 @@ fn a_birth_no_create_claimed_gets_its_row_seeded_when_the_writers_view_holds_it(
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.write_record(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(birth)).await;
         (storage.record_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }), "the birth holds the row and the Deleted row's config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the birth holds the row and the Deleted row's config");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let rpc2: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.2").collect();
     assert_eq!(rpc2.len(), 1, "{spans:#?}");
@@ -352,7 +352,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         storage.write_record(&written).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -393,7 +393,7 @@ fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         // The rename its mesh's former primary wrote while the node was stopped: the row moved to `.old`.
-        let renamed = NodeRow { name: rpc1.name.renamed(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        let renamed = NodeRow { name: rpc1.name.renamed(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         storage.write_record(&renamed).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -437,8 +437,8 @@ fn a_seat_taken_rebuild_finishes_a_lost_writers_pending_release() {
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         let to: PathName = "mesh1.rpc.9".parse().unwrap();
         // The lost writer's two writes: the row at its old key, then the put at the new key; no release.
-        storage.write_record(&NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
-        storage.write_record(&NodeRow { name: to.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some(rpc1.name.clone()), app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: to.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some(rpc1.name.clone()), app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
                 n.is_primary = n.name.to_string() == "mesh1.admin.1";
@@ -477,9 +477,9 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
         // P's writes, as its seat made them.
         for row in [
-            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None },
-            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None },
-            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None },
+            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None },
+            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None },
+            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None },
         ] {
             p_store.write_record(&row).await.unwrap();
         }
@@ -556,7 +556,7 @@ fn a_node_lets_go_only_of_its_own_row() {
         let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
-            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
             store.write_record(&held).await.unwrap();
             assert!(!rdm_admin::node_rows::release_record(&*store, &Default::default(), &held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.record_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");
@@ -785,7 +785,7 @@ mod writer {
         let cap = capture();
         let (err, spawned, row, held) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
-            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
             storage.write_record(&held).await.unwrap();
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
@@ -953,7 +953,7 @@ mod writer {
             )
             .await
             .unwrap();
-            storage.write_record(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+            storage.write_record(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
             let rerun_after_claim = create_attempt(&records, &provider, &builds, &other, "mesh1.rpc.6", 2).await;
             (lost_before_receipt, rerun_after_loss, x, rerun_after_claim)
         });
@@ -1570,7 +1570,7 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId,
     let mp = mesh_primary(&storage);
     let exited = held(&mp, "mesh1.rpc.1").await;
     // The exited birth's row, as its create claimed it.
-    storage.write_record(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+    storage.write_record(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
     let born = NodeId::mint();
     if new_claimed_first {
         mp.rows.claim(&exited.name, &born, create, None, None, ClaimFor::Recovery).await.expect_err("the exited node's live row holds the name");
@@ -1594,7 +1594,7 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId,
 fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded() {
     let cap = capture();
     let (row, exited, born, blue) = cap.run(recovered(false));
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }), "the new node holds the row, seeded from the exited node's config and tags");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the new node holds the row, seeded from the exited node's config and tags");
     assert_eq!(blue, [born.clone()].into(), "the claim indexed the label under the new node's id, the exited node's left with its Deleted row");
     let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted"))], "{deleted:#?}");
@@ -1610,7 +1610,7 @@ fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_
 fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_held_then_seeded() {
     let cap = capture();
     let (row, exited, born, blue) = cap.run(recovered(true));
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }), "the new node holds the row once the name is free, with the exited node's config and tags");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the new node holds the row once the name is free, with the exited node's config and tags");
     assert_eq!(blue, [born.clone()].into(), "the label is indexed under the new node's id only");
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
@@ -1630,7 +1630,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
         let exited = held(&mp, "mesh1.rpc.1").await;
-        storage.write_record(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
         mp.rows.deleted(&exited, delete).await.expect("the recovery's delete writes the Deleted row");
         let born = NodeId::mint();
         mp.rows.claim(&exited.name, &born, "node.create:mesh1.rpc.1", None, None, ClaimFor::Recovery).await.expect("the re-create claims the name");
