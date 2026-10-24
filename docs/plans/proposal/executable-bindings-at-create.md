@@ -71,10 +71,13 @@ Every Build that puts the fabric to pending completes only after its own ready-f
   by name at acceptance, before anything destructive (A1 gap 1). Compatibility, explicit (A1): the
   durable-format move's decoder fills each path's executable in an accepted Build written before the
   field from that Build's old per-kind set, by the path's kind, once, so the source is converted before
-  it is removed; a row written before R6 decodes with none and its node recovers on its path's entry,
-  the recovered row recording it; a path whose entry and row both name none (older than both) has its
-  recovery refused by name, and the repair is a request naming that path's executable, which is the
-  ordinary replacement, never an inference from the recovering admin. A topology edit that changes an
+  it is removed, and that fill is the desired topology only, never a birth's record: the old set names
+  the target, and after an interrupted change an unreplaced birth may run the previous executable. A
+  row written before R6 decodes with none, and a birth whose row records no executable has no
+  automatic recovery: node recovery of it is refused by name, since nothing birth-specific says what it
+  ran (A1); the repair is a request naming that path's executable, the ordinary replacement, which
+  deletes the birth and creates one whose row records what it runs. Never an inference from the
+  recovering admin and never from the topology's entry. A topology edit that changes an
   existing node's executable is the replacement of rule 5, not a refusal (A1 gap 3, inverted on Luke's
   ruling).
 
@@ -151,10 +154,9 @@ back to pending completes only after its own ready-for-traffic round (states.md)
 Node recovery is a create that names no executable on its step, so it takes the row's
 (node-recovery.md "Retained"), never the recovering admin's and never the topology's next entry. A
 heal never upgrades; a pending replacement follows as its own step. A row written before the field
-existed decodes with none: its node recovers on the executable its path's entry names, which the
-format move filled from the Build's older per-kind set, and the recovered row records it. A path whose
-entry and row both name none has its recovery refused by name; the repair is a request naming that
-path's executable.
+existed decodes with none, and a birth whose row records no executable has no automatic recovery: the
+topology's entry is the target, not what the birth ran, so recovery of it is refused by name; the repair
+is a request naming that path's executable, the ordinary replacement.
 
 ## 5. Reads
 
@@ -165,8 +167,8 @@ the rows. The digest, the `Members` projection and `node.topology.get` carry no 
 ## 6. Refusals, by name
 
 A created path with no executable; an executable outside the launcher's directories; a missing file;
-a differing hash; a replacement request for a node whose row records no executable, until it has
-recovered or restarted onto a recorded one.
+a differing hash; node recovery of a birth whose row records no executable (repaired by a replacement
+request naming it).
 ```
 
 **3.2 build.md §1**, after "Counts may remain product-facing resize input, but the compiler resolves a
@@ -297,9 +299,12 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
   acceptance; one inside, from a directory absent from day 0's input, launched;
 - an executable-only replacement of a `Persistent` broker: the successor opens the predecessor's data dir
   with its endpoint key, config and tags inherited; of an `Ephemeral` gateway: a fresh data dir;
-- an accepted Build and a row both in the old format, read together: the entry filled from the old
-  per-kind set, the recovery running it and the row recording it; a path with neither: recovery refused
-  by name, then repaired by a request naming its executable;
+- an accepted Build in the old format: its entries filled from its old per-kind set at decode, the
+  desired topology only; a row in the old format: node recovery of that birth refused by name, then
+  repaired by a request naming its executable, whose successor's row records it;
+- a legacy mixed-version fabric: the old set names B, an unreplaced birth with an old-format row runs
+  A; its recovery refused by name, never re-created on B; the replacement request re-creates it on B
+  by design;
 - `node.get` and `fabric.nodes.get` return each node's executable beside its status; `node.topology.get`
   and the digest carry none;
 - a `Roll` change refused as unknown; the Build wire's reserved slots decode as before.
