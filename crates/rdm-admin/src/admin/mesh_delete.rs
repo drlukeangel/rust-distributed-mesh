@@ -42,6 +42,17 @@ impl MeshDeleter for MeshDeleteDoor {
 }
 
 impl AdminRunner {
+    /// The facts of `build` this admin's own log holds, as its Build-facts door answers them
+    /// (`crate::build_facts_read::BuildFactsDoor::serve`): the read of the fabric-primary that is its own
+    /// mesh's primary, which no Node RPC call reaches (lifecycles/fabric-delete.md step 1).
+    async fn own_build_facts(&self, build: &crate::build::BuildId) -> Result<Vec<crate::build_state::BuildFact>, crate::build_facts_read::FetchFailure> {
+        let held: Vec<crate::build_state::BuildFact> = self.builds.facts().await.map_err(|e| crate::build_facts_read::FetchFailure::NotReady(e.to_string()))?.into_iter().filter(|f| f.build_id() == build).collect();
+        if held.is_empty() {
+            return Err(crate::build_facts_read::FetchFailure::UnknownBuild(build.to_string()));
+        }
+        Ok(held)
+    }
+
     /// The runtime fact the book holds for `node` (its digest).
     fn held_runtime(&self, node: &Node) -> Option<rdm_core::RuntimeFact> {
         self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
@@ -358,14 +369,22 @@ impl AdminRunner {
         handoff: tokio::sync::watch::Receiver<Option<crate::mesh_delete::MeshDeleteOutcome>>,
     ) -> Result<(), RunEnd> {
         let req = StatusRequest::DeleteMesh { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
-        let (out, _) = node_rpc.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
-        match &out {
-            rdm_core::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
-            rdm_core::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::failed(format!("{outer}: {} refused delete-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
+        // The fabric-primary that is the deleting mesh's own primary (its own mesh, the last of
+        // fabric.delete) commands the delete in process: a Node RPC client reaches no endpoint of its own.
+        let replied: Result<StatusReply, String> = match self.mesh_deleter.get().filter(|_| primary.node_id == self.node_id) {
+            Some(own) => Ok(own.delete_mesh(None, None, &req).await),
+            None => match node_rpc.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await.0 {
+                rdm_core::outcome::RpcOutcome::Reply(r) => Ok(r.into_value()),
+                other => Err(format!("{} ({other:?})", other.name())),
+            },
+        };
+        match replied {
+            Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => {}
+            Ok(refused) => return Err(RunEnd::failed(format!("{outer}: {} refused delete-mesh: {} ({refused:?})", primary.name, refused.name()))),
             // The call did not come back: the primary is unreached or the stream broke. A broken stream
             // proves neither a failed step nor a completed one (node-rpc-envelope.md, "Caller execution
             // and certainty"): the leave is incomplete and its receipts stand.
-            other => return Err(RunEnd::Incomplete(format!("{outer}: delete-mesh to {} ended {} ({other:?}): the mesh may or may not have admitted it", primary.name, other.name()))),
+            Err(ended) => return Err(RunEnd::Incomplete(format!("{outer}: delete-mesh to {} ended {ended}: the mesh may or may not have admitted it", primary.name))),
         }
         // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
         // for. The validation covered the accepted roster (and every amendment) exactly, every birth
@@ -662,7 +681,11 @@ impl AdminRunner {
         let build_id = key.build_id.clone();
         let me_name_ref = &me_name;
         let fetch_owner = || async {
-            crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, &owner.target, &build_id).await.map(|f| f.facts).map_err(|e| format!("{me_name_ref}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}"))
+            let read = match &owner.target {
+                rdm_transport::NodeTarget::ExactNode(id) if *id == self.node_id => self.own_build_facts(&build_id).await,
+                target => crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, target, &build_id).await.map(|f| f.facts),
+            };
+            read.map_err(|e| format!("{me_name_ref}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}"))
         };
         let capture = || {
             let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
@@ -751,10 +774,17 @@ impl AdminRunner {
         };
         let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
         let req = StatusRequest::MeshDeleted { mesh_id: key.mesh_id.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
-        let (out, _) = node_rpc.client.call::<Status>(&owner.target, &req, &rdm_transport::CallOptions::default()).await;
-        let outcome = match &out {
-            rdm_core::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
-            other => format!("{} {other:?}", other.name()),
+        // The owner that is this admin itself (the fabric-primary's own mesh) validates the handoff in
+        // process: a Node RPC client reaches no endpoint of its own.
+        let own = matches!(&owner.target, rdm_transport::NodeTarget::ExactNode(id) if *id == self.node_id);
+        let outcome = if own {
+            let r = self.validate_handoff(None, &req).await;
+            format!("{} {r:?}", r.name())
+        } else {
+            match node_rpc.client.call::<Status>(&owner.target, &req, &rdm_transport::CallOptions::default()).await.0 {
+                rdm_core::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
+                other => format!("{} {other:?}", other.name()),
+            }
         };
         tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-sent", mesh_id = %key.mesh_id, operation = %key.operation, owner = %owner, manifest, manifest_receipts, outcome = %outcome)
             .in_scope(|| tracing::info!("the mesh-deleted handoff was called"));
@@ -816,7 +846,12 @@ impl AdminRunner {
         }
         // The manifest: the sender's Build facts, read now.
         let node_rpc = &self.node_rpc;
-        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rdm_transport::NodeTarget::ExactNode(final_node_id.clone()), &build).await.map(|f| f.facts);
+        // The final primary that is this admin (the fabric-primary's own mesh) is read from its own log.
+        let read = if *final_node_id == self.node_id {
+            self.own_build_facts(&build).await
+        } else {
+            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rdm_transport::NodeTarget::ExactNode(final_node_id.clone()), &build).await.map(|f| f.facts)
+        };
         let verdict = match crate::mesh_delete::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &me_name, &final_node_id.to_string()) {
             Ok(v) => v,
             Err(refused) => return refused,

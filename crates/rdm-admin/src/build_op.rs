@@ -87,6 +87,9 @@ enum Admitted {
     /// A mesh's drift its mesh-primary reported (Q118): the attempt opened in the mesh's lane, which
     /// the mesh-primary claims and this fabric-primary runs naming the mesh.
     Reported(crate::control_plane::Opened, PathName),
+    /// The fabric.delete in force, which a second fabric.delete answers (build.md §1): nothing accepted,
+    /// its drive streamed from the attempt it covers.
+    Resumed(crate::control_plane::Opened, Disposition),
 }
 
 impl BuildDoor {
@@ -125,7 +128,11 @@ impl BuildDoor {
             }
             BuildChange::CreateMesh { mesh } => topology(TopologyChange::CreateMesh { desired: counts(mesh) }).await,
             BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,
-            BuildChange::DeleteFabric => topology(TopologyChange::DeleteFabric).await,
+            BuildChange::DeleteFabric => match cp.fabric_delete_in_force().await {
+                Ok(Some((o, failed))) => return Ok(Admitted::Resumed(o, if failed { Disposition::NextAttempt } else { Disposition::Attached })),
+                Ok(None) => topology(TopologyChange::DeleteFabric).await,
+                Err(r) => Err(r),
+            },
             // A roll is a topology Build: the set becomes the accepted topology's launch set
             // (proposal roll.md steps 1-2).
             BuildChange::Roll { bindings } => topology(TopologyChange::Roll { bindings: bindings.clone() }).await,
@@ -269,6 +276,11 @@ impl BuildDoor {
                     }
                     Ok(Admitted::Reported(opened, claimant)) => {
                         return self.drift_run(opened, claimant, sink).await
+                    }
+                    Ok(Admitted::Resumed(o, disposition)) => {
+                        let drive = self.drives.ensure(&self.env, &o.build_id, o.attempt);
+                        let sink = started(sink, BuildReply::Started { build_id: o.build_id.to_string(), attempt: o.attempt, disposition }).await?;
+                        return stream_frames(sink, drive.reader(o.attempt)).await;
                     }
                     Err(refusal) => return Ok(refusal),
                 };
@@ -914,7 +926,19 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
                 .in_scope(|| tracing::info!("the Build read after the current-Build read is no longer in progress: a failed Build is never current, and only a caller's resubmit drives it on (R-BI3)"));
             Vec::new()
         }
-        Ok(b) => vec![drives.ensure(env, &b.build_id, b.attempt_to_drive())],
+        Ok(b) => {
+            let mut driven = vec![drives.ensure(env, &b.build_id, b.attempt_to_drive())];
+            // The drives this admin holds of the Builds a fabric.delete interrupts are driven on, so each
+            // caller's run receives its terminal, `Failed` naming the delete (build.md §1).
+            if b.deletes_fabric() {
+                for held in drives.unended().into_iter().filter(|h| *h != b.build_id) {
+                    if let Ok(p) = env.builds.read_build(&held).await {
+                        driven.push(drives.ensure(env, &held, p.attempt_to_drive()));
+                    }
+                }
+            }
+            driven
+        }
         Err(e) => {
             tracing::info!(error = %e, build_id = %id.log(), "the current Build is unreadable; nothing driven");
             Vec::new()

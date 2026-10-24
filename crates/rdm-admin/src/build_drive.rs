@@ -560,6 +560,16 @@ impl std::fmt::Display for SeatMoveEnd {
     }
 }
 
+/// Where a Build a fabric.delete interrupts stands ([`DriveEnv::end_interrupted`]).
+enum Interrupted {
+    /// Its attempts ended and its terminal is `Failed` at `attempt`, for `reason`.
+    Ended { attempt: u32, reason: String },
+    /// Its last admitted operation completed it at `attempt`.
+    Converged { attempt: u32 },
+    /// An attempt of it still runs, named.
+    Open(String),
+}
+
 /// How one pass of a drive ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriveEnd {
@@ -656,6 +666,11 @@ impl Drives {
     /// The Build left history: its drive's record goes with it.
     pub fn forget(&self, build_id: &BuildId) {
         self.drives.lock().unwrap().remove(build_id);
+    }
+
+    /// The Builds whose drive this admin holds and has not ended.
+    pub fn unended(&self) -> Vec<BuildId> {
+        self.drives.lock().unwrap().iter().filter(|(_, d)| !d.ended()).map(|(id, _)| id.clone()).collect()
     }
 
     /// The drive of `build_id` when one is held (running, stalled, paused or completed).
@@ -1033,7 +1048,14 @@ impl DriveEnv {
             }
             match crate::build_state::drivable(&*self.builds, &p).await {
                 Ok(true) => {}
-                Ok(false) => return self.stalled(&me, drive, format!("{me}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it")),
+                Ok(false) => {
+                    // A fabric.delete accepted after this Build interrupts it (build.md §1): its run receives
+                    // `Failed` naming the delete once its attempts ended, and nothing of it runs again.
+                    if let Ok(Some(delete)) = crate::build_state::interrupted_by(&*self.builds, &p).await {
+                        return self.end_of_interrupted(&me, drive, &p, &delete).await;
+                    }
+                    return self.stalled(&me, drive, format!("{me}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it"));
+                }
                 Err(e) => return self.stalled(&me, drive, format!("{me}: the current Build could not be read to admit Build {id}: {e}")),
             }
             // A roll's remaining work is the members whose row records another sha than the set's for
@@ -1055,6 +1077,13 @@ impl DriveEnv {
                 };
                 (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
+                // The teardown opens once every open attempt of the Builds it interrupts has ended and
+                // each of them has its terminal (build.md §1).
+                if p.deletes_fabric() {
+                    if let Some(end) = self.interrupted_ended(&me, drive, &p).await {
+                        return end;
+                    }
+                }
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
                 }
@@ -1236,6 +1265,102 @@ impl DriveEnv {
                 }
             }
         }
+    }
+
+    /// The run of `p`, which the fabric.delete `delete` interrupts, ends at the Build's terminal: `Failed`
+    /// naming the delete once its attempts ended ([`Self::end_interrupted`]), or the `Complete` its last
+    /// admitted operation reached. While an attempt of it still runs, the drive stalls naming it.
+    async fn end_of_interrupted(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, delete: &BuildProjection) -> DriveEnd {
+        match self.end_interrupted(me, p, delete).await {
+            Interrupted::Ended { attempt, reason } => {
+                drive.finish(rdm_core::reply::build::failed(p.build_id.to_string(), attempt, String::new(), "fabric.delete".into(), crate::build_run::bounded_reason(reason), rdm_core::outcome::Code::Aborted));
+                DriveEnd::Terminal
+            }
+            Interrupted::Converged { attempt } => {
+                drive.finish(BuildReply::Complete { build_id: p.build_id.to_string(), attempt });
+                DriveEnd::Terminal
+            }
+            Interrupted::Open(why) => self.stalled(me, drive, why),
+        }
+    }
+
+    /// The fabric.delete `delete` opens its teardown only once every Build it interrupts has its
+    /// terminal (build.md §1): `Some` stalls the delete's drive, blocked naming the attempt it waits for.
+    async fn interrupted_ended(&self, me: &PathName, drive: &Arc<Drive>, delete: &BuildProjection) -> Option<DriveEnd> {
+        let active = match self.builds.list_active().await {
+            Ok(active) => active,
+            Err(e) => return Some(self.stalled(me, drive, format!("{me}: the Builds fabric.delete {} interrupts could not be read: {e}", delete.build_id))),
+        };
+        for p in active.iter().filter(|b| (b.submitted_at_ms, &b.build_id) < (delete.submitted_at_ms, &delete.build_id)) {
+            if let Interrupted::Open(why) = self.end_interrupted(me, p, delete).await {
+                self.blocked(drive, delete.attempt_to_drive(), "", "interrupted-build", &why);
+                return Some(self.stalled(me, drive, why));
+            }
+        }
+        None
+    }
+
+    /// Where `p`, which the fabric.delete `delete` interrupts, stands, and its terminal written once its
+    /// attempts ended (build.md §1). An attempt running at its executor ends within its bound: the run
+    /// stops at its next operation and hands back, and one whose executor departed ends on that
+    /// departure's exact proof, the attempt failing then. With no attempt running, this fabric-primary
+    /// claims the next attempt for itself and ends it `Failed` naming the delete, running nothing: the
+    /// Build's terminal, after which nothing reconciles it again.
+    async fn end_interrupted(&self, me: &PathName, p: &BuildProjection, delete: &BuildProjection) -> Interrupted {
+        let id = &p.build_id;
+        let p = match self.builds.read_build(id).await {
+            Ok(p) => p,
+            Err(e) => return Interrupted::Open(format!("{me}: Build {id}, which fabric.delete {} interrupts, could not be read: {e}", delete.build_id)),
+        };
+        match p.state {
+            BuildState::Complete => return Interrupted::Converged { attempt: p.attempt },
+            BuildState::Failed => return Interrupted::Ended { attempt: p.failed_at.unwrap_or(p.attempt), reason: p.last_failure.clone().unwrap_or_default() },
+            BuildState::Pending | BuildState::Running => {}
+        }
+        if let Some((mesh, lane)) = p.lanes.iter().find(|(_, l)| l.state == BuildState::Running) {
+            return Interrupted::Open(format!(
+                "{me}: attempt {} of mesh {mesh}'s drift lane of Build {id}, which fabric.delete {} interrupts, runs at {}: the teardown waits for it to end",
+                lane.attempt,
+                delete.build_id,
+                lane.executor.as_deref().unwrap_or("no recorded executor")
+            ));
+        }
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-interrupted-terminal", build_id = %id.log(), delete_build_id = %delete.build_id.log(), node = %me, attempt = tracing::field::Empty, executor = tracing::field::Empty);
+        let attempt = if p.state == BuildState::Running {
+            let Some(executor) = p.executor.as_deref().and_then(parse_path) else {
+                return Interrupted::Open(format!("{me}: attempt {} of Build {id} is claimed by {:?}, which is not a path.name", p.attempt, p.executor));
+            };
+            if let Err(not_proven) = self.departure.proven(&executor).await {
+                return Interrupted::Open(format!(
+                    "{me}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs at {executor} ({not_proven}): the teardown waits for it to end within its bound",
+                    p.attempt, delete.build_id
+                ));
+            }
+            span.record("executor", executor.to_string().as_str());
+            p.attempt
+        } else {
+            let claim = crate::build_state::BuildAttemptClaim { build_id: id.clone(), attempt: p.attempt + 1, executor: me.to_string(), claimant: Some(me.to_string()), mesh: None };
+            match self.builds.claim_attempt(&claim).await {
+                Ok(crate::build_state::ClaimOutcome::Won) => p.attempt + 1,
+                Ok(other) => return Interrupted::Open(format!("{me}: attempt {} of Build {id}, which fabric.delete {} interrupts, could not be taken to end it: {other:?}", p.attempt + 1, delete.build_id)),
+                Err(e) => return Interrupted::Open(format!("{me}: attempt {} of Build {id}, which fabric.delete {} interrupts, could not be taken to end it: {e}", p.attempt + 1, delete.build_id)),
+            }
+        };
+        span.record("attempt", attempt);
+        let reason = crate::build_state::interrupted_reason(id, &delete.build_id);
+        let verdict = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone(), code: rdm_core::outcome::Code::Aborted } };
+        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
+            return Interrupted::Open(format!("{me}: the terminal of Build {id}, which fabric.delete {} interrupts, could not be written: {e}", delete.build_id));
+        }
+        // The ended attempt holds its executor's mesh no longer (R-BI7 caveat 3).
+        if let Some(executor) = p.executor.as_deref().and_then(parse_path) {
+            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt: p.attempt, claimant: me.to_string() };
+            if let Err(e) = self.door.claims.release_in_flight(&executor.mesh, &row).await {
+                span.in_scope(|| tracing::info!(error = %e, mesh = %executor.mesh, "the ended attempt's in-flight row could not be released: the mesh stays held by it"));
+            }
+        }
+        span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempts ended: its run ends Failed naming the fabric.delete"));
+        Interrupted::Ended { attempt, reason }
     }
 
     /// Every node.primary.update that precedes an operation of `plan`, acknowledged through the gate

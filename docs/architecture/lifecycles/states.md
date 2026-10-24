@@ -76,7 +76,7 @@ name, `fabric-not-ready`:
   node.delete, node.update and the [replace recipe](node-replace.md).
 
 The initial accepted Build, which creates the fabric's nodes and brings the fabric to
-ready-for-traffic, runs as usual. Once the fabric is ready-for-traffic these are admitted as
+ready-for-traffic, runs as usual. fabric.delete is admitted before the first ready-for-traffic, the Build in progress or not (build.md §1): it ends the fabric, and its own mesh.delete and node.delete steps, and only those, run exempt from this refusal; launch and delete evidence is retained until the teardown completes. Once the fabric is ready-for-traffic these are admitted as
 usual. A Build is refused at build.create with the Build family's existing `Rejected` refusal
 ([Build refusals](../node-rpc-envelope.md#fabric-not-ready-refusal)).
 The reason is that before state-commit the Fabric record and each mesh's Mesh record live only in

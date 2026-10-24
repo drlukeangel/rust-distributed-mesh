@@ -133,6 +133,13 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
         detail = tracing::field::Empty,
     );
     let reply = async {
+        // A Build a fabric.delete interrupts opens no further attempt (build.md §1): its claim is refused
+        // naming the delete, the Build in progress, and nothing is taken or written.
+        if let Ok(p) = builds.read_build(&claim.build_id).await {
+            if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &p).await {
+                return rdm_core::reply::build_claim::build_in_progress(delete.build_id.to_string(), mesh.to_string(), None);
+            }
+        }
         let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()) };
         let decided = match builds.claim_in_flight(claim, claims, mesh, &row).await {
             // The same attempt another claimant took on the store: this claim lost (build.md §5.2, Q142).

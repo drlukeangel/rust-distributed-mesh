@@ -77,6 +77,10 @@ pub struct AdminRunner {
     pub leaves: Arc<crate::mesh_delete::MeshDeleteBook>,
     /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
     pub mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns,
+    /// This admin's own mesh.delete door: the fabric-primary that is its own mesh's primary (the last
+    /// mesh of fabric.delete, lifecycles/fabric-delete.md step 1) commands that mesh's delete here, in
+    /// process, as a Node RPC client reaches no endpoint of its own.
+    pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
     /// The fabric-primary handover: this admin's initiator, doors and recorded operations.
     pub handover: Arc<crate::fabric_handover::HandoverDoor>,
     /// The signer this admin issues a new mesh's first admin's issuing material with.

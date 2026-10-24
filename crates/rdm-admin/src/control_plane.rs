@@ -196,20 +196,47 @@ impl ControlPlane {
     /// and the refusal when it is still reconciling. The admission is taken first and returned with
     /// the Build: the caller holds it through its write.
     async fn current_settled(&self) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
+        let (admission, current) = self.current_read().await?;
+        settled(&current)?;
+        Ok((admission, current))
+    }
+
+    /// The current Build (R-BI3), in progress or not, with the admission taken first and returned with
+    /// it: what fabric.delete, the one Build that may interrupt the Build in progress (build.md §1),
+    /// is compiled against.
+    async fn current_read(&self) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
         let admission = self.admission.clone().lock_owned().await;
         // "Never written" and "could not be read" are distinct refusals: the store's own error is named.
         let current = self.builds.current().await.map_err(Refusal::State)?.ok_or_else(|| {
             Refusal::Unavailable("this admin holds no current Build yet (no Build in its builds store is in progress or completed); submit through a Ready node-admin".into())
         })?;
-        if matches!(current.state, BuildState::Pending | BuildState::Running) {
-            // A topology Build in progress refuses a second topology change fabric-wide (build.md §1,
-            // R-BI7): named by the mesh its claimed attempt acts in and its claimant, when claimed.
-            let held = holding(&current, None).unwrap_or_else(|| InProgress { current_build_id: current.build_id.clone(), mesh: None, held_by: None });
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
-                .in_scope(|| tracing::info!("another Build is reconciling: one topology Build in flight"));
-            return Err(Refusal::BuildInProgress(held));
-        }
         Ok((admission, current))
+    }
+
+    /// The fabric.delete in force, which a second fabric.delete answers and accepts nothing beside
+    /// (build.md §1: "No other Build ends another"; a successor reads the delete as the current Build
+    /// and continues it): the newest Build accepted, when it is a fabric.delete, in progress, complete,
+    /// or failed with its intent retained. Its attempt is the one its drive covers now; `true` when
+    /// that attempt follows a failed one.
+    pub async fn fabric_delete_in_force(&self) -> Result<Option<(Opened, bool)>, Refusal> {
+        let current = self.builds.current().await.map_err(Refusal::State)?;
+        if let Some(c) = current.as_ref().filter(|c| c.deletes_fabric()) {
+            return Ok(Some((Opened { build_id: c.build_id.clone(), attempt: c.attempt_to_drive(), mesh: None }, false)));
+        }
+        // A delete whose attempt failed is never current (R-BI3): it is the newest acceptance.
+        let Some(newest) = self.builds.newest_accepted_at_ms().await.map_err(Refusal::State)? else { return Ok(None) };
+        if current.as_ref().is_some_and(|c| c.submitted_at_ms >= newest) {
+            return Ok(None);
+        }
+        let facts = self.builds.facts().await.map_err(Refusal::State)?;
+        let Some(id) = facts.iter().rev().find_map(|f| match f {
+            crate::build_state::BuildFact::Accepted(a) if a.submitted_at_ms == newest && matches!(a.submitted_change, Some(TopologyChange::DeleteFabric)) => Some(a.build_id.clone()),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let p = self.builds.read_build(&id).await.map_err(Refusal::State)?;
+        Ok((p.state == BuildState::Failed).then(|| (Opened { build_id: p.build_id.clone(), attempt: p.attempt_to_drive(), mesh: None }, true)))
     }
 
     /// The current Build (R-BI3) for an attempt that acts in `mesh` alone with `action`, and the
@@ -415,15 +442,26 @@ impl ControlPlane {
             // fabric first reached ready-for-traffic (states.md "The initial fabric before
             // ready-for-traffic"), before the Build in progress is read, as the roll, a recipe and a node
             // workflow are: the Build that changes the initial fabric is in progress until its ready-for-traffic state is set (Q154).
-            let deletes = match &change {
+            let standalone_delete = match &change {
                 TopologyChange::RemoveNode { node } => Some(format!("node.delete {node}")),
                 TopologyChange::RemoveMesh { mesh } => Some(format!("mesh.delete {mesh}")),
                 _ => None,
             };
-            if let Some(workflow) = deletes {
+            if let Some(workflow) = standalone_delete {
                 self.admit_once_ready(route, workflow, &outer).await?;
             }
-            let (_admitted, current) = self.current_settled().await?;
+            // fabric.delete is the one Build that may interrupt the Build in progress (build.md §1): it is
+            // compiled against the current Build whatever its state, and a fabric.delete in force answers
+            // a second one, which accepts nothing.
+            let deletes = matches!(change, TopologyChange::DeleteFabric);
+            let (_admitted, current) = if deletes { self.current_read().await? } else { self.current_settled().await? };
+            if deletes {
+                if let Some((resumed, _)) = self.fabric_delete_in_force().await? {
+                    span.record("build_id", resumed.build_id.as_str());
+                    tracing::info!(build_id = %resumed.build_id.log(), attempt = resumed.attempt, "a fabric.delete is in force: this one answers it and accepts nothing");
+                    return Ok(resumed);
+                }
+            }
             if let TopologyChange::Roll { bindings } = &change {
                 let provider = self.topology.read().await.fabric.provider;
                 if let Some(reject) = roll_set_refusal(bindings, &current.topology, provider).await {
@@ -454,9 +492,17 @@ impl ControlPlane {
                 }
             };
             let operations = crate::accepted::plan(&topology, &observed, None).operations;
+            // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
+            // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
+            // mesh.delete and node.delete steps, and only those, run before the first ready-for-traffic
+            // (build.md §1; states.md, "The initial fabric before ready-for-traffic").
+            let interrupts = operations.iter().any(|op| matches!(op, crate::build::BuildOperation::DeleteFabric { .. }));
+            if deletes && !interrupts {
+                settled(&current)?;
+            }
             // A mesh whose own drift attempt is open is held by it: a topology operation on that mesh
             // is refused, naming the Build, the mesh and the mesh-primary holding it (R-BI7 caveat 3).
-            if let Some(held) = operations.iter().filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))) {
+            if let Some(held) = operations.iter().filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))).filter(|_| !interrupts) {
                 outer.in_scope(|| {
                     tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
                         .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
@@ -465,10 +511,9 @@ impl ControlPlane {
             }
             // A Build that deletes a node or a mesh writes caller state: it waits for the initial fabric
             // to first reach ready-for-traffic (R-PC1).
-            if let Some(workflow) = operations.iter().find_map(|op| match op {
+            if let Some(workflow) = operations.iter().filter(|_| !interrupts).find_map(|op| match op {
                 crate::build::BuildOperation::RetireNode { node, exited: None } => Some(format!("node.delete {node}")),
                 crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(format!("mesh.delete {mesh}")),
-                crate::build::BuildOperation::DeleteFabric { fabric_id } => Some(format!("fabric.delete {fabric_id}")),
                 _ => None,
             }) {
                 self.admit_once_ready(route, workflow, &outer).await?;
@@ -1301,6 +1346,18 @@ fn next_in_lane(p: &crate::build_state::BuildProjection, lane: Option<&str>) -> 
         None => p.attempt + 1,
         Some(mesh) => p.lanes.get(mesh).map_or(0, |l| l.attempt) + 1,
     }
+}
+
+/// The refusal of a second topology change while `current` is in progress (build.md §1, R-BI7): named
+/// by the mesh its claimed attempt acts in and its claimant, when claimed.
+fn settled(current: &crate::build_state::BuildProjection) -> Result<(), Refusal> {
+    if !matches!(current.state, BuildState::Pending | BuildState::Running) {
+        return Ok(());
+    }
+    let held = holding(current, None).unwrap_or_else(|| InProgress { current_build_id: current.build_id.clone(), mesh: None, held_by: None });
+    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
+        .in_scope(|| tracing::info!("another Build is reconciling: one topology Build in flight"));
+    Err(Refusal::BuildInProgress(held))
 }
 
 /// The mesh `op` acts in.

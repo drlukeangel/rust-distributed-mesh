@@ -512,12 +512,29 @@ impl FabricRounds {
         }
     }
 
+    /// Whether the current Build `build` is a fabric.delete: the fabric climbs no more, a round this
+    /// fabric-primary drives ends at the delete's acceptance with its hook's future dropped, and no round
+    /// is opened for the delete (build.md §1). The blocker names the delete.
+    fn deleting(&self, climb: &mut Climb, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
+        if !build.deletes_fabric() {
+            return false;
+        }
+        if let Some(run) = climb.sync.take() {
+            run.task.abort();
+        }
+        self.block(climb, &[Missing { who: "build".into(), why: "fabric-delete" }], &format!("fabric.delete Build {} is the current Build: no round is opened", build.build_id), me);
+        true
+    }
+
     async fn step_pending(self: &Arc<Self>, climb: &mut Climb, view: &Topology) {
         let me = self.held_name_in(view);
         let accepted = match self.env.builds.current().await {
             Ok(b) => b,
             Err(e) => return self.block(climb, &[unreadable(&e)], "state-sync names the current Build", &me),
         };
+        if accepted.as_ref().is_some_and(|b| self.deleting(climb, b, &me)) {
+            return;
+        }
         let mut blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
         // During a roll a member still on its old binary does not satisfy its planned replacement: the
         // fabric climbs once every planned member is on the set (states.md "Resize and roll"; proposal
@@ -577,7 +594,7 @@ impl FabricRounds {
             Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build", &me),
             Err(e) => return self.block(climb, &[unreadable(&e)], "sync_state names the current Build", &me),
         };
-        if self.topology_moved(climb, &build, &me) {
+        if self.topology_moved(climb, &build, &me) || self.deleting(climb, &build, &me) {
             return;
         }
         let parent = climb.root.clone().unwrap_or_else(tracing::Span::none);
@@ -675,7 +692,7 @@ impl FabricRounds {
             Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build", &me),
             Err(e) => return self.block(climb, &[unreadable(&e)], "commit-state names the current Build", &me),
         };
-        if self.topology_moved(climb, &build, &me) {
+        if self.topology_moved(climb, &build, &me) || self.deleting(climb, &build, &me) {
             return;
         }
         match &climb.key {

@@ -277,7 +277,11 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     // The delete of a mesh's only node skips node.primary.update; a fabric seat on it still moves, out
     // of its mesh, which has no other node-admin to take it (C2 search step 2), unless every mesh of
     // the fabric is already Dead (fabric-delete.md step 4: the separate node.delete of the fabric-primary).
-    if delete && t.only_node(&node.mesh, &holder.node_id) {
+    // The final primary of a mesh whose delete was accepted (its mesh leaving or dead) is deleted by the
+    // separate node.delete after its mesh.deleted (mesh-delete.md step 7): no other member is left to
+    // take its mesh seat, which goes with the mesh.
+    let mesh_deleted = t.meshes.iter().any(|m| m.name == node.mesh && matches!(m.status, crate::model::ScopeStatus::Leaving | crate::model::ScopeStatus::Dead));
+    if delete && (t.only_node(&node.mesh, &holder.node_id) || mesh_deleted) {
         if !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) {
             return None;
         }
@@ -486,6 +490,12 @@ impl BuildExecutor {
         let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
+            // A fabric.delete accepted after this Build interrupts it (build.md §1): the operation admitted
+            // before ended within its bound and its receipts stand, and nothing further is opened. The run
+            // hands back to the fabric-primary, which writes the Build's terminal naming the delete.
+            if let Ok(Some(delete)) = crate::build_state::interrupted_by(builds, &build).await {
+                return self.interrupted(builds, &build, attempt, operations[..i].to_vec(), op, &delete.build_id, span).await;
+            }
             // After the first operation the view can name another executor for the rest: the run
             // seated a mesh's first admin, which executes that mesh's members from then on. The
             // operation then belongs to the admin the view now names, and it is passed to it unrun;
@@ -536,6 +546,21 @@ impl BuildExecutor {
         let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
         builds.note_blocked(&build.build_id, None, attempt, &op.key(), "incomplete", &reason).await;
         tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
+        self.hand_off(builds, build, attempt, ran, to).await
+    }
+
+    /// The run stops before `next` because the fabric.delete `delete` interrupts its Build (build.md §1):
+    /// what it ran stands, `next` is never opened, and the attempt is handed to the fabric-primary of the
+    /// view the run ends with, which ends the Build `Failed` naming the delete once its attempts ended.
+    #[allow(clippy::too_many_arguments)]
+    async fn interrupted(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, next: &BuildOperation, delete: &BuildId, span: &tracing::Span) -> Reconciled {
+        let reason = crate::build_state::interrupted_reason(&build.build_id, delete);
+        span.record("incomplete", reason.as_str());
+        let me = self.held_name().await;
+        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
+        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key(), to = %to)
+            .in_scope(|| tracing::info!("a fabric.delete accepted after this Build interrupts it: the next operation is not opened and the attempt is handed to the fabric-primary"));
+        builds.note_blocked(&build.build_id, None, attempt, &next.key(), "interrupted", &reason).await;
         self.hand_off(builds, build, attempt, ran, to).await
     }
 

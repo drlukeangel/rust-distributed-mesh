@@ -1332,6 +1332,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let _ = handover_slot.set(handover.clone());
                             let runner = Arc::new(AdminRunner {
                                 listeners: listener_names.clone(),
+                                mesh_deleter: mesh_deleter.clone(),
                                 connections: Some(connections_storage.clone()),
                                 nodes_storage: nodes_storage.clone(),
                                 mesh_storage: mesh_storage.clone(),

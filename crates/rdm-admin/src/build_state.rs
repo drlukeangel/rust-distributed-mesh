@@ -386,6 +386,11 @@ impl Lane {
 }
 
 impl BuildProjection {
+    /// Whether the change that produced this Build is fabric.delete.
+    pub fn deletes_fabric(&self) -> bool {
+        matches!(self.submitted_change, Some(TopologyChange::DeleteFabric))
+    }
+
     /// Whether any mesh's drift lane holds an attempt open.
     pub fn lane_open(&self) -> bool {
         self.lanes.values().any(Lane::is_open)
@@ -540,6 +545,25 @@ pub async fn drivable(builds: &dyn BuildStateAdapter, p: &BuildProjection) -> Re
             (p.submitted_at_ms, &p.build_id) > (c.submitted_at_ms, &c.build_id)
         }
     })
+}
+
+/// The fabric.delete that interrupts `p` (build.md §1: "The one exception is fabric.delete, which may
+/// interrupt the Build in progress"): the current Build, when it is a fabric.delete accepted after `p`.
+/// Its acceptance record is the durable intent: from it on, `p` opens no further operation and is never
+/// resumed. `None` while `p` is the current Build, or the current Build is no fabric.delete accepted
+/// after it.
+pub async fn interrupted_by(builds: &dyn BuildStateAdapter, p: &BuildProjection) -> Result<Option<BuildProjection>, BuildStateError> {
+    let Some(id) = builds.current_build().await?.into_build_id() else { return Ok(None) };
+    if id == p.build_id {
+        return Ok(None);
+    }
+    let current = builds.read_build(&id).await?;
+    Ok((current.deletes_fabric() && (current.submitted_at_ms, &current.build_id) > (p.submitted_at_ms, &p.build_id)).then_some(current))
+}
+
+/// Why the run of `interrupted` ends: the fabric.delete `delete` accepted after it (build.md §1).
+pub fn interrupted_reason(interrupted: &BuildId, delete: &BuildId) -> String {
+    format!("Build {interrupted} is interrupted by fabric.delete Build {delete}, accepted after it: its open attempts have ended, it opens no further operation and is never resumed")
 }
 
 /// Accept `accepted` (build.md §5.2, acceptance): the Build entity is written once into the builds
