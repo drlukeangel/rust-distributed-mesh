@@ -827,8 +827,10 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
 /// claimed attempt 1, and no executor ran it. `mesh2.admin.2` takes mesh2's seat over the same Build
 /// log and rows. Its recovery of another birth (the lost primary's own) is refused build-in-progress
 /// naming mesh2 and the opener the row names: the open attempt holds the mesh. Its recovery of the
-/// member's exited birth claims the open attempt 1 itself: the claim is the attempt's first, so it
-/// wins, and the lane runs attempt 1 under `mesh2.admin.2` with the action the opener opened.
+/// member's exited birth is a second claimant of attempt 1: the row the opener took is its claim on the
+/// store (build.md §5.2, Q142), held while the opener's departure is unproven; once proven, the row is
+/// released and the member's recovery claims the open attempt 1, which runs under `mesh2.admin.2`
+/// with the action the opener opened.
 /// Must NOT happen: mesh2 held for good by an attempt no one claimed, a verdict written for an
 /// attempt no one ran, or a second attempt opened for the birth an open attempt already carries.
 #[tokio::test]
@@ -855,7 +857,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
 
     // What mesh2's primary wrote before it was lost: mesh2's in-flight row for attempt 1, then the
     // attempt's open carrying the member's recovery. Its claim was never written.
-    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap() };
+    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap(), create_only: false };
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() };
     assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
@@ -893,10 +895,18 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     };
     assert_eq!((other_before["current_build_id"].as_str(), other_before["mesh"].as_str()), (Some(b0.as_str()), Some("mesh2")), "{other_before}");
 
-    // The member's recovery claims the open attempt: it is not reopened, and nothing ends it.
+    // The row the lost opener took is its claim on the store (build.md §5.2, Q142): the member's recovery
+    // is a second claimant of attempt 1 and is held while that claimant's departure is unproven.
+    match heir.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await {
+        Err(Refusal::BuildInProgress(..)) => {}
+        other => panic!("while the lost opener's claim of attempt 1 stands, the member's recovery is held: {other:?}"),
+    }
+    // Its departure proven, the departed claimant's row is released and the member's recovery claims the
+    // open attempt: it is not reopened.
+    departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let taken = match heir.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await {
         Ok(Recovery::Opened(o)) => o,
-        other => panic!("the new mesh-primary claims the attempt its lost opener left unclaimed: {other:?}"),
+        other => panic!("the new mesh-primary claims the attempt its departed opener left: {other:?}"),
     };
     assert_eq!((taken.build_id.clone(), taken.mesh.as_deref(), taken.attempt), (b0.clone(), Some("mesh2"), 1), "attempt 1 of mesh2's lane, the one open");
     let p = builds.read_build(&b0).await.unwrap();
@@ -930,8 +940,8 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     assert_eq!(decided.len(), 1, "one claim decided: {decided:?}");
     let (_, d) = &decided[0];
     assert_eq!((d["lane"].as_str(), d["attempt"].as_str(), d["node"].as_str(), d["outcome"].as_str()), ("mesh2", "1", "mesh2.admin.2", "won"), "{d:?}");
-    assert!(capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "nothing is ended or released: no one claimed the attempt");
-    let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string()).expect("the member's recovery span");
+    assert!(!capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "the departed opener's row is released on its departure (Q142: the row is its claim)");
+    let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["outcome"] == "admitted").expect("the member's admitted recovery span");
     assert_eq!((recovery.1["attempt"].as_str(), recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("1", "admitted", "held-open"), "{recovery:?}");
     // The refusal before the claim named the opener the row names: an open attempt's holder.
     assert_eq!(other_before["held_by"].as_str(), Some("mesh2.admin.1"), "{other_before}");
@@ -946,9 +956,9 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
 /// so attempt 1 ends Failed. The primary resubmits: it takes mesh2's in-flight row for attempt 2 and
 /// opens it with the same recovery, and is lost before it claims it. `mesh2.admin.2` takes mesh2's
 /// seat over the same Build log and rows and records the lost primary's exit. The member is owed a
-/// submit from attempt 1's Failed verdict: an open no one claimed ran nothing and ends no run. Its
-/// owed submit claims the open attempt 2 as it stands (the in-flight row names that very attempt),
-/// and once claimed nothing is owed. Until then the lost primary's own recovery is refused
+/// submit from attempt 1's Failed verdict: an open no one ran ends no run. The row the lost primary took
+/// is its claim on the store (build.md §5.2, Q142), released on its recorded departure; the owed submit
+/// then claims the open attempt 2 as it stands, and once claimed nothing is owed. Until then the lost primary's own recovery is refused
 /// build-in-progress naming mesh2 and the opener the row names. Must NOT happen: the member's exit
 /// owed nothing while no attempt runs it (mesh2 held for good by the open attempt; seen at
 /// node_replace's a_failed_build_ cell, s23 part 16: mesh2.admin.2's recovery of mesh2.admin.1
@@ -992,7 +1002,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
 
     // The resubmit: mesh2's in-flight row for attempt 2, then attempt 2's open carrying the same
     // recovery. Its claim was never written: the primary was lost between the two.
-    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone() };
+    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone(), create_only: false };
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into() };
     assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
@@ -1062,5 +1072,5 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     }
     let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["attempt"] == "2").expect("the owed submit's recovery span");
     assert_eq!((recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("admitted", "held-open"), "{recovery:?}");
-    assert!(capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "nothing is ended or released: the row names the attempt claimed");
+    assert!(!capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "the departed opener's row, its claim on the store (Q142), is released on its departure before the owed submit claims attempt 2");
 }

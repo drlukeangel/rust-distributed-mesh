@@ -249,7 +249,7 @@ impl FabricRecoveryDoor {
                         }
                         (_, Some(inspected)) => {
                             submitted = true;
-                            done = self.submit(&node, &inspected, &mut next_submit, &mut backoff, ceiling).await;
+                            done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
                         }
                         (_, None) => {}
                     }
@@ -259,7 +259,7 @@ impl FabricRecoveryDoor {
                 (Some(node), None) if submitted && !done && std::time::Instant::now() >= next_submit => {
                     // Investigated already: its re-create is owed again after a submit that ended without it.
                     let inspected = crate::deployment::provider::Inspected::Unavailable("re-create owed after a submit that ended without the node".into());
-                    done = self.submit(&node, &inspected, &mut next_submit, &mut backoff, ceiling).await;
+                    done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
                 }
                 (None, None) if !done && std::time::Instant::now() >= next_submit => {
                     let mut node = Node::allocated(at.clone());
@@ -267,7 +267,7 @@ impl FabricRecoveryDoor {
                     node.incarnation_id = Some(target.incarnation.clone());
                     let inspected = crate::deployment::provider::Inspected::Unavailable("gone from the view".into());
                     submitted = true;
-                    done = self.submit(&node, &inspected, &mut next_submit, &mut backoff, ceiling).await;
+                    done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
                 }
                 _ => {}
             }
@@ -277,8 +277,11 @@ impl FabricRecoveryDoor {
 
     /// One submit of the re-create of `node`: `true` once its attempt completed; else the next is due after
     /// `backoff`, which doubles up to `ceiling`.
-    async fn submit(&self, node: &Node, inspected: &crate::deployment::provider::Inspected, next: &mut std::time::Instant, backoff: &mut std::time::Duration, ceiling: std::time::Duration) -> bool {
-        match self.recovery.submit_route(node, inspected, "fabric-recovery").await {
+    /// From the backbone (`own_mesh` false) the re-create is a node.create alone (fabric-recovery.md step 3,
+    /// Q142): an executor outside the mesh deletes and terminates nothing in it.
+    async fn submit(&self, node: &Node, inspected: &crate::deployment::provider::Inspected, own_mesh: bool, next: &mut std::time::Instant, backoff: &mut std::time::Duration, ceiling: std::time::Duration) -> bool {
+        let route = if own_mesh { "fabric-recovery" } else { "fabric-recovery-backbone" };
+        match self.recovery.submit_route(node, inspected, route).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::info!(node = %node.name, error = %e, retry_ms = backoff.as_millis() as u64, "fabric recovery's re-create ended without the node: owed again after the backoff");

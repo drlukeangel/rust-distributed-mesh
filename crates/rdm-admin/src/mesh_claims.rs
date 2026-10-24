@@ -38,6 +38,12 @@ impl InFlight {
     pub fn same_attempt(&self, other: &InFlight) -> bool {
         self.build_id == other.build_id && self.lane == other.lane && self.attempt == other.attempt
     }
+
+    /// Whether `self` and `other` are the same attempt taken by the same claimant: a repeat take. The
+    /// same attempt taken by another claimant is held, never won (build.md §5.2, Q142).
+    pub fn same_claim(&self, other: &InFlight) -> bool {
+        self.same_attempt(other) && self.claimant == other.claimant
+    }
 }
 
 /// What a take of a mesh's in-flight row came to.
@@ -94,6 +100,39 @@ mod tests {
         assert!(root.meshes("mesh2").join("claims").join("in-flight.json").is_file(), "the row is on the store root under meshes/mesh2/claims/");
         let later = FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap();
         assert_eq!(later.in_flight("mesh2").await.unwrap().map(|h| h.claimant), Some("mesh2.admin.1".to_string()), "a process that opens the root later reads the same row");
+    }
+
+    /// CONTRACT (build.md §5.2, Q142: "the mesh's in-flight row taken by another claimant for the same
+    /// `(build_id, mesh, attempt)` is held, never won, so a second claimant of one attempt loses and runs
+    /// nothing"): two admins each decide a claim of one attempt with neither seeing the other's claim; the
+    /// store's row names the first, the second take of the same attempt is Held naming it, and only the
+    /// first's repeat take is Won. Must NOT happen: two claimants both holding one attempt.
+    async fn a_second_claimant_of_one_attempt_is_held(a: &dyn MeshStorage, b: &dyn MeshStorage) {
+        let build = BuildId::mint();
+        let first = attempt(&build, Some("mesh1"), 8, "mesh2.admin.2");
+        let second = attempt(&build, Some("mesh1"), 8, "mesh1.admin.2");
+        assert_eq!(a.take_in_flight("mesh1", &first).await.unwrap(), Taken::Won, "the first claimant takes attempt 8");
+        assert_eq!(b.take_in_flight("mesh1", &second).await.unwrap(), Taken::Held(first.clone()), "the second claimant of the same attempt is held, naming the first");
+        assert_eq!(a.take_in_flight("mesh1", &first).await.unwrap(), Taken::Won, "the first claimant's repeat take is its own");
+        assert_eq!(b.in_flight("mesh1").await.unwrap(), Some(first), "the store holds one claimant");
+    }
+
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn a_second_claimant_of_one_attempt_on_the_store_root_is_held() {
+        use crate::model::IncarnationId;
+        use crate::storage::FileMeshStorage;
+        use crate::store_root::StoreRoot;
+        let d = crate::test_support::tempdir("mesh-claims-second");
+        let root = StoreRoot::at(&d);
+        let (a, b) = (FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap(), FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap());
+        a_second_claimant_of_one_attempt_is_held(&a, &b).await;
+    }
+
+    #[tokio::test]
+    async fn a_second_claimant_of_one_attempt_in_memory_is_held() {
+        let shared = crate::storage::MemoryMeshStorage::default();
+        a_second_claimant_of_one_attempt_is_held(&shared, &shared).await;
     }
 
     /// CONTRACT: the in-flight rows of a memory mesh storage decide as the store root's do.

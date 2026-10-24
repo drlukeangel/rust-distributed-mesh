@@ -2398,6 +2398,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             }
                                                         });
                                                     }
+                                                    // A second birth another executor made at a path.name of this mesh across a cut:
+                                                    // superseded, its row written deleted and its NodeDeleted published, so its next
+                                                    // digest is a deleted birth heard again (node-investigation.md, Q142).
+                                                    if holds_seat {
+                                                        for op in recovery.superseded_births(&view, &mesh).await {
+                                                            runner.lifecycle_events.deleted(&op).await;
+                                                        }
+                                                    }
                                                     // A deleted birth of this mesh heard again by its own digest: refused by every
                                                     // book, and reported to the fabric-primary, which terminates its runtime
                                                     // (node-investigation.md, Q110, Q128).

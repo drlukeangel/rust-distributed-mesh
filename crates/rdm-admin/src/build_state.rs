@@ -1176,7 +1176,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::DeleteConnections { path, from_incarnation }) => format!("node.connections.delete of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Delete { path, from_incarnation }) => format!("delete of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recipe { steps, .. }) => format!("recipe of {} step(s): {}", steps.len(), steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(", ")),
         Some(crate::accepted::AttemptAction::Terminate { path, node_id, from_incarnation }) => format!("termination of the deleted birth {node_id} at {from_incarnation} of {path}"),
@@ -1467,7 +1467,7 @@ pub fn birth_entries(fact: &BuildFact) -> Vec<BirthEntry> {
     }
     match fact {
         BuildFact::Opened(o) => {
-            if let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) = &o.action {
+            if let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = &o.action {
                 out.push(BirthEntry::RecoveryOpened { node_id: node_id.clone(), incarnation: from_incarnation.clone(), path: path.clone(), build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt, opened_at_ms: o.opened_at_ms });
             }
             out.push(BirthEntry::Opened { build_id: o.build_id.clone(), mesh: o.mesh.clone(), attempt: o.attempt });
@@ -3285,7 +3285,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }),
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), create_only: false }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
         };
@@ -3357,7 +3357,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone() }),
+            action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone(), create_only: false }),
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
         };
@@ -3576,7 +3576,7 @@ mod tests {
             build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
-            action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }),
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint(), create_only: false }),
             opened_by: format!("{mesh}.admin.1"),
             opened_at_ms: 6,
         }

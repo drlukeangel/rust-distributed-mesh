@@ -896,7 +896,7 @@ async fn a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_
         let current = e.lane(peer).await;
         assert_eq!(current.reason, rdm_admin::build_state::AttemptReason::Recovery, "{code:?}");
         assert!(
-            matches!(&current.action, Some(rdm_admin::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) if path.to_string() == admin && node_id.as_str() == id && *from_incarnation == incarnation),
+            matches!(&current.action, Some(rdm_admin::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) if path.to_string() == admin && node_id.as_str() == id && *from_incarnation == incarnation),
             "{code:?}: a Recover of the exact exited birth: {:?}",
             current.action
         );

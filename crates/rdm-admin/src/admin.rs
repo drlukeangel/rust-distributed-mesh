@@ -1344,7 +1344,7 @@ mod tests {
                 build_id: b1.clone(),
                 attempt: 2,
                 reason: crate::build_state::AttemptReason::Recovery,
-                action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }),
+                action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), create_only: false }),
                 opened_by: "mesh1.admin.1".into(),
                 opened_at_ms: 1,
             }),

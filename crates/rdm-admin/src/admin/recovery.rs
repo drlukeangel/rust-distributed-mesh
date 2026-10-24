@@ -520,6 +520,58 @@ pub(crate) fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), St
 
 
 impl RecoverySubmitter {
+    /// The second births at a `path.name` of `mesh` in `view` (node-investigation.md, Q142): another
+    /// executor made a birth at the path across a cut, and the path's name claim names the other birth.
+    /// Each is a superseded birth: this mesh-primary writes its record deleted, releasing the name if it
+    /// held it, and answers its `node.delete:<path>` operation, which the caller publishes as
+    /// `NodeDeleted`; its next digest is then a deleted birth heard again, refused and reported to the
+    /// fabric-primary, which terminates its runtime ([`Self::report_returned`]).
+    pub(crate) async fn superseded_births(&self, view: &Topology, mesh: &str) -> Vec<rdm_core::LifecycleOp> {
+        let build_id = match self.builds.current_build().await {
+            Ok(current) => current.into_build_id().map(|b| b.to_string()).unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        superseded_births(&self.me, view, mesh, &*self.nodes_storage, &self.written, &build_id).await
+    }
+}
+
+/// [`RecoverySubmitter::superseded_births`] on `storage` and the records `written` holds, by `me`, the
+/// operations it answers named under the current Build `build_id`.
+pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str, storage: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, build_id: &str) -> Vec<rdm_core::LifecycleOp> {
+    let mut at: BTreeMap<PathName, Vec<&Node>> = BTreeMap::new();
+    for n in view.members().filter(|n| n.mesh == mesh && n.status != NodeStatus::Deleted && n.incarnation_id.is_some()) {
+        at.entry(n.name.clone()).or_default().push(n);
+    }
+    let mut ops = Vec::new();
+    for (path, births) in at.into_iter().filter(|(_, b)| b.len() > 1) {
+        let Ok(Some(holder)) = storage.name_claim(&path).await else { continue };
+        if !births.iter().any(|b| b.node_id == holder) {
+            continue;
+        }
+        for b in births.into_iter().filter(|b| b.node_id != holder) {
+            let incarnation = b.incarnation_id.clone().expect("filtered above");
+            let span = tracing::info_span!("rdm.node_admin.node.delete.via-superseded-birth", node = %me, subject = %path, node_id = %b.node_id, incarnation_id = %incarnation.as_str(), holder = %holder, outcome = tracing::field::Empty);
+            let row = written.update(storage, &b.node_id, None, |r| {
+                r.status = NodeStatus::Deleted;
+                r.allocated = None;
+            }).await;
+            match row {
+                Ok(_) => {
+                    span.record("outcome", "row-deleted");
+                    span.in_scope(|| tracing::info!("a second birth at the path.name, made across a cut, is superseded: its row is written deleted"));
+                    ops.push(rdm_core::LifecycleOp { build_id: build_id.to_string(), attempt: 0, operation: format!("node.delete:{path}"), node_id: b.node_id.clone(), incarnation, name: path.clone(), event_at_rafka_ms: local_now_ms() });
+                }
+                Err(e) => {
+                    span.record("outcome", "row-refused");
+                    span.in_scope(|| tracing::info!(error = %e, "the superseded birth's row could not be written deleted: the next tick tries again"));
+                }
+            }
+        }
+    }
+    ops
+}
+
+impl RecoverySubmitter {
     /// Report the deleted birth `d`, heard again by its own digest, to the fabric-primary
     /// (node-investigation.md: "The node that refused it reports it to the fabric-primary, which
     /// terminates its runtime"; Q110, Q128): `build.create { Change(Terminate) }`, opened here when this
@@ -699,5 +751,53 @@ impl RecoverySubmitter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod superseded_tests {
+    use super::*;
+    use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
+
+    fn birth(path: &str) -> Node {
+        let mut n = Node::allocated(path.parse().unwrap());
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.status = NodeStatus::ReadyForTraffic;
+        n
+    }
+
+    fn view(nodes: Vec<Node>) -> Topology {
+        Topology {
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes,
+        }
+    }
+
+    /// CONTRACT (node-investigation.md, Q142: "a second birth another executor made at the path.name
+    /// across a cut is a superseded birth ... its mesh-primary writes its row deleted"): after a heal the
+    /// view holds two live births at mesh1.admin.1; the path's name claim names the first. The second's
+    /// record is written deleted and its `node.delete:<path>` is answered for its NodeDeleted; the first is
+    /// untouched, and a path with one birth, or whose claim names neither, answers nothing. Must NOT
+    /// happen: the claim's own birth deleted, or two live records left at one path.name.
+    #[tokio::test]
+    async fn a_second_birth_at_a_path_after_a_heal_is_written_deleted_and_the_claims_birth_stands() {
+        let storage = MemoryNodesStorage::default();
+        let written = crate::node_rows::WrittenRows::default();
+        let (first, second, alone) = (birth("mesh1.admin.1"), birth("mesh1.admin.1"), birth("mesh1.rpc.1"));
+        for n in [&first, &alone] {
+            crate::node_rows::write_record(&storage, &NodeRow::new(n.name.clone(), n.node_id.clone(), n.status)).await.unwrap().unwrap();
+        }
+        storage.put_node(&NodeRow::new(second.name.clone(), second.node_id.clone(), second.status)).await.unwrap();
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let ops = superseded_births(&me, &view(vec![first.clone(), second.clone(), alone.clone()]), "mesh1", &storage, &written, "b1").await;
+        assert_eq!(ops.iter().map(|o| (o.node_id.clone(), o.operation.clone())).collect::<Vec<_>>(), vec![(second.node_id.clone(), "node.delete:mesh1.admin.1".to_string())], "only the second birth is answered");
+        assert_eq!(storage.node(&second.node_id).await.unwrap().unwrap().status, NodeStatus::Deleted, "the second birth's row is written deleted");
+        assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "the claim's birth stands");
+        assert_eq!(storage.name_claim(&first.name).await.unwrap(), Some(first.node_id.clone()), "the name stays the first birth's");
+        let unclaimed = birth("mesh1.rpc.2");
+        let other = birth("mesh1.rpc.2");
+        storage.put_node(&NodeRow::new(unclaimed.name.clone(), unclaimed.node_id.clone(), unclaimed.status)).await.unwrap();
+        assert!(superseded_births(&me, &view(vec![unclaimed, other]), "mesh1", &storage, &written, "b1").await.is_empty(), "a path whose claim names neither birth answers nothing");
     }
 }

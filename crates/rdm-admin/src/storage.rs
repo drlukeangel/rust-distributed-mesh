@@ -177,9 +177,9 @@ pub trait MeshStorage: Send + Sync {
     /// Release `name`'s claim while `mesh_id` holds it; another mesh's claim there is left as it is.
     async fn release_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<(), StorageError>;
     /// Take `mesh`'s in-flight row for `claim` (R-BI7 caveat 3, [`crate::mesh_claims`]): the insert of
-    /// the row's key decides. A row standing for the same attempt is that attempt's own (a repeat take,
-    /// by any claimant): `Won`, and the claim of the attempt itself is decided by the Build log. A row
-    /// standing for another attempt is `Held`, naming it. A row the insert met and the read no longer
+    /// the row's key decides. A row standing for the same attempt by the same claimant is a repeat take:
+    /// `Won`. A row standing for another attempt, or for the same attempt by another claimant, is
+    /// `Held`, naming it: the second claimant of one attempt loses and runs nothing (build.md §5.2, Q142). A row the insert met and the read no longer
     /// finds was released between the two: refused by name, never answered as either outcome. An
     /// attempt claim is a Build fact, durable when it is taken, before the fabric's first
     /// state-commit too (Q61, build.md §5.2).
@@ -239,7 +239,7 @@ impl MeshStorage for MemoryMeshStorage {
         // The map's key is the row's: the look and the insert are one step under its lock.
         let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         Ok(match rows.get(mesh) {
-            Some(held) if held.same_attempt(claim) => Taken::Won,
+            Some(held) if held.same_claim(claim) => Taken::Won,
             Some(held) => Taken::Held(held.clone()),
             None => {
                 rows.insert(mesh.to_string(), claim.clone());
@@ -377,7 +377,7 @@ impl MeshStorage for FileMeshStorage {
             return Ok(Taken::Won);
         }
         match store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await? {
-            Some(held) if held.same_attempt(claim) => Ok(Taken::Won),
+            Some(held) if held.same_claim(claim) => Ok(Taken::Won),
             Some(held) => Ok(Taken::Held(held)),
             None => Err(StorageError::Io {
                 file: format!("{}/{IN_FLIGHT}.json", store.store_name()),

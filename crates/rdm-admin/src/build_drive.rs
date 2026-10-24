@@ -1542,7 +1542,7 @@ pub fn describe(r: &BuildReply) -> String {
 /// investigation's verdict, so R-D1's fence does not hold them; nothing else of the unheard mesh
 /// crosses it.
 fn mesh_primary_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> bool {
-    let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) = p.action.as_ref() else { return false };
+    let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = p.action.as_ref() else { return false };
     let birth = |b: &crate::build::ExitedBirth| &b.node_id == node_id && &b.incarnation == from_incarnation;
     match op {
         BuildOperation::RetireNode { node, exited: Some(b) } | BuildOperation::CreateNode { node, over: Some(b) } => node == path && birth(b),

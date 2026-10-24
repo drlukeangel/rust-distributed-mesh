@@ -7,8 +7,9 @@
 //! with `build.attempt.run` carrying the won claim; the mesh-primary of a mesh for that mesh's drift
 //! attempt (its lane), decided in process when it opens the attempt (`http::ControlPlane::
 //! open_recovery`). Both go through [`decide_claim`]: the mesh the attempt acts in is taken first by
-//! its in-flight row on the store root (`crate::mesh_claims`, one attempt in flight per mesh), then
-//! the claim key `(build_id, mesh, attempt)` is an insert-and-fail on the claimant's Build log. The
+//! its in-flight row on the store root (`crate::mesh_claims`, one attempt in flight per mesh), which names
+//! its claimant: the store decides the claim, and the same attempt another claimant took is held, never
+//! won (build.md §5.2, Q142); the claimant's Build log then records what the store decided. The
 //! door is also served on `BuildClaim` (op `0x1C`) for a caller that puts a claim over Node RPC; the
 //! product has no such caller. An admin whose view names another birth fabric-primary decides no
 //! fabric-lane claim; one whose view names another birth its mesh-primary decides no claim of that
@@ -112,8 +113,9 @@ impl AttemptContexts {
 /// `mesh`, on this admin `me` (R-BI7 caveats 2, 3), under the one claim-decision span. The mesh's
 /// in-flight row is taken first, naming the claim's lane key (Q35), in the same writer's turn as the
 /// claim ([`BuildStateAdapter::claim_in_flight`]): another attempt holding it refuses
-/// `BuildInProgress` naming it and its claimant, and nothing is written. Then the claim key
-/// `(build_id, lane, attempt)` is an insert-and-fail on `builds`: `Won` carries the attempt's context. An attempt that is not open
+/// `BuildInProgress` naming it and its claimant, the same attempt another claimant took answers `Lost`
+/// naming it (Q142), and nothing is written. Then the claim key `(build_id, lane, attempt)` is recorded
+/// on `builds`, the record of what the store decided: `Won` carries the attempt's context. An attempt that is not open
 /// releases the row taken for it; a claim `Lost` to another executor of the same attempt leaves the
 /// row, which names the attempt, to its verdict. Who may claim is the caller's rule
 /// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this.
@@ -133,6 +135,8 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
     let reply = async {
         let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()) };
         let decided = match builds.claim_in_flight(claim, claims, mesh, &row).await {
+            // The same attempt another claimant took on the store: this claim lost (build.md §5.2, Q142).
+            Ok(InFlightClaim::Held(held)) if held.same_attempt(&row) => return rdm_core::reply::build_claim::lost(held.claimant),
             Ok(InFlightClaim::Held(held)) => return rdm_core::reply::build_claim::build_in_progress(held.build_id.to_string(), mesh.to_string(), Some(held.claimant)),
             Ok(InFlightClaim::Decided(outcome)) => Ok(outcome),
             Err(e) => Err(e),

@@ -233,7 +233,7 @@ fn facts() -> Vec<BuildFact> {
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
         reason: AttemptReason::Recovery,
-        action: Some(AttemptAction::Recover { path: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }),
+        action: Some(AttemptAction::Recover { path: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint(), create_only: false }),
         opened_by: "mesh1.admin.1".into(),
         opened_at_ms: 56,
     }));
