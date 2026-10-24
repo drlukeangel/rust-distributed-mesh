@@ -829,8 +829,8 @@ impl NodeSelf {
             Err(e) => format!("not-published: {e}"),
         };
         let owed = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, ..rdm_transport::CallOptions::default() };
-        let holder = || self.membership.seats().mesh(&self.name.mesh).map(|h| (h.node_id, h.incarnation));
-        let mut seats = self.membership.seats().subscribe();
+        let holder = || self.membership.primaries().mesh(&self.name.mesh).map(|h| (h.node_id, h.incarnation));
+        let mut seats = self.membership.primaries().subscribe();
         let mut to = commander.clone();
         loop {
             seats.borrow_and_update();

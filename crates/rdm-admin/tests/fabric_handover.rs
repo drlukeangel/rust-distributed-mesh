@@ -244,12 +244,12 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
     // over its members with the primaries this admin holds now, as the admin's own projection does
     // (`admin::view_projector`).
     let project_view: ProjectView = {
-        let (topology, seats) = (topology.clone(), membership.seats().clone());
+        let (topology, seats) = (topology.clone(), membership.primaries().clone());
         Arc::new(move || {
             let (topology, seats) = (topology.clone(), seats.clone());
             Box::pin(async move {
                 let mut view = topology.write().await;
-                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: seats.cohorts(), lost: seats.gone() };
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: seats.node_type_primaries(), lost: seats.gone() };
                 resolve_with(&mut view.nodes, &inc);
             })
         })
@@ -325,7 +325,7 @@ async fn send(from: &Admin, to: &Admin, req: Request) -> Reply {
 
 /// The primary record `holder` holds for `seat` in `a`'s view (the election's input).
 async fn seat_at(a: &Admin, seat: Seat, holder: &Primary) {
-    a.door.membership.seats().take(seat, holder);
+    a.door.membership.primaries().take(seat, holder);
 }
 
 /// `a`'s mesh's status rows on the fabric's store root, holding the ready-for-traffic row of `a`'s
@@ -641,7 +641,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         for r in &resolved {
             m.resolver.insert(r.clone());
         }
-        m.door.membership().seats().take(Seat::Cohort(RPC), &member_holder(&b1, 2));
+        m.door.membership().primaries().take(Seat::Cohort(RPC), &member_holder(&b1, 2));
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.membership().book.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it ReadyForTraffic.
@@ -680,8 +680,8 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
         let revisions = f.p.door.move_own_seats(Moving::BothSeats, "b1", 1, &op, None).await.expect("both primaries move");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
         for a in [&f.p, &f.n] {
-            assert_eq!(a.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{}", a.resolved.name);
-            assert_eq!(a.door.membership.seats().fabric(), Some(holder_of(&f.n, 8)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().fabric(), Some(holder_of(&f.n, 8)), "{}", a.resolved.name);
         }
         let pv = f.p.door.topology.read().await.clone();
         assert_eq!(pv.cohort_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"), "P's view names N mesh-primary");
@@ -692,7 +692,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
         let (finished, installed) = (spans.position(WRITES_FINISHED).expect("P finished its writes"), spans.position(UPDATED).expect("N installed"));
         assert!(finished < installed, "P finished its writes before N installed: {:?}", spans.names());
         assert_eq!(f.p.finished(), 1);
-        assert_eq!(f.m.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "M, which nobody called, takes the change from N's digest");
+        assert_eq!(f.m.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "M, which nobody called, takes the change from N's digest");
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
     });
@@ -748,8 +748,8 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successor
         let revisions = f.x.door.command_update_primary(&p, "b1", 1, &op).await.expect("the command answers node.primary.updated");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]);
         for a in [&f.x, &f.p, &f.n] {
-            assert_eq!(a.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{}", a.resolved.name);
-            assert_eq!(a.door.membership.seats().fabric(), Some(holder_of(&f.x, 7)), "{}: the fabric-primary stays X", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().fabric(), Some(holder_of(&f.x, 7)), "{}: the fabric-primary stays X", a.resolved.name);
         }
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| (c["to"].clone(), c["outcome"].clone())).collect::<Vec<_>>(), vec![("mesh1.admin.1".to_string(), "updated".to_string())], "{commands:?}");
@@ -773,7 +773,7 @@ fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_opera
         assert_eq!(first, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
         assert_eq!(send(&f.p, &f.n, call(4)).await, first, "an identical retry answers the same");
         assert_eq!(send(&f.p, &f.n, call(5)).await, Reply::RejectedConflictingPayload { operation: op.into() });
-        assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "the conflicting payload installs nothing");
+        assert_eq!(f.n.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)), "the conflicting payload installs nothing");
         assert_eq!(spans.named(UPDATED).len(), 1, "one install");
         let _ = (&f.m, &f.x);
     });
@@ -792,7 +792,7 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
         let r = send(&f.p, &f.m, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), run: 1, operation: op.into() }).await;
         assert_eq!(r, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
-        assert_eq!(f.m.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)));
+        assert_eq!(f.m.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)));
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
     });
@@ -838,7 +838,7 @@ fn an_update_with_no_successor_fails_by_its_exact_text_and_nothing_moves() {
         let fabric = p.door.move_own_seats(Moving::FabricSeatOutside, "b1", 1, &op, None).await;
         assert!(matches!(&fabric, Err(SeatMoveEnd::Failed { reason, .. }) if reason == "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic"), "{fabric:?}");
         assert_eq!(p.finished(), 0, "no writes finished for a refused update");
-        assert_eq!((p.door.membership.seats().mesh("mesh1"), p.door.membership.seats().fabric()), (Some(holder_of(&p, 3)), Some(holder_of(&p, 7))), "P stays both");
+        assert_eq!((p.door.membership.primaries().mesh("mesh1"), p.door.membership.primaries().fabric()), (Some(holder_of(&p, 3)), Some(holder_of(&p, 7))), "P stays both");
         let _ = &x;
     });
 }
@@ -859,8 +859,8 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
         let revisions = p.door.move_own_seats(Moving::FabricSeatOutside, "b1", 1, &op, None).await.expect("the fabric-primary moves to mesh2");
         assert_eq!(revisions, vec![entry("fabric", &p.resolved, &x.resolved, 8)]);
         for a in [&p, &x] {
-            assert_eq!(a.door.membership.seats().fabric(), Some(holder_of(&x, 8)), "{}", a.resolved.name);
-            assert_eq!(a.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "{}: P stays mesh1's mesh-primary", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().fabric(), Some(holder_of(&x, 8)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(holder_of(&p, 3)), "{}: P stays mesh1's mesh-primary", a.resolved.name);
         }
         p.door.fabric_seat_updated("mesh1", &op).await.expect("the fabric-primary is no node-admin of mesh1 any more");
     });
@@ -883,7 +883,7 @@ fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
         let r = send(&f.p, &f.n, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), run: 1, operation: op.into() }).await;
         assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
-        assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N installs nothing");
+        assert_eq!(f.n.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N installs nothing");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "successor" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
         let _ = (&f.m, &f.x);
     });
@@ -911,7 +911,7 @@ fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_
         assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "primary" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
         assert_eq!(f.p.finished(), 0, "no writes finished for the refused update");
-        assert_eq!(f.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "P is still mesh-primary");
+        assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "P is still mesh-primary");
         let fabric_id = f.p.door.topology.read().await.fabric.id.clone();
         rows.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
         assert_eq!(send(&f.x, &f.p, command()).await, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] }, "decided on the root's ready row");
@@ -957,7 +957,7 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
         let r = f.p.door.move_own_seats(Moving::BothSeats, "b1", 1, &op, None).await;
         assert!(matches!(&r, Err(SeatMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason.starts_with("the successor is unheard after the update: mesh1.admin.2")), "{r:?}");
-        assert_eq!(f.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
+        assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
         assert_eq!(spans.named(INVESTIGATION).len(), 1);
         let _ = (&f.m, &f.x);
     });
@@ -981,9 +981,9 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.p.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)));
-        assert_eq!(f.b1.door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
-        assert_eq!(f.b2().door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B2 installed itself");
+        assert_eq!(f.p.door.membership.primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)));
+        assert_eq!(f.b1.door.membership().primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
+        assert_eq!(f.b2().door.membership().primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");
         let _ = &f.x;
     });
@@ -1004,7 +1004,7 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.b1.door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
+        assert_eq!(f.b1.door.membership().primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
         let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.2"), successor: None }).await;
         assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == "mesh1.rpc.1 is a rpc-node primary: its mesh-primary's command names no successor"), "{bare:?}");
         let _ = &f.x;
@@ -1026,7 +1026,7 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.x.door.command_update_primary(&b1, "b1", 1, &op).await.expect("the command answers");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.x.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)));
+        assert_eq!(f.x.door.membership.primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| c["to"].clone()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()], "X's command goes to mesh1's mesh-primary: {commands:?}");
     });
@@ -1044,7 +1044,7 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let r = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type rpc-node in mesh mesh1"), "{r:?}");
-        assert_eq!(f.p.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(&f.b1, 2)), "B1 stays the rpc-node primary");
+        assert_eq!(f.p.door.membership.primaries().cohort("mesh1", RPC), Some(member_holder(&f.b1, 2)), "B1 stays the rpc-node primary");
         let _ = &f.x;
     });
 }

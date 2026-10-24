@@ -216,7 +216,7 @@ pub struct Watch {
 pub async fn run(w: Watch) {
     let mut said = Said::default();
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
-    let mut seats_changed = w.membership.seats().subscribe();
+    let mut seats_changed = w.membership.primaries().subscribe();
     let mut held_the_fabric_seat = false;
     // A turn runs from the gate to the next idle wait: the pass below, then the yield check at the
     // top of the loop, which can hand facts on. It is held in an Option so it ends (`take`) right
@@ -225,7 +225,7 @@ pub async fn run(w: Watch) {
     loop {
         // A fabric seat this birth held, now recorded to another birth: the record already fences
         // its Build log; the committed facts are handed to the neighbours before the new holder acts.
-        let record = w.membership.seats().fabric();
+        let record = w.membership.primaries().fabric();
         let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
         if let Some((by, to)) = owed {
             w.builds.hand_over_facts(&by, to).await;
@@ -239,7 +239,7 @@ pub async fn run(w: Watch) {
         turn = Some(w.gate.turn("seat-watch").await);
         let view = w.topology.read().await.clone();
         // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
-        let fabric_mesh = w.membership.seats().fabric().map(|h| h.mesh.clone());
+        let fabric_mesh = w.membership.primaries().fabric().map(|h| h.mesh.clone());
         // A node-admin in the view whose digest has returned (`ReadyForTraffic`).
         let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
         for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
@@ -261,9 +261,9 @@ pub async fn run(w: Watch) {
         // mesh's lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after the mark,
         // once the record has named the unheard birth for a floor in its own book (a record learned after a
         // heal names a birth whose silence here began before it). It takes no primary role and needs no probe.
-        let held_a_floor = w.membership.seats().fabric_held_for() >= w.membership.book.staleness_floor();
+        let held_a_floor = w.membership.primaries().fabric_held_for() >= w.membership.book.staleness_floor();
         w.fabric_recovery.start_if_mine(held_a_floor, false).await;
-        let seats = w.membership.seats();
+        let seats = w.membership.primaries();
         let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| seats.replaced(rdm_core::Seat::MeshPrimary, &n.mesh, i));
         let plan = plan(&view, &me, &me_birth, &mut said, &was_mesh_primary);
         for node in plan.investigate {

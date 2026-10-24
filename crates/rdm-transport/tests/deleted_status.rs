@@ -98,7 +98,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// member, the same answer again is a repeat of the change held and is not taken again. Must NOT
 /// happen: a status refused for its publisher's name (`via-departed-birth` with `frame=mesh-status`).
 #[test]
-fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
+fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
     let dir = crate::evidence_dir();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-s41-departed-status").expect("the cell's evidence file can be created");
     capture.run(4, async {
@@ -125,7 +125,7 @@ fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
         let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
-        until("Y and the member to hold X departed", || y.book.is_departed(x.as_str()) && m.book.is_departed(x.as_str())).await;
+        until("Y and the member to hold X departed", || y.book.is_deleted(x.as_str()) && m.book.is_deleted(x.as_str())).await;
         assert!(y.book.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's book");
 
         // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.

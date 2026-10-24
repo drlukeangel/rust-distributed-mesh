@@ -53,7 +53,7 @@ async fn a_call_to_an_exited_birth_dials_nothing_and_the_successor_is_dialled() 
     router.shutdown().await.unwrap();
     ep_handle.close().await;
     // The exit is proven.
-    resolver.retire_birth(&node_id, &old_inc);
+    resolver.mark_exited(&node_id, &old_inc);
     let out = ping(&client, &target).await;
     match out {
         RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::Resolve(ResolveFailure::Unavailable)), "{:?}", n.reason()),

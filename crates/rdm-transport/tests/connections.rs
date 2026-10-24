@@ -199,7 +199,7 @@ async fn a_direct_open_writes_connected_with_its_alpn_and_the_acceptor_sees_the_
 }
 
 #[tokio::test]
-async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_retires_bs_proxy() {
+async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_disconnects_bs_proxy() {
     let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A), alpn(ALPN_B)]).await;
     // peer_b registers only ALPN_A, not ALPN_B:
     let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
@@ -1949,7 +1949,7 @@ async fn a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held() {
 }
 
 #[tokio::test]
-async fn the_carrier_choice_is_sticky_until_a_named_event_and_spread_by_source() {
+async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
     let alpns = [gateway_alpn(ALPN_A)];
     let gw1 = TestPeer::bind("mesh1.gateway.1", &alpns).await;
     let gw2 = TestPeer::bind("mesh1.gateway.2", &alpns).await;
@@ -2041,7 +2041,7 @@ async fn the_carrier_choice_is_sticky_until_a_named_event_and_spread_by_source()
 }
 
 #[tokio::test]
-async fn a_direct_connected_retires_the_proxy() {
+async fn a_direct_connected_disconnects_the_proxy() {
     let alpns = [gateway_alpn(ALPN_A)];
     let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
     let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;

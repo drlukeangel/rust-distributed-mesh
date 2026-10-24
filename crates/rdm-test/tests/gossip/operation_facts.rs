@@ -52,8 +52,8 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
             }
         }).await.expect("the terminal fact is applied after unrelated newer traffic");
         assert!(receiver.book.get(op.node_id.as_str()).is_none());
-        assert!(receiver.book.is_departed(op.node_id.as_str()));
-        assert_eq!(receiver.book.departed(), vec![op.clone()]);
+        assert!(receiver.book.is_deleted(op.node_id.as_str()));
+        assert_eq!(receiver.book.deleted(), vec![op.clone()]);
         if repeat {
             let changes = receiver.book.birth_changes();
             let before = *changes.borrow();
@@ -66,7 +66,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
                 }
             }).await.expect("RDM receives the repeat");
             assert_eq!(*changes.borrow(), before, "the repeated fact emits no birth-change notification");
-            assert_eq!(receiver.book.departed(), vec![op.clone()], "the terminal fact is unchanged");
+            assert_eq!(receiver.book.deleted(), vec![op.clone()], "the terminal fact is unchanged");
         }
         sender_ep.close().await;
         receiver_ep.close().await;

@@ -1065,7 +1065,7 @@ impl FabricRounds {
                 Some(planned) => {
                     let me_ready = i.view.own(&self.env.node_id).is_some_and(|n| n.status == crate::model::NodeStatus::ReadyForTraffic);
                     let (heard, known) = (i.book.heard_direct_since(round.began), i.book.all());
-                    missing_members(planned, &me, me_ready, &heard, &known, &|id| i.book.is_departed(id))
+                    missing_members(planned, &me, me_ready, &heard, &known, &|id| i.book.is_deleted(id))
                 }
             };
             if missing.is_empty() {

@@ -311,7 +311,7 @@ impl Events {
         let birth = self.birth_of(authority);
         match on {
             RetryOn::PrimaryChanged => match &birth {
-                Some((d, _)) => self.book.is_departed(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
+                Some((d, _)) => self.book.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
                 None => mark.authority_incarnation.is_some(),
             },
             RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),

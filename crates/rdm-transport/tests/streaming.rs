@@ -219,7 +219,7 @@ fn attr(s: &SpanData, key: &str) -> Option<String> {
     s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.as_str().into_owned())
 }
 
-async fn in_flight_drains(stats: &ServerStats) -> bool {
+async fn in_flight_reaches_zero(stats: &ServerStats) -> bool {
     for _ in 0..100 {
         if ServerStats::get(&stats.in_flight) == 0 {
             return true;
@@ -274,7 +274,7 @@ async fn cancelling_mid_stream_tells_the_handler_and_releases_the_invocation() {
     tokio::time::timeout(Duration::from_secs(10), r.finished.notified()).await.expect("the handler ends once the caller is gone");
     assert_eq!(r.caller_gone.load(Ordering::SeqCst), 1, "the sink answered CallerGone");
     assert!(r.produced.load(Ordering::SeqCst) < 100_000, "production stopped early");
-    assert!(in_flight_drains(&r.stats).await, "the invocation and its admission are released");
+    assert!(in_flight_reaches_zero(&r.stats).await, "the invocation and its admission are released");
 }
 
 #[tokio::test]
@@ -324,7 +324,7 @@ async fn a_handler_that_panics_after_started_leaves_the_caller_indeterminate() {
         last = Some(item);
     }
     assert!(matches!(last, Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::Reset(423))))), "{last:?}");
-    assert!(in_flight_drains(&r.stats).await);
+    assert!(in_flight_reaches_zero(&r.stats).await);
 }
 
 /// CONTRACT: a stream's end is a step of its serve: the terminal frame the runtime writes once the

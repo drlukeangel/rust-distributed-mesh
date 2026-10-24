@@ -181,7 +181,7 @@ impl HandoverDoor {
         let mesh_of = self.mesh_of().await;
         let outcome = {
             let _decisions = self.decisions.clone().lock_owned().await;
-            install(self.membership.seats(), entries, mesh_of)
+            install(self.membership.primaries(), entries, mesh_of)
         };
         (self.project_view)().await;
         outcome
@@ -257,7 +257,7 @@ impl HandoverDoor {
     /// the primary of that type in this admin's mesh, which this admin, its mesh-primary, commands.
     async fn serve_update_primary(self: &Arc<Self>, node_type: String, build_id: String, run: u32, operation: String) -> Reply {
         let me = self.held_name();
-        let book = self.membership.seats();
+        let book = self.membership.primaries();
         let mesh_primary = book.mesh(&self.me.mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation));
         let fabric_primary = book.fabric().is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation));
         let moving = if node_type == crate::model::NodeKind::NodeAdmin.node_type() {
@@ -336,7 +336,7 @@ impl HandoverDoor {
         if let Some(refusal) = self.refused_before_first_ready("primary", operation).await {
             return Err(refusal);
         }
-        let book = self.membership.seats();
+        let book = self.membership.primaries();
         // The hand-back repeated once it applied (fabric-recovery.md step 4): the fabric-primary is the
         // birth this admin's view holds at `named` already.
         if let (true, Some(name)) = (moving.fabric_seat(), named) {
@@ -554,7 +554,7 @@ impl HandoverDoor {
     /// anything is installed ("Discovery is not installation"). `None`: the view names `primary` still,
     /// or `primary` was never that type's primary in this view, so no update moved it.
     async fn discovered(&self, primary: &HandoverBirth, kind: crate::model::NodeKind, build_id: &str, run: u32, operation: &str) -> Result<Option<Vec<Entry>>, String> {
-        let book = self.membership.seats();
+        let book = self.membership.primaries();
         // The record the operation moves: the fabric-primary's for node.fabric-primary.update, its type's
         // otherwise.
         let fabric_update = operation.starts_with("node.fabric-primary.update:");
@@ -618,7 +618,7 @@ impl HandoverDoor {
     /// dismantled. A view that names one of the departing mesh fabric-primary still refuses, named.
     pub async fn fabric_seat_updated(&self, departing: &str, operation: &str) -> Result<(), String> {
         let me = self.held_name();
-        match self.membership.seats().fabric() {
+        match self.membership.primaries().fabric() {
             Some(h) if h.mesh == departing => Err(format!("{me}: the fabric-primary is {h}, a node-admin of the departing mesh {departing}: node.fabric-primary.update {operation} has not moved it")),
             held => {
                 tracing::info_span!("rdm.node_admin.primary.update.via-fabric-primary-left", node = %me, operation, departing, fabric_primary = %held.map(|h| h.to_string()).unwrap_or_default())
@@ -664,7 +664,7 @@ impl HandoverDoor {
         if let Some(refusal) = self.refused_before_first_ready("commander", operation).await {
             return Err(refusal);
         }
-        let book = self.membership.seats();
+        let book = self.membership.primaries();
         if self.me.mesh != mesh || !book.mesh(&mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
             let reason = format!("{me} is not the mesh-primary of {mesh}, the commander of its {} primary", holder.kind.node_type());
             refused("commander", "not-primary", &reason, operation);

@@ -95,7 +95,7 @@ async fn an_indeterminate_alone_never_invalidates_a_proxy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_direct_connected_creates_the_retirement_obligation_and_new_calls_cut_back_only_after_durable_retirement() {
+async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable() {
     let r = rig().await;
     let own: PathName = "mesh1.admin.1".parse().unwrap();
     let me = own_end(&own);
@@ -128,7 +128,7 @@ async fn a_direct_connected_creates_the_retirement_obligation_and_new_calls_cut_
 /// (connections.md section 7): a complete holder with no Direct fact toward the destination
 /// resolves a direct dial and the call is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_complete_holder_with_no_fact_dials_the_destination_directly() {
+async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
     let r = rig().await;
     let own: PathName = "mesh1.admin.1".parse().unwrap();
     let held = held_for(&own);

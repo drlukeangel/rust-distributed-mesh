@@ -80,7 +80,7 @@ pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
 pub(crate) fn admit_status_context(frame: &str, subject: &str, held: Option<&crate::envelope::Context>, offered: Option<&crate::envelope::Context>, held_status: &str, status: &str) -> Option<bool> {
     let (held, offered) = (held?, offered?);
     let (h, o) = (held.sequence.as_ref()?, offered.sequence.as_ref()?);
-    if held.source == offered.source && held.seat_revision() == offered.seat_revision() { return None; }
+    if held.source == offered.source && held.primary_revision() == offered.primary_revision() { return None; }
     if o < h {
         tracing::info_span!("rdm.mesh.membership.reject.via-stale", frame, subject, held_key = %h, frame_key = %o)
             .in_scope(|| tracing::info!("status sequence is below the held committed revision and change time"));

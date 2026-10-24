@@ -65,8 +65,8 @@ async fn until(what: &str, mut ok: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_parked_membership_is_no_neighbour_and_sends_nothing_until_it_unparks() {
-    if crate::own_process::delegated_with_env(module_path!(), "a_parked_membership_is_no_neighbour_and_sends_nothing_until_it_unparks", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
+async fn a_stopped_membership_is_no_neighbour_and_sends_nothing_until_it_starts() {
+    if crate::own_process::delegated_with_env(module_path!(), "a_stopped_membership_is_no_neighbour_and_sends_nothing_until_it_starts", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
         return;
     }
     let (a, b) = (node().await, node().await);

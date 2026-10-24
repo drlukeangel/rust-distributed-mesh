@@ -191,7 +191,7 @@ impl Context {
     }
 
     /// The primary record's revision in a status sequence.
-    pub fn seat_revision(&self) -> Option<u64> { self.sequence.as_deref()?.split_once('.').and_then(|(r, _)| scalar(r).ok()) }
+    pub fn primary_revision(&self) -> Option<u64> { self.sequence.as_deref()?.split_once('.').and_then(|(r, _)| scalar(r).ok()) }
 }
 
 /// Encode one complete metadata-and-data message. The caller measures these exact bytes.
@@ -346,7 +346,7 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
         _ => (),
     }
     let owner = context.publication.as_ref().map(|(b, _)| b).unwrap_or(&context.source);
-    let expected = Context::authored(&frame, owner, context.seat_revision().unwrap_or(0), time_ms);
+    let expected = Context::authored(&frame, owner, context.primary_revision().unwrap_or(0), time_ms);
     if context.id != expected.id || context.source != expected.source || context.subject != expected.subject || context.sequence != expected.sequence || context.time_ms != expected.time_ms {
         return Err(invalid("context and data disagree").into());
     }

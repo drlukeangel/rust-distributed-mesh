@@ -145,7 +145,7 @@ mod tests {
         }
     }
 
-    fn seated(seat: Seat, mesh: &str, id: &NodeId, inc: &IncarnationId, revision: u64) -> SeatBook {
+    fn with_primary(seat: Seat, mesh: &str, id: &NodeId, inc: &IncarnationId, revision: u64) -> SeatBook {
         let b = SeatBook::default();
         b.take(seat, &Primary { mesh: mesh.into(), node_id: id.clone(), incarnation: inc.clone(), revision });
         b
@@ -156,16 +156,16 @@ mod tests {
     #[test]
     fn a_member_takes_its_mesh_primarys_ready_digest() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::MeshPrimary, MESH, &id, &inc, 1);
+        let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 7_000);
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Sample { authority: "mesh1.admin.1".into(), stamp_ms: 7_000 });
     }
 
     /// CONTRACT: a publisher that has not declared itself ready-for-traffic (pre-adoption) offers no sample.
     #[test]
-    fn a_pending_or_leaving_authority_offers_no_sample() {
+    fn a_pending_or_leaving_mesh_primary_offers_no_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::MeshPrimary, MESH, &id, &inc, 1);
+        let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         for status in [MemberStatus::Pending, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving] {
             let d = digest("mesh1.admin.1", &id, &inc, status, 7_000);
             assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Refused { authority: "mesh1.admin.1".into(), reason: "authority-not-ready-for-traffic" }, "{status:?}");
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn a_digest_the_book_did_not_admit_offers_no_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::MeshPrimary, MESH, &id, &inc, 1);
+        let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 7_000);
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, false), Verdict::Refused { authority: "mesh1.admin.1".into(), reason: "digest-not-newer" });
     }
@@ -184,9 +184,9 @@ mod tests {
     /// CONTRACT: only the seat holder's exact birth is the authority: another member, another
     /// birth of the same node, another mesh and a node with no seat record all offer nothing.
     #[test]
-    fn only_the_exact_birth_the_seat_record_names_is_the_authority() {
+    fn only_the_exact_birth_recorded_as_mesh_primary_offers_a_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::MeshPrimary, MESH, &id, &inc, 1);
+        let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let other_member = digest("mesh1.rpc.2", &NodeId::mint(), &IncarnationId::mint(), MemberStatus::ReadyForTraffic, 7_000);
         let older_birth = digest("mesh1.admin.1", &id, &IncarnationId::mint(), MemberStatus::ReadyForTraffic, 7_000);
         let other_mesh = digest("mesh2.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 7_000);
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn a_mesh_primary_and_a_node_itself_take_no_mesh_channel_digest() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::MeshPrimary, MESH, &id, &inc, 1);
+        let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 7_000);
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.2", true, &seats, &d, true), Verdict::NotTheAuthority);
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.1", false, &seats, &d, true), Verdict::NotTheAuthority);
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn a_mesh_primary_takes_the_fabric_primarys_aggregate_stamp() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
+        let seats = with_primary(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
         let auth = digest("mesh2.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 1);
         let p = publisher("mesh2.admin.1", &id, &inc);
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 12_000), Verdict::Sample { authority: "mesh2.admin.1".into(), stamp_ms: 12_000 });
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn only_the_current_fabric_primary_is_observed_and_only_by_a_mesh_primary() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let seats = seated(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
+        let seats = with_primary(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
         let auth = digest("mesh2.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 1);
         let other_inc = IncarnationId::mint();
         let other = publisher("mesh3.admin.1", &NodeId::mint(), &other_inc);

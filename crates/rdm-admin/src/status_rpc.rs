@@ -1285,7 +1285,7 @@ impl StatusAuthority {
             let (why, by) = match book.get(node_id.as_str()) {
                 Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.to_string()),
                 Some(_) => continue,
-                None if book.is_departed(node_id.as_str()) => ("node-deleted", String::new()),
+                None if book.is_deleted(node_id.as_str()) => ("node-deleted", String::new()),
                 None => match name.as_ref().and_then(|n| at_path.get(n)) {
                     Some(other) if *other != node_id => ("new-node", other.to_string()),
                     _ => continue,

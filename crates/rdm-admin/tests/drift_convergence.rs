@@ -1031,7 +1031,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
 
     // The mesh-primary's tick: what it watches, from its view and its durable rows.
     let accepted = e.builds.current().await.unwrap().unwrap().topology;
-    let births = rdm_admin::admin::durable_births(&t, std::slice::from_ref(&row), &|p| accepted.contains(p), &|id| heard.is_departed(id));
+    let births = rdm_admin::admin::durable_births(&t, std::slice::from_ref(&row), &|p| accepted.contains(p), &|id| heard.is_deleted(id));
     let watched = rdm_admin::admin::watched_births(&t, &t.node(&mp).expect("the mesh-primary is in the view").node_id, peer, &births);
     let w = watched.get(&old).unwrap_or_else(|| panic!("{mp}'s tick watches {lost}, known only by its durable row: watched {:?}", watched.values().map(|n| n.name.to_string()).collect::<Vec<_>>()));
     assert_eq!((w.name.to_string(), w.incarnation_id.clone(), w.status), (lost.clone(), Some(row.incarnation_id.clone()), NodeStatus::PendingReconnect), "the row's exact birth, silent");

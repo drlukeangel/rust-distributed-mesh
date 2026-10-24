@@ -17,7 +17,7 @@ fn node() -> NodeId {
     NodeId::parse("04raj09p3zp7").unwrap()
 }
 
-fn holder(revision: u64) -> Primary {
+fn primary(revision: u64) -> Primary {
     Primary { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision }
 }
 
@@ -26,7 +26,7 @@ fn holder(revision: u64) -> Primary {
 /// its mesh, NodeId, incarnation and revision, in that order. What must NOT happen: a field moved, a
 /// variant inserted before the end, or a self-describing encoding.
 #[test]
-fn seat_frames_match_the_frozen_wire_schema() {
+fn primary_frames_match_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let fixtures = [
         (Frame::MeshStatus { mesh: "m".into(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }, "06 016d 0173 0170 00 01".to_string()),
@@ -46,36 +46,36 @@ fn seat_frames_match_the_frozen_wire_schema() {
 #[test]
 fn the_book_holds_the_superseding_primary_record() {
     let book = SeatBook::default();
-    assert_eq!(book.take(Seat::FabricPrimary, &holder(1)), SeatTaken::Held { previous: None });
-    assert_eq!(book.take(Seat::FabricPrimary, &holder(1)), SeatTaken::Same);
-    assert_eq!(book.take(Seat::FabricPrimary, &holder(3)), SeatTaken::Held { previous: Some(holder(1)) });
-    assert_eq!(book.take(Seat::FabricPrimary, &holder(2)), SeatTaken::Refused { held: holder(3) }, "an older revision never replaces");
-    assert_eq!(book.take(Seat::MeshPrimary, &holder(1)), SeatTaken::Held { previous: None }, "a mesh's seat is its own record");
-    assert_eq!(book.fabric(), Some(holder(3)));
-    assert_eq!(book.mesh("m"), Some(holder(1)));
+    assert_eq!(book.take(Seat::FabricPrimary, &primary(1)), SeatTaken::Held { previous: None });
+    assert_eq!(book.take(Seat::FabricPrimary, &primary(1)), SeatTaken::Same);
+    assert_eq!(book.take(Seat::FabricPrimary, &primary(3)), SeatTaken::Held { previous: Some(primary(1)) });
+    assert_eq!(book.take(Seat::FabricPrimary, &primary(2)), SeatTaken::Refused { held: primary(3) }, "an older revision never replaces");
+    assert_eq!(book.take(Seat::MeshPrimary, &primary(1)), SeatTaken::Held { previous: None }, "a mesh's seat is its own record");
+    assert_eq!(book.fabric(), Some(primary(3)));
+    assert_eq!(book.mesh("m"), Some(primary(1)));
 }
 
 /// CONTRACT: `NewFabricPrimary` is variant 14, appended after `NodeConnectionsDeleted` (13), a reserved position (R-G3): the committed
-/// holder (mesh, NodeId, incarnation, revision), the endpoint key, the bound QUIC UDP address
+/// primary (mesh, NodeId, incarnation, revision), the endpoint key, the bound QUIC UDP address
 /// (socket-address variant 0 is IPv4: four octets then the port as a varint) and the optional HTTP
 /// API base. The two addresses are separate fields: neither is derived from the other.
 #[test]
 fn new_fabric_primary_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
-    let frame = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
+    let frame = Frame::NewFabricPrimary { holder: primary(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
     // 0e = variant 14; holder 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
     let hex = format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
     let expected = golden(&frame, &bytes(&hex));
     assert_eq!(frame.golden_encode(), expected);
     assert_roundtrip(&frame, &expected);
-    let none = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
+    let none = Frame::NewFabricPrimary { holder: primary(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
     assert_eq!(none.golden_encode(), golden(&none, &bytes(&format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00"))));
 }
 
 
 /// Both primaries of mesh `m`, the birth `m`/`node()`/`i` at their revisions.
 fn both(mesh_revision: u64, fabric_revision: u64) -> Vec<(Seat, rdm_core::Primary)> {
-    vec![(Seat::MeshPrimary, holder(mesh_revision)), (Seat::FabricPrimary, holder(fabric_revision))]
+    vec![(Seat::MeshPrimary, primary(mesh_revision)), (Seat::FabricPrimary, primary(fabric_revision))]
 }
 
 /// CONTRACT (lifecycles/node-primary-update.md "Both primaries": "the successor becomes both"): the
@@ -84,12 +84,12 @@ fn both(mesh_revision: u64, fabric_revision: u64) -> Vec<(Seat, rdm_core::Primar
 #[test]
 fn the_book_holds_an_updates_primaries_together() {
     let book = SeatBook::default();
-    book.take(Seat::MeshPrimary, &holder(3));
-    book.take(Seat::FabricPrimary, &holder(8));
+    book.take(Seat::MeshPrimary, &primary(3));
+    book.take(Seat::FabricPrimary, &primary(8));
     assert!(book.take_together(&both(4, 9)).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
-    assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(9))));
-    book.take(Seat::FabricPrimary, &holder(10));
+    assert_eq!((book.mesh("m"), book.fabric()), (Some(primary(4)), Some(primary(9))));
+    book.take(Seat::FabricPrimary, &primary(10));
     // An older update moves neither seat.
     assert!(book.take_together(&both(2, 2)).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
-    assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(10))));
+    assert_eq!((book.mesh("m"), book.fabric()), (Some(primary(4)), Some(primary(10))));
 }

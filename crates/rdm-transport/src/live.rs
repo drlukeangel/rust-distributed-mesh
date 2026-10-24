@@ -251,7 +251,7 @@ impl LiveNodeResolver {
     /// The exact birth `incarnation` of `node_id` is known to have exited (the provider proved
     /// it): until a successor birth is applied the node resolves `Unavailable`, a dial in flight
     /// to the dead birth is cancelled, and nothing dials or installs its address again.
-    pub fn retire_birth(&self, node_id: &NodeId, incarnation: &IncarnationId) {
+    pub fn mark_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) {
         let held = self.live.read().unwrap().nodes.get(node_id).map(|n| n.incarnation.clone());
         if held.as_ref() != Some(incarnation) {
             return;
@@ -407,7 +407,7 @@ mod tests {
     /// predecessor departs; the parked birth stays reachable by its exact id, and its rejoin as itself
     /// takes the path back when no other node holds it.
     #[test]
-    fn a_parked_birth_gives_up_its_path_and_stays_reachable_by_id() {
+    fn a_stopped_birth_gives_up_its_path_and_stays_reachable_by_id() {
         let r = LiveNodeResolver::default();
         let old = birth("mesh1.rpc.1", 7000);
         r.apply(old.clone(), None);

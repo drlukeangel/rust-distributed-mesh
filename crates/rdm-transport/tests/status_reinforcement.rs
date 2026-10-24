@@ -201,8 +201,8 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         backbone.announce_statuses("pending", "pending", true, true).await;
         assert!(membership.mesh_status("mesh1").is_none() && membership.fabric_status().is_none(), "a node holding no role publishes no status");
         let holder = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
-        membership.seats().take(rdm_core::Seat::MeshPrimary, &holder);
-        membership.seats().take(rdm_core::Seat::FabricPrimary, &holder);
+        membership.primaries().take(rdm_core::Seat::MeshPrimary, &holder);
+        membership.primaries().take(rdm_core::Seat::FabricPrimary, &holder);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;

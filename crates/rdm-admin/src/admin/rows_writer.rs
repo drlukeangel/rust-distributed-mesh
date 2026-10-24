@@ -156,7 +156,7 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook,
                 d
             })
             .collect();
-        let owed = writer.round(&held, &meshes, |id| book.is_departed(id.as_str())).await;
+        let owed = writer.round(&held, &meshes, |id| book.is_deleted(id.as_str())).await;
         owed_rounds = if owed { owed_rounds + 1 } else { 0 };
         drop(turn);
         let again = async {

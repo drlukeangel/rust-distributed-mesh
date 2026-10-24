@@ -86,8 +86,8 @@ async fn publish_stopped(_p: &Membership, bb: &Backbone, stop: &LifecycleOp) {
 }
 
 /// `m` holds `holder` as its mesh's seat record, as its entry read named it.
-fn learn_primary_seat(m: &Membership, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId) {
-    m.learn_seats(&[(Seat::MeshPrimary, Primary { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 }, false)], "entry");
+fn learn_mesh_primary(m: &Membership, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId) {
+    m.learn_primaries(&[(Seat::MeshPrimary, Primary { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 }, false)], "entry");
 }
 
 /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): the mesh-primary's
@@ -225,7 +225,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         // The mesh-primary's own digest, heard by the member directly.
         let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_001);
         p.publish(&p_digest).await.unwrap();
-        learn_primary_seat(&m, "mesh1", &p_digest.node.node_id, &p_birth);
+        learn_mesh_primary(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         // mesh1.rpc.1: its heartbeats as the primary and the member hear them.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_011);
@@ -356,7 +356,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
 
         let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_021);
         p.publish(&p_digest).await.unwrap();
-        learn_primary_seat(&m, "mesh1", &p_digest.node.node_id, &p_birth);
+        learn_mesh_primary(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_031);
         assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));

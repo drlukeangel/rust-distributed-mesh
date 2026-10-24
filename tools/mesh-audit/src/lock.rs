@@ -773,7 +773,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/membership.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.stopped"], ratchet, &mut out);
-            require(root, SEAT_FRAME_CELLS, &["fn seat_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
+            require(root, SEAT_FRAME_CELLS, &["fn primary_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);

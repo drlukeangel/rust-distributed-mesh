@@ -7,10 +7,10 @@ use super::*;
 /// replaced it (`supersedes`), or when the seats hold it gone. Silence, an unreachable path and the
 /// observer-inferred `Dead` are not.
 pub(crate) fn incumbency_of(book: &DigestBook, _records: &Records) -> crate::election::Incumbency {
-    let mut lost: std::collections::HashSet<IncarnationId> = book.departed().into_iter().map(|op| op.incarnation).collect();
+    let mut lost: std::collections::HashSet<IncarnationId> = book.deleted().into_iter().map(|op| op.incarnation).collect();
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
-    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost }
+    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.node_type_primaries(), lost }
 }
 
 /// What this birth's Build log reads its fence from: the fabric-primary record `book` holds, the
@@ -257,7 +257,7 @@ pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -
                 d.status,
                 age,
                 d.node.supersedes.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "none".into()),
-                book.is_departed(d.node.node_id.as_str()),
+                book.is_deleted(d.node.node_id.as_str()),
                 book.routable(d.node.node_id.as_str()),
                 book.staleness_floor().as_millis()
             )
@@ -375,7 +375,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // A parked birth (stopped, its process alive): the book dropped it, and this view keeps it,
     // `Leaving` and `parked`, until it rejoins as itself or departs.
     for d in book.stopped_digests() {
-        if &d.fabric_id != fabric_id || book.is_departed(d.node.node_id.as_str()) {
+        if &d.fabric_id != fabric_id || book.is_deleted(d.node.node_id.as_str()) {
             continue;
         }
         heard.insert(d.node.incarnation.clone());
@@ -412,7 +412,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // A parked birth this admin never held a digest of (it joined after the stop): the stop
     // overlay the mesh topology carried names it, `Leaving` and `parked`, until it rejoins or departs.
     for op in book.stopped_unheard() {
-        if book.is_departed(op.node_id.as_str()) {
+        if book.is_deleted(op.node_id.as_str()) {
             continue;
         }
         heard.insert(op.incarnation.clone());
@@ -481,11 +481,11 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // stands in for a birth only until membership speaks for it: once heard,
     // it never revives the birth (another admin may have retired it since). A
     // departed birth was heard and has left: its record never stands in either.
-    for op in book.departed() {
+    for op in book.deleted() {
         heard.insert(op.incarnation.clone());
     }
     for (name, r) in recorded {
-        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || book.is_departed(r.node_id.as_str()) {
+        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || book.is_deleted(r.node_id.as_str()) {
             continue;
         }
         nodes.entry(name).or_insert(r);

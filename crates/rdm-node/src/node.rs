@@ -712,11 +712,11 @@ async fn start_booted(
                             let declare_loop = {
                                 let (node, membership, client, owed, status, held) = (digest.node.clone(), membership.clone(), node_rpc.client.clone(), owed_state.clone(), status.clone(), connections.held());
                                 tokio::spawn(async move {
-                                    let mut seats = membership.seats().subscribe();
+                                    let mut seats = membership.primaries().subscribe();
                                     let mut told: Option<(NodeId, IncarnationId)> = None;
                                     loop {
                                         seats.borrow_and_update();
-                                        let holder = membership.seats().mesh(&node.name.mesh);
+                                        let holder = membership.primaries().mesh(&node.name.mesh);
                                         if authority_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().owed.is_none() {
                                             let state = node_state_of(*status.lock().unwrap());
                                             tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %membership.held_name(&node.name), state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
@@ -1231,15 +1231,15 @@ enum Declared {
 /// owed to the holder the seat names next. A seat record of another mesh changes nothing here.
 async fn declare_until_seat_moves(me: &MeshNode, membership: &Membership, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>) -> Declared {
     let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
-    let mut seats = membership.seats().subscribe();
+    let mut seats = membership.primaries().subscribe();
     seats.borrow_and_update();
-    let from = birth(membership.seats().mesh(&me.name.mesh));
+    let from = birth(membership.primaries().mesh(&me.name.mesh));
     let moved = async {
         loop {
             if seats.changed().await.is_err() {
                 std::future::pending::<()>().await;
             }
-            if birth(membership.seats().mesh(&me.name.mesh)) != from {
+            if birth(membership.primaries().mesh(&me.name.mesh)) != from {
                 break;
             }
         }
@@ -1301,7 +1301,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rdm_trans
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let node = membership.held_name(&me.name);
     let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
-    let Some(holder) = membership.seats().mesh(&me.name.mesh) else {
+    let Some(holder) = membership.primaries().mesh(&me.name.mesh) else {
         tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-holder: this birth holds no primary seat for its mesh", definitive = false)
             .in_scope(|| tracing::info!("no primary seat is held for this birth's mesh: the declaration stays owed"));
         return Some("no-holder".into());
@@ -1434,7 +1434,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 // primary is before this node hears it take the seat. Only a caller no projection this
                 // node holds names is checked in at the node-admin its seat book names.
                 let mesh = me.digest.node.name.mesh.clone();
-                let commander = sender.as_ref().map(|d| d.node.node_id.clone()).or_else(|| me.membership.seats().mesh(&mesh).map(|held| held.node_id));
+                let commander = sender.as_ref().map(|d| d.node.node_id.clone()).or_else(|| me.membership.primaries().mesh(&mesh).map(|held| held.node_id));
                 let reply = match commander {
                     None => rdm_core::reply::status::not_ready(format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.membership.held_name(&me.digest.node.name), peer.endpoint_id)),
                     Some(commander) => me.own.serve(Some(&commander), None, &req).await.expect("a round op"),

@@ -132,7 +132,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(WRONG, async {
-            while root.membership.seats().mesh("mesh1").is_none() {
+            while root.membership.primaries().mesh("mesh1").is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })

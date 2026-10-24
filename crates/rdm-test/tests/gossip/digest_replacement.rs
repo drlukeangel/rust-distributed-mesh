@@ -88,7 +88,7 @@ fn story(story: Story) {
             assert_eq!((*changes.borrow(), *births.borrow(), *overlays.borrow()), counts);
         }
         assert!(receiver.book.in_flight().is_empty());
-        assert!(!receiver.book.is_departed(node_id.as_str()));
+        assert!(!receiver.book.is_deleted(node_id.as_str()));
         if matches!(story, Story::Duplicate) { assert!(receiver.location_book().addrs(key).is_empty(), "a duplicate cannot fill a forgotten address"); }
         if matches!(story, Story::Inconsistent) { assert!(receiver.location_book().addrs(other_key).is_empty(), "an inconsistent digest cannot install its offered endpoint"); }
         sender_ep.close().await; receiver_ep.close().await;

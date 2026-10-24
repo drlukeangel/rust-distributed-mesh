@@ -172,7 +172,7 @@ pub(crate) fn lost_birth_name(book: &DigestBook, lost: &rdm_core::handover::Hand
         .filter(exact)
         .or_else(|| book.stopped_digests().into_iter().find(exact))
         .map(|d| d.node.name)
-        .or_else(|| book.departed().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.name))
+        .or_else(|| book.deleted().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.name))
 }
 
 /// The fabric primary `me` claimed the create of the fully crashed `mesh`'s first node-admin on the
@@ -287,7 +287,7 @@ pub async fn reconcile_drift(
     // at a path its view holds nothing at (a sibling this admin never heard). Such a birth is
     // unheard: it is inspected like any unheard birth.
     let mut map = t.clone();
-    map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| book.is_departed(id)));
+    map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| book.is_deleted(id)));
     let t = &map;
     // The carrier-edge-lost verdict (mesh-investigation.md step 6): a peer mesh whose investigation
     // decided its recovery is owed node.create of a node-admin. A mesh this authority never heard on the

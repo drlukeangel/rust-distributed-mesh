@@ -1355,7 +1355,7 @@ async fn an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable() {
     let call = tokio::spawn(async move { client.call::<Command>(&target, &run(29, Mode::Apply), &owed()).await.0 });
     eventually("silence keeps the request owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 3).await;
     assert!(!call.is_finished(), "silence ends nothing");
-    resolver.retire_birth(&r.node.node_id, &r.node.incarnation);
+    resolver.mark_exited(&r.node.node_id, &r.node.incarnation);
     let out = tokio::time::timeout(FLOOR * 2, call).await.expect("the proof of the exit ended the call").unwrap();
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(why) if why.contains("exit is proven"))), "{out:?}");
     assert_eq!(out.code(), rdm_core::outcome::Code::Unavailable, "{out:?}");

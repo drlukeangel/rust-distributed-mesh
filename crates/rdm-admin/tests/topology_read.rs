@@ -600,24 +600,24 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_hold
     assert_eq!(served.kind, None, "a node that is no primary answers none");
 
     let (seat, holder) = held(Seat::MeshPrimary);
-    server.membership.seats().take(seat, &holder);
+    server.membership.primaries().take(seat, &holder);
     let rpc_holder = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
     let broker_holder = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 };
-    server.membership.seats().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
-    server.membership.seats().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
+    server.membership.primaries().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
+    server.membership.primaries().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::MeshPrimary));
-    assert_eq!(caller.membership.seats().mesh("mesh1"), Some(holder.clone()));
+    assert_eq!(caller.membership.primaries().mesh("mesh1"), Some(holder.clone()));
     // The read carries the mesh-primaries and the fabric-primary (node-rpc-envelope.md `Primaries`); every
     // other type's primary rides its digest and its mesh-primary's projection (`is_primary`).
-    assert_eq!(caller.membership.seats().cohort("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
-    assert_eq!(caller.membership.seats().cohort("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
+    assert_eq!(caller.membership.primaries().cohort("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
+    assert_eq!(caller.membership.primaries().cohort("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
 
     let (seat, holder) = held(Seat::FabricPrimary);
-    server.membership.seats().take(seat, &holder);
+    server.membership.primaries().take(seat, &holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::FabricPrimary), "the fabric-primary outranks the mesh-primary it also is");
-    assert_eq!(caller.membership.seats().fabric(), Some(holder));
+    assert_eq!(caller.membership.primaries().fabric(), Some(holder));
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -657,7 +657,7 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         let t = target_of(&caller, &server);
         let caller_id = NodeId::mint();
         // The caller holds its mesh's primary seat in its own records.
-        caller.membership.seats().take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
+        caller.membership.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
         let pull = || async {
             let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
             read.adopt_rafka_time(&caller.time, &caller.membership, "mesh1.admin.2", "mesh1", &caller_id, "mesh2.rpc.1")
@@ -665,10 +665,10 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::ServedByAReplica));
         assert!(caller.time.now_ms() >= 9_000_000 && caller.time.now_ms() < 9_060_000, "the replica's 5 000 000 was not taken");
 
-        server.membership.seats().take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+        server.membership.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
 
-        server.membership.seats().take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+        server.membership.primaries().take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         let adopted = pull().await.unwrap();
         assert_eq!(adopted.previous_ms.map(|p| p >= 9_000_000), Some(true));
         assert!(adopted.stalls_ms > 3_000_000, "the fabric-primary's earlier time is behind: the reader stalls, it never steps back: {adopted:?}");

@@ -691,7 +691,7 @@ impl Records {
     /// record or an entry sweep's record of a deleted birth never stands in for it again, after the
     /// book forgets the departure too.
     pub fn remove_deleted(&self, book: &DigestBook) {
-        let deleted = book.departed();
+        let deleted = book.deleted();
         if deleted.is_empty() {
             return;
         }

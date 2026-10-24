@@ -568,7 +568,7 @@ mod discipline_sim {
     }
 
     #[test]
-    fn a_slow_clock_steps_forward_and_stays_within_the_delivery_delay_of_the_authority() {
+    fn a_slow_clock_steps_forward_and_stays_within_the_delivery_delay_of_the_primary() {
         // 50 ppm slow, heartbeats every 2 s delivered after 20 ms, three hours.
         let sim = Sim::new(-50, 0);
         let (mut lo, mut hi, mut steps) = (i64::MAX, i64::MIN, 0);
@@ -595,7 +595,7 @@ mod discipline_sim {
     }
 
     #[test]
-    fn a_fast_clock_is_held_within_the_jitter_allowance_of_the_authority() {
+    fn a_fast_clock_is_held_within_the_jitter_allowance_of_the_primary() {
         // 50 ppm fast for six hours: unchecked it would stand 1.08 s ahead.
         let sim = Sim::new(50, 0);
         let (mut hi, mut slews, mut max_ppm) = (i64::MIN, 0, 0u32);
@@ -672,7 +672,7 @@ mod discipline_sim {
     }
 
     #[test]
-    fn the_authority_changing_retargets_to_the_new_holder() {
+    fn a_primary_change_retargets_to_the_new_primary() {
         // The new holder's clock stands 300 ms ahead of the old one's: the follower steps to it.
         let sim = Sim::new(0, 0);
         sim.run(0, 60_000, 2_000, &|_| Some(10), 1_000, &mut |_, _| {}, &mut quiet);

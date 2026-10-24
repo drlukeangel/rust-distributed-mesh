@@ -498,7 +498,7 @@ fn fabric_seat_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) ->
     if !view.holds_mesh_seat(&me.mesh, &w.me_id) {
         return None;
     }
-    let record = w.membership.seats().fabric()?;
+    let record = w.membership.primaries().fabric()?;
     if record.mesh == me.mesh {
         return None;
     }
@@ -663,7 +663,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                 // node-admin of that mesh answered either probe, so the backbone rule applies and the
                 // lowest ReadyForTraffic mesh-primary is fabric-primary (fabric-recovery.md "Outside its
                 // mesh"; elections §4.3). The re-creation of the lost mesh's node-admin follows it.
-                let record = w.membership.seats().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
+                let record = w.membership.primaries().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
                 if let (Some(_), false) = (record, view.holds_fabric_seat(&w.me_id)) {
                     verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule applies");
                     continue;

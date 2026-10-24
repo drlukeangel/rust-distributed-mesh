@@ -269,8 +269,8 @@ impl Birth {
     /// resolves once this birth holds that record.
     async fn seat(&self, admin: &crate::common::AdminSide, revision: u64) {
         let holder = rdm_core::seat::Primary { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
-        admin.observer.membership.seats().take(rdm_core::seat::Seat::MeshPrimary, &holder);
-        let seats = self.running.membership.seats();
+        admin.observer.membership.primaries().take(rdm_core::seat::Seat::MeshPrimary, &holder);
+        let seats = self.running.membership.primaries();
         let mut changed = seats.subscribe();
         tokio::time::timeout(Duration::from_secs(20), async {
             while seats.mesh("mesh1").as_ref() != Some(&holder) {

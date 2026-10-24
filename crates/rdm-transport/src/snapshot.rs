@@ -80,7 +80,7 @@ impl Full {
     }
 
     /// The retained departures.
-    pub fn departed(&self) -> Vec<LifecycleOp> {
+    pub fn deleted(&self) -> Vec<LifecycleOp> {
         self.departed.values().cloned().collect()
     }
 
@@ -248,7 +248,7 @@ pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<Lifec
         .into_iter()
         .map(Item::Digest)
         .chain(full.in_flight().into_iter().map(Item::InFlight))
-        .chain(full.departed().into_iter().map(Item::Departed))
+        .chain(full.deleted().into_iter().map(Item::Departed))
         .collect();
     let (sized, refused) = crate::chunking::pack_in_order(items, |run: &[Item]| {
         let (d, i, x) = split(run.to_vec());
@@ -743,7 +743,7 @@ impl SnapshotReceiver {
             .held
             .iter()
             .filter(|(_, h)| h.desynced.is_none())
-            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), departed: h.full.departed() })
+            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), departed: h.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -923,7 +923,7 @@ impl Forwarder {
         let mut v: Vec<SourceSnapshot> = self
             .published
             .iter()
-            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), departed: p.full.departed() })
+            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), departed: p.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v

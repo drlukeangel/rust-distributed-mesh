@@ -81,7 +81,7 @@ pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
 pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     let held_holder = book.holder_name();
     let node = held_holder.as_deref().unwrap_or(node);
-    for op in book.departed() {
+    for op in book.deleted() {
         let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
         if applied == Applied::Departed {
             tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())

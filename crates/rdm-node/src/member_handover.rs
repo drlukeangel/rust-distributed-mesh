@@ -186,7 +186,7 @@ impl MemberDoor {
         }
         // The span covers the install: its start is the moment the successor begins to install.
         let span = tracing::info_span!("rdm.node_admin.seat.update.via-primary-updated", node = %self.held_name(), operation = %operation, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
-        let outcome = span.in_scope(|| install(self.membership.seats(), &primaries, self.mesh_of()));
+        let outcome = span.in_scope(|| install(self.membership.primaries(), &primaries, self.mesh_of()));
         span.record("outcome", outcome);
         span.in_scope(|| tracing::info!("the successor installed the election's result the call carries and answers node.primary.updated"));
         let reply = Reply::PrimaryUpdated { revisions: primaries };
@@ -226,7 +226,7 @@ impl MemberDoor {
         // Commanded by its mesh-primary, it runs the update (a receiver never refuses a call for the birth it
         // names, R-RX5). The revision the successor's entry takes is the next after the record of its type
         // this node holds; holding none, it reads its mesh-primary's topology first, as a starting node does.
-        let book = self.membership.seats();
+        let book = self.membership.primaries();
         if book.cohort(&mesh, kind).is_none() {
             self.read_own_mesh(me, &mesh).await;
         }
@@ -252,7 +252,7 @@ impl MemberDoor {
     /// One `GetTopology` of `mesh` from the mesh-primary this node holds, installed into its view: the
     /// primary records the projection carries come with it.
     async fn read_own_mesh(&self, me: &PathName, mesh: &str) {
-        let Some(mp) = self.membership.seats().mesh(mesh) else { return };
+        let Some(mp) = self.membership.primaries().mesh(mesh) else { return };
         let read = crate::topology_read::get_topology(&self.client, &NodeTarget::ExactNode(mp.node_id.clone()), mesh, &self.membership, Some(mesh), None).await;
         tracing::info_span!("rdm.node_admin.primary.resolve.via-topology-read", node = %me, mesh, mesh_primary = %mp, outcome = %read.as_ref().map(|_| "installed".to_string()).unwrap_or_else(|e| e.to_string()))
             .in_scope(|| tracing::info!("the commanded primary read its mesh-primary's topology: its own record was not held yet"));

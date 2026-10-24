@@ -194,7 +194,7 @@ impl RecoverySubmitter {
     pub(crate) async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
         let of = |announced: &'static str, op: rdm_core::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
-        if let Some(op) = self.book.departed().into_iter().find(|op| op.node_id == n.node_id) {
+        if let Some(op) = self.book.deleted().into_iter().find(|op| op.node_id == n.node_id) {
             return Some(of("node-deleted", op));
         }
         if let Some(op) = self.book.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop()) {

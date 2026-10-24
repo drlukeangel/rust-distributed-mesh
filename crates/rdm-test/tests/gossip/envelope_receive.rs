@@ -22,7 +22,7 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
         sender.broadcast_neighbors(status("held", 1).encode().into()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("held").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         let held = receiver.mesh_status("held");
-        let seats = receiver.seats().subscribe(); let births = receiver.book.birth_changes();
+        let seats = receiver.primaries().subscribe(); let births = receiver.book.birth_changes();
         let before = (*seats.borrow(), *births.borrow());
         let mut cases = Vec::new();
         for kind in ["rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new", "rdm.unknown"] {

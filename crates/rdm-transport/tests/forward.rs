@@ -189,7 +189,7 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::P
 /// CONTRACT: the source learns the third Proxy validity condition from the carried call itself
 /// (connections.md section 8) and from nothing else.
 #[tokio::test]
-async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_for_retirement() {
+async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected() {
     use rdm_core::connections::{resolve, CarrierPolicy, INVALID_CARRIER_EDGE_LOST};
     let policy = CarrierPolicy::Forwardable { carrier_kind: rdm_core::NodeKind::RpcNode };
     for (edge, retired) in [(Some("Direct Failed".to_string()), true), (None, false)] {

@@ -830,7 +830,7 @@ impl AdminRunner {
     /// of this one, none of which awaits the exited peer.
     pub(crate) async fn revise_exited(&self, record: &Node) {
         if let Some(incarnation) = record.incarnation_id.as_ref() {
-            self.node_rpc.resolver.retire_birth(&record.node_id, incarnation);
+            self.node_rpc.resolver.mark_exited(&record.node_id, incarnation);
         }
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             ep.replace_direct_addrs(key, []).await;
@@ -848,7 +848,7 @@ impl AdminRunner {
             let rpc = &self.node_rpc;
             // The exit is proven: the resolver names no current birth for the node until its
             // successor is applied, so no dial, probe or install aims at the dead birth's socket.
-            rpc.resolver.retire_birth(&record.node_id, incarnation);
+            rpc.resolver.mark_exited(&record.node_id, incarnation);
         }
         // The exit is proven: the exited birth's direct paths are retired. Until now they stayed
         // open for the typed drain.

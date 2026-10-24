@@ -49,7 +49,7 @@ pub async fn run_seat_move_pull(
     client: Arc<rdm_transport::NodeRpcClient>,
     membership: rdm_transport::membership::Membership,
 ) {
-    let seats = membership.seats().clone();
+    let seats = membership.primaries().clone();
     let mut changed = seats.subscribe();
     let mut last = seats.fabric().map(|h| (h.node_id, h.revision));
     loop {
@@ -95,7 +95,7 @@ async fn pull_from_fabric_primary(
     let mut holder = moved_to;
     for attempt in 1..=SEAT_MOVE_ATTEMPTS {
         // The holder this admin's records name now: a seat that moved again is pulled from where it is.
-        if let Some(current) = membership.seats().fabric() {
+        if let Some(current) = membership.primaries().fabric() {
             if current.node_id == *me_id {
                 return ("kept: this admin took the fabric seat itself".into(), attempt - 1, None);
             }

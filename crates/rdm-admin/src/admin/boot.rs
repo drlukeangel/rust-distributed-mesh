@@ -855,7 +855,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
                 // The primaries recorded on the node rows of the fabric's store root: an election input this admin
                 // enters with (elections §3), its own included. A record older than one held changes nothing.
-                crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, membership.seats()).await.map_err(storage_err)?;
+                crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, membership.primaries()).await.map_err(storage_err)?;
                 if let Some(own) = &inherited {
                     membership.book.seats.mark_gone(own.incarnation_id.clone());
                 }
@@ -877,7 +877,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
                 // seat change.
                 {
-                    let seats = membership.seats().clone();
+                    let seats = membership.primaries().clone();
                     let mut writer = FabricRowsWriter::new((node_id.clone(), incarnation.clone()), fabric_identity.clone(), fabric_storage.clone());
                     let mut changed = seats.subscribe();
                     let park = park_gate.clone();
@@ -1393,7 +1393,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 });
                                 let _ = control.departure.set(env.departure.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(book.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
-                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
+                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.primaries().clone(), incarnation: incarnation.clone() }));
                                 env
                             };
 
@@ -2212,7 +2212,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let durable = {
                                                     let rows = recovery.durable_rows().await;
                                                     let planned = records.planned();
-                                                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
+                                                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_deleted(id))
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);

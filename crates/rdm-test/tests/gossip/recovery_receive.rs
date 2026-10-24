@@ -63,7 +63,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let full=vec![own.clone(),restarted.clone(),started.clone(),holder.clone()];
         assert!(matches!(server_membership.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],departed:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
         let seat_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
-        for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_membership.seats().take(seat,&seat_of(d,10));}
+        for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_membership.primaries().take(seat,&seat_of(d,10));}
         let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_membership.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
         let mut serial=0;
         for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
@@ -77,13 +77,13 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         assert!(read.installed.iter().any(|s|s.mesh=="mesh1"&&s.topology_version==100));
         assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
         assert!(receiver.book.in_flight().is_empty(),"the read installs the operations' completion/later lifecycle evidence");
-        assert!(receiver.book.is_departed(deleted.node.node_id.as_str()));
+        assert!(receiver.book.is_deleted(deleted.node.node_id.as_str()));
         assert!(receiver.book.get(deleted.node.node_id.as_str()).is_none());
-        assert_eq!(receiver.seats().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
+        assert_eq!(receiver.primaries().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
         for d in [&restarted,&started,&holder] {assert_eq!(receiver.book.get(d.node.node_id.as_str()).unwrap().0.digest_seq,100);}
         let before:Vec<_>=full.iter().map(|d|receiver.book.get(d.node.node_id.as_str()).unwrap().0).collect();
         let statuses=(receiver.mesh_status("mesh1"),receiver.fabric_status());
-        let (births,changes,overlays,seats)=(receiver.book.birth_changes(),receiver.book.digest_changes(),receiver.book.overlay_changes(),receiver.seats().subscribe());
+        let (births,changes,overlays,seats)=(receiver.book.birth_changes(),receiver.book.digest_changes(),receiver.book.overlay_changes(),receiver.primaries().subscribe());
         let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow());
         let bad=iroh::SecretKey::generate().public();
         let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());stale.config.insert("obsolete".into(),"yes".into());
@@ -104,10 +104,10 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
             assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
             for held in &before {assert_eq!(receiver.book.get(held.node.node_id.as_str()).unwrap().0,*held,"no category rolls back the read-installed birth");}
             assert_eq!((receiver.mesh_status("mesh1"),receiver.fabric_status()),statuses);
-            assert_eq!(receiver.seats().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
-            assert_eq!(receiver.seats().mesh("mesh1"),Some(seat_of(&own,10)));assert_eq!(receiver.seats().fabric(),Some(seat_of(&own,10)));
+            assert_eq!(receiver.primaries().cohort("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
+            assert_eq!(receiver.primaries().mesh("mesh1"),Some(seat_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(seat_of(&own,10)));
             assert_eq!((*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow()),counts);
-            assert!(receiver.book.in_flight().is_empty());assert!(receiver.book.is_departed(deleted.node.node_id.as_str()));assert!(receiver.book.get(deleted.node.node_id.as_str()).is_none());
+            assert!(receiver.book.in_flight().is_empty());assert!(receiver.book.is_deleted(deleted.node.node_id.as_str()));assert!(receiver.book.get(deleted.node.node_id.as_str()).is_none());
             assert!(receiver.desynced_sources().is_empty());assert!(receiver.location_book().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
         }
         server_ep.close().await;receiver_ep.close().await;

@@ -195,8 +195,8 @@ impl TopologyDoor {
             }
             // The recorded primaries this node holds: the fabric-primary and each mesh's mesh-primary, an
             // election input the reader holds before it computes any (elections §3).
-            let mut records: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary)> = self.membership.seats().meshes().into_values().map(|h| (rdm_core::topology::PrimaryKind::MeshPrimary, h)).collect();
-            records.extend(self.membership.seats().fabric().map(|h| (rdm_core::topology::PrimaryKind::FabricPrimary, h)));
+            let mut records: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary)> = self.membership.primaries().meshes().into_values().map(|h| (rdm_core::topology::PrimaryKind::MeshPrimary, h)).collect();
+            records.extend(self.membership.primaries().fabric().map(|h| (rdm_core::topology::PrimaryKind::FabricPrimary, h)));
             let primary_records = records.len() as u64;
             for (kind, primary) in records {
                 let gone = self.gone.as_ref().is_some_and(|g| g(&primary));
@@ -210,7 +210,7 @@ impl TopologyDoor {
             // The rafka-time this node adopted and which primary it is, read from the primaries it
             // holds: the puller applies its own rule to the pair (`rafka_time::adopt_pulled`).
             let time_ms = self.time.try_now_ms().unwrap_or(time_ms);
-            let kind = crate::rafka_time::primary_held(self.membership.seats(), &me.node.name.mesh, &me.node.node_id);
+            let kind = crate::rafka_time::primary_held(self.membership.primaries(), &me.node.name.mesh, &me.node.node_id);
             let r = TopologyReply::RafkaTime { ms: time_ms, kind };
             bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
             if let Err(e) = sink.data(r).await {
@@ -281,7 +281,7 @@ impl TopologyRead {
     /// every pull goes through). `served_by` is the target's `path.name`.
     pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
-        let puller = crate::rafka_time::Puller::of(membership.seats(), mesh, node_id);
+        let puller = crate::rafka_time::Puller::of(membership.primaries(), mesh, node_id);
         crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, kind: served.kind }).map_err(TimeNotAdopted::Refused)
     }
 }
@@ -360,7 +360,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     let read = read_with(client, target, &node_name, mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await?;
     // The seat records the target holds are this node's too, wherever they supersede its own: it
     // computes no seat before it has them.
-    membership.learn_seats(&read.seats, "entry");
+    membership.learn_primaries(&read.seats, "entry");
     Ok(read)
 }
 
