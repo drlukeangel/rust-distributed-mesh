@@ -12,7 +12,9 @@ third time on Architect 1's review of `4de516d30`: a type with one node in its m
 primary-update page's no-successor refusal; R5 is ruled (Luke 2026-10-24, arm (a)), its page sentence
 landing with the roll's code. Revised a fourth time on Architect 1's review of `c028a6ae9`: the
 predecessor half is one `node.delete`, with no standalone connections delete or mesh leave before it
-(step 4), so a type's only node reaches the step R5 exempts. Nothing below is built.
+(step 4), so a type's only node reaches the step R5 exempts. R6 (the lead, 2026-10-24) is built in
+below: every claim records the binding its birth runs, the bootstrap admin's included, so step 3's
+"or none" names only rows written before the field. Nothing below is built.
 
 ### What the pages already say
 
@@ -100,7 +102,8 @@ behaviour that depends on the product is Rafka's):
    as every path's target binding, by kind; it is written once in the acceptance record. There is no
    persisted operation list and no instruction pointer (build.md §1). Each attempt computes remaining
    work as the members whose row records a sha256 other than the set's for their kind, or none (a row
-   written before the field decodes with none and is replaced), and orders them by a rule read from
+   written before the field decodes with none and is replaced; after R6 no claim writes none), and
+   orders them by a rule read from
    the current primaries at that moment: mesh by mesh; in a mesh its non-primary node-admins, then its
    primary node-admin, then the nodes of each other type, non-primary before primary. A member's
    operations are keyed by its path.name and step, so a receipt `(build_id, attempt, operation, step)`
@@ -219,6 +222,24 @@ here, hidden nowhere.
   estate unrollable until resized to two of each type; (c) adding a second node of the type first, as
   R4 does for admins, since a broker holds data and a second broker is Rafka's placement decision.
 
+### Built in, for objection: R6, every row records what its birth runs (the lead, 2026-10-24)
+
+Today only a create's name claim records the executable on the row, and only when the launch carries a
+binding (`node_rows.rs:406`); the Day-0 claim (`claim_day0_name_in_boot`, `node_rows.rs:1165`) takes
+none, so the bootstrap admin's row records nothing it runs, and a built-in launch (no
+`RDM_EXECUTABLE_BINDINGS`) records none for any node. Under step 3 as first written the first roll of
+a bootstrapped fabric replaced the bootstrap admin whatever it ran, against step 2's sentence, and
+moved the fabric-primary on every first roll. The same gap reaches node recovery today: a recovered
+bootstrap admin runs the recovering admin's binding, not its own, against node-recovery.md "Retained".
+
+R6: every claim records the binding its birth runs, as a create's claim records a launched node's: the
+Day-0 claim records the bootstrap admin's `node_admin` binding from its `RDM_EXECUTABLE_BINDINGS`, else
+its running executable hashed as the built-in binding; a built-in launch records the executable it
+resolved from `bin_dir`, hashed, the same way. The row then says what it runs, step 3 needs no
+exception, a roll replaces a member only when its row's sha differs from the set's, and recovery runs
+the bin the row records for every node. Not taken: striking step 2's sentence for the bootstrap admin
+so the first roll always replaces it, which is what the code does today.
+
 ### Wire and storage
 
 `BuildChange::Roll { bindings: BindingSet }`, a new variant of the Build change. The accepted topology
@@ -253,6 +274,9 @@ receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value an
   nothing for it; no member replaced twice;
 - after the roll, an ordinary `node.create` (a resize) from a replaced admin and from an unreplaced
   admin launches the set's binary, and a node recovery runs its row's;
+- a bootstrapped fabric rolled onto a set whose `node_admin` sha equals the bootstrap admin's: the
+  bootstrap admin is not replaced and the fabric-primary does not move; its row records its binding
+  from the Day-0 claim (R6); a built-in launch's row records its hashed executable;
 - the Build `Complete` only after the fabric's ready-for-traffic round;
 - refused `fabric-not-ready` before first ready-for-traffic; a sha that does not match, a launch id the
   topology uses with no binding, and a container fabric's set without the image, each refused by name
