@@ -70,9 +70,13 @@ life; a new executable is a new birth at the same `path.name`.**
    request that changes the path's storage or placement with its executable is one re-birth with the
    new config, since the entry is explicit; nothing is inferred. `node.restart` keeps the executable
    (node-restart.md "Kept"). Rafka submits the shape; it composes no steps.
-6. **Recovered from the row.** Node recovery is a create that names no executable on its step, so it
-   takes the row's (node-recovery.md "Retained"), never the recovering admin's and never the topology's
-   next entry: a heal never silently upgrades; a pending replacement follows as its own step.
+6. **A heal is the verdict first; only a re-birth reads the row.** Node investigation decides
+   (node-investigation.md): `reached`, the birth is commanded back through node.mesh.join, the same
+   process on the same executable, nothing created and nothing about its executable read or written; a
+   restart likewise keeps the process and the executable (node-restart.md "Kept"). Any other verdict
+   re-creates the birth at its `path.name`, and that create names no executable on its step, so it takes
+   the row's (node-recovery.md "Retained"), never the recovering admin's and never the topology's next
+   entry: a heal never silently upgrades; a pending replacement follows as its own step.
 7. **Read from the records.** `NodeView` gains the executable from the row, so `node.get` and the
    fabric's per-node read return what each node runs beside status, config and tags.
    `fabric.nodes.get` gets its wire mapping as the mesh selector's answer over every mesh, from the
@@ -192,9 +196,13 @@ back to pending completes only after its own ready-for-traffic round (states.md)
 
 ## 4. Recovery
 
-Node recovery is a create that names no executable on its step, so it takes the row's
-(node-recovery.md "Retained"), never the recovering admin's and never the topology's next entry. A
-heal never upgrades; a pending replacement follows as its own step. A row written before the field
+A heal is node investigation's verdict first (node-investigation.md). `reached`: the birth is commanded
+back through node.mesh.join, the same process on the same executable; nothing is created and nothing
+about its executable is read or written. A restart keeps the process and the executable
+(node-restart.md "Kept"). Any other verdict re-creates the birth at its `path.name`, and that create
+names no executable on its step, so it takes the row's (node-recovery.md "Retained"), never the
+recovering admin's and never the topology's next entry. A heal never upgrades; a pending replacement
+follows as its own step. A row written before the field
 existed decodes with none, and a birth whose row records no executable has no automatic recovery: the
 topology's entry is the target, not what the birth ran, so recovery of it is refused by name; the repair
 is a request naming that path's executable, the ordinary replacement.
@@ -352,7 +360,9 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 - an admin restarted over a store whose current Build predates the field: it reads it as valid history
   and serves;
 - a containerized admin launched by another admin mounts the launching admin's `RDM_EXECUTABLE_DIRS`;
-- a recovery runs the executable the lost birth's row records, with a newer entry pending on the path;
+- a birth found `reached` rejoins on its own executable, nothing created, its row unchanged, with a
+  newer entry pending on the path; a birth found `exited` is re-created on the executable its row
+  records, the newer entry still pending;
 - a created path naming no executable refused by name at acceptance, nothing run; a missing file or a
   differing hash refused by name at the launch;
 - a request that creates a node without naming its `path.name`, a count form, refused as unknown; a
