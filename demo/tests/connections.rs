@@ -15,8 +15,11 @@ use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 use rdm_node::connections::{
     Alpn, Birth, Closed, ConnectError, Connection, ConnectionKind, Connections, StreamError,
 };
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{Status, StatusReply, StatusRequest};
+use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_test::connection_faults::{block_direct, fault_pre_opened_once, unblock_direct, PreOpenedFault};
-use rdm_transport::{NodeResolver, NodeTarget};
+use rdm_transport::{CallOptions, NodeResolver, NodeTarget};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -291,6 +294,47 @@ async fn establish_direct_edge(
     assert_eq!(c_recv.read_to_end(64).await.unwrap(), b"warmed");
     let path = direct_index_path(fabric_root, source, &dest.name.to_string(), alpn);
     wait_for_row(&path, ConnectionState::Connected).await;
+}
+
+/// What the node's `node.connections.get` answers for a stream Proxy that is still open after its
+/// route was replaced by Direct (connections.md §10: the tunnel outlives the Proxy's
+/// `Disconnected(direct-restored)` write).
+const TUNNEL_PAST_ITS_ROUTE: &str = "route: retired";
+
+/// `node.connections.get` of the exact birth `node`, sent by `root`'s Node RPC client, answered
+/// within `bound`. The node answers once every observation handed to its connections writer has
+/// landed, a Direct Connected's owed `Proxy Disconnected(direct-restored)` write included, so the
+/// answer is the held projection new opens resolve over (connections.md §10: "Only then does
+/// Direct become effective"). Panics naming the read when it is not answered within `bound` or is
+/// answered with anything but the node's connections.
+async fn wait_for_held_connections(root: &Running, node: &Birth, bound: Duration) -> ConnectionsView {
+    let what = format!("node.connections.get of {} ({})", node.name, node.node_id);
+    let req = StatusRequest::GetConnections {
+        node_id: node.node_id.clone(),
+        incarnation: node.incarnation.clone(),
+    };
+    let (out, _) = tokio::time::timeout(
+        bound,
+        root.node_rpc.client.call::<Status>(
+            &NodeTarget::ExactNode(node.node_id.clone()),
+            &req,
+            &CallOptions::default(),
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{what}: not answered within {bound:?}"));
+    match out {
+        RpcOutcome::Reply(r) => match r.into_value() {
+            StatusReply::Connections { connections } => connections,
+            other => panic!("{what}: answered {other:?}"),
+        },
+        other => panic!("{what}: ended {other:?}"),
+    }
+}
+
+/// The entry `id` in `held`, by the id `node.connections.get` names it by.
+fn held_entry<'a>(held: &'a ConnectionsView, id: &rdm_core::ConnectionId) -> Option<&'a ConnectionView> {
+    held.connections.iter().find(|c| c.id == id.to_string())
 }
 
 async fn delete_connections_command(
@@ -786,6 +830,30 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
             "restoring ALPN_A must leave ALPN_B's Proxy Connected"
         );
 
+        // The row on disk is the first of the write's files; Direct is effective once the write has
+        // landed in rpc.1's held projection, which its own node.connections.get answers after.
+        let held = wait_for_held_connections(&root, &rpc1_birth, BOUND).await;
+        let a_tunnel = held_entry(&held, proxy_a_client.id())
+            .unwrap_or_else(|| panic!("rpc.1 must still hold ALPN_A's open Proxy tunnel: {held:?}"));
+        assert_eq!(
+            a_tunnel.reason.as_deref(),
+            Some(TUNNEL_PAST_ITS_ROUTE),
+            "ALPN_A's Proxy is no longer rpc.1's route once Direct is restored: {held:?}"
+        );
+        let b_proxy = held_entry(&held, proxy_b_client.id())
+            .unwrap_or_else(|| panic!("rpc.1 must hold ALPN_B's Proxy: {held:?}"));
+        assert_eq!(
+            (b_proxy.kind.as_str(), b_proxy.state.as_str(), b_proxy.reason.as_deref()),
+            ("proxy", "connected", None),
+            "restoring ALPN_A must leave ALPN_B's Proxy rpc.1's route: {held:?}"
+        );
+        assert!(
+            held.connections.iter().any(|c| c.kind == "direct"
+                && c.state == "connected"
+                && c.destination == "mesh1.rpc.2"),
+            "rpc.1 must hold its restored Direct to rpc.2: {held:?}"
+        );
+
         // B's in-flight stream continues while A has restored Direct!
         b_send.write_all(b"-and-after").await.unwrap();
         b_send.finish().unwrap();
@@ -795,7 +863,6 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
         assert_eq!(b_recv.read_to_end(64).await.unwrap(), b"b-proxy-intact");
 
         // Next open on A is Direct; next open on B is still Proxy (via gateway.1)!
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let (next_a_c, next_a_s) = open_pair(&rpc1_a, &mut rpc2_a, &rpc2_birth).await;
         assert_eq!(next_a_c.kind(), ConnectionKind::Direct);
 
@@ -1120,6 +1187,27 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         )
         .await;
 
+        // The row on disk is the first of the write's files; Direct is effective once the write has
+        // landed in rpc.1's held projection, which its own node.connections.get answers after.
+        let held = wait_for_held_connections(&root, &rpc1_birth, BOUND).await;
+        let tunnel = held_entry(&held, &tunnel_id)
+            .unwrap_or_else(|| panic!("rpc.1 must still hold the open Proxy tunnel: {held:?}"));
+        assert_eq!(
+            tunnel.reason.as_deref(),
+            Some(TUNNEL_PAST_ITS_ROUTE),
+            "the Proxy is no longer rpc.1's route once Direct is restored: {held:?}"
+        );
+        assert!(
+            !held.connections.iter().any(|c| c.kind == "proxy" && c.reason.is_none()),
+            "rpc.1 holds no Proxy route to rpc.2 once Direct is restored: {held:?}"
+        );
+        assert!(
+            held.connections.iter().any(|c| c.kind == "direct"
+                && c.state == "connected"
+                && c.destination == "mesh1.rpc.2"),
+            "rpc.1 must hold its restored Direct to rpc.2: {held:?}"
+        );
+
         // 1. The long-running Proxy stream continues across Direct restoration!
         long_send
             .write_all(b"chunk-after-direct-restored")
@@ -1137,7 +1225,6 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         assert_eq!(&ack_part, b"ack-from-long-proxy-stream");
 
         // 2. The next open() goes Direct!
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let direct_client =
             tracing::Instrument::instrument(rpc1_a.open(&rpc2_birth), flow.clone())
                 .await
