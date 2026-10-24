@@ -194,7 +194,7 @@ async fn seatless_rpc(e: &Estate, mesh: &str) -> String {
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
+    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect(), bindings: None };
     let mut nodes = Vec::new();
     let book = DigestBook::default();
     for m in topology.meshes.values() {
@@ -292,7 +292,7 @@ impl OperationRunner for Runner {
         let created;
         let op = match op {
             BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node, .. }, .. } => {
-                created = BuildOperation::CreateNode { node: node.clone(), over: None };
+                created = BuildOperation::CreateNode { node: node.clone(), over: None, executable: None };
                 &created
             }
             other => other,
@@ -314,7 +314,7 @@ impl OperationRunner for Runner {
                 return Ok(());
             }
             // node.create at the same path.name with a new node.id and no supersedes.
-            BuildOperation::CreateNode { node: path, over: Some(_) } => {
+            BuildOperation::CreateNode { node: path, over: Some(_), .. } => {
                 self.recovering.lock().unwrap().push(op.key());
                 if self.fail_recovery_create.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     return Err(format!("{path}: the recovered node's launch never came up").into());
@@ -333,7 +333,7 @@ impl OperationRunner for Runner {
         }
         // A creation at a path whose exact birth the provider's proof clears: the fence stands for the
         // exact terminal proof.
-        let BuildOperation::CreateNode { node: path, over: None } = op else { return Err(format!("unexpected {op:?}").into()) };
+        let BuildOperation::CreateNode { node: path, over: None, .. } = op else { return Err(format!("unexpected {op:?}").into()) };
         let prev = self.view.read().await.node(path).cloned();
         let out = fence(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));

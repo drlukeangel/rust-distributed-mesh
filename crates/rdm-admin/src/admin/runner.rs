@@ -42,9 +42,11 @@ pub struct AdminRunner {
     pub admin_env: BTreeMap<String, String>,
     /// The directory the node executables are looked up in.
     pub bin_dir: PathBuf,
-    /// Explicit executable bindings: when set, every launch runs its bound executable and
-    /// `bin_dir` is never consulted.
-    pub bindings: Option<rdm_core::binding::Validated>,
+    /// The executable set this admin started with (the bootstrap admin's `RDM_EXECUTABLE_BINDINGS`, a
+    /// launched admin's entry answer): launched from only while the current Build carries no launch set
+    /// ([`Self::launch_set`]). With a set, every launch runs its bound executable and `bin_dir` is
+    /// never consulted.
+    pub start_bindings: Option<rdm_core::binding::BindingSet>,
     /// The lifecycle transitions of the births this admin executes.
     pub lifecycle: LifecycleTransitionPipeline,
     /// The runtimes this admin started, by node.
@@ -239,14 +241,14 @@ impl AdminRunner {
     /// fabric knows (a recovered mesh is reconstructed as itself, never anew).
 
     pub(crate) async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
-        let (executable, binding) = match &self.bindings {
-            // Explicit mode: the bound executable, re-hashed now; an unbound kind is refused, never
-            // launched from the built-in set.
-            Some(b) => {
-                let r = resolve_bound(b, kind).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
-                tracing::info!(launch_id = %r.launch_id, executable = %r.executable.display(), sha256 = %r.sha256, candidate = %r.candidate.sha, "launching from the explicit executable binding");
-                let binding = rdm_core::binding::Binding { launch_id: r.launch_id, executable: r.executable.clone(), sha256: r.sha256, image: r.image };
-                (r.executable, Some(binding))
+        let (executable, binding) = match self.launch_set().await? {
+            // Explicit mode: the launch set's binding of the kind, re-hashed now; an unbound kind is
+            // refused, never launched from the built-in set.
+            Some(set) => {
+                let b = set.of(kind).cloned().ok_or_else(|| format!("{kind:?} in {mesh}: {}", rdm_core::binding::BindingError::Unbound { launch_id: kind.name().into() }, kind = kind.name()))?;
+                verify_binding(&b, kind, self.fabric_provider, "launch set").await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
+                tracing::info!(launch_id = %b.launch_id, executable = %b.executable.display(), sha256 = %b.sha256, candidate = %set.candidate.sha, "launching from the explicit executable binding");
+                (b.executable.clone(), Some(b))
             }
             // The built-in set: the node-admin, and the one node executable every other node_type
             // runs, taking its node_type from the launch (rafka-node-base `run_launched`). The rpc
@@ -261,6 +263,16 @@ impl AdminRunner {
             }
         };
         self.template_launching(kind, mesh, executable, binding).await
+    }
+
+    /// The executable set a launch runs (proposal roll.md step 2): the current Build's launch set, read
+    /// at each launch and never held since this admin's start, so a replaced and an unreplaced admin
+    /// alike launch from the set the fabric last rolled to (R3); the set this admin started with only
+    /// while the current Build carries none (a topology written before the field). A Build state that
+    /// cannot be read is named.
+    pub(crate) async fn launch_set(&self) -> Result<Option<rdm_core::binding::BindingSet>, String> {
+        let current = self.builds.current().await.map_err(|e| format!("the current Build could not be read for its launch set: {e}"))?;
+        Ok(current.and_then(|b| b.topology.bindings).or_else(|| self.start_bindings.clone()))
     }
 
     /// The template a node.create of `node` launches from (node-rpc-envelope.md "Build recipe";
@@ -739,6 +751,62 @@ impl AdminRunner {
         Ok(())
     }
 
+    /// A roll's node.create of the member at `node` whose birth `from` the roll's node.delete deleted
+    /// (proposal roll.md step 4, R1): a new node.id and incarnation at the same `path.name`, over the
+    /// predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint key loaded
+    /// from it), config and tags seeded from the Deleted row (node-replace.md "Inherited"), launching
+    /// `executable`, the set's binding of its kind. The Build fixes the binding, as a recipe's Create
+    /// step does, so the launch never takes the one the Deleted row still records; the claim records it
+    /// on the node's row, so a later node recovery runs it (node-recovery.md "Retained"). The data dir
+    /// is the one the delete's `TerminateRuntime` receipt names: the delete stopped the exact runtime
+    /// and proved it exited, and kept its storage (node-delete.md step 3). The old birth's resolver entry
+    /// and direct paths are dropped right before the new runtime with its key is launched, as node
+    /// recovery's create drops them ([`Self::revise_exited`]). A birth
+    /// other than `from` already live at the path (a create whose receipt an earlier attempt never
+    /// wrote) is the member: nothing is created again.
+    pub(crate) async fn create_rolled(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: &rdm_core::binding::Binding) -> Result<(), crate::executor::RunEnd> {
+        if let Some(n) = self.topology.read().await.node(node).filter(|n| n.status.is_live() && n.node_id != from.node_id) {
+            tracing::info!(successor = %n.node_id, "the member's successor is already live at its path: nothing is created again");
+            return Ok(());
+        }
+        let operation = format!("node.delete:{node}");
+        let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+        let p = builds.read_build(build_id).await.map_err(|e| format!("node.create:{node}: Build {build_id} could not be read for its delete's TerminateRuntime receipt: {e}"))?;
+        let terminal = p
+            .steps
+            .iter()
+            .filter(|s| s.attempt <= attempt && s.operation == operation && s.step == terminate && s.outcome == crate::build_state::StepOutcome::Complete)
+            .filter_map(|s| s.output.clone().and_then(|o| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(o).ok()).map(|t| (s.attempt, t)))
+            .filter(|(_, t)| t.node_id == from.node_id.to_string() && t.incarnation_id == from.incarnation.to_string())
+            .max_by_key(|(a, _)| *a)
+            .map(|(_, t)| t)
+            .ok_or_else(|| format!("node.create:{node}: Build {build_id} holds no completed TerminateRuntime of {operation} for birth {} at {} up to attempt {attempt}: the successor's data dir is the one that delete kept", from.node_id, from.incarnation.as_str()))?;
+        let first_admin = {
+            let t = self.topology.read().await;
+            t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
+        };
+        let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
+        let mut template = self.create_template(node, Some(executable)).await?;
+        if node.kind == NodeKind::NodeAdmin {
+            template = self.with_issuing_material(template, &node.mesh).await?;
+        }
+        let pipeline = self.pipeline_with(&template, builds);
+        let mut predecessor = Node::allocated(node.clone());
+        predecessor.node_id = from.node_id.clone();
+        predecessor.incarnation_id = Some(from.incarnation.clone());
+        predecessor.data_dir = terminal.data_dir;
+        let data_dir = pipeline.birth_dir(&predecessor);
+        crate::deployment::pipeline::inspect_transport_key(&data_dir).map_err(|e| format!("node.create:{node}: {}", e.into_message()))?;
+        // The key whose old paths are dropped is the one the kept data dir holds: the node created over it loads exactly it.
+        predecessor.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
+        let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
+        let created = pipeline.create_with(&req, before_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
+        self.bring_into_traffic(&created.node).await?;
+        self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
+        Ok(())
+    }
+
     /// node-recovery.md "Delete fences the old instance before the new join": the exited birth's
     /// resolver entry is retired and its direct paths dropped, awaited, right before the new birth
     /// with the same endpoint key is launched (the create over its data dir, [`Self::create_over`]).
@@ -1045,12 +1113,18 @@ impl AdminRunner {
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &me.to_string(), build_id, attempt, op).await.map_err(Into::into),
-            BuildOperation::CreateNode { node, over: Some(from) } => {
+            // A roll's create of a replaced member: over its predecessor's kept data dir, launching the
+            // binding the Build fixed (proposal roll.md step 4).
+            BuildOperation::CreateNode { node, over: Some(from), executable: Some(executable) } => {
+                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), sha256 = %executable.sha256);
+                self.create_rolled(&*builds, build_id, attempt, node, from, executable).instrument(span).await
+            }
+            BuildOperation::CreateNode { node, over: Some(from), executable: None } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
                 self.create_over(&*builds, build_id, attempt, node, from).instrument(span).await
             }
-            BuildOperation::CreateNode { node, over: None } => self.create_node(build_id, attempt, node, None, crate::node_rows::ClaimFor::Create).await,
+            BuildOperation::CreateNode { node, over: None, executable } => self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Create).await,
             BuildOperation::RestartNode { node } => {
                 // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
                 // proven exited is node recovery's (node-recovery.md).
@@ -1314,24 +1388,12 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
     verdict
 }
 
-/// The executable bound to `kind`, re-hashed now: the launch proves the bytes it launches are the
-/// bound ones. The hash reads the whole file, so it runs on the blocking pool, never on a worker of
-/// the runtime: a task the launching task woke just before waits in that worker's LIFO slot, which
-/// no other worker steals, until the worker is free (Q30).
-pub(crate) async fn resolve_bound(bindings: &rdm_core::binding::Validated, kind: NodeKind) -> Result<rdm_core::binding::Resolved, rdm_core::binding::BindingError> {
-    let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = kind.name(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-    let started = std::time::Instant::now();
-    let bound = bindings.clone();
-    let resolved = crate::blocking::blocking_io(move || bound.resolve(kind)).await;
-    span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-    span.record("outcome", if resolved.is_ok() { "hashed" } else { "refused" });
-    span.in_scope(|| tracing::info!("the bound executable's bytes are hashed against its binding"));
-    resolved
-}
-
-/// A binding a Build or a node row names, checked at the launch that runs it: its launch id is the
-/// node's kind, and its file is re-hashed now (on the blocking pool, as [`resolve_bound`]). A missing
-/// file and a hash that differs are refused by name.
+/// A binding the launch set, a Build or a node row names, checked at the launch that runs it: its
+/// launch id is the node's kind, and its file is re-hashed now, so the launch proves the bytes it
+/// launches are the bound ones. A missing file and a hash that differs are refused by name. The hash
+/// reads the whole file, so it runs on the blocking pool, never on a worker of the runtime: a task the
+/// launching task woke just before waits in that worker's LIFO slot, which no other worker steals,
+/// until the worker is free (Q30).
 pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: NodeKind, provider: ProviderKind, from: &str) -> Result<(), String> {
     let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
     if binding.launch_id != kind.name() {
@@ -1376,7 +1438,7 @@ async fn backbone_attempt(builds: &dyn BuildStateAdapter, build_id: &crate::buil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::binding::{Binding, BindingSet, Candidate, Expect, ProviderImage};
+    use rdm_core::binding::Binding;
 
     /// CONTRACT (e12.s91; node-rpc-envelope.md "the executable binding the Build fixes ... verified at
     /// launch"): a binding a recipe step or a row names is checked against the provider that launches it,
@@ -1424,13 +1486,7 @@ mod tests {
         std::fs::OpenOptions::new().write(true).open(&exe).unwrap().set_len(16 << 20).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let sha256 = rdm_core::binding::sha256_file(&exe).unwrap();
-        let bind = |id: &str| Binding { launch_id: id.into(), sha256: sha256.clone(), executable: exe.clone(), image: None };
-        let set = BindingSet {
-            candidate: Candidate { sha: "candidate".into(), build: "cell".into() },
-            launch_ids: vec!["node_admin".into(), "rpc_node".into()],
-            bindings: vec![bind("node_admin"), bind("rpc_node")],
-        };
-        let bindings = set.validate(&Expect { candidate_sha: "candidate", required: &[], provider_image: ProviderImage::Unchecked }).unwrap();
+        let binding = Binding { launch_id: NodeKind::RpcNode.name().into(), sha256, executable: exe.clone(), image: None };
 
         // A task parked on its channel, as a connection's driver is between packets.
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -1445,7 +1501,7 @@ mod tests {
         // The launch wakes it, then re-hashes its executable.
         let hashed_at = tokio::spawn(async move {
             wake_tx.send(()).unwrap();
-            let resolved = resolve_bound(&bindings, NodeKind::RpcNode).await;
+            let resolved = verify_binding(&binding, NodeKind::RpcNode, ProviderKind::Process, "launch set").await;
             assert!(resolved.is_ok(), "{resolved:?}");
             std::time::Instant::now()
         })

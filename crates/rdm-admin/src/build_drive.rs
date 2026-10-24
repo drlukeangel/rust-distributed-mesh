@@ -88,6 +88,17 @@ pub trait Gate: Send + Sync {
     /// Refresh the fabric-primary's book and view from any completed stop-node receipt of `build_id`
     /// before `BuildReply::Complete` goes out on the caller's stream.
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
+    /// What the node rows record of each member of `topology`'s executable, for a roll's plan
+    /// ([`crate::accepted::recorded_executables`]; proposal roll.md step 3). A gate with no rows
+    /// records none: every member is owed its replacement.
+    async fn recorded_executables(&self, _topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
+        Ok(crate::accepted::Recorded::new())
+    }
+    /// Whether the fabric holds ready-for-traffic now: a roll's Build is `Complete` only after the
+    /// fabric's climb (proposal roll.md step 8). A gate with no climb holds it.
+    fn fabric_ready(&self) -> bool {
+        true
+    }
 }
 
 /// The node.primary.update that precedes an operation on a primary (R-MT1), named by its operation
@@ -284,6 +295,9 @@ pub struct Drive {
     state: Mutex<DriveState>,
     wake: Notify,
     running: AtomicBool,
+    /// What the node rows recorded of each member's executable when this drive's pass last read them:
+    /// a roll's plan ([`crate::accepted::plan_for_roll`]); `None` until a pass of a roll read them.
+    recorded: Mutex<Option<crate::accepted::Recorded>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -303,7 +317,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -688,7 +702,17 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
 }
 
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
-    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
+    // A roll plans from what the rows recorded at this pass ([`Gate::recorded_executables`]).
+    let plan = match drive.recorded.lock().unwrap().as_ref() {
+        Some(recorded) => crate::accepted::plan_for_roll(p, t, recorded),
+        None => crate::accepted::plan_for_build(p, t),
+    };
+    plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
+}
+
+/// Whether `p` is a roll's Build (proposal roll.md).
+fn is_roll(p: &BuildProjection) -> bool {
+    p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll)
 }
 
 /// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
@@ -944,6 +968,11 @@ impl DriveEnv {
             plan.operations.truncate(i);
             plan.hand_off_to = Some(me.to_string());
         }
+        // A roll's last run hands back here rather than ending `Complete` while the fabric has not
+        // climbed (proposal roll.md step 8): the next pass waits for the climb.
+        if is_roll(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
+            plan.hand_off_to = Some(me.to_string());
+        }
         Ok(plan)
     }
 
@@ -990,6 +1019,14 @@ impl DriveEnv {
                 Ok(false) => return self.stalled(&me, drive, format!("{me}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it")),
                 Err(e) => return self.stalled(&me, drive, format!("{me}: the current Build could not be read to admit Build {id}: {e}")),
             }
+            // A roll's remaining work is the members whose row records another sha than the set's for
+            // their kind (proposal roll.md step 3): the rows are read at every pass, before it plans.
+            if is_roll(&p) {
+                match self.gate.recorded_executables(&p.topology).await {
+                    Ok(recorded) => *drive.recorded.lock().unwrap() = Some(recorded),
+                    Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} is a roll and the node rows could not be read for what each member runs: {e}")),
+                }
+            }
             let crashed = self.unanswered_meshes(&p);
             // The claim's holder was proven departed by this pass: the next attempt is claimed without
             // calling the lost holder again.
@@ -1003,6 +1040,15 @@ impl DriveEnv {
             } else {
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
+                }
+                // A roll whose replacements are all done completes only after the fabric's climb
+                // (proposal roll.md step 8; states.md "Resize and roll": the fabric cannot climb until the
+                // roll's last planned birth checks in): no attempt is claimed until the fabric holds
+                // ready-for-traffic, and the reconcile loop drives the Build again.
+                if is_roll(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
+                    let why = format!("{me}: every member of roll {id} is on its set, and the Build completes only after the fabric's climb to ready-for-traffic");
+                    self.blocked(drive, p.attempt, "", "fabric-climb", &why);
+                    return self.stalled(&me, drive, why);
                 }
                 match self.seats_first(&me, drive, &p).await {
                     Ok(true) => continue,
@@ -1545,7 +1591,7 @@ fn mesh_primary_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> boo
     let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) = p.action.as_ref() else { return false };
     let birth = |b: &crate::build::ExitedBirth| &b.node_id == node_id && &b.incarnation == from_incarnation;
     match op {
-        BuildOperation::RetireNode { node, exited: Some(b) } | BuildOperation::CreateNode { node, over: Some(b) } => node == path && birth(b),
+        BuildOperation::RetireNode { node, exited: Some(b) } | BuildOperation::CreateNode { node, over: Some(b), .. } => node == path && birth(b),
         _ => false,
     }
 }

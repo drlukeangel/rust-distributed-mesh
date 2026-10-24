@@ -217,6 +217,31 @@ pub enum BindingError {
     },
 }
 
+impl BindingError {
+    /// The defect's name, as a refusal states it (`hash-mismatch`, `no-image-bound`, ...).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Unreadable { .. } => "unreadable",
+            Self::Parse { .. } => "parse",
+            Self::UnknownLaunchId { .. } => "unknown-launch-id",
+            Self::DuplicateDeclaration { .. } => "duplicate-declaration",
+            Self::DuplicateBinding { .. } => "duplicate-binding",
+            Self::UndeclaredBinding { .. } => "undeclared-binding",
+            Self::MissingBinding { .. } => "missing-binding",
+            Self::NotRequiredByTheSet { .. } => "not-required-by-the-set",
+            Self::ExecutableAbsent { .. } => "executable-absent",
+            Self::NotExecutable { .. } => "not-executable",
+            Self::BadHash { .. } => "bad-hash",
+            Self::HashMismatch { .. } => "hash-mismatch",
+            Self::CandidateMismatch { .. } => "candidate-mismatch",
+            Self::ImageMismatch { .. } => "image-mismatch",
+            Self::ImageUnderProcessProvider { .. } => "image-under-process-provider",
+            Self::NoImageBound { .. } => "no-image-bound",
+            Self::Unbound { .. } => "unbound",
+        }
+    }
+}
+
 impl fmt::Display for BindingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -266,6 +291,11 @@ fn is_executable(path: &Path) -> std::io::Result<bool> {
 }
 
 impl BindingSet {
+    /// The binding of `kind`'s launch id, when the set binds it.
+    pub fn of(&self, kind: NodeKind) -> Option<&Binding> {
+        self.bindings.iter().find(|b| b.launch_id == kind.name())
+    }
+
     /// Read the binding set from the file at `path`.
     pub fn load(path: &Path) -> Result<Self, BindingError> {
         let bytes = std::fs::read(path).map_err(|e| BindingError::Unreadable { path: path.to_path_buf(), reason: e.to_string() })?;

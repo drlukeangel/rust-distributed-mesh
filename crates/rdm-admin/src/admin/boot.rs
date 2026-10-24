@@ -925,7 +925,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 let joined_seam: crate::workflows::node_start::JoinedSeam<String> = Box::new(
                     move |_: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<String>>), String>> {
                         Box::pin(async move {
-                            let policy = match joined {
+                            // The launch set a launched admin starts with is its launcher's entry answer's, as the
+                            // provider policy is (proposal roll.md step 2): the current Build's set, read again at
+                            // every launch; the bootstrap admin's is day 0's `RDM_EXECUTABLE_BINDINGS`.
+                            let (policy, entry_bindings) = match joined {
                                 Some(answer) => {
                                     // Fetch the current Build from the launching admin, and record the attempt floor its
                                     // answer names; without them this admin is not started. The Build it names arrives on
@@ -938,7 +941,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     if let Some(p) = answer.control.cert_policy {
                                         issuer.set_policy(p);
                                     }
-                                    FabricPolicy { provider: answer.control.provider }
+                                    (FabricPolicy { provider: answer.control.provider }, answer.control.bindings.clone())
                                 }
                                 None => {
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
@@ -953,7 +956,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     } else if matches!(builds.current_build().await, Ok(crate::build_state::CurrentBuild::None)) {
                                         let b0 = crate::build_state::BuildAccepted {
                                             build_id: crate::build::BuildId::mint(),
-                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()),
+                                            // B0's launch set is the bootstrap admin's `RDM_EXECUTABLE_BINDINGS`: the field exists
+                                            // from day 0, and every compile carries it forward (proposal roll.md step 2).
+                                            topology: crate::accepted::FabricTopology { bindings: cfg.bindings.as_ref().map(|v| v.set().clone()), ..crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()) },
                                             submitted_change: None,
                                             submitted_at_ms: rafka_time.now_ms(),
                                         };
@@ -965,7 +970,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                                         crate::build_state::accept(&*builds, &b0, None, &name.to_string(), "day-0").await.map_err(|e| e.to_string())?;
                                     }
-                                    FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
+                                    (FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?, None)
                                 }
                             };
 
@@ -1267,9 +1272,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             };
                             let mut admin_env = BTreeMap::new();
                             admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
-                            // A node-admin this admin launches honors the same explicit bindings: its own launches and
-                            // restarts run the bound executables too.
-                            admin_env.extend(cfg.bindings_env.clone());
                             let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
                             let template = LaunchTemplate {
                                 fabric: cfg.fabric.clone(),
@@ -1326,7 +1328,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 template,
                                 admin_env,
                                 bin_dir: cfg.bin_dir.clone(),
-                                bindings: cfg.bindings.clone(),
+                                start_bindings: entry_bindings.or_else(|| cfg.bindings.as_ref().map(|v| v.set().clone())),
                                 lifecycle: LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default())),
                                 handles: Mutex::new(HashMap::new()),
                                 topology: control.topology.clone(),

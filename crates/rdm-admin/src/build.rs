@@ -111,6 +111,13 @@ pub enum BuildOperation {
         /// dir the new node takes over whole, with the endpoint key it holds. `None`: a fresh data dir.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         over: Option<ExitedBirth>,
+        /// The executable binding the Build fixes for the launch, as a recipe's Create step carries it
+        /// (node-rpc-envelope.md "Build recipe"): a roll's create of a replaced member, and every
+        /// create of a roll's Build, carries the set's binding of its kind (proposal roll.md step 4),
+        /// so the launch never takes the binding a Deleted row still records. `None`: the binding
+        /// is chosen as every create chooses it, the row's, else the launch set's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        executable: Option<rdm_core::binding::Binding>,
     },
     /// Restart a node's exact birth.
     RestartNode {
@@ -448,6 +455,16 @@ pub enum BuildReject {
         /// The fabric's status as this admin holds it.
         status: String,
     },
+    /// A roll's executable set refused at acceptance (proposal roll.md step 1): validated as the
+    /// bootstrap admin validates its own (`BindingSet::validate`), against every launch id the accepted
+    /// topology uses and the fabric's provider; nothing is accepted.
+    BindingsRefused {
+        /// The defect's name (`rdm_core::binding::BindingError::name`: `hash-mismatch`,
+        /// `not-required-by-the-set`, `no-image-bound`, ...).
+        defect: String,
+        /// The defect, naming the launch id or file at fault.
+        detail: String,
+    },
 }
 
 impl BuildReject {
@@ -477,6 +494,7 @@ impl BuildReject {
             Self::RecipeStepRepeated { .. } => "recipe-step-repeated",
             Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
             Self::FabricNotReady { .. } => "fabric-not-ready",
+            Self::BindingsRefused { .. } => "bindings-refused",
         }
     }
 }
@@ -514,6 +532,7 @@ impl fmt::Display for BuildReject {
                 "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
             ),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
+            Self::BindingsRefused { defect, detail } => write!(f, "the roll's executable set is refused ({defect}): {detail}; nothing is accepted"),
             Self::PathConfigMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",
@@ -544,7 +563,7 @@ mod tests {
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = "mesh2.admin.1".parse().unwrap();
-        assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None, executable: None }.created_node(), Some(&node));
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Create { node: node.clone(), executable: None }, birth: None }.created_node(), Some(&node));
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Stop { node: node.clone() }, birth: None }.created_node(), None);
         assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Start { node: node.clone() }, birth: None }.created_node(), None);

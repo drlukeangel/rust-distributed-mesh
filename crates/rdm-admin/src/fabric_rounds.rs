@@ -516,7 +516,16 @@ impl FabricRounds {
             Ok(b) => b,
             Err(e) => return self.block(climb, &[unreadable(&e)], "state-sync names the current Build", &me),
         };
-        let blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
+        let mut blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
+        // During a roll a member still on its old binary does not satisfy its planned replacement: the
+        // fabric climbs once every planned member is on the set (states.md "Resize and roll"; proposal
+        // roll.md step 8), as the node rows record what each runs.
+        if let (Some(build), Some(rows)) = (accepted.as_ref().filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll)), self.env.records.contacts.get()) {
+            match crate::accepted::recorded_executables(&**rows, &build.topology).await {
+                Ok(recorded) => blockers.extend(crate::accepted::off_the_set(&build.topology, &recorded).into_iter().map(|p| Missing { who: p.to_string(), why: "not-on-the-rolled-set" })),
+                Err(e) => blockers.push(Missing { who: e, why: "rows-unreadable" }),
+            }
+        }
         if !blockers.is_empty() {
             self.block(climb, &blockers, "state-sync waits for every mesh to be ready-for-traffic", &me);
             return;
@@ -1375,7 +1384,7 @@ mod tests {
     async fn a_round_the_current_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_log_is_not() {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new(), bindings: None };
         let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
@@ -1405,7 +1414,7 @@ mod tests {
     async fn an_owed_completion_of_a_round_the_accepted_build_moved_past_is_withdrawn_when_it_is_superseded() {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new(), bindings: None };
         let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
@@ -1458,7 +1467,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
-        let one_mesh = FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1")].into() };
+        let one_mesh = FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1")].into(), bindings: None };
         let mut two_meshes = one_mesh.clone();
         two_meshes.meshes.extend([mesh("mesh2")]);
         let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
@@ -1548,7 +1557,7 @@ mod tests {
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1"), mesh("mesh2")].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1"), mesh("mesh2")].into(), bindings: None }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         for attempt in 1..=attempts {
             claim(&builds, &id, attempt).await;
         }
@@ -1823,7 +1832,7 @@ mod tests {
             ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]))),
             ("mesh2".to_string(), MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))),
         ];
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: meshes.into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: meshes.into(), bindings: None }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         claim(&builds, &id, 1).await;
         let (fp, m2) = fabric_primary_and_mesh2();
         let member = node("mesh1.rpc.1", NodeStatus::ReadyForTraffic, false);

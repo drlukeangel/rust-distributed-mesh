@@ -745,6 +745,12 @@ pub struct TerminalReceipt {
     /// other delete. Positional on the Build topic's wire, after `exit_code`.
     #[serde(default)]
     pub verdict: Option<String>,
+    /// The data dir the birth ran over, as the delete resolved its record: a roll's create of the
+    /// member's successor takes it over whole (proposal roll.md step 4, R1: "the successor is created
+    /// over the predecessor's data dir"). `None` when the record names none. Positional on the Build
+    /// topic's wire, after `verdict`.
+    #[serde(default)]
+    pub data_dir: Option<String>,
 }
 
 /// An exact runtime by fingerprint.
@@ -2379,6 +2385,7 @@ impl DeploymentPipeline<'_> {
                     runtime: handle.fact().as_ref().map(RuntimeProof::of),
                     exit_code,
                     verdict: verdict.map(str::to_string),
+                    data_dir: node.data_dir.clone(),
                 })
             };
             let verdict = if when != Terminate::Always {

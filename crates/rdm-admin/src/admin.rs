@@ -1944,7 +1944,7 @@ mod tests {
         }
         let desired = |mesh: &str, rpc: u32| crate::build::MeshDesired::of(mesh, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
         let records = Records::default();
-        let mut plan = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        let mut plan = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new(), bindings: None };
         plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 1)));
         records.set_planned(&plan);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
@@ -2307,7 +2307,7 @@ mod tests {
 
     /// The exact Exited receipt of `d`'s birth, as a leave records it.
     fn exited_receipt(d: &MeshDigest) -> crate::deployment::pipeline::TerminalReceipt {
-        crate::deployment::pipeline::TerminalReceipt { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.to_string(), runtime: None, exit_code: Some(0) , verdict: None}
+        crate::deployment::pipeline::TerminalReceipt { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.to_string(), runtime: None, exit_code: Some(0) , verdict: None, data_dir: None }
     }
 
     /// CONTRACT (R-MD1 = A, i143-rulings-2026-10-11-dev.md: "The mesh-primary commits the mesh row
@@ -2828,7 +2828,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None, bindings: None },
                         statuses: vec![],
                     })
                 })
@@ -3558,7 +3558,7 @@ mod tests {
     fn entry_answer(frames: Vec<rdm_transport::membership::Frame>) -> crate::wire::JoinAnswer {
         crate::wire::JoinAnswer {
             served_by: "mesh1.admin.1".into(),
-            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None, bindings: None },
             statuses: frames,
         }
     }

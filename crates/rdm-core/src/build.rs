@@ -153,6 +153,14 @@ pub enum BuildChange {
         /// The deleted birth's incarnation.
         incarnation: IncarnationId,
     },
+    /// Roll the fabric's members onto a new executable set (proposal roll.md, R1-R5): the set becomes
+    /// the accepted topology's launch set, and each member whose row records another sha for its kind
+    /// is replaced at the same `path.name` (node.delete, then node.create over its kept data dir
+    /// launching the set's binding of its kind). Appended last: the Build wire is positional.
+    Roll {
+        /// The executable set every launch of the fabric runs from once accepted.
+        bindings: crate::binding::BindingSet,
+    },
 }
 
 /// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names

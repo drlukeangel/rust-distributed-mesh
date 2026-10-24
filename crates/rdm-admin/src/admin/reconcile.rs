@@ -73,6 +73,19 @@ impl crate::build_drive::Gate for SeatGate {
         Ok(())
     }
 
+    /// What the node rows record of each member's executable (proposal roll.md step 3), read from this
+    /// admin's nodes.storage, every mesh's rows on the fabric's shared root.
+    async fn recorded_executables(&self, topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
+        let Some(rows) = self.handover.records.contacts.get().cloned() else {
+            return Err(format!("{}: no nodes.storage is open yet to read the node rows from", self.handover.me));
+        };
+        crate::accepted::recorded_executables(&*rows, topology).await
+    }
+
+    fn fabric_ready(&self) -> bool {
+        self.handover.records.fabric_state() == crate::fabric_state::FabricState::ReadyForTraffic
+    }
+
     async fn attempt_completed(&self, build_id: &crate::build::BuildId, _attempt: u32) {
         if let Ok(p) = self.builds.read_build(build_id).await {
             let mut stopped = false;

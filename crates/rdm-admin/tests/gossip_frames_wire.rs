@@ -181,7 +181,14 @@ fn changes() -> Vec<Option<TopologyChange>> {
         Some(TopologyChange::RemoveNode { node: "mesh2.rpc.2".parse().unwrap() }),
         Some(TopologyChange::CreateMesh { desired }),
         Some(TopologyChange::RemoveMesh { mesh: "mesh2".into() }),
+        // A roll (proposal roll.md): the change's last variant, its set the accepted topology's.
+        Some(TopologyChange::Roll { bindings: launch_set() }),
     ]
+}
+
+fn launch_set() -> rdm_core::binding::BindingSet {
+    let bind = |id: &str, image: Option<&str>| rdm_core::binding::Binding { launch_id: id.into(), executable: format!("/opt/next/{id}").into(), sha256: "ab".repeat(32), image: image.map(String::from) };
+    rdm_core::binding::BindingSet { candidate: rdm_core::binding::Candidate { sha: "c0ffee".into(), build: "b2".into() }, launch_ids: vec!["node_admin".into(), "rpc_node".into()], bindings: vec![bind("node_admin", None), bind("rpc_node", Some("rafka-node-runtime:empty"))] }
 }
 
 fn step(step: &str, output: Option<Value>) -> BuildFact {
@@ -196,7 +203,12 @@ fn to_json<T: serde::Serialize>(v: &T) -> Value {
 fn facts() -> Vec<BuildFact> {
     let mut out = Vec::new();
     for change in changes() {
-        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
+        // A roll's topology carries its set as the launch set; every other change carries none here.
+        let topology = match &change {
+            Some(TopologyChange::Roll { bindings }) => FabricTopology { bindings: Some(bindings.clone()), ..topology() },
+            _ => topology(),
+        };
+        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology, submitted_change: change, submitted_at_ms: 55 }));
     }
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
     out.push(action(None));
@@ -269,7 +281,7 @@ fn facts() -> Vec<BuildFact> {
         operation: "node.delete:mesh2.rpc.1".into(),
         step: RetireStep::TerminateRuntime.name().into(),
         outcome: StepOutcome::Complete,
-        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: "mesh2.rpc.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: IncarnationId::mint().to_string(), runtime: None, exit_code: None, verdict: Some("running".into()) })),
+        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: "mesh2.rpc.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: IncarnationId::mint().to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.rpc.1-3qcfk1kq47m9".into()) })),
         executor: Some("key@127.0.0.1:1".into()),
     }));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "an16er0436pg" }))));

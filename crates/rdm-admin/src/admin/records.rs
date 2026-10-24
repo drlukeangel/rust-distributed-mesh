@@ -61,12 +61,13 @@ pub struct AdminConfig {
     pub launch: Option<Launch>,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
-    /// The explicit executable bindings this admin launches from (`RDM_EXECUTABLE_BINDINGS`),
-    /// validated before it opens a provider. `None` is the built-in mode: executables come from
-    /// `bin_dir`. With bindings, nothing is launched from `bin_dir`.
+    /// The explicit executable bindings this admin was started with (`RDM_EXECUTABLE_BINDINGS`),
+    /// validated before it opens a provider: the bootstrap admin's are day 0's input, B0's launch set
+    /// (proposal roll.md step 2). Every launch runs the current Build's set, never one held since this
+    /// admin's start; these only while the current Build carries none. `None` is the built-in mode:
+    /// executables come from `bin_dir`. Nothing hands them to a node-admin this admin launches: it
+    /// takes the current set from its entry answer.
     pub bindings: Option<rdm_core::binding::Validated>,
-    /// The two variables that named them, handed on to every node-admin this admin launches.
-    pub bindings_env: BTreeMap<String, String>,
     /// `RDM_STOPPED_NODE_TTL` (node-identity-and-state.md §6.9): a node stopped longer than it is
     /// collected by a node.delete Build the fabric-primary submits on a sweep every ttl. Read by the
     /// fabric-primary only, held by every admin (a successor sweeps with it). `None`: blank, forever.
@@ -120,10 +121,6 @@ impl AdminConfig {
             .map(|b| b.parse().map_err(|e| format!("RDM_NODE_ADMIN_API_BIND `{b}`: {e}")))
             .transpose()?
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
-        let bindings_env: BTreeMap<String, String> = [rdm_core::binding::ENV_EXECUTABLE_BINDINGS, rdm_core::binding::ENV_EXECUTABLE_CANDIDATE]
-            .iter()
-            .filter_map(|k| get(k).filter(|v| !v.trim().is_empty()).map(|v| (k.to_string(), v)))
-            .collect();
         let bindings = match get(rdm_core::binding::ENV_EXECUTABLE_BINDINGS).filter(|v| !v.trim().is_empty()) {
             None => None,
             Some(file) => {
@@ -194,7 +191,6 @@ impl AdminConfig {
             launch,
             passthrough,
             bindings,
-            bindings_env,
         })
     }
 }

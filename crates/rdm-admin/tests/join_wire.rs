@@ -18,6 +18,7 @@ fn answer() -> JoinAnswer {
             member_cert: vec![0xca, 0xfe],
             name: Some("mesh1.rpc.1.old".parse().unwrap()),
             config: Some([("tier".to_string(), "gold".to_string())].into()),
+            bindings: None,
         },
         statuses: vec![],
     }
@@ -49,7 +50,7 @@ fn a_truncated_answer_is_refused_by_name_not_decoded_partially() {
 
 // @feature: node-lifecycle
 #[test]
-fn the_answers_member_cert_name_config_and_cert_policy_are_the_control_frames_last_fields_before_the_statuses() {
+fn the_answers_member_cert_name_config_cert_policy_and_launch_set_are_the_control_frames_last_fields_before_the_statuses() {
     let mut a = answer();
     a.control.rafka_time_ms = 300;
     a.control.member_cert = vec![0xca, 0xfe];
@@ -58,19 +59,36 @@ fn the_answers_member_cert_name_config_and_cert_policy_are_the_control_frames_la
     let bytes = answer_to_wire(&a).unwrap();
     // postcard varint 300 = ac 02, the cert's length 02 and its bytes ca fe, no name = 00, the
     // config Some = 01 with one entry 01 ("k" = 01 6b, "v" = 01 76), no cert policy = 00 (i145 e3),
-    // then the empty statuses = 00.
-    assert_eq!(&bytes[bytes.len() - 14..], &[0xac, 0x02, 0x02, 0xca, 0xfe, 0x00, 0x01, 0x01, 0x01, 0x6b, 0x01, 0x76, 0x00, 0x00], "{bytes:02x?}");
+    // no launch set = 00 (proposal roll.md step 2), then the empty statuses = 00.
+    assert_eq!(&bytes[bytes.len() - 15..], &[0xac, 0x02, 0x02, 0xca, 0xfe, 0x00, 0x01, 0x01, 0x01, 0x6b, 0x01, 0x76, 0x00, 0x00, 0x00], "{bytes:02x?}");
     // An authority configured with no certs sends an empty cert, and no row hands no config.
     a.control.member_cert = vec![];
     a.control.config = None;
     let bytes = answer_to_wire(&a).unwrap();
-    assert_eq!(&bytes[bytes.len() - 7..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
-    // The fabric's cert policy rides last: member TTL 12 = 0c, issuing 2592000 = 80 9a 9e 01, CA
-    // 31536000 = 80 e7 84 0f, renew point 670 = 9e 05.
+    assert_eq!(&bytes[bytes.len() - 8..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
+    // The fabric's cert policy: member TTL 12 = 0c, issuing 2592000 = 80 9a 9e 01, CA 31536000 =
+    // 80 e7 84 0f, renew point 670 = 9e 05; then no launch set = 00.
     a.control.cert_policy = Some(rdm_core::certs::CertPolicy { member_ttl_secs: 12, ..Default::default() });
     let bytes = answer_to_wire(&a).unwrap();
-    assert_eq!(&bytes[bytes.len() - 13..], &[0x01, 0x0c, 0x80, 0x9a, 0x9e, 0x01, 0x80, 0xe7, 0x84, 0x0f, 0x9e, 0x05, 0x00], "{bytes:02x?}");
+    assert_eq!(&bytes[bytes.len() - 14..], &[0x01, 0x0c, 0x80, 0x9a, 0x9e, 0x01, 0x80, 0xe7, 0x84, 0x0f, 0x9e, 0x05, 0x00, 0x00], "{bytes:02x?}");
     assert_eq!(answer_from_wire(&bytes).unwrap().control.cert_policy, a.control.cert_policy, "and returns");
+    // The launch set rides last (proposal roll.md step 2): Some = 01, candidate ("c" = 01 63, "b" =
+    // 01 62), one launch id ("node_admin" = 0a ...), one binding (its launch id, "/x" = 02 2f 78,
+    // "s" = 01 73, no image = 00).
+    a.control.bindings = Some(rdm_core::binding::BindingSet {
+        candidate: rdm_core::binding::Candidate { sha: "c".into(), build: "b".into() },
+        launch_ids: vec!["node_admin".into()],
+        bindings: vec![rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }],
+    });
+    let bytes = answer_to_wire(&a).unwrap();
+    let admin = b"node_admin";
+    let mut tail = vec![0x01, 0x01, 0x63, 0x01, 0x62, 0x01, 0x0a];
+    tail.extend_from_slice(admin);
+    tail.extend_from_slice(&[0x01, 0x0a]);
+    tail.extend_from_slice(admin);
+    tail.extend_from_slice(&[0x02, 0x2f, 0x78, 0x01, 0x73, 0x00, 0x00]);
+    assert_eq!(&bytes[bytes.len() - tail.len()..], &tail[..], "{bytes:02x?}");
+    assert_eq!(answer_from_wire(&bytes).unwrap().control.bindings, a.control.bindings, "and returns");
 }
 
 /// An entry answer carries the retained envelope, including its original author and R10 floor.

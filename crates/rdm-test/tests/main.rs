@@ -66,6 +66,8 @@ mod seeded;
 mod rounds;
 #[path = "fabric/owed_check_ins.rs"]
 mod owed_check_ins;
+#[path = "fabric/roll.rs"]
+mod roll;
 #[path = "rpc/proof_holder_lifecycle.rs"]
 mod proof_holder_lifecycle;
 #[path = "runtime/manifest_replay.rs"]

@@ -445,7 +445,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     // MeshLeft: with the final primary's own exit, the proof set covers every accepted birth.
     let mut all = manifest.clone();
     all.final_runtime = None;
-    all.receipts.push(TerminalReceipt { node: me.node.clone(), node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone(), runtime: Some(final_runtime.clone()), exit_code: Some(0) , verdict: None});
+    all.receipts.push(TerminalReceipt { node: me.node.clone(), node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone(), runtime: Some(final_runtime.clone()), exit_code: Some(0) , verdict: None, data_dir: None });
     assert_eq!(first_mismatch(&all, &fp2, &me, true), None, "MeshLeft covers the whole accepted roster");
 
     // The trace: both attempts' tiers and the retained receipt, under the cell's one trace.
@@ -739,7 +739,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
             n.parked = true;
         });
         let stopped = rows.deleted(&last, &deleting).await;
-        let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None};
+        let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None, data_dir: None };
         let after = mesh_left_rows(Some(&rows), &status, &Default::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = storage.record_at(&last.name).await.unwrap();
         let statuses = status.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>();
@@ -785,7 +785,7 @@ const NEW_ADMIN: &str = "mesh2.admin.3";
 
 /// The exact Exited receipt the provider's inspection of `b`'s runtime `runtime` proves.
 fn exited(b: &RosterBirth, runtime: &RuntimeProof) -> TerminalReceipt {
-    TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) , verdict: None}
+    TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) , verdict: None, data_dir: None }
 }
 
 fn step_facts(facts: &[BuildFact]) -> Vec<BuildStepReceipt> {

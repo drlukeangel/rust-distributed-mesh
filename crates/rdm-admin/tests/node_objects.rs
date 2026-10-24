@@ -348,7 +348,7 @@ struct RigRunner {
 impl OperationRunner for RigRunner {
     async fn run(&self, build_id: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         match op {
-            BuildOperation::CreateNode { node, over: None } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await.map_err(Into::into),
+            BuildOperation::CreateNode { node, over: None, .. } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await.map_err(Into::into),
             other => Err(format!("the fixture creates nodes only, not {other:?}").into()),
         }
     }

@@ -1770,6 +1770,7 @@ mod tests {
             runtime: Some(RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }),
             exit_code: Some(0),
             verdict: None,
+            data_dir: None,
         }
     }
 

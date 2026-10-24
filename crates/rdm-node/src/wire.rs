@@ -51,9 +51,13 @@ pub struct JoinControl {
     pub config: Option<std::collections::BTreeMap<String, String>>,
     /// The fabric's cert policy (fabric-certs.md §Tracking): its TTLs and renewal point, read once by
     /// the bootstrap admin and carried to every later admin in its entry pull the way the provider is.
-    /// `None` from an admin that answers with none. Appended last: it is the control frame's final
-    /// field.
+    /// `None` from an admin that answers with none.
     pub cert_policy: Option<rdm_core::certs::CertPolicy>,
+    /// The fabric's launch set, the answering admin's current Build's (proposal roll.md step 2): a
+    /// launched node-admin takes it as the provider policy is taken, and launches from it while its own
+    /// current Build carries none. `None` in the built-in mode. Appended last: it is the control
+    /// frame's final field.
+    pub bindings: Option<rdm_core::binding::BindingSet>,
 }
 
 /// The answering admin's current Build, and the attempt a joiner's copy of it must reach before Ready.
@@ -83,6 +87,7 @@ struct WireControl {
     name: Option<PathName>,
     config: Option<std::collections::BTreeMap<String, String>>,
     cert_policy: Option<rdm_core::certs::CertPolicy>,
+    bindings: Option<rdm_core::binding::BindingSet>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,6 +110,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             name: c.name.clone(),
             config: c.config.clone(),
             cert_policy: c.cert_policy,
+            bindings: c.bindings.clone(),
         },
         statuses: answer.statuses.clone(),
     };
@@ -124,6 +130,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
             member_cert: w.control.member_cert,
             name: w.control.name,
             config: w.control.config,
+            bindings: w.control.bindings,
         },
         statuses: w.statuses,
     })

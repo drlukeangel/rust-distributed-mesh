@@ -135,6 +135,10 @@ pub enum BuildSpec {
     },
     /// A new mesh with these counts, beside the meshes the fabric holds.
     CreateMesh(MeshDesired),
+    /// Roll the fabric's members onto this executable set (`BuildChange::Roll`, proposal roll.md):
+    /// the set becomes the fabric's launch set, and each member on another executable is replaced at
+    /// its `path.name`.
+    Roll(rdm_core::binding::BindingSet),
 }
 
 /// A preset `build.create` expands.
@@ -470,6 +474,7 @@ impl Builds {
             BuildSpec::Fabric(d) => d.clone(),
             BuildSpec::Preset { preset, fabric } => preset.desired(fabric),
             BuildSpec::CreateMesh(mesh) => return self.call(BuildOp::Create, self.carrier.create(BuildChange::CreateMesh { mesh: counts(mesh) })).await,
+            BuildSpec::Roll(bindings) => return self.call(BuildOp::Create, self.carrier.create(BuildChange::Roll { bindings: bindings.clone() })).await,
         };
         self.call(BuildOp::Create, self.carrier.create(BuildChange::ReconcileFabric { fabric: desired.fabric.clone(), meshes: desired.meshes.iter().map(counts).collect() })).await
     }

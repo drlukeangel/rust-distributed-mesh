@@ -294,7 +294,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one rpc node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into() }
+    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into(), bindings: None }
 }
 
 /// What `deploy_through_every_step` found.

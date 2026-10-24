@@ -82,7 +82,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // node recovery, and no admin executes one. Its node-admin is created by a recipe's node.create
         // (below), the fabric-primary's once the mesh holds no admin that is not proven gone
         // (mesh-investigation.md "A node-admin joins the live mesh").
-        BuildOperation::RetireNode { node, exited: Some(_) } | BuildOperation::CreateNode { node, over: Some(_) } => {
+        BuildOperation::RetireNode { node, exited: Some(_) } | BuildOperation::CreateNode { node, over: Some(_), .. } => {
             if node.kind == NodeKind::NodeAdmin {
                 node_admin_recoverer(node, t)
             } else {
@@ -597,7 +597,7 @@ mod tests {
     }
 
     fn create(n: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: n.parse().unwrap(), over: None }
+        BuildOperation::CreateNode { node: n.parse().unwrap(), over: None, executable: None }
     }
 
     fn who(op: &BuildOperation, t: &Topology) -> String {
@@ -619,7 +619,7 @@ mod tests {
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let recovery = |n: &str| {
             let (node, from) = (n.parse::<PathName>().unwrap(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
-            [BuildOperation::RetireNode { node: node.clone(), exited: Some(from.clone()) }, BuildOperation::CreateNode { node, over: Some(from) }]
+            [BuildOperation::RetireNode { node: node.clone(), exited: Some(from.clone()) }, BuildOperation::CreateNode { node, over: Some(from), executable: None }]
         };
         let recovered_by = |n: &str, t: &Topology| {
             let who: Vec<String> = recovery(n).iter().map(|op| who(op, t)).collect();

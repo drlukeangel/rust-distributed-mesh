@@ -406,7 +406,19 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
+            // A roll replaces members and moves primaries: refused `fabric-not-ready` until the initial
+            // fabric first reached ready-for-traffic, as every recipe is (proposal roll.md step 1).
+            if change.is_roll() {
+                self.admit_once_ready(route, "roll".into(), &outer).await?;
+            }
             let (_admitted, current) = self.current_settled().await?;
+            if let TopologyChange::Roll { bindings } = &change {
+                let provider = self.topology.read().await.fabric.provider;
+                if let Some(reject) = roll_set_refusal(bindings, &current.topology, provider).await {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            }
             if let Some(candidate) = collect {
                 if let Err(reject) = self.recheck_stopped(candidate).await {
                     outer.in_scope(|| reject_span(route, &reject));
@@ -1041,11 +1053,13 @@ impl ActionKind {
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
     let target = t.node(node)?;
     // The holder of any other cohort's seat: its mesh-primary's node.primary.update needs another node
-    // of its type (Q7); the delete of its mesh's only node skips the update (R-MT1).
+    // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
+    // leaves the topology (a removal) or is re-created at the same path.name (node recovery, a roll's
+    // replacement, the replace recipe's Delete step): R5, node-primary-update.md "No-successor cases".
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.cohort_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
         let only_of_cohort = t.cohort(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
-        if !holds || (action == "retire" && only_of_cohort) || (action == "delete" && t.only_node(&node.mesh, &target.node_id)) {
+        if !holds || (matches!(action, "retire" | "delete") && only_of_cohort) {
             return None;
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
@@ -1074,6 +1088,24 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
     let refusal = crate::election::commanded_successor(&nodes, &crate::election::Incumbency::default(), target, moving).err()?;
     Some(BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal })
+}
+
+/// A roll's set refused by name (proposal roll.md step 1), or `None` when it is accepted: validated as
+/// the bootstrap admin validates its own at start (`BindingSet::validate`, every file hashed, on the
+/// blocking pool): every launch id `topology` uses declared and bound, `node_admin` always; every file
+/// present and hashing to its sha; every binding checked against the fabric's `provider` (a process
+/// fabric binds no image, a container fabric binds its one image). The set is held to its own
+/// candidate: a roll names the build it rolls to.
+async fn roll_set_refusal(set: &rdm_core::binding::BindingSet, topology: &crate::accepted::FabricTopology, provider: crate::model::ProviderKind) -> Option<BuildReject> {
+    let required: Vec<&'static str> = topology.meshes.values().flat_map(|m| m.nodes.iter().map(|p| p.kind.name())).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let set = set.clone();
+    let image = crate::admin::provider_image(provider);
+    let checked = crate::blocking::blocking_io(move || {
+        let candidate = set.candidate.sha.clone();
+        set.validate(&rdm_core::binding::Expect { candidate_sha: &candidate, required: &required, provider_image: image }).map(|_| ())
+    })
+    .await;
+    checked.err().map(|e| BuildReject::BindingsRefused { defect: e.name().to_string(), detail: e.to_string() })
 }
 
 /// Why a fresh `node.restart` of the birth `n` at `path`, which is not live, is refused `node-not-live`
@@ -1154,7 +1186,8 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "referenced-by-open-build",
         "empty-recipe",
         "recipe-step-repeated",
-        "recipe-node-unknown"
+        "recipe-node-unknown",
+        "bindings-refused"
     );
 }
 
@@ -1308,9 +1341,10 @@ mod tests {
     /// rpc node. The stop of mesh1.rpc.1 moves its seat first (`executor::seat_move` names it) and no
     /// admin executes the stop until it has; the stop of mesh1.rpc.2, which holds no seat, moves nothing
     /// and its mesh's primary executes it. The Build door admits a stop of mesh1.rpc.1 and refuses a
-    /// stop, restart or delete of mesh2.rpc.1 by name with Q7's text.
+    /// stop or restart of mesh2.rpc.1 by name with Q7's text; its delete, by the node.delete route or the
+    /// replace recipe's Delete step, skips the update as its removal does (R5).
     /// Must NOT happen: a cohort holder stopped with its seat unmoved, or the sole node of its type in a
-    /// mesh stopped, restarted or deleted while its mesh has other nodes.
+    /// mesh stopped or restarted while its mesh has other nodes.
     /// CONTRACT (R-PV1, the fresh-request versus resumption rule; node-rpc-envelope.md build.create:
     /// "existing build_id for resubmission"): attempt 2 of a Build carried the restart of mesh1.rpc.2's
     /// birth and failed after its stop completed (StopNode and AwaitNodeLeft Complete, StartNode
@@ -1382,7 +1416,7 @@ mod tests {
         assert_eq!(crate::executor::seat_move(&other, &t), None, "a node that holds no seat moves none");
         assert_eq!(crate::executor::executor_for(&other, &t).map(|p| p.to_string()), Some("mesh1.admin.1".to_string()), "its mesh's primary executes it");
         assert!(last_admin(&"mesh1.rpc.1".parse().unwrap(), "stop", &t).is_none(), "mesh1's rpc holder has a secondary: admitted");
-        for action in ["stop", "restart", "delete"] {
+        for action in ["stop", "restart"] {
             match last_admin(&"mesh2.rpc.1".parse().unwrap(), action, &t) {
                 Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type rpc-node in mesh mesh2"), "{action}"),
                 None => panic!("{action} of mesh2's sole rpc node is refused by name"),
@@ -1391,6 +1425,13 @@ mod tests {
         let retire_sole = crate::build::BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None };
         assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "retire", &t).is_none(), "retiring the sole member of a non-admin cohort skips node.primary.update");
         assert_eq!(crate::executor::seat_move(&retire_sole, &t), None, "retiring the sole member of a non-admin cohort moves no seat");
+        // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
+        // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
+        // at the same `path.name`"): the replace recipe's Delete step and the node.delete route of a
+        // type's only node skip the update as a removal does, refused `no-secondary` at no step.
+        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t));
+        let delete_step = crate::build::BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None };
+        assert_eq!(crate::executor::seat_move(&delete_step, &t), None, "the recipe's delete of a type's only node moves no primary");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
@@ -1461,5 +1502,47 @@ mod tests {
                 other => panic!("{action}: no other mesh-primary is ReadyForTraffic: refused last-admin: {other:?}"),
             }
         }
+    }
+
+    /// CONTRACT (proposal roll.md step 1: "The fabric-primary validates it as the bootstrap admin
+    /// validates its own at start (`BindingSet::validate`): every launch id the accepted topology uses
+    /// declared and bound, `node_admin` always; every file present and hashing to its sha; every binding
+    /// checked against the fabric's provider ... Any defect is refused by name and nothing is
+    /// accepted"): a set whose files hash to their shas and bind every kind the topology uses is
+    /// accepted under the process provider; a sha that does not match, a launch id the topology uses
+    /// with no binding, and, under the container provider, a binding without the image are each refused
+    /// `bindings-refused` naming the defect and the launch id. Must NOT happen: a roll accepted onto a
+    /// file whose bytes are not the bound ones, or onto a set that cannot launch a member.
+    #[tokio::test]
+    async fn a_rolls_set_is_validated_at_acceptance_and_each_defect_is_refused_by_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("roll-set-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bind = |id: &str| {
+            let p = dir.join(id);
+            std::fs::write(&p, format!("#!/bin/sh\n# {id}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
+        };
+        let good = rdm_core::binding::BindingSet { candidate: rdm_core::binding::Candidate { sha: "next".into(), build: "b2".into() }, launch_ids: vec!["node_admin".into(), "rpc_node".into()], bindings: vec![bind("node_admin"), bind("rpc_node")] };
+        let topology = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)])))].into(), bindings: None };
+        assert_eq!(roll_set_refusal(&good, &topology, ProviderKind::Process).await, None, "a complete, hash-true set is accepted");
+        let refused = |r: Option<BuildReject>| match r {
+            Some(BuildReject::BindingsRefused { defect, detail }) => (defect, detail),
+            other => panic!("refused bindings-refused: {other:?}"),
+        };
+        let mut mismatched = good.clone();
+        mismatched.bindings[1].sha256 = "0".repeat(64);
+        let (defect, detail) = refused(roll_set_refusal(&mismatched, &topology, ProviderKind::Process).await);
+        assert_eq!(defect, "hash-mismatch");
+        assert!(detail.contains("rpc_node"), "{detail}");
+        let unbound = rdm_core::binding::BindingSet { launch_ids: vec!["node_admin".into()], bindings: vec![good.bindings[0].clone()], ..good.clone() };
+        let (defect, detail) = refused(roll_set_refusal(&unbound, &topology, ProviderKind::Process).await);
+        assert_eq!((defect.as_str(), detail.contains("rpc_node")), ("not-required-by-the-set", true), "{detail}");
+        let (defect, _) = refused(roll_set_refusal(&good, &topology, ProviderKind::Container).await);
+        assert_eq!(defect, "no-image-bound", "a container fabric's set binds its one image");
+        let reject = BuildReject::BindingsRefused { defect: "hash-mismatch".into(), detail: "x".into() };
+        assert_eq!(reject.reason(), "bindings-refused");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

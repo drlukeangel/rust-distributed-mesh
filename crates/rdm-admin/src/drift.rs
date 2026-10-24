@@ -98,7 +98,7 @@ mod tests {
     }
 
     fn desired(a: u32, r: u32) -> FabricTopology {
-        FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, a), (rdm_core::NodeKind::RpcNode, r)])))].into() }
+        FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, a), (rdm_core::NodeKind::RpcNode, r)])))].into(), bindings: None }
     }
 
     #[test]

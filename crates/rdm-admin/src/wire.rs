@@ -107,6 +107,8 @@ pub(crate) struct WireStep {
 struct WireTopology {
     fabric: String,
     meshes: BTreeMap<String, WireMesh>,
+    /// The launch set (proposal roll.md step 2), appended last.
+    bindings: Option<rdm_core::binding::BindingSet>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -154,6 +156,8 @@ enum WireChange {
     CreateMesh { desired: WireMeshDesired },
     RemoveMesh { mesh: String },
     DeleteFabric,
+    /// Appended last: the variants are positional.
+    Roll { bindings: rdm_core::binding::BindingSet },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -201,6 +205,7 @@ impl From<&TopologyChange> for WireChange {
             TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
             TopologyChange::DeleteFabric => Self::DeleteFabric,
+            TopologyChange::Roll { bindings } => Self::Roll { bindings: bindings.clone() },
         }
     }
 }
@@ -214,6 +219,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
             WireChange::DeleteFabric => Self::DeleteFabric,
+            WireChange::Roll { bindings } => Self::Roll { bindings },
         }
     }
 }
@@ -288,7 +294,7 @@ impl From<&FabricTopology> for WireTopology {
                 (k.clone(), mesh)
             })
             .collect();
-        Self { fabric: t.fabric.clone(), meshes }
+        Self { fabric: t.fabric.clone(), meshes, bindings: t.bindings.clone() }
     }
 }
 impl From<WireTopology> for FabricTopology {
@@ -301,7 +307,7 @@ impl From<WireTopology> for FabricTopology {
                 (k, mesh)
             })
             .collect();
-        Self { fabric: t.fabric, meshes }
+        Self { fabric: t.fabric, meshes, bindings: t.bindings }
     }
 }
 

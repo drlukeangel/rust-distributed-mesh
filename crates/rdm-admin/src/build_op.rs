@@ -126,6 +126,9 @@ impl BuildDoor {
             BuildChange::CreateMesh { mesh } => topology(TopologyChange::CreateMesh { desired: counts(mesh) }).await,
             BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,
             BuildChange::DeleteFabric => topology(TopologyChange::DeleteFabric).await,
+            // A roll is a topology Build: the set becomes the accepted topology's launch set
+            // (proposal roll.md steps 1-2).
+            BuildChange::Roll { bindings } => topology(TopologyChange::Roll { bindings: bindings.clone() }).await,
             BuildChange::Restart { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Restart, node.clone(), ActionKind::Restart).await,
             BuildChange::DeleteConnections { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::DeleteConnections, node.clone(), ActionKind::DeleteConnections).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop).await,
