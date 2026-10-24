@@ -5,7 +5,10 @@ Proposal for i143 R-D3 (`docs/plans/i143-prd.md:2938`, assigned to the lead 2026
 architect under delegation, A1 concurring, and Luke approved the one page sentence; R-D3.2 and R-D3.3 are
 A, no code, accepted as read from the pages. The rulings are in `docs/plans/rulings/INDEX.md` (Q150,
 Q151). The decided contract is §0; §1-§8 are the analysis the rulings were made on, read at RDM
-`7811eb4a3` and rafka-v2 `f52217511f`, kept as the record. RDM `file:line` is bare; rafka-v2
+`7811eb4a3` and rafka-v2 `f52217511f`, kept as the record. Revised 2026-10-24 on the architect's
+adversarial review of `708afd101` and Architect 1's recommendations on it: §0 gains the value's life and
+its file beside the data dir, the diagnostics scrub, the container boundary, the listener address check,
+the refusal of a duplicate declaration, and the env table rows; §7 gains D7. RDM `file:line` is bare; rafka-v2
 `file:line` is prefixed `rafka-v2`.
 
 RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY`,
@@ -22,18 +25,40 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   `RAFKA_SYSTEM_KEY` on compute, gateway and broker, and `RAFKA_SIGNING_KEY_HEX` on gateway.
 - **The value.** Read once from the bootstrap admin's own environment at its start, as the fabric root is.
 - **Custody.** Every node-admin RDM launches is written every declared value beside the root, in one
-  launch variable (`RDM_DECLARED_SECRETS`), so whichever admin runs a create can launch the named kinds.
-  A node-admin's process carries the app's variable itself only when `node_admin` is a named kind.
+  launch variable (`RDM_DECLARED_SECRETS`: one entry per declared variable carrying its name, its kinds
+  and its value, entries joined as `RDM_LISTENERS` joins its own), so whichever admin runs a create can
+  launch the named kinds. A node-admin's process carries the app's variable itself only when
+  `node_admin` is a named kind. The landing adds the variable's row to CLAUDE.md's env table, with the
+  rows for `RDM_TRANSPORT_ADDR` and `RDM_LISTENERS` the table lacks (D1).
+- **Fixed for the fabric's life.** The value is captured once, at the bootstrap. A replace and a roll
+  launch from the launching admin's custody copy, so the value never changes while the fabric runs;
+  changing it is a new fabric, and a live rotation is a separate proposal, not R-D3's. Every admin keeps
+  the declared values beside its data dir as it keeps the root (`ca-secret`, `certs.rs:37`), read back
+  on a start from disk without a launcher; that file and the launch environment are the two places a
+  value lives, and the approved §2.3 sentence names records and projections, neither of which they are.
+- **A duplicate declaration is refused at registration**, naming the variable and never its value: two
+  declarations of one name are not merged and registration order chooses nothing.
 - **Use.** The value is set in the process environment of the named kinds only.
 - **Redaction.** Held as `SecretHex` (its debug form names its length, never its value) until the spawn;
-  never written to a row, a Build record, a receipt, the launch record or a span.
+  never written to a row, a Build record, a receipt, the launch record or a span. RDM's own diagnostics
+  are scrubbed before they leave the provider: a spawn error and `failure_detail` (the child's stdout
+  and stderr tail, `pipeline.rs:1809-1811`, `container.rs:727-736`) have every declared value and RDM's
+  four secrets replaced before they reach a receipt or a span. The guarantee is RDM's diagnostics; what
+  an application logs of its own environment is the product's.
+- **The container boundary, stated.** The container provider passes `spec.env` on the `docker run` argv
+  as `-e K=V` (`container.rs:585-587`), so the daemon's container configuration and, briefly, the host's
+  process table hold every value, RDM's four secrets included today. The landing passes each secret as
+  `-e K` with the value in the docker client's own environment, which keeps it off the argv and out of
+  the process table; the daemon's configuration still holds a container's environment, and that is the
+  accepted boundary: it is the daemon's record, not RDM's, the same for the root since day 0.
 - **Amendment 1.** A declared name is removed from the inherited environment before the spec's env is
   applied, exactly as `RDM_*` is (`process.rs:388-397`). The spawn comment at `process.rs:388-391`,
   which says the child inherits nothing while it inherits the host environment, is corrected to what
   the code does.
-- **Amendment 2.** The order has no host tier: RDM's own launch variables, then the declared ones, then
-  RDM's fixed pass-through list. The host environment reaches a child only for other names (`PATH`,
-  `HOME`), never for a declared or an RDM name.
+- **Amendment 2.** The order has no host tier: RDM's own launch variables, the declared ones and RDM's
+  fixed pass-through list, which by amendment 3 never share a name, so their order decides nothing; the
+  implementation keeps §3's "a later write of the same name wins" as its fact. The host environment
+  reaches a child only for other names (`PATH`, `HOME`), never for a declared or an RDM name.
 - **Amendment 3.** Refused by name at the admin's start, nothing bootstrapped: a declared name that RDM
   sets or passes through (`RDM_*`, `TRACEPARENT`, `TRACESTATE`, the pass-through list).
 - **The page sentence (Luke, 2026-10-24), landing with the code.** deployment-provider.md §2.3, old:
@@ -41,12 +66,15 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   environment". New: "the operational context needed to manage it: data_dir, the resolved executable,
   the launch's environment with its declared secrets excepted (a declared secret is written to the
   admins that may launch its kinds and to those processes, never to a record or a projection)".
-- **Cells, RED first.** A declared secret reaches only the named kinds and no other process, admin
-  included, read from each child's environment; a declared secret set in the bootstrap admin's
-  environment is absent from a kind not named; a declared name colliding with an RDM or a pass-through
-  name is refused at start with nothing bootstrapped; a create run by a launched admin, not the
-  bootstrap, sets the declared value; no span, log, row, Build record or receipt carries the value,
-  checked against the run's span JSONL, node logs and store root.
+- **Cells, RED first, each under both providers** (i50: both spawn modes). A declared secret reaches
+  only the named kinds and no other process, admin included, read from each child's environment; a
+  declared secret set in the bootstrap admin's environment is absent from a kind not named; a declared
+  name colliding with an RDM or a pass-through name, and a name declared twice, are refused at start
+  with nothing bootstrapped, the refusal naming the variable; a create run by a launched admin, not the
+  bootstrap, sets the declared value; an admin started again from its data dir without a launcher
+  launches the named kinds with the value; a child that fails after printing a sentinel value leaves no
+  trace of it in the step's failure, its receipt or its span; no span, log, row, Build record or receipt
+  carries the value, checked against the run's span JSONL, node logs and store root.
 
 #### 0.2 A product kind's listeners (Q151: A with A1's requirements)
 
@@ -57,8 +85,11 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   through its join; it reports the OS-selected ports at join; the accepting primary reads them back
   (`Bound::of`); they are published on the node row's `listeners` (R-D2).
 - **Requirements.** Listener names are unique within a kind; a name RDM owns is refused at the admin's
-  start. A join report with a declared listener missing, duplicated or undeclared is refused by name and
-  installs nothing (node-create.md step 4); nothing is dropped. Nothing probes and releases a port: a
+  start (none exists today, D7; the rule stands for any RDM adds). A join report is refused by name as a
+  whole, installing nothing (node-create.md step 4), unless it carries exactly the declared names, each
+  on the assigned address exactly, with a port that is not 0, as `Bound::of` already requires of the
+  transport (`pipeline.rs:1092-1100`): a listener missing, duplicated, undeclared, on another address,
+  on an unspecified address or on port 0 refuses the report; nothing is dropped. Nothing probes and releases a port: a
   successful bind stays open through the join (node-create.md: the executor never picks, reserves or
   predicts a port).
 - **No page text changes.** The sentences on assigned endpoints, port 0, the provider honouring and
@@ -66,9 +97,10 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   landing corrects CLAUDE.md's env table row from `RDM_ENDPOINTS` (`slot=addr=freshness`) to
   `RDM_LISTENERS` (`name=addr`): §7 D1, a table-versus-code difference, not a page.
 - **Cells, RED first.** A gateway's three listeners bound, reported and published on its row; two
-  gateways launched at once with no conflict; a join report missing one, duplicating one and naming an
-  undeclared one, each refused by name; a container fabric's listeners on the container's own address.
-  This is the demo-surface plan's A1 cell.
+  gateways launched at once with no conflict; a join report missing one, duplicating one, naming an
+  undeclared one, carrying one on another address, on an unspecified address and on port 0, each refused
+  by name with nothing installed; a container fabric's listeners on the container's own address. This is
+  the demo-surface plan's A1 cell.
 
 #### 0.3 Settled without code
 
@@ -76,7 +108,7 @@ RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY
   with evidence, listeners, is §0.2.
 - **R-D3.3, the no-slot refusal: A.** No RDM code: Rafka's front door names the provider from
   `FabricView.provider`; RDM's typed calls cannot carry a field the type lacks; the one setting §0.1 adds
-  is refused at the admin's start, naming it.
+  is refused at the admin's start, naming the setting and the fabric's provider.
 - **The "restart env override"** (§2): a restart keeps the process; a changed non-secret setting is a
   `node.config.update`, a changed secret or executable is a replace or a roll.
 - **Non-secret per-node settings** (§1): the row's `config`, read by the role at its entry; Rafka moves
@@ -541,6 +573,14 @@ Every arm assumes an unslotted setting is refused by name, never dropped.
   (`provider.rs:81-86`) has no caller outside its test. The typed wire cannot carry a provider field, so
   nothing reaches a Build today and the page holds; the function is unused. Named cleanup with R-D3's
   code: remove it.
+- **D7** CLAUDE.md env table, `RDM_NODE_ADMIN_API_BIND` ("The control API's HTTP bind ... A launched
+  admin binds the `control` slot node-admin assigned") and `RDM_NODE_ADMIN_API_BASE` ("the URL node-admin
+  prints"); code: `rdm-admin` depends on no HTTP server, `api_base` is `rdm://<node id>`
+  (`admin/boot.rs:650`), and `records.rs:120` (`api_bind`) and `boot.rs:499` (`addr_of("control")`,
+  always none since `NODE_ADMIN` names no listener, `endpoint.rs:33`) are inputs nothing serves. So RDM
+  owns no listener name today, which §0.2's refusal of "a name RDM owns" states; the two table rows and
+  the two dead reads are cleanup with R-D3's code, like D6; `boot.rs:82` keeps printing the node's
+  `rdm://` base under a name that no longer says HTTP, or the name goes with the rows.
 
 ---
 
