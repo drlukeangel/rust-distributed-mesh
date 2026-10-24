@@ -5,7 +5,10 @@ the roll"). R1-R3 have Luke's yes (2026-10-24, as written). Revised the same day
 review of `2195f9379`: its three gaps are closed in the operation below (step 2, the launch set; step 3,
 resume without a plan record; step 6, the one-admin mesh), the R2 sentence is amended with its arm
 unchanged, the RDM/Rafka split is written down, and step 5 adds the fabric-primary's own replacement,
-which the first text left out. One choice is new and is Luke's (R4). Nothing below is built.
+which the first text left out. Revised again the same day on Architect 1's review of `578a6044d`: the
+set lives on the accepted topology, so every later Build carries it (step 2), and step 5 separates a
+node-admin primary from a primary of another type. R4 is ruled (Luke 2026-10-24, arm A). Nothing below
+is built.
 
 ### What the pages already say
 
@@ -69,9 +72,12 @@ behaviour that depends on the product is Rafka's):
    in the Build's acceptance record, written once, and at the acceptance, before the door answers, the
    fabric goes back to pending by the resize hook (`control_plane.rs:503`; states.md "Resize and
    roll"); its meshes stay ready-for-traffic.
-2. **The accepted set is the fabric's launch set.** What every admin launches from is the current
-   Build's set: the roll's once accepted, and before any roll day 0's, which the bootstrap admin writes
-   from its `RDM_EXECUTABLE_BINDINGS` into B0's acceptance record, so the record exists from day 0. A
+2. **The accepted set is the fabric's launch set.** The set is a field of the accepted topology
+   (`FabricTopology.bindings`), not of the roll's record alone: every Build compiles from the current
+   topology (`accepted.rs:399`, `compile(current, change, observed)`), so a resize, an added node, a
+   mesh created or removed after a roll carries the roll's set forward unchanged, and only a `Roll`
+   replaces it. Day 0's comes from the bootstrap admin's `RDM_EXECUTABLE_BINDINGS` into B0's topology,
+   so the field exists from day 0. What every admin launches from is the current Build's set. A
    launched admin takes the current set from its launcher's entry answer, as it takes the provider
    policy today (`boot.rs:425`), and every admin reads the set from the current Build at each launch,
    never from a value held since its own start: `AdminConfig.bindings` as a lifetime value and the
@@ -82,7 +88,9 @@ behaviour that depends on the product is Rafka's):
    launches run it, and a node recovery still runs its row's bin (node-recovery.md "Retained"). An
    admin whose executable already hashes to the set's is not replaced and launches from the new set
    all the same: its set is the Build's, not its own. This closes Architect 1's first gap: launching
-   an admin's new executable and installing its launch set were two things; the set is now the Build's.
+   an admin's new executable and installing its launch set were two things; the set is now the
+   topology's, and its second review's: a Build after the roll inherits the set by the compile rule,
+   never by a rule of its own.
 3. **The plan is the Build's topology, not a list.** A roll changes no path.name: its compiled
    topology is the current one (every path, mesh id and path config unchanged) with the accepted set
    as every path's target binding, by kind; it is written once in the acceptance record. There is no
@@ -109,20 +117,32 @@ behaviour that depends on the product is Rafka's):
    peer-location book's block of the old `(node.id, incarnation)` covers a successor on the same
    endpoint key (node-delete.md step 5). The create ends at the member's ReadyForTraffic check-in.
 5. **A primary's own replacement.** A primary is replaced last of its type and goes through
-   `node.primary.update` first, as every delete or replace of a primary does; the successor is a
-   node-admin already on the set (the non-primaries went first) and, now mesh-primary, executes the
-   delete (build.md §12.4). When the mesh-primary is also the fabric-primary, both move together to the
-   same-mesh successor (node-primary-update.md "Both primaries"); the caller's `build.create` stream
-   ends `FabricPrimaryMoved { build_id, fabric_primary }`, the caller resubmits the same build_id
-   there, and the new fabric-primary continues the same Build as its next attempt (build.md §4.1), then
-   replaces the old fabric-primary's node as an ordinary member. The fabric's pending from the roll is
-   not `fabric-not-ready`: that refusal is the initial fabric's, before its first ready-for-traffic.
-6. **A mesh with one node-admin** (R4). Its only admin is its primary and has no non-primary to go
-   first, and the page allows no replace that leaves a mesh without a listening admin. The roll's
-   compile adds a second node-admin path to such a mesh (`<mesh>.admin.<next free>`), created first
-   from the set; the original is then replaced as in step 5. The added admin stays: the roll's
-   topology is the fabric's after it, and the mesh has the HA shape the page assumes. No temporary
-   member, no cleanup. This closes Architect 1's second gap.
+   `node.primary.update` first, as every delete or replace of a primary does (node-primary-update.md);
+   the successor is a node of the same type already on the set, since the non-primaries went first.
+   The two cases the page separates:
+   - *The mesh-primary (the `node-admin` type).* The fabric-primary commands the update; the successor
+     admin installs itself, writes the row and, now mesh-primary, executes the delete and the create
+     (build.md §12.4). When the mesh-primary is also the fabric-primary, both move together to the
+     same-mesh successor (node-primary-update.md "Both primaries"); the caller's `build.create` stream
+     ends `FabricPrimaryMoved { build_id, fabric_primary }`, the caller resubmits the same build_id
+     there, and the new fabric-primary continues the same Build as its next attempt (build.md §4.1),
+     then replaces the old fabric-primary's node as an ordinary member.
+   - *A primary of any other type (a broker-primary, an rpc primary).* The mesh-primary commands the
+     update to another node of that type and stays the executor and the writer; the old primary only
+     makes the call and writes nothing. Then it is replaced as an ordinary member. A type with one
+     node in the mesh has no successor and no update: its node is replaced as an ordinary member, and
+     the election names the new birth when it is ReadyForTraffic ("the next primary is whatever the
+     election resolves").
+   The fabric's pending from the roll is not `fabric-not-ready`: that refusal is the initial fabric's,
+   before its first ready-for-traffic.
+6. **A mesh with one node-admin** (R4, Luke 2026-10-24, arm A). Its only admin is its primary and
+   has no non-primary to go first, and the page allows no replace that leaves a mesh without a
+   listening admin. The roll's compile adds a second node-admin path to such a mesh
+   (`<mesh>.admin.<next free>`), created first from the set; the roll waits for it to check in
+   ReadyForTraffic, hands the primary to it by `node.primary.update` (both primaries when the original
+   is the fabric-primary, step 5), then replaces the original. The added admin stays in the accepted
+   topology after the roll: the mesh has the HA shape the page assumes. No temporary member, no
+   cleanup. This closes Architect 1's second gap.
 7. **Through the mesh-primaries.** The fabric-primary claims each attempt and dispatches
    `build.attempt.run` to the executor `executor_for` names; a run ends `HandedOff { to }` at an
    operation another executor runs, and the fabric-primary's next claim and call carry the run on
@@ -135,7 +155,7 @@ behaviour that depends on the product is Rafka's):
    needed), state-commit, ready-for-traffic (states.md "Resize and roll"). The fabric leaves pending
    for state-sync when every mesh's planned members, on the set, are ready (build.md §10).
 
-### Decided (Luke 2026-10-24, R1-R3 as written)
+### Decided (Luke 2026-10-24: R1-R3 as written; R4 arm A)
 
 - **R1, the data dir: inherited.** The successor is created over the predecessor's data dir, so a
   restage keeps each node's data. The other arm, a newly allocated dir, makes data transfer Rafka's
@@ -150,29 +170,23 @@ behaviour that depends on the product is Rafka's):
   complete: the admin's launch set follows the Build, so a replaced and an unreplaced admin alike
   launch from the accepted set.
 
-### For Luke's yes, R4: the mesh with one node-admin. Recommendation: the roll adds a second admin, which stays.
-
-Rafka's estates run one node-admin per mesh today (`lane_mesh_finish.py`, one `node_admin_api_base`
-per mesh), so this is the common case, not an edge.
-
-- **(a) Recommended: the roll's compile adds `<mesh>.admin.<next free>`, created first from the set,
-  and it stays** (step 6). One rule in the compiler, no temporary member, no cleanup; the mesh keeps a
-  listening admin throughout, as the page requires, and ends in the HA shape the page assumes. A later
-  `ReconcileMesh` with one admin removes it like any resize.
-- **(b) Refuse by name, `single-admin { mesh }`, before anything destructive.** Rafka resizes every mesh
-  to two admins before its first roll (its existing `ReconcileMesh`) and the roll adds nothing. No
-  compiler rule; one more step in Rafka's cutover, and every one-admin estate is unrollable until it is
-  resized.
-- A temporary admin deleted after the roll is not proposed: two more primary moves and a cleanup for
-  the same result as (a).
+- **R4, the mesh with one node-admin: arm A (Luke 2026-10-24).** Rafka's estates run one
+  node-admin per mesh today (`lane_mesh_finish.py`, one `node_admin_api_base` per mesh), so this is
+  the common case. The roll creates a second node-admin first, waits for it to become
+  ReadyForTraffic, hands over the primary role, then replaces the original; the added admin remains
+  in the accepted topology after the roll (step 6). A later `ReconcileMesh` with one admin removes it
+  like any resize. Not taken: (b) refusing a one-admin mesh by name and making Rafka resize first;
+  (c) a temporary admin deleted after the roll, two more primary moves and a cleanup for the same
+  result.
 
 ### Wire and storage
 
-`BuildChange::Roll { bindings: BindingSet }`, a new variant of the Build change. The acceptance record
-(`BuildAccepted`) carries `bindings`: the roll's set, and B0's from the bootstrap admin's env (durable
-format moved; a record written before it decodes with none, and an admin whose current Build carries
-none launches from its start env, as today, until the fabric's first roll). The entry answer carries the
-current Build's set beside the provider policy. No new op, no new storage object, no plan record; the
+`BuildChange::Roll { bindings: BindingSet }`, a new variant of the Build change. The accepted topology
+(`FabricTopology`, inside every `BuildAccepted`) carries `bindings`: B0's from the bootstrap admin's
+env, carried forward by every compile, replaced by a `Roll` (durable format moved; a record written
+before it decodes with none, and an admin whose current Build carries none launches from its start env,
+as today, until the fabric's first roll). The entry answer carries the current Build's set beside the
+provider policy. No new op, no new storage object, no plan record; the
 receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value and the forwarding of
 `bindings_env` to a launched admin.
 
@@ -185,8 +199,14 @@ receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value an
   (no round misses the mesh's aggregate);
 - the fabric-primary's mesh: the caller's stream ends `FabricPrimaryMoved`, the resubmitted build_id
   completes at the new fabric-primary, the old fabric-primary's node re-created on the set;
-- a mesh with one admin: a second admin created first, on the set, before the original is replaced;
-  it is in the accepted topology after the roll;
+- a mesh with one admin: a second admin created first, on the set, ReadyForTraffic and primary before
+  the original is replaced; it is in the accepted topology after the roll;
+- a non-admin primary (a broker-primary with another broker in its mesh): the primary moves to the
+  other broker by `node.primary.update` with the mesh-primary as writer, then the old primary is
+  replaced; a type with one node is replaced with no update and the new birth is its primary once
+  ReadyForTraffic;
+- roll, then a resize, then an admin restart, then an ordinary `node.create`: every launch runs the
+  roll's set, which the resize's Build carried forward;
 - the executor killed after a predecessor's `node.deleted` and before its create: the next attempt
   creates it once; killed after the successor's check-in and before its receipt: the next attempt runs
   nothing for it; no member replaced twice;
