@@ -92,11 +92,13 @@ Every Build that puts the fabric to pending completes only after its own ready-f
   at launch (`runner.rs` `launch_set`); the removed operation's cells and `docs/plans/proposal/roll.md`;
   R6's check of the running executable against a configured `node_admin` sha, with its cell, since the
   configuration goes (§2).
-- **Kept and moved to the replacement, renamed without the banned word:** the planner and its progress
-  (`roll_operations`, `roll_progress`) are exactly rule 5's order, non-primaries first, the primary's move,
-  the fabric-primary last, and the interrupted-delete resume of `9fbf7efba` is rule 5's resume; they
-  become the replacement's planner, driven by each path's entry versus its row rather than by a fabric
-  set. Nothing is deleted and rewritten.
+- **Gone as separate things:** the planner and its progress record (`roll_operations`, `roll_progress`)
+  existed because the operation was a Build kind of its own. A replacement is now the Build's remaining
+  work, computed as every Build's is (build.md §1): each path's entry against its row, mesh by mesh, with
+  the Build's receipts as the only record and the interrupted-delete resume of `9fbf7efba` as the
+  ordinary resume by receipts. What survives is their ordering rules, non-primaries first, the primary's
+  move, the fabric-primary last, R4 and R5, which become the reconciler's rules for replacement work in
+  any Build. No separate status, plan or progress stands beside the Build.
 - **Kept:** R6 (every row records what its birth runs); R5's page sentence (a type's only node needs no
   primary update; its predecessor half is one `node.delete`, never a standalone connections delete,
   which the executor refuses on a type's only node); Q154's generic hold for every Build that puts the
