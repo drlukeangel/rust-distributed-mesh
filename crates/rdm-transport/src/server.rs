@@ -280,6 +280,8 @@ pub struct ServerBuilder {
     pub(crate) carried: HashMap<u8, usize>,
     /// Filled at build for the forward handler, when this node serves it.
     pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
+    /// What this carrier does with each inner answer it carries back, when it was given one.
+    pub(crate) carried_replies: Arc<std::sync::OnceLock<Arc<dyn crate::forward::CarriedReplies>>>,
     /// The accept trigger and the resolver that names an accepted peer, when the process runs
     /// direct recovery (R-CN1).
     inbound: Option<Inbound>,
@@ -307,6 +309,7 @@ impl ServerBuilder {
             ready: None,
             carried: HashMap::new(),
             carried_table: None,
+            carried_replies: Arc::default(),
             inbound: None,
             withhold: None,
             delivery: None,

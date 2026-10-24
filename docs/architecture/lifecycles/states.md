@@ -32,7 +32,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |
 | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step receipt |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |
-| mesh ReadyForTraffic | the fabric-primary | its mesh-primary's report that every planned birth is ready |
+| mesh ReadyForTraffic | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144) | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
 | fabric state-sync, state-commit, ready-for-traffic | the fabric-primary | the completed round below it |
@@ -48,7 +48,7 @@ successful admission reply does not complete a round: the matching upward comple
 and planned-birth checklist do. Required writes finish before their completion check-ins.
 Gossip disseminates the resulting states and overlays for peer topology and routing; it never
 completes a round, and neither caller progress nor round completion waits for peers to receive
-gossip. Before state-commit, RDM holds its entity rows in the scratchpad; state-commit publishes the required held rows to the configured stores. A node declared-state fact acknowledged as Applied is written to the birth's `declared/<state>` row in `nodes/<mesh>/` on the shared store root before the reply, including before state-commit; a successor acquires that fact without creating a new lifecycle transition.
+gossip. Before state-commit, RDM holds the Fabric and Mesh records in the scratchpad; state-commit publishes them to the configured stores. A Node record is written straight to the store, before state-commit too, because a declared state acknowledged as Applied is on it and is durable before the reply; a successor acquires that fact without creating a new lifecycle transition.
 
 | state | carried down | checked in | between |
 |---|---|---|---|
@@ -79,9 +79,9 @@ The initial accepted Build, which creates the fabric's nodes and brings the fabr
 ready-for-traffic, runs as usual. Once the fabric is ready-for-traffic these are admitted as
 usual. A Build is refused at build.create with the Build family's existing `Rejected` refusal
 ([Build refusals](../node-rpc-envelope.md#fabric-not-ready-refusal)).
-The reason is that before state-commit the Fabric row, each mesh's Mesh row and its members'
-Node rows live only in their writers' scratchpads, so a primary change or a row written in that
-window is lost with its writer or cannot be read by its successor.
+The reason is that before state-commit the Fabric record and each mesh's Mesh record live only in
+their writers' scratchpads, so a primary change or a record written in that window is lost with its
+writer or cannot be read by its successor.
 
 ## Routing
 

@@ -8,6 +8,8 @@
 //! ladder, so the ordinary tier is incomplete and the node-admin tier never starts. The resumed
 //! attempt sees the view as the first one left it: neither ordinary node is live any more.
 
+use rdm_admin::node_rows::WriteRecord as _;
+use rdm_admin::node_rows::RecordAt as _;
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter};
@@ -21,7 +23,7 @@ use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, P
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows, RowRefused};
 use rdm_admin::status_rpc::Declared;
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
-use rdm_admin::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
+use rdm_admin::storage::{MemoryNodesStorage, NodeRow};
 use rdm_admin::topology::Topology;
 use rdm_core::status::MeshState;
 use std::sync::Arc;
@@ -314,7 +316,7 @@ fn writer_view(records: &[Node], primary: Option<&str>, fabric_primary: Option<N
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
+        storage.write_record(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
         assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
     }
 }
@@ -463,7 +465,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let read = |name: &str| {
         let storage = storage.clone();
         let name: PathName = name.parse().unwrap();
-        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async move { storage.node_row_at(&name).await.unwrap() })
+        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async move { storage.record_at(&name).await.unwrap() })
     };
     for n in records.iter().filter(|n| n.name.to_string() != FINAL) {
         let row = read(&n.name.to_string()).unwrap_or_else(|| panic!("{} has a row", n.name));
@@ -738,10 +740,10 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         });
         let stopped = rows.deleted(&last, &deleting).await;
         let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None};
-        let after = mesh_left_rows(Some(&rows), &status, &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
-        let row = storage.node_row_at(&last.name).await.unwrap();
-        let statuses = status.mesh_statuses().await.unwrap();
-        let dead_held = status.mesh_status_held("mesh2", &rdm_admin::storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
+        let after = mesh_left_rows(Some(&rows), &status, &Default::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
+        let row = storage.record_at(&last.name).await.unwrap();
+        let statuses = status.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>();
+        let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead));
         // mesh2 created again: its first admin's claim wins over the Deleted row.
         let again = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, None, ClaimFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
@@ -1507,7 +1509,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
+            storage.write_record(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
         }
         for n in &records {
             assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
@@ -1542,7 +1544,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let ran = ran.into_inner().unwrap();
     let worked = ran.iter().find(|n| n.name.to_string() == FAILING).expect("the stopped roster birth's workflow ran");
     assert_eq!(RosterBirth::of(worked).unwrap(), stopped, "its workflow is handed exactly the roster birth");
-    let row = cap.run(async { storage.node_row_at(&FAILING.parse().unwrap()).await.unwrap() }).expect("the stopped birth's row stays at its path.name");
+    let row = cap.run(async { storage.record_at(&FAILING.parse().unwrap()).await.unwrap() }).expect("the stopped birth's row stays at its path.name");
     assert_eq!((row.status, row.node_id.to_string(), row.config.clone()), (NodeStatus::Deleted, stopped.node_id.clone(), tier_of(FAILING)), "its row is written Deleted with the config its node held: {row:?}");
     let spans = cap.spans();
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();

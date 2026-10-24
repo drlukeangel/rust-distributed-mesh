@@ -38,7 +38,23 @@ pub trait CarrierEdges: Send + Sync {
     }
 }
 
+/// What a carrier does with the answer of an inner call it carried (storage-whole-records.md: a
+/// mesh-primary writes another admin's signing cert dates when its `IssuerUpdated` returns through it).
+/// Handed the exact target, the inner op, the inner request and the target's reply payload, verbatim,
+/// before the reply goes back; it changes nothing the origin receives.
+#[async_trait::async_trait]
+pub trait CarriedReplies: Send + Sync {
+    /// The target answered `reply` to `request` of `inner_op`.
+    async fn carried(&self, target: &NodeId, inner_op: u8, request: &[u8], reply: &[u8]);
+}
+
 impl ServerBuilder {
+    /// Hand each inner answer this carrier carries back to `replies` ([`CarriedReplies`]).
+    pub fn observe_carried(self, replies: Arc<dyn CarriedReplies>) -> Self {
+        let _ = self.carried_replies.set(replies);
+        self
+    }
+
     /// Carry protocol `P` for others: a forward naming its op is executed only when `P` is
     /// forwardable. A protocol that is not forwardable is never carried, whatever is declared.
     pub fn carry<P: NodeProtocol>(mut self) -> Self {
@@ -76,9 +92,21 @@ impl ServerBuilder {
     fn serve_forward_with(mut self, client: Arc<NodeRpcClient>, edges: Option<Arc<dyn CarrierEdges>>) -> Self {
         let table = Arc::new(std::sync::OnceLock::new());
         self.carried_table = Some(table.clone());
+        let replies = self.carried_replies.clone();
         self.serve::<Forward, _, _>(OpOwner::Core, move |peer: PeerContext, req: ForwardRequest| {
-            let (client, table, edges) = (client.clone(), table.clone(), edges.clone());
-            async move { Ok(carry_once(&client, &table, edges.as_deref(), &peer, req).await) }
+            let (client, table, edges, replies) = (client.clone(), table.clone(), edges.clone(), replies.clone());
+            async move {
+                let observed = replies.get().cloned();
+                let (target, inner_op, request) = match (&observed, &req) {
+                    (Some(_), ForwardRequest::Forward { target, inner_op, inner, .. }) => (Some(target.clone()), *inner_op, inner.clone()),
+                    _ => (None, 0, Vec::new()),
+                };
+                let reply = carry_once(&client, &table, edges.as_deref(), &peer, req).await;
+                if let (Some(observer), Some(target), ForwardReply::Forwarded { inner }) = (observed, target, &reply) {
+                    observer.carried(&target, inner_op, &request, inner).await;
+                }
+                Ok(reply)
+            }
         })
     }
 }

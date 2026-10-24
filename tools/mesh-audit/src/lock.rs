@@ -790,12 +790,12 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         }
         Ratchet::OneRenameWritePath => {
             // A node row moves through one writer (R13: node.update is one write path):
-            // `node_rows::move_row` claims the new name and releases the old key. Nothing else
-            // releases a node row's key, and no second rename door stands beside it.
+            // `node_rows::move_row` claims the new name and releases the old claim. Nothing else
+            // releases a node name claim, and no second rename door stands beside it.
             let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| !rel(root, f).ends_with(NODE_ROWS) && !rel(root, f).ends_with(NODES_STORAGE)).collect();
-            scan_non_test_tokens(root, &files, &[".release_node_row("], ratchet, &mut out);
+            scan_non_test_tokens(root, &files, &[".release_node_name("], ratchet, &mut out);
             scan_tokens(root, &files_in(root, &[NODE_ROWS]), &["pub async fn rename(", "fn rename_steps("], ratchet, &mut out);
-            require(root, NODE_ROWS, &["pub(crate) async fn move_row(storage: &dyn NodesStorage,"], ratchet, &mut out);
+            require(root, NODE_ROWS, &["pub async fn move_row(storage: &dyn NodesStorage,"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
             // Echo (0x11) is retired forever and peer-tickle (0x19) is a product's transitional

@@ -8,12 +8,14 @@
 //! commits is `NotSent` with nothing applied; a reply lost after the apply is `Indeterminate`,
 //! and the same declaration again is `AlreadyApplied` — one logical event.
 
+use rdm_admin::node_rows::WriteRecord as _;
+use rdm_admin::node_rows::RecordAt as _;
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind};
 use rdm_admin::model::{Fabric, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::status_rpc::{Declared, StatusAuthority};
-use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
+use rdm_admin::storage::{MemoryNodesStorage, MeshStorage, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
@@ -78,7 +80,7 @@ impl NodesStorage for Rows {
     async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.runtimes().await
     }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
+    async fn runtime(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.runtime(node_id, incarnation).await
     }
     async fn own(&self) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
@@ -93,83 +95,44 @@ impl NodesStorage for Rows {
     async fn put_contact(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_contact(record).await
     }
-    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+    async fn remove_contact(&self, mesh: &str, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.remove_contact(mesh, node_id).await
     }
-    async fn put_node_row(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_row(row).await
+    async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node(node_id).await
     }
-    async fn node_row_at(&self, name: &PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_row_at(name).await
+    async fn node_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_at(name).await
     }
-    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_row_name(mesh, node_id).await
+    async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.nodes(mesh).await
     }
-    async fn remove_node_row(&self, name: &PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
-        if self.refuse_release.swap(false, Ordering::SeqCst) {
-            return Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() });
-        }
-        self.inner.remove_node_row(name).await
+    async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node(row).await
     }
-    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
+    async fn remove_node(&self, mesh: &str, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node(mesh, node_id).await
+    }
+    async fn index_path(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.index_path(name, node_id).await
+    }
+    async fn index_tags(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.index_tags(mesh, node_id, leaving, arriving).await
+    }
+    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
         self.inner.tagged(label).await
     }
-    async fn put_node_declared(&self, mesh: &str, row: &rdm_admin::storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_declared(mesh, row).await
+    async fn name_claim(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
+        self.inner.name_claim(name).await
     }
-    async fn remove_node_declared(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
+    async fn claim_node_name(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
+        self.inner.claim_node_name(name, node_id).await
     }
-    async fn node_declared(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_declared(mesh).await
-    }
-    async fn put_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_operation(mesh, row).await
-    }
-    async fn node_operations(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_operations(mesh).await
-    }
-    async fn remove_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_operation(mesh, row).await
-    }
-    async fn put_node_silence(&self, mesh: &str, row: &rdm_admin::storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_silence(mesh, row).await
-    }
-    async fn node_silences(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_silences(mesh).await
-    }
-    async fn node_data_dir_lost(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_lost_at(mesh, name).await
-    }
-    async fn put_node_data_dir_lost(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_data_dir_lost(mesh, row).await
-    }
-    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_data_dir_unreadable_at(mesh, name).await
-    }
-    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_data_dir_unreadable(mesh, row).await
-    }
-    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-    }
-    async fn node_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_certs(mesh).await
-    }
-    async fn put_node_cert(&self, mesh: &str, row: &rdm_admin::storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_node_cert(mesh, row).await
-    }
-    async fn signing_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::SigningCertRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.signing_certs(mesh).await
-    }
-    async fn put_signing_cert(&self, mesh: &str, row: &rdm_admin::storage::SigningCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_signing_cert(mesh, row).await
+    async fn release_node_name(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        if self.refuse_release.swap(false, Ordering::SeqCst) {
+            return Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/names/{name}"), reason: "disk refused the release".into() });
+        }
+        self.inner.release_node_name(name, node_id).await
     }
 }
 
@@ -221,6 +184,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
         fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
         nodes_storage: Arc::new(Rows { inner: nodes.clone(), refuse_release: refuse_release.clone() }),
+        caches: Default::default(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
         commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
@@ -298,7 +262,7 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     let rpc1 = &b["rpc1"];
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
     // Applied is on the subject's row before it was answered.
-    let row = rig.storage.node_declared("mesh1").await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!(row.state, NodeState::ReadyForTraffic);
     assert_eq!(row.incarnation_id, rpc1.node.incarnation_id.clone().unwrap());
     // The same natural key again: one logical event.
@@ -359,7 +323,7 @@ async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_
     assert!(rig.topology.read().await.births().all(|n| n.endpoint_id != stranger.node.endpoint_id), "the stranger is in no birth of the view");
     // A member's declaration is decided for that member: Applied, on its row first.
     assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
-    let row = rig.storage.node_declared("mesh1").await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!((row.state, row.name.clone()), (NodeState::ReadyForTraffic, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
     // A node-admin's declaration reaches the fabric seat this admin holds.
     assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
@@ -384,13 +348,16 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     // mesh2's primary declares mesh2's state to the fabric-primary.
     let m2 = |s| StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: s };
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::Applied);
-    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
+    // Q144: a repeated declaration is answered `Applied` again, so a mesh-primary that lost its record
+    // write before it landed records it on the answer to its next declaration.
+    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert!(rig.authority.meshes_storage.mesh(&rig.mesh_id("mesh2")).await.unwrap().is_none_or(|r| r.states.is_empty()), "the fabric-primary writes nothing of mesh2's record: its primary does");
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Pending)).await), StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic });
     // The declaration is decided for the mesh it names, whoever calls (an ordinary node; a
     // non-primary admin of another mesh): forward applies once, a mesh the holder does not hold is
     // `SubjectUnknown`.
     assert_eq!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::Applied);
-    assert_eq!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::AlreadyApplied);
+    assert_eq!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::Applied, "a repeated declaration is answered Applied again (Q144)");
     let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, m2admin, &unknown).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
     // A fabric event is applied at a mesh primary (this admin is mesh1's), whoever sends it, once.
@@ -419,7 +386,7 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.authority.declared.lock().unwrap().nodes.is_empty());
-    assert!(rig.storage.node_declared("mesh1").await.unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
+    assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
@@ -464,7 +431,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 2, "the lost call and the retry, nothing replayed");
-    let row = rig.storage.node_declared("mesh1").await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!(row.state, NodeState::ReadyForTraffic);
 }
 
@@ -572,7 +539,8 @@ async fn configs_door_for(rig: &Rig, nodes: &[&ServedNode]) {
         resolver.insert(node.resolved.clone());
     }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
+    // The door writes from the one copy of the records this admin holds, its authority's.
+    let _ = rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone(), rig.authority.caches.nodes.clone())));
 }
 
 /// mesh1's primary's config door, the one door its record changes take turns at, its client
@@ -604,7 +572,7 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
+        let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
@@ -640,7 +608,7 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&old).await.unwrap().expect("the mesh-primary wrote the node's row at its .old name");
+        let row = rig.nodes.record_at(&old).await.unwrap().expect("the mesh-primary wrote the node's row at its .old name");
         assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()));
         assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
     });
@@ -672,7 +640,7 @@ fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing
         let client = client_of(&rig, &b["admin2"]).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
-        let row = rig.nodes.node_row_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
+        let row = rig.nodes.record_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
         assert_eq!((row.node_id.clone(), row.config.clone(), row.tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
         assert!(node.seen.lock().unwrap().is_empty(), "the stopped node is told nothing: {:?}", node.seen.lock().unwrap());
     });
@@ -721,7 +689,7 @@ impl NodesStorage for RefusingRows {
     async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.0.runtimes().await
     }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
+    async fn runtime(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.0.runtime(node_id, incarnation).await
     }
     async fn own(&self) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
@@ -736,80 +704,41 @@ impl NodesStorage for RefusingRows {
     async fn put_contact(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.put_contact(record).await
     }
-    async fn remove_contact(&self, mesh: &str, node_id: &rdm_core::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+    async fn remove_contact(&self, mesh: &str, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.remove_contact(mesh, node_id).await
     }
-    async fn put_node_row(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
+    async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node(node_id).await
     }
-    async fn node_row_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_row_at(name).await
+    async fn node_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.0.node_at(name).await
     }
-    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rdm_admin::model::PathName>, rdm_admin::storage_error::StorageError> {
-        self.0.node_row_name(mesh, node_id).await
+    async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.0.nodes(mesh).await
     }
-    async fn remove_node_row(&self, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
-        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
+    async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/records/{}", row.node_id), reason: "disk refused the write".into() })
     }
-    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
+    async fn remove_node(&self, mesh: &str, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.remove_node(mesh, node_id).await
+    }
+    async fn index_path(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.index_path(name, node_id).await
+    }
+    async fn index_tags(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.index_tags(mesh, node_id, leaving, arriving).await
+    }
+    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
         self.0.tagged(label).await
     }
-    async fn put_node_declared(&self, mesh: &str, row: &rdm_admin::storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_node_declared(mesh, row).await
+    async fn name_claim(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
+        self.0.name_claim(name).await
     }
-    async fn remove_node_declared(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.remove_node_declared(mesh, node_id, incarnation_id).await
+    async fn claim_node_name(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
+        self.0.claim_node_name(name, node_id).await
     }
-    async fn node_declared(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_declared(mesh).await
-    }
-    async fn put_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_node_operation(mesh, row).await
-    }
-    async fn node_operations(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_operations(mesh).await
-    }
-    async fn remove_node_operation(&self, mesh: &str, row: &rdm_admin::storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.remove_node_operation(mesh, row).await
-    }
-    async fn put_node_silence(&self, mesh: &str, row: &rdm_admin::storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_node_silence(mesh, row).await
-    }
-    async fn node_silences(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_silences(mesh).await
-    }
-    async fn node_data_dir_lost(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_data_dir_lost(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_data_dir_lost_at(mesh, name).await
-    }
-    async fn put_node_data_dir_lost(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_node_data_dir_lost(mesh, row).await
-    }
-    async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-    }
-    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_data_dir_unreadable_at(mesh, name).await
-    }
-    async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &rdm_admin::storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_node_data_dir_unreadable(mesh, row).await
-    }
-    async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-    }
-    async fn node_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
-        self.0.node_certs(mesh).await
-    }
-    async fn put_node_cert(&self, mesh: &str, row: &rdm_admin::storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_node_cert(mesh, row).await
-    }
-    async fn signing_certs(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::SigningCertRow>, rdm_admin::storage_error::StorageError> {
-        self.0.signing_certs(mesh).await
-    }
-    async fn put_signing_cert(&self, mesh: &str, row: &rdm_admin::storage::SigningCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.0.put_signing_cert(mesh, row).await
+    async fn release_node_name(&self, name: &rdm_admin::model::PathName, _node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/names/{name}"), reason: "disk refused the release".into() })
     }
 }
 
@@ -835,7 +764,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
         assert_eq!((named.as_str(), answered.as_str()), ("mesh1.rpc.1", "not-ready"), "{reply:?}");
         assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
         assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
-        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the row before telling the birth");
+        let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the row before telling the birth");
         assert_eq!(row.config, config);
         (reason.clone(), refusal)
     });
@@ -909,7 +838,7 @@ fn a_config_update_is_refused_by_name_at_the_fabric_primary_and_written_by_the_n
         let refused = reply(&call(&rig, admin2, &req).await);
         let StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } = &refused else { panic!("the fabric-primary is not mesh2's writer: {refused:?}") };
         assert!(needed.contains("mesh2") && needed.contains("mesh2.admin.1"), "the refusal names mesh2's primary node-admin: {needed}");
-        assert!(rig.nodes.node_row_at(&m2rpc.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
+        assert!(rig.nodes.record_at(&m2rpc.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
         assert!(node.seen.lock().unwrap().is_empty(), "nothing is told by an admin that is not the writer");
         // At mesh2's primary: the row is written, then the birth is told directly.
         let mp_rows = MemoryNodesStorage::default();
@@ -917,7 +846,7 @@ fn a_config_update_is_refused_by_name_at_the_fabric_primary_and_written_by_the_n
         let view = rig.topology.read().await.clone();
         let updated = door.update(&m2admin.node.name, &m2admin.node.node_id, &view, &mp_rows, &req).await;
         assert_eq!(updated, StatusReply::ConfigUpdated { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap() });
-        let row = mp_rows.node_row_at(&m2rpc.node.name).await.unwrap().expect("mesh2's primary wrote the row");
+        let row = mp_rows.record_at(&m2rpc.node.name).await.unwrap().expect("mesh2's primary wrote the row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (m2rpc.node.node_id.clone(), config.clone()));
         assert_eq!(
             node.seen.lock().unwrap().clone(),
@@ -963,7 +892,7 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
         let route = rdm_transport::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone(), path: m2admin.node.name.clone() };
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &route, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote the row");
+        let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote the row");
         assert_eq!(row.config, config);
         assert_eq!(
             node.seen.lock().unwrap().clone(),
@@ -1008,7 +937,7 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &rdm_transport::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
+        let row = rig.nodes.record_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (me.node_id.clone(), config.clone()));
         assert_eq!(held.lock().unwrap().clone(), vec![config], "the admin holds the whole config, once");
         assert!(node.seen.lock().unwrap().is_empty(), "no other node is told");
@@ -1197,7 +1126,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let newcomer = birth("mesh1.rpc.3", NodeKind::RpcNode, "mesh1", false, false);
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tags".to_string(), "edge".to_string())].into();
         rig.nodes
-            .put_node_row(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None })
+            .write_record(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None })
             .await
             .unwrap();
         let node = serve_node(&newcomer).await;
@@ -1207,7 +1136,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let configs: rdm_admin::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())));
         let records = rdm_admin::admin::Records::default();
-        records.set_rows(Arc::new(rdm_admin::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_configs(configs)));
+        records.set_rows(Arc::new(rdm_admin::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_configs(configs).with_written(rig.authority.caches.nodes.clone())));
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
         records.install_projected(&rig.topology, || t.clone()).await;
@@ -1217,7 +1146,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
             vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],
             "the birth was told the Deleted row's whole config, once"
         );
-        let row = rig.nodes.node_row_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
+        let row = rig.nodes.record_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
         assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "the birth holds the row with the seeded config");
     });
     let _ = trace;
@@ -1246,7 +1175,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "c".to_string()), ("tags".to_string(), "far".to_string())].into();
         let mp_rows = Arc::new(MemoryNodesStorage::default());
         mp_rows
-            .put_node_row(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None })
+            .write_record(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None })
             .await
             .unwrap();
         let node = serve_node(&newcomer).await;
@@ -1277,9 +1206,9 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
             vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],
             "the birth was told the Deleted row's whole config, once, by its mesh's primary"
         );
-        let row = mp_rows.node_row_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
+        let row = mp_rows.record_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
         assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "mesh2's primary wrote the birth's row with the seeded config");
-        assert!(rig.nodes.node_row_at(&newcomer.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
+        assert!(rig.nodes.record_at(&newcomer.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
     });
     let rows = cap.spans("rdm.node_admin.node.create.via-node-row");
     let ours: Vec<_> = rows.iter().filter(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh2.rpc.2")).collect();
@@ -1338,8 +1267,8 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.parked, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
-    rig.nodes.put_node_row(&row).await.unwrap();
+    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+    rig.nodes.write_record(&row).await.unwrap();
 }
 
 /// The mesh-primary holds `b` as a rename needs it (node-name-update.md Precondition): live and
@@ -1359,8 +1288,8 @@ async fn hold_left(rig: &Rig, b: &Birth) {
 /// `tags`; served, answering every request `Applied`, and mesh1's primary's config door resolving it.
 async fn left_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_left(rig, b).await;
-    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
-    rig.nodes.put_node_row(&row).await.unwrap();
+    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+    rig.nodes.write_record(&row).await.unwrap();
     let node = serve_node(b).await;
     configs_door(rig, &node).await;
     node
@@ -1398,7 +1327,7 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
         let reply = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ReadyForTraffic, held_connections: vec![] });
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.name == succ.node.name), "the view keeps the birth at its name");
     });
@@ -1437,7 +1366,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] });
-        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
 
         let deleted = reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await);
@@ -1445,16 +1374,16 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
         assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ)], "the delete is carried to the exact birth");
         let on_mesh = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(on_mesh, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] }, "a birth still on its mesh keeps its name");
-        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed while the birth is on its mesh");
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed while the birth is on its mesh");
 
         let left = rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.8").await;
         assert!(matches!(&left, Ok(StatusReply::MeshLeft { .. })), "the mesh-primary carries the leave and the birth answers MeshLeft: {left:?}");
         assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.8")), "the leave is carried to the exact birth");
         let applied = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(applied, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the row at the new name");
+        let row = rig.nodes.record_at(&taken).await.unwrap().expect("the row at the new name");
         assert_eq!((row.node_id, row.renamed_from), (succ.node.node_id.clone(), Some(succ.node.name.clone())), "the row at the new name holds the birth and names the key it moved from");
-        assert_eq!(rig.nodes.node_row_at(&succ.node.name).await.unwrap(), None, "the old key is released");
+        assert_eq!(rig.nodes.record_at(&succ.node.name).await.unwrap(), None, "the old key is released");
         assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(apply_name(&succ, &taken)), "the left birth is told its name");
 
         // A start begins the birth's next cycle: its last cycle's receipts do not carry over.
@@ -1507,7 +1436,7 @@ fn a_connections_deleted_node_still_holding_a_connection_is_refused_naming_it_an
         rig.authority.declared.lock().unwrap().connections_deleted.insert((succ.node.node_id.clone(), inc), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![held_id.clone()], status_at_cut: NodeStatus::ConnectionsDeleting });
         let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![held_id.clone()] });
-        assert_eq!(rig.nodes.node_row_at(&"mesh1.rpc.3".parse().unwrap()).await.unwrap(), None, "nothing is claimed");
+        assert_eq!(rig.nodes.record_at(&"mesh1.rpc.3".parse().unwrap()).await.unwrap(), None, "nothing is claimed");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1531,10 +1460,10 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         hold_left(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        rig.nodes.put_node_row(&rdm_admin::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
+        rig.nodes.write_record(&rdm_admin::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { name: taken.to_string(), by: holder.clone() });
-        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
         let routed = &b["rpc1"];
         let refused = reply(&call(&rig, &b["admin2"], &update_name(routed, "1.old")).await);
@@ -1574,7 +1503,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let reply = rdm_client::NodeRpc::new(&client).name_update(&rig.admin.node.node_id, &route, &exact(&succ), "3", &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
+        let row = rig.nodes.record_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);
         assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), leave, apply_name(&succ, &taken)]);
     });
@@ -1608,12 +1537,12 @@ fn a_stopped_nodes_rename_is_refused_admitting_connections_and_nothing_is_claime
         quiet_door(&rig).await;
         let stopped = &b["rpc2"];
         stopped_with_row(&rig, stopped, &[]).await;
-        let row = rig.nodes.node_row_at(&stopped.node.name).await.unwrap();
+        let row = rig.nodes.record_at(&stopped.node.name).await.unwrap();
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let refused = StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Leaving, held_connections: vec![] };
         assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await), refused);
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap(), None, "nothing is claimed at the new name");
-        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), row, "the row stands at its key as it was");
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap(), None, "nothing is claimed at the new name");
+        assert_eq!(rig.nodes.record_at(&stopped.node.name).await.unwrap(), row, "the row stands at its key as it was");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == stopped.node.name), "the view lists the stopped node at its name");
         assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await), refused, "a repeat is refused the same way");
     });
@@ -1647,8 +1576,8 @@ fn a_left_node_renamed_to_any_name_within_its_path_ends_name_updated() {
         let to: PathName = "mesh1.rpc.9".parse().unwrap();
         let reply = reply(&call(&rig, &b["admin2"], &update_name(left, "9")).await);
         assert_eq!(reply, StatusReply::NameUpdated { node_id: left.node.node_id.clone(), incarnation: left.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(left.node.node_id.clone()), "the row is at the new name");
-        assert_eq!(rig.nodes.node_row_at(&left.node.name).await.unwrap(), None, "the old key is released");
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(left.node.node_id.clone()), "the row is at the new name");
+        assert_eq!(rig.nodes.record_at(&left.node.name).await.unwrap(), None, "the old key is released");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.name == to), "the view lists the node at the new name");
         assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(left, &to)], "the birth is told its name");
     });
@@ -1676,7 +1605,7 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
             let refused = reply(&call(&rig, &b["admin2"], &update_name(left, bad)).await);
             assert!(matches!(&refused, StatusReply::RejectedName { reason } if reason.contains(bad)), "{bad}: {refused:?}");
         }
-        assert_eq!(rig.nodes.node_row_name("mesh1", &left.node.node_id).await.unwrap(), Some(left.node.name.clone()), "the node's row stays at its key");
+        assert_eq!(rig.nodes.node(&left.node.node_id).await.unwrap().map(|r| r.name), Some(left.node.name.clone()), "the node's record stays at its name");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.name == left.node.name), "the view keeps the node at its name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
@@ -1709,14 +1638,14 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
             matches!(&incomplete, StatusReply::NameNotApplied { node, answered, reason } if node == "mesh1.rpc.2.old" && answered == "release-pending" && reason.contains("mesh1.rpc.2 ")),
             "the command ends incomplete naming the new key and the pending release: {incomplete:?}"
         );
-        let moved = rig.nodes.node_row_at(&to).await.unwrap().expect("the put at the new key stands");
+        let moved = rig.nodes.record_at(&to).await.unwrap().expect("the put at the new key stands");
         assert_eq!((moved.node_id.clone(), moved.renamed_from.clone()), (stopped.node.node_id.clone(), Some(stopped.node.name.clone())));
-        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the node holds both keys");
+        assert_eq!((rig.nodes.name_claim(&stopped.node.name).await.unwrap(), rig.nodes.name_claim(&to).await.unwrap()), (Some(stopped.node.node_id.clone()), Some(stopped.node.node_id.clone())), "the node holds both names' claims");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing while the release is pending");
         let done = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await);
         assert_eq!(done, StatusReply::NameUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), None, "the retry released the old key");
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap(), Some(moved), "the destination row stands as written");
+        assert_eq!(rig.nodes.name_claim(&stopped.node.name).await.unwrap(), None, "the retry released the old name's claim");
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap(), Some(moved), "the destination row stands as written");
         assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(stopped, &to)], "the retry told the birth its name");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1746,7 +1675,7 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
         let (base, old): (PathName, PathName) = (stopped.node.name.clone(), "mesh1.rpc.2.old".parse().unwrap());
         let holds = |name: PathName| {
             let nodes = rig.nodes.clone();
-            async move { nodes.node_row_at(&name).await.unwrap().map(|r| r.node_id) }
+            async move { nodes.name_claim(&name).await.unwrap() }
         };
         rig.refuse_release.store(true, Ordering::SeqCst);
         let pending = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await);
@@ -1755,7 +1684,7 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
         let config = StatusRequest::UpdateNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "a".to_string())].into() };
         let configured = reply(&call(&rig, &b["admin2"], &config).await);
         assert_eq!(holds(base.clone()).await, None, "the config put released {base}: {configured:?}");
-        assert_eq!(rig.nodes.node_row_at(&old).await.unwrap().map(|r| r.config), Some([("zone".to_string(), "a".to_string())].into()), "the config put wrote the row at {old}");
+        assert_eq!(rig.nodes.record_at(&old).await.unwrap().map(|r| r.config), Some([("zone".to_string(), "a".to_string())].into()), "the config put wrote the row at {old}");
 
         rig.refuse_release.store(true, Ordering::SeqCst);
         let back = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2")).await);
@@ -1764,7 +1693,7 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
         let tagged = reply(&call(&rig, &b["admin2"], &create_tags(stopped, &["red"])).await);
         assert_eq!(tagged, StatusReply::TagsCreated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), already_carried: Default::default() });
         assert_eq!(holds(old.clone()).await, None, "the tags put released {old}");
-        assert_eq!(rig.nodes.node_row_at(&base).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the tags put wrote the row at {base}");
+        assert_eq!(rig.nodes.record_at(&base).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the tags put wrote the row at {base}");
     });
     let releases = cap.spans("rdm.node_admin.node.name.update.via-pending-release");
     let seen: Vec<(String, String, String)> = releases.iter().map(|(_, a)| (a.get("moment").cloned().unwrap_or_default(), a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect();
@@ -1804,7 +1733,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert!(matches!(&incomplete, StatusReply::NameNotApplied { node, answered, .. } if node == "mesh1.rpc.3" && answered == "not-ready"), "{incomplete:?}");
-        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "the row moved");
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "the row moved");
         let done = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(done, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let apply = StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() };
@@ -1841,15 +1770,15 @@ fn a_node_name_update_before_the_fabric_first_reaches_ready_for_traffic_is_refus
 
         let refused = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(refused, StatusReply::RejectedFabricNotReady { workflow: "node.name.update mesh1.rpc.2".into(), status: "state-sync".into() });
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap(), None, "no row is written");
-        assert_eq!(rig.nodes.node_row_at(&rpc2.node.name).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()), "the row stands at its key");
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap(), None, "no row is written");
+        assert_eq!(rig.nodes.record_at(&rpc2.node.name).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()), "the row stands at its key");
 
         // The fabric reaches ready-for-traffic: the same rename is admitted.
         rig.authority.first_ready.reach("the test fabric reached ready-for-traffic");
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "admitted once the fabric has first been ready-for-traffic, a resize notwithstanding");
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()));
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()));
     });
     let rejects = cap.spans("rdm.node_admin.node.reject.via-fabric-not-ready");
     assert_eq!(rejects.len(), 1, "{rejects:?}");
@@ -1902,7 +1831,7 @@ fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traff
         assert_eq!(reply(&call(&rig, &b["admin2"], &delete_tags(rpc1, TagScope::All)).await), not_ready("node.tags.delete"));
         let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "a".to_string())].into() };
         assert_eq!(reply(&call(&rig, &b["admin2"], &config).await), not_ready("node.config.update"));
-        assert_eq!(rig.nodes.node_row_at(&rpc1.node.name).await.unwrap(), None, "no row is written");
+        assert_eq!(rig.nodes.record_at(&rpc1.node.name).await.unwrap(), None, "no row is written");
         assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
 
@@ -1910,7 +1839,7 @@ fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traff
         let (id, birth) = (rpc1.node.node_id.clone(), rpc1.node.incarnation_id.clone().unwrap());
         let created = |already: &[&str]| StatusReply::TagsCreated { node_id: id.clone(), incarnation: birth.clone(), already_carried: labels(already) };
         let deleted = |not: &[&str]| StatusReply::TagsDeleted { node_id: id.clone(), incarnation: birth.clone(), not_carried: labels(not) };
-        let row_tags = || async { rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().map(|r| r.tags).unwrap_or_default() };
+        let row_tags = || async { rig.nodes.record_at(&rpc1.node.name).await.unwrap().map(|r| r.tags).unwrap_or_default() };
         assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit"])).await), created(&[]));
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [id.clone()].into());
         assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit", "red"])).await), created(&["rabbit"]));
@@ -1957,7 +1886,7 @@ fn a_node_name_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_d
         let _node = left_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::StateCommit;
         let fabric_id = rig.topology.read().await.fabric.id.clone();
-        rdm_admin::fabric_storage::FabricStorage::put_fabric_event(&*rig.authority.fabric_storage, &rdm_admin::fabric_storage::FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
+        rdm_admin::fabric_storage::FabricStorage::put_fabric(&*rig.authority.fabric_storage, &rdm_admin::fabric_storage::FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "decided on the ready row on the root");
     });
@@ -1993,24 +1922,24 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         let created = reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit", "red"])).await);
         assert_eq!(created, StatusReply::TagsCreated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), already_carried: Default::default() });
         assert!(node.seen.lock().unwrap().is_empty(), "a tags command tells the birth nothing: {:?}", node.seen.lock().unwrap());
-        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote rpc.1's row");
+        let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote rpc.1's row");
         assert_eq!((row.node_id.clone(), row.tags.clone()), (rpc1.node.node_id.clone(), labels(&["rabbit", "red"])), "the row holds the tags the create added");
         assert_eq!(tagged("rabbit").await, [rpc1.node.node_id.clone()].into(), "the tags index names rpc.1 under rabbit");
 
         let config: BTreeMap<String, String> = [("zone".to_string(), "c".to_string())].into();
         let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: config.clone() };
         assert_eq!(reply(&call(&rig, &b["admin2"], &req).await), StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("rpc.1's row");
+        let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("rpc.1's row");
         assert_eq!((row.config, row.tags), (config, labels(&["rabbit", "red"])), "the config put writes the new config and keeps the tags");
         assert_eq!(tagged("rabbit").await, [rpc1.node.node_id.clone()].into(), "the index is unchanged by a config put");
 
         hold_left(&rig, rpc2).await;
-        let row = rdm_admin::storage::NodeRow { name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
-        rig.nodes.put_node_row(&row).await.unwrap();
+        let row = rdm_admin::storage::NodeRow { name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        rig.nodes.write_record(&row).await.unwrap();
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the row at the new name keeps the tags");
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the row at the new name keeps the tags");
         assert_eq!(tagged("red").await, [rpc1.node.node_id.clone(), rpc2.node.node_id.clone()].into(), "the index still names the renamed node: it is keyed by node id");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -2060,7 +1989,7 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
         let update = StatusRequest::UpdateName { node_id: me.node.node_id.clone(), incarnation: inc.clone(), name: "1.old".into() };
         let renamed = reply(&call(&rig, &b["admin2"], &update).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: me.node.node_id.clone(), incarnation: inc });
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(me.node.node_id.clone()), "the row moved to the new name");
+        assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(me.node.node_id.clone()), "the row moved to the new name");
         assert_eq!(asked.lock().unwrap().clone(), vec![to.clone()], "the mesh-primary's own name decision was asked the new name, once");
         assert!(node.seen.lock().unwrap().is_empty(), "no other node is told anything");
     });
@@ -2201,6 +2130,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
                 fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
                 nodes_storage: Arc::new(MemoryNodesStorage::default()),
+                caches: Default::default(),
                 mesh_ids: Arc::new(BTreeMap::new),
                 durable: Default::default(),
                 commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
@@ -2293,8 +2223,8 @@ fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_re
         let (rig, b) = rig().await;
         let pred = &b["rpc2"];
         hold_left(&rig, pred).await;
-        let row = rdm_admin::storage::NodeRow { name: pred.node.name.clone(), node_id: pred.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["rabbit", "red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
-        rig.nodes.put_node_row(&row).await.unwrap();
+        let row = rdm_admin::storage::NodeRow { name: pred.node.name.clone(), node_id: pred.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["rabbit", "red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        rig.nodes.write_record(&row).await.unwrap();
         let mut succ = birth("mesh1.rpc.2", NodeKind::RpcNode, "mesh1", false, false);
         succ.node.status = NodeStatus::Pending;
         let (pred_node, succ_node) = (serve_node(pred).await, serve_node(&succ).await);
@@ -2312,12 +2242,12 @@ fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_re
 
         // Step 3: the successor's claim at the name the predecessor released.
         rig.topology.write().await.nodes.push(succ.node.clone());
-        let rows = NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone());
+        let rows = NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_written(rig.authority.caches.nodes.clone());
         let claim = || rows.claim(&base_name, &succ.node.node_id, "node.create:mesh1.rpc.2", None, None, ClaimFor::Successor);
         assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::Written { .. })), "the successor claims the released name");
-        let succ_row = rig.nodes.node_row_at(&base_name).await.unwrap().expect("successor row at mesh1.rpc.2");
+        let succ_row = rig.nodes.record_at(&base_name).await.unwrap().expect("successor row at mesh1.rpc.2");
         assert_eq!((succ_row.node_id.clone(), succ_row.config.clone(), succ_row.tags.clone()), (succ.node.node_id.clone(), pred_cfg.clone(), labels(&["rabbit", "red"])));
-        let retained = rig.nodes.node_row_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2.old");
+        let retained = rig.nodes.record_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2.old");
         assert_eq!((retained.node_id.clone(), retained.tags.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), labels(&["rabbit", "red"]), Some(succ.node.node_id.clone())));
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [succ.node.node_id.clone()].into(), "only the successor's id is in the active index after its claim");
         assert_eq!(rig.nodes.tagged("red").await.unwrap(), [succ.node.node_id.clone()].into());
@@ -2337,7 +2267,7 @@ fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_re
             StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: Default::default() }
         );
         assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::HeldByNode(_))), "a repeated claim finds the successor's own row");
-        let row_after = rig.nodes.node_row_at(&base_name).await.unwrap().unwrap();
+        let row_after = rig.nodes.record_at(&base_name).await.unwrap().unwrap();
         assert_eq!((row_after.config, row_after.tags), (succ_cfg, labels(&["rabbit", "blue"])), "a repeated claim keeps the successor's later updates");
         assert!(rig.nodes.tagged("red").await.unwrap().is_empty(), "the deleted tag red is not resurrected from .old");
 
@@ -2347,13 +2277,13 @@ fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_re
             rig.authority.update_name(&update_name(pred, "2")).await,
             StatusReply::NameUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
         );
-        let restored = rig.nodes.node_row_at(&base_name).await.unwrap().expect("predecessor row restored at mesh1.rpc.2");
+        let restored = rig.nodes.record_at(&base_name).await.unwrap().expect("predecessor row restored at mesh1.rpc.2");
         assert_eq!(
             (restored.node_id.clone(), restored.config, restored.tags, restored.inherited_by),
             (pred.node.node_id.clone(), pred_cfg, labels(&["rabbit", "red"]), None),
             "rollback restores the predecessor row at its original name with inherited_by cleared"
         );
-        assert_eq!(rig.nodes.node_row_at(&old_name).await.unwrap(), None, "mesh1.rpc.2.old is released");
+        assert_eq!(rig.nodes.record_at(&old_name).await.unwrap(), None, "mesh1.rpc.2.old is released");
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [pred.node.node_id.clone()].into(), "rollback restores rabbit in the tag index under the predecessor's original id");
         assert_eq!(rig.nodes.tagged("red").await.unwrap(), [pred.node.node_id.clone()].into(), "rollback restores red in the tag index under the predecessor's original id");
     });
@@ -2482,8 +2412,8 @@ async fn a_never_sent_stop_or_start_writes_no_lifecycle_state() {
         let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.{}:{}", if start { "start" } else { "stop" }, subject.name) };
         assert!(matches!(rig.authority.carry_lifecycle(subject, start, &ctx).await, CommandAdmission::NotSent { .. }));
         assert_eq!(*rig.authority.declared.lock().unwrap(), before);
-        assert!(rig.storage.node_declared("mesh1").await.unwrap().is_empty());
-        assert!(rig.storage.node_operations("mesh1").await.unwrap().is_empty());
+        assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
+        assert!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
     }
 }
 
@@ -2498,7 +2428,7 @@ async fn status_stop_and_start_positions_are_refused_by_name_without_execution()
         let result = call(&rig, subject, &request).await;
         assert!(matches!(reply(&result), StatusReply::RejectedUnmatchedCompletion { expected, reported, .. } if expected.contains("reserved") && reported.contains(request.op())), "{result:?}");
         assert_eq!(*rig.authority.declared.lock().unwrap(), before);
-        assert!(rig.storage.node_declared("mesh1").await.unwrap().is_empty());
+        assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
     }
 }
 
@@ -2539,7 +2469,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         let (authority, target) = (rig.authority.clone(), subject.clone());
         let call = tokio::spawn(async move { authority.carry_lifecycle(&target, start, &ctx).await });
         tokio::time::timeout(Duration::from_secs(5), arrived.notified()).await.unwrap();
-        assert!(rig.storage.node_declared("mesh1").await.unwrap().is_empty(), "no state before CommandAccepted");
+        assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty(), "no state before CommandAccepted");
         admit.notify_one();
         if !fail {
             tokio::time::timeout(Duration::from_secs(5), progressed.notified()).await.unwrap();
@@ -2553,12 +2483,12 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         let result = tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap();
         if fail {
             assert!(matches!(result, A::StartFailed { step, reason, code: rdm_core::outcome::Code::FailedPrecondition } if step == "before_ready" && reason == "app refused"));
-            assert!(rig.storage.node_operations("mesh1").await.unwrap().is_empty());
+            assert!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
         } else {
             assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");
             let state = if start { NodeState::ReadyForTraffic } else { NodeState::Stopped };
             assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), Some(state), "recorded before the outer Build can complete");
-            assert_eq!(rig.storage.node_operations("mesh1").await.unwrap().len(), 1);
+            assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
         }
     }
 }
@@ -2615,7 +2545,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.start:{}", rpc.node.name) };
         let answer = rig.authority.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
-        assert_eq!(rig.storage.node_operations("mesh1").await.unwrap().len(), 1);
+        assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
         assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
     });
     let records: Vec<_> = cap.spans("rdm.node_admin.node.update.via-command-frame").into_iter().filter(|(_, a)| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
@@ -2817,6 +2747,6 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     let end = tokio::time::timeout(Duration::from_secs(5), rig.authority.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");
     assert!(matches!(end, A::Stopped { .. }), "{end:?}");
     assert_eq!(published.load(Ordering::SeqCst), 1, "the declaration publishes stopped; the recovered terminal publishes nothing twice");
-    assert_eq!(rig.storage.node_operations("mesh1").await.unwrap().len(), 1);
+    assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
     assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }

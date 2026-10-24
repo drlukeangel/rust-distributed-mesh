@@ -78,7 +78,7 @@ fn day0_config(dir: &Path, policy: &[(&'static str, String)]) -> AdminConfig {
 /// root is the cells' shared store, `dir`), reconciling nothing.
 async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
     let cfg = day0_config(dir, policy);
-    let identity = dir.join(cfg.fabric_id.to_string()).join("fabric").join("identity.json");
+    let identity = dir.join(cfg.fabric_id.to_string()).join("fabric").join("record.json");
     let root = start_with(cfg, Wiring { certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
     tokio::time::timeout(BOUND, async {
         while !identity.exists() {
@@ -283,12 +283,13 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
         let shown = until("node.get of mesh1.rpc.1 shows its cert row", BOUND, async || node_get(&root, &a.digest.node.node_id).await.and_then(|v| v.cert)).await;
         assert_eq!(shown, NodeCertView { issued_at, expires_at: held.cert.expiry_ms, issuer_expires_at: held.issuer.cert.expiry_ms }, "node.get shows the cert the birth holds");
 
-        let rows = root.runner.nodes_storage.node_certs("mesh1").await.expect("the cert rows read");
-        let row = rows.iter().find(|r| r.node_id == a.digest.node.node_id).unwrap_or_else(|| panic!("no cert row for mesh1.rpc.1: {rows:?}"));
+        let record = root.runner.nodes_storage.node(&a.digest.node.node_id).await.expect("the record read").expect("mesh1.rpc.1's record");
+        let birth = record.birth(&a.digest.node.incarnation).unwrap_or_else(|| panic!("no facts of the exact birth on mesh1.rpc.1's record: {record:?}"));
+        let row = birth.cert.clone().unwrap_or_else(|| panic!("no cert dates on mesh1.rpc.1's record: {record:?}"));
         assert_eq!(
-            (row.name.to_string(), &row.incarnation_id, row.issued_at, row.expires_at, row.issuer_expires_at),
-            ("mesh1.rpc.1".to_string(), &a.digest.node.incarnation, issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
-            "the row names the exact birth and its cert"
+            (birth.name.to_string(), row.issued_at, row.expires_at, row.issuer_expires_at),
+            ("mesh1.rpc.1".to_string(), issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
+            "the record names the exact birth and its cert"
         );
         let life = row.expires_at - row.issued_at;
         assert!((row.issued_at + life * RENEW_FROM / 1000..=row.issued_at + life * RENEW_TO / 1000).contains(&row.renew_at), "renewed at the policy's point plus at most 5 %: {row:?}");
@@ -461,7 +462,7 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
         let view = node_get(&root, &b.digest.node.node_id).await.expect("mesh1.rpc.1 in the view");
         assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::ReadyForTraffic, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
         assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
-        let row = root.runner.nodes_storage.node_certs("mesh1").await.unwrap().into_iter().find(|r| r.node_id == b.digest.node.node_id).expect("the member's cert row");
+        let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.rpc.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");
 
         root.node_rpc.client.admit_new_connections();
@@ -712,7 +713,7 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         assert_eq!((shown.next_expiry, mesh1(&shown)), (Some(joined), Some(None)), "the next expiry is the member's, nothing stalls");
         cut_calls(&root, &b);
 
-        let row = root.runner.nodes_storage.node_certs("mesh1").await.unwrap().into_iter().find(|r| r.node_id == b.digest.node.node_id).expect("the member's cert row");
+        let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         let stalled = until("fabric.get shows mesh1's renewals stalled", BOUND, async || fabric_get(&root).await.filter(|f| matches!(mesh1(f), Some(Some(_))))).await;
         let floor = rdm_core::cadence::staleness_floor().as_millis() as u64;
         assert!(root.rafka_time.now_ms() > row.renew_at + floor, "stalled only past the renew point by more than a floor");
@@ -785,7 +786,9 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
 /// inner call is Status (0x1B) `UpdateIssuer`. The fabric-primary originates and records both: each hop's
 /// `via-renewal` names it as `sender` and the receiver `installed`. The secondary's install names mesh2's
 /// primary as its `sender` (the carrier); the forward and the carried inner call are in the trace of the
-/// fabric-primary's update to the secondary. Must NOT happen: an update originated by mesh2's primary
+/// fabric-primary's update to the secondary, and mesh2's primary, the secondary's writer, writes the
+/// signing cert dates the secondary answered on its record as they return through it (`via-carried`
+/// `written`). Must NOT happen: an update originated by mesh2's primary
 /// alone, or the fabric-primary calling mesh2's secondary admin directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
@@ -824,6 +827,12 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     };
     estate_span(&estate, "rdm.node_rpc.request.update.via-call", "the fabric-primary's update to the secondary is a Forward (0x1A) whose carrier is mesh2's primary", Duration::from_secs(10), in_this_trace("op", "26", primary_id.clone())).await;
     estate_span(&estate, "rdm.node_rpc.request.serve.via-carried-inner", "mesh2's primary carries the Status (0x1B) UpdateIssuer to the secondary", Duration::from_secs(10), in_this_trace("inner_op", "27", secondary_id.clone())).await;
+    // The carrier is the secondary's writer: the dates its IssuerUpdated answered are written on the
+    // secondary's record by mesh2's primary as they return through it (node-issuer-update.md step 4).
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-carried", "mesh2's primary writes the dates the secondary answered on its record", Duration::from_secs(10), {
+        let (secondary_name, primary_name, expiry) = (secondary_name.clone(), primary_name.clone(), expiry.clone());
+        move |sp: &serde_json::Value| attr(sp, "node") == secondary_name && attr(sp, "carrier") == primary_name && attr(sp, "issuer_expires_at") == expiry && attr(sp, "outcome") == "written"
+    }).await;
     let spans = estate.spans();
     let alone: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") != "mesh1.admin.1").collect();
     assert!(alone.is_empty(), "no update to the secondary is originated by anyone but the fabric-primary: {alone:#?}");

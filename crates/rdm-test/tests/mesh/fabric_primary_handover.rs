@@ -238,14 +238,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         }
     }
     // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): every birth of mesh1 is deleted and no row is
-    // removed. Each mesh1 birth's Node row stays on the fabric's store root at its path.name
-    // (`nodes/mesh1/rows/<path.name>`, R14), written Deleted under its node id: the members' by
+    // removed. Each mesh1 birth's Node record stays on the fabric's store root at its node id
+    // (`nodes/mesh1/records/<node_id>`, storage-whole-records.md), written Deleted: the members' by
     // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A departed birth
     // never answers, so mesh-left drops the contact of every birth its proof set names.
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
     let shared = estate.fabric_store_root().join("nodes").join("mesh1");
     for (name, id) in mesh1_ids.iter() {
-        let at = shared.join("rows").join(format!("{name}.json"));
+        let at = shared.join("records").join(format!("{id}.json"));
         let row: Value = std::fs::read(&at).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("the Node row of {name} ({id}) remains at {}", at.display()));
         assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name}'s Node row is written Deleted: {row}");
         let contact = shared.join("contacts").join(format!("{id}.json"));
@@ -253,11 +253,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     }
     // states.md: the mesh's `deleting` is entered by the delete-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op": mesh1's primary stored its own mesh row
-    // Leaving when it admitted delete-mesh, a fact on mesh1 in mesh.storage on the fabric's store root (R14).
-    let mesh1_statuses = estate.fabric_store_root().join("meshes").join("mesh1").join("status");
-    let leaving_row = mesh1_statuses.join(format!("{mesh1_bare}-Leaving.json"));
-    let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {}: {:?}", leaving_row.display(), std::fs::read_dir(&mesh1_statuses).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
-    assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");
+    // Leaving when it admitted delete-mesh, on mesh1's record in mesh.storage on the fabric's store root
+    // (R14; storage-whole-records.md: `mesh-records/<mesh id>`, every state it entered on the record).
+    let record_at = estate.fabric_store_root().join("mesh-records").join(format!("{mesh1_bare}.json"));
+    let row: Value = std::fs::read(&record_at).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's record is not at {}", record_at.display()));
+    assert_eq!(s(&row["record"]["mesh_id"]), mesh1_bare.clone(), "{row}");
+    assert!(row["record"]["states"].as_array().is_some_and(|states| states.iter().any(|st| st == "Leaving")), "mesh1's primary stored Leaving on its mesh's record: {row}");
     // mesh-left, once the final birth's exit was proven: one Complete MeshLeft receipt under the
     // mesh.delete's operation, covering every birth of the mesh, the final primary included.
     let build_b = build_log::build_value(&estate.carrier().await, &b).await;

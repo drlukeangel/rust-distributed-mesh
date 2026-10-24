@@ -66,7 +66,7 @@ impl FabricState {
 /// pending, and the rows it already published to the store root stay there. One handle is shared by
 /// everything on an admin that refuses a workflow until it is true.
 ///
-/// The durable fact is the ready-for-traffic Fabric event's row (`crate::fabric_storage::FabricEventRow`).
+/// The durable fact is the ready-for-traffic event on the Fabric record (`crate::fabric_storage::FabricRecord`).
 /// The initial fabric first reaching ready-for-traffic is the fabric-primary's one fact (states.md: "The
 /// fabric-primary declares fabric state through the completed rounds"): it puts the row among its own
 /// mesh's status rows as the first act of entering ready-for-traffic, before it latches or admits
@@ -97,7 +97,7 @@ impl FirstReady {
     /// refuse by name.
     pub async fn read_from(&self, fabric: &dyn crate::fabric_storage::FabricStorage, fabric_id: &crate::model::FabricId) -> Result<(), crate::storage_error::StorageError> {
         let ready = crate::status_rpc::event_key(&rdm_core::status::FabricEvent::ReadyForTraffic);
-        if fabric.fabric_events().await?.iter().any(|row| row.fabric_id == *fabric_id && row.event == ready) {
+        if fabric.fabric().await?.is_some_and(|r| r.fabric_id == *fabric_id && r.events.iter().any(|e| *e == ready)) {
             self.reach(READY_ROW_ON_ROOT);
         }
         Ok(())

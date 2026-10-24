@@ -250,7 +250,7 @@ mod tests {
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.0.runtimes().await
         }
-        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.0.runtime(node_id, incarnation).await
         }
         async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
@@ -270,77 +270,38 @@ mod tests {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.remove_contact(mesh, node_id).await
         }
-        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_row(row).await
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node(node_id).await
         }
-        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_row_at(name).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node_at(name).await
         }
-        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::storage_error::StorageError> {
-            self.0.node_row_name(mesh, node_id).await
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.nodes(mesh).await
         }
-        async fn remove_node_row(&self, name: &PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_row(name).await
+        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node(row).await
         }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::storage_error::StorageError> {
+        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_node(mesh, node_id).await
+        }
+        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.index_path(name, node_id).await
+        }
+        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
+            self.0.index_tags(mesh, node_id, leaving, arriving).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.0.tagged(label).await
         }
-        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_declared(mesh, row).await
+        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.0.name_claim(name).await
         }
-        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_declared(mesh, node_id, incarnation_id).await
+        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
+            self.0.claim_node_name(name, node_id).await
         }
-        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.0.node_declared(mesh).await
-        }
-        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_operation(mesh, row).await
-        }
-        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
-            self.0.node_operations(mesh).await
-        }
-        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_operation(mesh, row).await
-        }
-        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_silence(mesh, row).await
-        }
-        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.0.node_silences(mesh).await
-        }
-        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_lost(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_data_dir_lost(mesh, row).await
-        }
-        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_data_dir_unreadable(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-        }
-        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.0.node_certs(mesh).await
-        }
-        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_cert(mesh, row).await
-        }
-        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
-            self.0.signing_certs(mesh).await
-        }
-        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_signing_cert(mesh, row).await
+        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.release_node_name(name, node_id).await
         }
     }
 
@@ -361,7 +322,7 @@ mod tests {
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtimes().await
         }
-        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtime(node_id, incarnation).await
         }
         async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
@@ -382,80 +343,41 @@ mod tests {
             self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
-        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_contact(mesh, node_id).await
         }
-        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_row(row).await
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node(node_id).await
         }
-        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_row_at(name).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
-        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::storage_error::StorageError> {
-            self.inner.node_row_name(mesh, node_id).await
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.nodes(mesh).await
         }
-        async fn remove_node_row(&self, name: &PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_row(name).await
+        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node(row).await
         }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::storage_error::StorageError> {
+        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node(mesh, node_id).await
+        }
+        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_path(name, node_id).await
+        }
+        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_tags(mesh, node_id, leaving, arriving).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.inner.tagged(label).await
         }
-        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(mesh, row).await
+        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.name_claim(name).await
         }
-        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
+        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
+            self.inner.claim_node_name(name, node_id).await
         }
-        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared(mesh).await
-        }
-        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_operation(mesh, row).await
-        }
-        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
-            self.inner.node_operations(mesh).await
-        }
-        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_operation(mesh, row).await
-        }
-        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(mesh, row).await
-        }
-        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences(mesh).await
-        }
-        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost(mesh, row).await
-        }
-        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-        }
-        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs(mesh).await
-        }
-        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert(mesh, row).await
-        }
-        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
-            self.inner.signing_certs(mesh).await
-        }
-        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_signing_cert(mesh, row).await
+        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.release_node_name(name, node_id).await
         }
     }
 
@@ -469,7 +391,7 @@ mod tests {
         let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
         book.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
         book.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 2));
-        let writer = MeshRowsWriter::new("mesh1.admin.1", fabric1(), "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()));
+        let writer = MeshRowsWriter::new("mesh1.admin.1", fabric1(), "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
         let (_seat, own_seat) = tokio::sync::watch::channel(true);
         let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, book.clone(), fabric1(), own_seat, crate::stop_gate::StopGate::new()));
         let at = |n: std::sync::atomic::Ordering| (refusing.refused.load(n), refusing.acknowledged.load(n));
@@ -547,15 +469,15 @@ mod tests {
             (Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()));
         let (p, q, rpc, other) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.admin.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
         let held = vec![p.clone(), q.clone(), rpc.clone(), other.clone()];
-        let mut pw = MeshRowsWriter::new("mesh1.admin.1", fabric1(), "mesh1", mesh_id("mesh1"), p_nodes.clone(), p_meshes);
-        let mut qw = MeshRowsWriter::new("mesh1.admin.2", fabric1(), "mesh1", mesh_id("mesh1"), q_nodes.clone(), q_meshes);
+        let mut pw = MeshRowsWriter::new("mesh1.admin.1", fabric1(), "mesh1", mesh_id("mesh1"), p_nodes.clone(), p_meshes, Default::default());
+        let mut qw = MeshRowsWriter::new("mesh1.admin.2", fabric1(), "mesh1", mesh_id("mesh1"), q_nodes.clone(), q_meshes, Default::default());
         tokio::join!(pw.round(&held, true, |_| false), qw.round(&held, false, |_| false));
         let contacts = root.dir().join("nodes").join("mesh1").join("contacts");
         assert_eq!(contact_names(&contacts), 3, "mesh1's primary writes its three members");
         assert_eq!(contact_names(&root.dir().join("nodes").join("mesh2").join("contacts")), 0, "mesh1's primary writes no mesh2 contact");
         assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "an unseated admin writes no contact");
-        let mesh_rows: Vec<String> = std::fs::read_dir(root.dir().join("meshes")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
-        assert_eq!(mesh_rows, ["mesh1.json"], "mesh1's primary writes mesh1's row alone");
+        let mesh_rows: Vec<String> = std::fs::read_dir(root.dir().join("mesh-records")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
+        assert_eq!(mesh_rows, [format!("{}.json", mesh_id("mesh1"))], "mesh1's primary writes mesh1's record alone");
         // The seat moves to Q; mesh1.rpc.1 is replaced by a new node at its path.name.
         let recovered = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
@@ -604,15 +526,15 @@ mod tests {
         let (a_admin, b_admin) = (digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
         let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let mut aw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", first.clone(), a_nodes.clone(), a_meshes.clone());
+        let mut aw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", first.clone(), a_nodes.clone(), a_meshes.clone(), Default::default());
         aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
-        assert_eq!(crate::storage::MeshStorage::mesh(&*a_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "mesh A's primary claims mesh2 and writes its row");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&*a_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "mesh A's primary claims mesh2 and writes its row");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "mesh A's primary writes its member's contact once its claim won");
-        let mut bw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", second.clone(), b_nodes.clone(), b_meshes.clone());
+        let mut bw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", second.clone(), b_nodes.clone(), b_meshes.clone(), Default::default());
         for _round in 0..2 {
             bw.round(std::slice::from_ref(&b_admin), true, |_| false).await;
         }
-        assert_eq!(crate::storage::MeshStorage::mesh(&*b_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "the second mesh's claim of a live name writes no row: mesh2's row still names mesh A");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&*b_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "the second mesh's claim of a live name writes no row: mesh2's row still names mesh A");
         assert_eq!(b_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the second mesh's primary writes no contact beside its refused claim");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default())).collect();
@@ -641,21 +563,21 @@ mod tests {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let records = Records::default();
         let holder = MeshId::mint();
-        let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false };
-        assert_eq!(crate::storage::claim_mesh(&meshes, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
+        let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false, states: Default::default() };
+        assert_eq!(crate::storage::claim_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
         // The ids the two operations carry, minted when each mesh entered the accepted topology.
         let (carried, mesh3_carried) = (MeshId::mint(), MeshId::mint());
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await.expect("a free name is claimed");
         assert_eq!(minted, carried, "the claim is made for the id the operation carries");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the carried id");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false, states: Default::default() }), "the claim wrote mesh2's row under the carried id");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
         assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await, Ok(minted.clone()), "a re-run claims the same id");
         let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
         let refused = refused.to_string();
         assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
         assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String, String)> = spans
@@ -697,7 +619,7 @@ mod tests {
         let rerun = create_mesh(&successor, &meshes, "mesh1.admin.2", successor_mesh, successor_id).await;
         assert_eq!(rerun, Ok(claimed.clone()), "the successor's re-run of the same Build's create-mesh claims with the same MeshId and finds its own row");
         assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(&claimed), "the successor's launches of mesh2 carry the id mesh2's row holds");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(claimed.clone()), "mesh2's row is the first claim's");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(claimed.clone()), "mesh2's row is the first claim's");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
         assert_eq!(said, vec![("mesh1.admin.1".to_string(), claimed.to_string(), "row-written".to_string()), ("mesh1.admin.2".to_string(), claimed.to_string(), "row-held-by-mesh".to_string())], "{spans:?}");
@@ -833,7 +755,7 @@ mod tests {
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let holder = MeshId::mint();
-        crate::storage::claim_mesh(&meshes, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        crate::storage::claim_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), dead: false, states: Default::default() }).await.unwrap().unwrap();
         let records = Records::default();
         let refused = create_mesh_step(&records, &meshes, &builds, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("mesh2's name is held by another mesh");
         assert!(refused.contains("create-mesh:mesh2") && refused.contains(&holder.to_string()), "{refused}");
@@ -902,23 +824,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::storage::MeshStorage for UnansweredMeshes {
-        async fn mesh(&self, _: &str) -> Result<Option<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+        async fn mesh(&self, _: &crate::model::MeshId) -> Result<Option<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: "mesh-records".into(), reason: "the disk did not answer".into() })
+        }
+        async fn mesh_named(&self, _: &str) -> Result<Option<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: "mesh-records".into(), reason: "the disk did not answer".into() })
         }
         async fn put_mesh(&self, _: &crate::storage::MeshRecord) -> Result<(), crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "meshes/mesh2.json".into(), reason: "the disk did not answer".into() })
-        }
-        async fn put_mesh_status(&self, _: &str, _: &crate::storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "meshes/mesh2/status".into(), reason: "the disk did not answer".into() })
-        }
-        async fn mesh_status_held(&self, _: &str, _: &crate::storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "meshes/mesh2/status".into(), reason: "the disk did not answer".into() })
-        }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+            Err(crate::storage_error::StorageError::Io { file: "mesh-records/mesh2.json".into(), reason: "the disk did not answer".into() })
         }
         async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+            Err(crate::storage_error::StorageError::Io { file: "mesh-records".into(), reason: "the disk did not answer".into() })
+        }
+        async fn claim_mesh_name(&self, name: &str, _: &crate::model::MeshId) -> Result<Result<(), crate::model::MeshId>, crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("mesh-names/{name}.json"), reason: "the disk did not answer".into() })
+        }
+        async fn release_mesh_name(&self, name: &str, _: &crate::model::MeshId) -> Result<(), crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("mesh-names/{name}.json"), reason: "the disk did not answer".into() })
         }
         async fn take_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
@@ -930,6 +852,7 @@ mod tests {
             Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
         }
     }
+
 
     /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a step is committed by its receipt; CLAUDE.md: an
     /// error state names what failed and where, distinct facts distinct arms): `create-mesh:mesh2` fails
@@ -953,7 +876,7 @@ mod tests {
         let unknown = crate::build::BuildId::parse("kpnnk1nrvac1").unwrap();
         let unread = create_mesh_step(&Records::default(), &meshes, &*memory, "key1@127.0.0.1:1", "mesh1.admin.1", &unknown, 1, &op).await.expect_err("the Build is not held");
         assert!(unread.contains("could not be read for its receipts") && unread.contains("kpnnk1nrvac1"), "{unread}");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), None, "nothing was claimed beside a Build that could not be read");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap(), None, "nothing was claimed beside a Build that could not be read");
         // (2) The mesh store does not answer: nothing is receipted.
         let unanswered = create_mesh_step(&Records::default(), &UnansweredMeshes, &*memory, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("the mesh store does not answer");
         assert!(unanswered.contains("did not answer") && unanswered.contains("mesh2"), "{unanswered}");
@@ -961,7 +884,7 @@ mod tests {
         // (3) The claim won and the receipt is refused: the step is uncommitted.
         let refused = create_mesh_step(&Records::default(), &meshes, &RefusesReceipts(memory.clone()), "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("the Build state refuses the receipt");
         assert!(refused.contains("Complete receipt of create-mesh:mesh2") && refused.contains("was not written") && refused.contains("journal refused"), "{refused}");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(mesh_id.clone()), "the claim stands");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(mesh_id.clone()), "the claim stands");
         assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await, vec![], "the refused receipt is not in the log");
         // The next run settles the uncertain step by its natural key.
         create_mesh_step(&Records::default(), &meshes, &*memory, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the next run settles the step");
@@ -993,7 +916,7 @@ mod tests {
         h_seats.take(rdm_core::Seat::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
         hw.round(&h_seats).await;
-        assert_eq!(storage.fabric().await.unwrap(), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
+        assert_eq!(storage.fabric().await.unwrap().map(|r| r.identity()), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
         let o_seats = rdm_transport::membership::SeatBook::default();
         o_seats.take(rdm_core::Seat::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
@@ -1035,20 +958,23 @@ mod tests {
         let (a_admin, b_admin) = (digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
         let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-over-dead");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let mut aw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", removed.clone(), a_nodes.clone(), meshes.clone());
+        // Mesh A's primary holds one copy of its mesh's record: its claims and its removal start from it.
+        let caches = crate::record_cache::Caches::default();
+        let mut aw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", removed.clone(), a_nodes.clone(), meshes.clone(), caches.clone());
         aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
-        assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, "mesh2", &removed).await, Ok("dead-written"), "the removal writes mesh A's row Dead");
-        assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, "mesh2", &removed).await, Ok("already-dead"), "a repeat of the removal writes nothing");
+        assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("dead-written"), "the removal writes mesh A's row Dead");
+        assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("already-dead"), "a repeat of the removal writes nothing");
         // Mesh A's primary takes a new tenure: its id is Dead and is never written live again.
         let contacts_before = a_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         aw.round(std::slice::from_ref(&a_admin), false, |_| false).await;
         aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
-        assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), dead: true }), "the removed mesh's later tenure writes nothing live");
+        assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, &removed).await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }), "the removed mesh's later tenure writes nothing live");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its Dead record released the name");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), contacts_before, "nor any contact");
-        let mut bw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone());
+        let mut bw = MeshRowsWriter::new("mesh2.admin.1", fabric1(), "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
         bw.round(std::slice::from_ref(&b_admin), true, |_| false).await;
-        let row = crate::storage::MeshStorage::mesh(&*meshes, "mesh2").await.unwrap();
-        assert_eq!(row, Some(crate::storage::MeshRecord { mesh_id: recreated.clone(), name: "mesh2".into(), dead: false }), "the recreated mesh's row holds mesh2 under its new MeshId");
+        let row = crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap();
+        assert_eq!(row, Some(crate::storage::MeshRecord { mesh_id: recreated.clone(), name: "mesh2".into(), dead: false, states: Default::default() }), "the recreated mesh's row holds mesh2 under its new MeshId");
         let contacts: Vec<NodeId> = crate::storage::NodesStorage::contacts(&*b_nodes).await.unwrap().into_iter().map(|c| c.node_id).collect();
         assert_eq!(contacts, vec![b_admin.node.node_id.clone()], "the recreated mesh's primary writes its member's contact once its claim won, and drops the removed mesh's at the path.name it now holds");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
@@ -1058,9 +984,9 @@ mod tests {
             vec![
                 (removed.to_string(), "row-written".to_string(), String::new()),
                 (removed.to_string(), "mesh-dead".to_string(), String::new()),
-                (recreated.to_string(), "row-written".to_string(), removed.to_string()),
+                (recreated.to_string(), "row-written".to_string(), String::new()),
             ],
-            "the dead mesh claims nothing again, and the recreated mesh claims over the Dead row: {spans:?}"
+            "the dead mesh claims nothing again, and the recreated mesh claims the name its Dead record released: {spans:?}"
         );
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
     }
@@ -1140,80 +1066,41 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_contact(record).await
         }
-        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.0.remove_contact(mesh, node_id).await
         }
-        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_row(row).await
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node(node_id).await
         }
-        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_row_at(name).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node_at(name).await
         }
-        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::storage_error::StorageError> {
-            self.0.node_row_name(mesh, node_id).await
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.nodes(mesh).await
         }
-        async fn remove_node_row(&self, name: &PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_row(name).await
+        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_node(row).await
         }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::storage_error::StorageError> {
+        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.remove_node(mesh, node_id).await
+        }
+        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.index_path(name, node_id).await
+        }
+        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
+            self.0.index_tags(mesh, node_id, leaving, arriving).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.0.tagged(label).await
         }
-        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_declared(mesh, row).await
+        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.0.name_claim(name).await
         }
-        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_declared(mesh, node_id, incarnation_id).await
+        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
+            self.0.claim_node_name(name, node_id).await
         }
-        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.0.node_declared(mesh).await
-        }
-        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_operation(mesh, row).await
-        }
-        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
-            self.0.node_operations(mesh).await
-        }
-        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_operation(mesh, row).await
-        }
-        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_silence(mesh, row).await
-        }
-        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.0.node_silences(mesh).await
-        }
-        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_lost(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_data_dir_lost(mesh, row).await
-        }
-        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.0.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_data_dir_unreadable(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.0.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-        }
-        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.0.node_certs(mesh).await
-        }
-        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node_cert(mesh, row).await
-        }
-        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
-            self.0.signing_certs(mesh).await
-        }
-        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_signing_cert(mesh, row).await
+        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.0.release_node_name(name, node_id).await
         }
     }
 
@@ -1253,80 +1140,41 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_contact(record).await
         }
-        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_contact(mesh, node_id).await
         }
-        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_row(row).await
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node(node_id).await
         }
-        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_row_at(name).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
-        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::storage_error::StorageError> {
-            self.inner.node_row_name(mesh, node_id).await
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.nodes(mesh).await
         }
-        async fn remove_node_row(&self, name: &PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_row(name).await
+        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node(row).await
         }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::storage_error::StorageError> {
+        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node(mesh, node_id).await
+        }
+        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_path(name, node_id).await
+        }
+        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_tags(mesh, node_id, leaving, arriving).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.inner.tagged(label).await
         }
-        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(mesh, row).await
+        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.name_claim(name).await
         }
-        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
+        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
+            self.inner.claim_node_name(name, node_id).await
         }
-        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared(mesh).await
-        }
-        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_operation(mesh, row).await
-        }
-        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
-            self.inner.node_operations(mesh).await
-        }
-        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_operation(mesh, row).await
-        }
-        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(mesh, row).await
-        }
-        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences(mesh).await
-        }
-        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost(mesh, row).await
-        }
-        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-        }
-        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs(mesh).await
-        }
-        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert(mesh, row).await
-        }
-        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
-            self.inner.signing_certs(mesh).await
-        }
-        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_signing_cert(mesh, row).await
+        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.release_node_name(name, node_id).await
         }
     }
 
@@ -1401,6 +1249,7 @@ mod tests {
             book,
             provider,
             nodes_storage: nodes_storage.clone(),
+            written: Default::default(),
             door: Default::default(),
             client: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
@@ -1512,6 +1361,7 @@ mod tests {
             book,
             provider: Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() }),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            written: Default::default(),
             door: Default::default(),
             client: None,
             builds,
@@ -2266,32 +2116,31 @@ mod tests {
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn mesh_lefts_dead_write_is_already_applied_over_the_mesh_primarys_dead_and_the_acting_primarys_when_none_survived() {
-        use crate::storage::{MeshStatusRow, MeshStorage};
-        let dead = |m: &str| MeshStatusRow { mesh_id: mesh_id(m), state: rdm_core::status::MeshState::Dead };
+        use crate::storage::MeshStorage;
+        let dead_on = async |meshes: &crate::storage::MemoryMeshStorage, m: &str| meshes.mesh(&mesh_id(m)).await.unwrap().is_some_and(|r| r.dead && r.states.contains(&rdm_core::status::MeshState::Dead));
         let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: format!("mesh.delete:{}", mesh_id("mesh2")) };
         for case in ["surviving-primary-wrote-dead", "no-survivor"] {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
             let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
+            crate::node_rows::write_record(&*storage, &crate::storage::NodeRow::new(last.node.name.clone(), last.node.node_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap().unwrap();
             depart(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let meshes = crate::storage::MemoryMeshStorage::default();
             if case == "surviving-primary-wrote-dead" {
-                // mesh2's primary committed Dead at mesh.deleted, on mesh2 (R-MD1 item 1).
-                meshes.put_mesh_status("mesh2", &dead("mesh2")).await.unwrap();
-                // ... and its Mesh row Dead on mesh.storage with it (admin/leave.rs, mesh.deleted).
-                crate::storage::claim_mesh(&meshes, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true }).await.unwrap().unwrap();
+                // mesh2's primary committed Dead at mesh.deleted on mesh2's record, the record Dead with
+                // it (R-MD1 item 1; admin/leave.rs, mesh.deleted).
+                crate::storage::claim_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }).await.unwrap().unwrap();
             }
             let capture = crate::span_capture::Capture::new(&format!("i143-3068-r-md1-{case}"));
             {
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
                 for _replay in 0..2 {
-                    crate::mesh_delete::mesh_left_rows(records.node_rows().as_deref(), &meshes, &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
+                    crate::mesh_delete::mesh_left_rows(records.node_rows().as_deref(), &meshes, &records.caches, &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
                 }
             }
-            assert!(meshes.mesh_status_held("mesh2", &dead("mesh2")).await.unwrap(), "{case}: mesh2's status Dead stands on mesh2");
-            assert!(!meshes.mesh_status_held("mesh1", &dead("mesh2")).await.unwrap(), "{case}: no Dead status of mesh2 on the fabric-primary's own mesh");
+            assert!(dead_on(&meshes, "mesh2").await, "{case}: mesh2's record stands Dead, its state Dead among its states");
+            assert!(!dead_on(&meshes, "mesh1").await, "{case}: no Dead on the fabric-primary's own mesh's record");
             let spans = capture.named("rdm.node_admin.mesh.update.via-dead-row");
             let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("writer").cloned().unwrap_or_default(), s.attributes.get("mesh_row").cloned().unwrap_or_default())).collect();
             let expected: Vec<(String, String, String)> = match case {
@@ -2322,7 +2171,7 @@ mod tests {
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None }).await.unwrap();
+        crate::node_rows::write_record(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None }).await.unwrap().unwrap();
         let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new(), is_primary: None, is_fabric_primary: None };
         // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
         for d in [&last, &member, &fp] {
@@ -2334,7 +2183,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-contacts");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            crate::mesh_delete::mesh_left_rows(records.node_rows().as_deref(), &crate::storage::MemoryMeshStorage::default(), &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last), exited_receipt(&member)]).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
+            crate::mesh_delete::mesh_left_rows(records.node_rows().as_deref(), &crate::storage::MemoryMeshStorage::default(), &records.caches, &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last), exited_receipt(&member)]).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
         }
         let held: Vec<String> = storage.contacts().await.unwrap().into_iter().map(|c| c.name.to_string()).collect();
         assert_eq!(held, vec!["mesh1.admin.1".to_string()], "no contact of the removed mesh's births stands; another mesh's is untouched");
@@ -2715,6 +2564,7 @@ mod tests {
             meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
             fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            caches: Default::default(),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
@@ -2840,9 +2690,9 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
-        crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap();
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, None, &held.node.name, &to).await.unwrap();
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
+        crate::node_rows::move_row(&primary, &Default::default(), &"mesh1.admin.1".parse().unwrap(), &record, &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
@@ -2857,7 +2707,7 @@ mod tests {
         // name): only the view names the birth by its row.
         assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
         // The row moved back (node-replace.md Rollback): the next projection reads it there.
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, None, &to, &held.node.name).await.unwrap();
+        crate::node_rows::move_row(&primary, &Default::default(), &"mesh1.admin.1".parse().unwrap(), &record, &to, &held.node.name).await.unwrap();
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
@@ -2888,7 +2738,7 @@ mod tests {
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
         }));
-        let file = root.nodes("mesh1").join("ids").join(format!("{}.json", held.node.node_id));
+        let file = root.nodes("mesh1").join("records").join(format!("{}.json", held.node.node_id));
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, b"not an index entry").unwrap();
         let records = Arc::new(Records::default());
@@ -3092,7 +2942,7 @@ mod tests {
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtimes().await
         }
-        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
+        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtime(node_id, incarnation).await
         }
         async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
@@ -3107,82 +2957,43 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_contact(record).await
         }
-        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
+        async fn remove_contact(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_contact(mesh, node_id).await
         }
-        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_row(row).await
-        }
-        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.read(&self.key_reads);
-            self.inner.node_row_at(name).await
-        }
-        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.read(&self.id_reads);
-            self.inner.node_row_name(mesh, node_id).await
+            self.inner.node(node_id).await
         }
-        async fn remove_node_row(&self, name: &PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_row(name).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.read(&self.key_reads);
+            self.inner.node_at(name).await
         }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.nodes(mesh).await
+        }
+        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node(row).await
+        }
+        async fn remove_node(&self, mesh: &str, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node(mesh, node_id).await
+        }
+        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_path(name, node_id).await
+        }
+        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.index_tags(mesh, node_id, leaving, arriving).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.inner.tagged(label).await
         }
-        async fn put_node_declared(&self, mesh: &str, row: &crate::storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_declared(mesh, row).await
+        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+            self.inner.name_claim(name).await
         }
-        async fn remove_node_declared(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_declared(mesh, node_id, incarnation_id).await
+        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
+            self.inner.claim_node_name(name, node_id).await
         }
-        async fn node_declared(&self, mesh: &str) -> Result<Vec<crate::storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
-            self.inner.node_declared(mesh).await
-        }
-        async fn put_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_operation(mesh, row).await
-        }
-        async fn node_operations(&self, mesh: &str) -> Result<Vec<crate::storage::NodeOperationRow>, crate::storage_error::StorageError> {
-            self.inner.node_operations(mesh).await
-        }
-        async fn remove_node_operation(&self, mesh: &str, row: &crate::storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_operation(mesh, row).await
-        }
-        async fn put_node_silence(&self, mesh: &str, row: &crate::storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_silence(mesh, row).await
-        }
-        async fn node_silences(&self, mesh: &str) -> Result<Vec<crate::storage::NodeSilenceRow>, crate::storage_error::StorageError> {
-            self.inner.node_silences(mesh).await
-        }
-        async fn node_data_dir_lost(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_lost_at(mesh, name).await
-        }
-        async fn put_node_data_dir_lost(&self, mesh: &str, row: &crate::storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_lost(mesh, row).await
-        }
-        async fn node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable(mesh, node_id, incarnation_id).await
-        }
-        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
-            self.inner.node_data_dir_unreadable_at(mesh, name).await
-        }
-        async fn put_node_data_dir_unreadable(&self, mesh: &str, row: &crate::storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_data_dir_unreadable(mesh, row).await
-        }
-        async fn remove_node_data_dir_unreadable(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.remove_node_data_dir_unreadable(mesh, node_id, incarnation_id, name).await
-        }
-        async fn node_certs(&self, mesh: &str) -> Result<Vec<crate::storage::NodeCertRow>, crate::storage_error::StorageError> {
-            self.inner.node_certs(mesh).await
-        }
-        async fn put_node_cert(&self, mesh: &str, row: &crate::storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node_cert(mesh, row).await
-        }
-        async fn signing_certs(&self, mesh: &str) -> Result<Vec<crate::storage::SigningCertRow>, crate::storage_error::StorageError> {
-            self.inner.signing_certs(mesh).await
-        }
-        async fn put_signing_cert(&self, mesh: &str, row: &crate::storage::SigningCertRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_signing_cert(mesh, row).await
+        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.release_node_name(name, node_id).await
         }
     }
 
@@ -3210,11 +3021,11 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None };
-        crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap();
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None };
+        crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), "mesh1.rpc.1".parse::<PathName>().unwrap());
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, None, &held.node.name, &base).await.unwrap();
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, None, &base, &base.renamed()).await.unwrap();
+        crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.name, &base).await.unwrap();
+        crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &base, &base.renamed()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
         let probed = Arc::new(ProbedRows {
             inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()),

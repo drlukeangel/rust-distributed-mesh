@@ -179,7 +179,7 @@ async fn rename(
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config and the tags included.
     let _one = door.one_at_a_time().await;
-    let known = match door.written().known_row(storage, &held.mesh, node_id).await {
+    let known = match door.written().known_row(storage, node_id).await {
         Ok(row) => row,
         Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&held.name.to_string(), &format!("{me}: {why}: the rename of {} is refused and nothing is written", held.name)),
     };
@@ -188,7 +188,7 @@ async fn rename(
     if from == to {
         // A repeat naming the name the row already holds: any release still pending is finished first.
         if let Some(row) = &known {
-            if let Err(why) = crate::node_rows::finish_release(storage, me, row, "retry").await {
+            if let Err(why) = crate::node_rows::finish_release(storage, door.written(), me, row, "retry").await {
                 return release_pending(me, node_id, &to, row.renamed_from.as_ref().unwrap_or(&from), &why, span);
             }
         }
@@ -196,15 +196,10 @@ async fn rename(
         let Some(moved) = doors.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name));
         };
-        let app_types = known.as_ref().and_then(|r| r.app_types.clone());
-        let executable = known.as_ref().and_then(|r| r.executable.clone());
-        let (config, tags) = known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default()));
-        span.record("keys", config.len() as u64).record("tags", crate::node_rows::labels(&tags).as_str());
-        let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, app_types, executable, &from, &to).await {
-            Ok((m, written)) => {
-                if let Some(row) = &written {
-                    door.written().hold(row);
-                }
+        let (keys, tags) = known.map(|r| (r.config.len(), r.tags)).unwrap_or_else(|| (held.config.len(), Default::default()));
+        span.record("keys", keys as u64).record("tags", crate::node_rows::labels(&tags).as_str());
+        let pending = match crate::node_rows::move_row(storage, door.written(), me, &held, &from, &to).await {
+            Ok((m, _)) => {
                 match m {
                     Moved::ReleasePending { why } => Some(why),
                     Moved::Renamed | Moved::AlreadyMoved => None,

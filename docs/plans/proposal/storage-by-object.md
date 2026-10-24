@@ -33,41 +33,69 @@ are on its node row; only cert dates are stored; Q141 A (below). Q139, Q140 and 
 
 ### Keys, writers, fold
 
-"A row lives on the object" is not one compacted record per object. Every fact is its own row, keyed under
-the object it describes, with the complete identity today's status rows carry, so that no later or
-delayed write can erase an independent fact: a node's facts under its path.name and, where the fact is a
-birth's, its exact birth `(node_id, incarnation)`, then the fact's full name:
-`declared/<state>` (one row per state, as `NodeDeclaredRow::key` is today, so a delayed `Pending` never
-replaces `ReadyForTraffic`; the fold reads them in lifecycle order), `operation/<build_id>/<attempt>/<operation>`
-(one row per effect, so a later attempt never erases an earlier attempt's), `silence`, `cert`,
-`signing-cert` (a node-admin's), `data-dir-lost`, `data-dir-unreadable`, `runtime`; the mesh's and the
-fabric's likewise. Each key has one writer and no write replaces another
-writer's row (Q109: the storage decides nothing, the writer decides before it writes, every reader folds).
-A reader folds the rows of one object into its view; a cycle reset deletes the birth's declared facts and
-keeps its operation effects, as today. A tombstone removes one key, never an object's other facts. The
-object's topics are compacted by key (Q140, below), so the newest row of each key is what survives.
+Replaced by [storage-whole-records.md](storage-whole-records.md)'s "The rule", "The objects" and
+"Durability" (Luke, 2026-10-23), copied here; the map's rafka topics above stand.
 
-**Durability before `Applied`.** A birth's `declared` facts are written straight to the store, never
-through the bootstrap scratchpad, so an `Applied` declaration survives a crash before state-commit
-(Q54; today `status_storage.rs` opens `declared` to the disk while every other row waits in the
-scratchpad). The move keeps that boundary: the node store writes `declared` durably and answers `Applied`
-only after, whichever writer holds the pen, the acting fabric-primary included. No declaration is
-acknowledged from a buffer.
+#### The rule (Luke, 2026-10-23)
 
-**The writer of a mesh's and its nodes' facts** is that mesh's mesh-primary; while the mesh has no
-primary it is the fabric-primary ([node-mesh-join.md](../../architecture/lifecycles/node-mesh-join.md) names it the
-accepting primary then; [mesh-create.md](../../architecture/lifecycles/mesh-create.md) has it set the first node-admin's
-ReadyForTraffic; [mesh.delete](../../architecture/lifecycles/mesh-delete.md) has it act for the last admin), and
-ownership passes to the mesh-primary when there is one. This is the one acting case; fabric recovery's
-executor is not it (Q122: it takes no role; it writes only its own attempt's operations' rows).
+RDM holds every object it writes, whole, in its cache. A write is:
 
-**The writer, per fact kind.** `declared`, `operation`, `silence`, `data-dir-lost`, `data-dir-unreadable`
-and `runtime`: the node's mesh-primary (the fabric-primary while the mesh has no primary). `cert` and
-`signing-cert`: the issuer, which is not always the mesh-primary ([fabric-certs.md](../../architecture/fabric-certs.md)):
-a member's cert is issued and its dates written by its mesh-primary; a mesh-primary's own cert and a
-node-admin's signing cert are issued and their dates written by the fabric-primary, while that mesh's
-primary exists (`cert_renewal.rs::renewed_by` today). One writer per key still holds: each key has
-exactly one, named here; an implementation refuses nothing a named writer writes.
+1. take the object from the cache;
+2. apply the change to it (a state, an effect, a mark, dates);
+3. write the whole object to storage;
+4. once storage answers, replace the cached object with the updated one.
+
+No write reads storage first: no read-modify-write and no version check. Storage stores and returns
+whole objects and decides nothing (Q109). Storage is read only to fill a cache, and the cache is filled
+whenever write ownership of an object is acquired, before any mutation of it is accepted: at boot; when an
+admin becomes its mesh's primary and folds its mesh's records; when the fabric-primary becomes a mesh's
+writer because its last node-admin is gone, loading that mesh's records then and never from its boot-time
+copy; when a node-admin becomes fabric-primary, loading the Fabric record.
+
+One writer per object does not serialize two tasks inside that writer: a declaration handler and a
+renewal task can both take the cached record, and the second write would erase the first. Every mutation
+of an object holds that object's own lock from the cache read through the mutation, the store's
+acknowledgment and the cache replacement; two updates of one object never overlap.
+
+Because the cache is the copy a write starts from, each object has exactly one writer, the writer map's:
+the fabric-primary writes the fabric record and its own mesh's records; each mesh-primary writes its own
+mesh's record and its nodes' records; the fabric-primary writes a mesh's records only while that mesh
+has no primary (mesh-create, node-mesh-join, mesh-left with no survivor). Fabric recovery's executor
+writes only the records its own attempt's operations require (Q122), as today.
+
+#### The objects
+
+| Object | Key | What it holds | Writer | Cache that holds it |
+|---|---|---|---|---|
+| Fabric record | `fabric_id` | identity (id, name), immutable inside a record written on every fabric event; the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`) | the fabric-primary | the fabric-primary's applied set (`Declared.fabric` today) |
+| Mesh record | mesh id | id, name, dead; the states entered (Pending, ReadyForTraffic, Leaving, Dead) | the mesh's primary; the fabric-primary while the mesh has none | the writer's applied set (`Declared.meshes` today) |
+| Node record | minted node id | today's node row (path.name, status, config, tags, allocated, executable, renamed_from, app types, inherited_by) and, per incarnation: the declared states, the operation effects, the silence mark, `data-dir-lost`, `data-dir-unreadable`, the member cert dates, a node-admin's signing cert dates; `predecessor`, the exact birth this node replaced, written at its create from the recovery attempt that named it (`inherited_by` points the other way and is not followed backwards). The record keeps the facts of its current incarnation and of the one a restart replaced (`RDM_SUPERSEDES`), nothing older; the predecessor is another node with its own record: the Build journal keeps the history, and a record rewritten on every silence mark stays small | the node's mesh-primary; the fabric-primary while the mesh has none | the writer's node rows (`node_rows::WrittenRows` today), into which `Declared.nodes`, `Declared.operations` and the silence memo fold |
+
+Outside the records, unchanged: the fabric name's claim, each mesh's in-flight row and each node's name
+claim (`NameHeld { by: node.id }`, node-name-update.md) are claims, an insert that fails when the key is
+held, raced by design and never updated; the node's name claim is the path.name-to-node-id lookup a rename
+moves and recovery uses to find the record at a path.name, so a rename is a claim move plus one record
+write; the Build journal; a node's connections log; an admin's own row, contacts and launch handles in its
+data dir.
+
+The tags index is RDM's to keep, not the store's: today `put_node_row` reads the previous row inside the store
+to move the tag entries (storage.rs:1457-1462), a read before a write and logic in the provider. RDM
+computes the index moves from its cached record before the write and the store writes the index entries
+blindly. A record write that succeeds while an index write fails keeps the pending index moves on the
+writer until the index acknowledges them; the retry never recomputes an empty difference from the
+already-updated cache.
+
+A record's facts stay independent inside it, keyed by their full identity: one declared entry per state
+(a late Pending never removes ReadyForTraffic; the reader takes the greatest), one effect per
+(build_id, attempt, operation). A start beginning a birth's next cycle clears that birth's declared states
+on the cached record and keeps its effects; the record is then written whole.
+
+#### Durability
+
+A Node record carries the declared states, and an Applied declaration is durable before the reply (Q54),
+so the whole Node record is written straight to the store, never held in the scratchpad, before
+state-commit too. The Fabric and Mesh records keep the scratchpad until state-commit, as today. A fabric
+that dies before its first state-commit is abandoned (Q74), so a node record on its root changes nothing.
 
 ### Outside the map, by design
 

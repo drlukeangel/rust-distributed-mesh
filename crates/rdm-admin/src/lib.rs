@@ -63,6 +63,7 @@ pub mod round;
 pub mod seat_watch;
 pub use rdm_node::blocking;
 pub use rdm_node::durable_file;
+pub mod record_cache;
 #[cfg(feature = "file-backend")]
 pub mod record_store;
 pub mod stopped_gc;

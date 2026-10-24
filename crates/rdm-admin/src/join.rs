@@ -302,10 +302,11 @@ pub struct JoinDoor {
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
     pub issuer: Arc<crate::certs::CertIssuer>,
-    /// Where each admitted birth's cert row is written before it is admitted (fabric-certs.md
-    /// §Tracking), and a node-admin birth's signing cert dates when this admin minted the key it holds;
-    /// `None` for a door that keeps no rows (a testkit admin side).
-    pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
+    /// Where each admitted birth's cert dates are written on its node record before it is admitted
+    /// (fabric-certs.md §Tracking), and a node-admin birth's signing cert dates when this admin minted
+    /// the key it holds, through the records this admin holds; `None` for a door that keeps no records
+    /// (a testkit admin side).
+    pub nodes: Option<(Arc<dyn crate::storage::NodesStorage>, Arc<crate::node_rows::WrittenRows>)>,
     /// The node row at a `path.name`: a point read through the store's `path.name` key (`Ok(None)`
     /// when none was ever written). The join answer hands the row's config beside its name.
     pub row: Arc<dyn Fn(PathName) -> Pin<Box<dyn Future<Output = Result<Option<crate::storage::NodeRow>, String>> + Send>> + Send + Sync>,
@@ -409,20 +410,21 @@ impl JoinDoor {
                         return rdm_core::reply::join::cert_refused(error.as_str().to_string(), detail);
                     }
                 };
-                // The join admits the birth holding the cert: its row, the receipt (Q141), is written
-                // before the birth is admitted; a node-admin's signing cert dates beside it when this
-                // admin minted the key it was launched with. A write refused leaves nothing installed,
-                // and the join is retried.
-                if let (Some(storage), false) = (&self.nodes, issue.bytes.is_empty()) {
-                    let row = crate::cert_renewal::row_of(&birth, &issue);
-                    let signing = (birth.name.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten();
-                    let put = async {
-                        if let Some(mint) = &signing {
-                            let s = crate::storage::SigningCertRow { node_id: birth.node_id.clone(), name: birth.name.clone(), incarnation_id: birth.incarnation.clone(), issued_at: mint.issued_at, expires_at: mint.expires_at, renew_at: mint.renew_at };
-                            storage.put_signing_cert(&birth.mesh, &s).await.map_err(|e| format!("the signing cert row: {e}"))?;
+                // The join admits the birth holding the cert: its dates, the receipt (Q141), are written
+                // on its node record before the birth is admitted; a node-admin's signing cert dates
+                // beside them when this admin minted the key it was launched with, in the same write. A
+                // write refused leaves nothing installed, and the join is retried.
+                if let (Some((storage, written)), false) = (&self.nodes, issue.bytes.is_empty()) {
+                    let dates = crate::cert_renewal::dates_of(&issue);
+                    let signing = (birth.name.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
+                    let base = crate::storage::NodeRow::new(birth.name.clone(), birth.node_id.clone(), crate::model::NodeStatus::Pending);
+                    let put = written.update(&**storage, &birth.node_id, Some(base), |r| {
+                        let b = r.birth_mut(&birth.incarnation, &birth.name);
+                        b.cert = Some(dates);
+                        if let Some(s) = signing {
+                            b.signing_cert = Some(s);
                         }
-                        storage.put_node_cert(&birth.mesh, &row).await.map_err(|e| format!("the cert row: {e}"))
-                    };
+                    });
                     if let Err(why) = put.await {
                         span.record("outcome", "not-ready");
                         return rdm_core::reply::join::not_ready(format!("{}: {} ({}): {why}", self.me, birth.name, birth.node_id));

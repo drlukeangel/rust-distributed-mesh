@@ -496,7 +496,7 @@ impl AdminRunner {
         let me = self.held_name().to_string();
         // This fabric-primary is the acting primary of a mesh that has none left: the final birth's
         // node.delete wrote its row Deleted and proved its exit.
-        crate::mesh_delete::mesh_left_rows(self.records.node_rows().as_deref(), &*self.mesh_storage, &self.records.declared, &me, key, mesh, &all.receipts).await?;
+        crate::mesh_delete::mesh_left_rows(self.records.node_rows().as_deref(), &*self.mesh_storage, &self.records.caches, &self.records.declared, &me, key, mesh, &all.receipts).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
                 mesh: None,
@@ -570,7 +570,7 @@ impl AdminRunner {
         };
         // The mesh row Leaving and the round's admission (the command hook's mesh-leaving is the
         // owner's): [`crate::mesh_delete::admit_delete_mesh`].
-        let crate::mesh_delete::DeleteMeshAdmission { leaving_row, admission } = crate::mesh_delete::admit_delete_mesh(&self.mesh_delete_runs, &*self.mesh_storage, &self.records.declared, &me.mesh, &key, &owner).await;
+        let crate::mesh_delete::DeleteMeshAdmission { leaving_row, admission } = crate::mesh_delete::admit_delete_mesh(&self.mesh_delete_runs, &*self.mesh_storage, &self.records.caches, &self.records.declared, &me.mesh, &key, &owner).await;
         if let Some(committed) = &leaving_row {
             tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %me_name, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %owner, outcome = committed.name())
                 .in_scope(|| tracing::info!("delete-mesh at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
@@ -714,10 +714,10 @@ impl AdminRunner {
         // answers no handoff: the owner's repeated delete-mesh decides it afresh.
         // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1
         // item 2); a refused write answers no handoff either.
-        let committed = crate::status_rpc::commit_mesh_state(&*self.mesh_storage, &self.records.declared, &me.mesh, &key.mesh_id, rdm_core::status::MeshState::Dead).await;
+        let committed = crate::status_rpc::commit_mesh_state(&*self.mesh_storage, &self.records.caches, &self.records.declared, &me.mesh, &key.mesh_id, rdm_core::status::MeshState::Dead).await;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.held_name(), mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
         let mesh_row = match committed {
-            StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_delete::mesh_row_dead(&*self.mesh_storage, &me.mesh, &key.mesh_id).await,
+            StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_delete::mesh_row_dead(&*self.mesh_storage, &self.records.caches, &me.mesh, &key.mesh_id).await,
             refused => Err(format!("the Dead status row was not committed: {}", refused.name())),
         };
         match &mesh_row {

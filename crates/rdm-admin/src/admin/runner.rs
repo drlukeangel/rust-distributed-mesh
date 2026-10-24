@@ -13,7 +13,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
     if let Some(id) = records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
         return Ok(Some(id.to_string()));
     }
-    match mesh_rows.mesh(mesh).await {
+    match mesh_rows.mesh_named(mesh).await {
         Ok(Some(row)) if !row.dead => Ok(Some(row.mesh_id.to_string())),
         Ok(Some(row)) => Err(format!("mesh {mesh}'s row is Dead (mesh id {})", row.mesh_id)),
         Ok(None) => Ok(None),
@@ -130,7 +130,7 @@ pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&A
 /// the operation which stopped it (i146 Q29, Q36): NodeStopped, the operation stamped with this
 /// admin's Rafka-time.
 pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
-    Arc::new(move |row: crate::storage::NodeDeclaredRow, operation: rdm_core::status::DeclaredOperation| {
+    Arc::new(move |row: crate::status_rpc::Declaration, operation: rdm_core::status::DeclaredOperation| {
         let (membership, backbone, project) = (membership.clone(), backbone.clone(), project.clone());
         Box::pin(async move {
             // Inside node.restart the stop's stopped is held by NodeRestarting, never published as
@@ -293,10 +293,10 @@ impl AdminRunner {
     /// [`crate::node_rows::NodeRows::claim`]): the row at the path, else its `<name>.old` row.
     async fn recorded_executable(&self, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
         let Some(rows) = self.records.contacts.get() else { return Ok(None) };
-        let at = rows.node_row_at(node).await.map_err(|e| format!("node.create:{node}: the row at {node} could not be read for its executable: {e}"))?;
+        let at = crate::node_rows::record_at(&**rows, node).await.map_err(|e| format!("node.create:{node}: the row at {node} could not be read for its executable: {e}"))?;
         let seed = match at {
             Some(row) => Some(row),
-            None => rows.node_row_at(&node.renamed()).await.map_err(|e| format!("node.create:{node}: the row at {} could not be read for its executable: {e}", node.renamed()))?,
+            None => crate::node_rows::record_at(&**rows, &node.renamed()).await.map_err(|e| format!("node.create:{node}: the row at {} could not be read for its executable: {e}", node.renamed()))?,
         };
         Ok(seed.and_then(|row| row.executable))
     }
@@ -702,7 +702,7 @@ impl AdminRunner {
         // The inherited data dir only when the delete read the old runtime exited, and its loss is not
         // recorded (node-recovery.md step 4, `R-FM2`); a newly allocated one otherwise.
         let lost = match self.records.status.get() {
-            Some(fold) => fold.nodes().node_data_dir_lost(&node.mesh, &from.node_id, &from.incarnation).await.ok().flatten().is_some(),
+            Some(fold) => fold.caches().nodes.birth_facts(&**fold.nodes(), &from.node_id, &from.incarnation).await.ok().flatten().is_some_and(|f| f.data_dir_lost.is_some()),
             None => false,
         };
         let exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
@@ -712,14 +712,9 @@ impl AdminRunner {
         } else {
             if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
                 if let Some(fold) = self.records.status.get() {
-                    let row = crate::storage::NodeDataDirUnreadableRow {
-                        node_id: from.node_id.clone(),
-                        name: node.clone(),
-                        incarnation_id: from.incarnation.clone(),
-                        path: data_dir.display().to_string(),
-                        cause: cause.clone(),
-                    };
-                    let _ = fold.nodes().put_node_data_dir_unreadable(&node.mesh, &row).await;
+                    let unreadable = crate::storage::DataDirUnreadable { path: data_dir.display().to_string(), cause: cause.clone() };
+                    let held = crate::storage::NodeRow::new(node.clone(), from.node_id.clone(), crate::model::NodeStatus::Deleted);
+                    let _ = fold.caches().nodes.update(&**fold.nodes(), &from.node_id, Some(held), |r| r.birth_mut(&from.incarnation, node).data_dir_unreadable = Some(unreadable)).await;
                 }
                 tracing::info_span!(
                     "rdm.node_admin.node.reject.via-data-dir-unreadable",
@@ -1025,7 +1020,13 @@ impl OperationRunner for AdminRunner {
 }
 
 impl AdminRunner {
-    pub(crate) async fn run_op(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) fn run_op<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, op: &'a BuildOperation) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+        // Boxed where it is made: the operation's workflows are one large state machine, and every
+        // caller (the executor, a recipe's steps) holds only the box on its worker's stack.
+        Box::pin(self.run_op_body(build_id, lane, attempt, op))
+    }
+
+    async fn run_op_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let me = self.held_name();
         // The workflows write the attempt's receipts and read its Build through the lane's Build
@@ -1082,14 +1083,19 @@ impl AdminRunner {
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
             BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, &*self.fabric_storage, build_id, attempt, fabric_id, &self.me.to_string()).await.map_err(Into::into),
-            BuildOperation::RecipeStep { step, birth } => return Box::pin(self.recipe_step(build_id, lane, attempt, step, birth.as_ref())).await,
+            BuildOperation::RecipeStep { step, birth } => return self.recipe_step(build_id, lane, attempt, step, birth.as_ref()).await,
         };
         ended
     }
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a recipe's
     /// create step, whose claim is a replace successor's), its name claimed for `claim_for`.
-    async fn create_node(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, attempt: u32, node: &'a PathName, executable: Option<&'a rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+        // Boxed where it is made, as `run_op`.
+        Box::pin(self.create_node_body(build_id, attempt, node, executable, claim_for))
+    }
+
+    async fn create_node_body(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt);
         async {
@@ -1114,7 +1120,13 @@ impl AdminRunner {
     /// the stopped birth; node.delete node.delete's workflow from the state the birth is in.
     ///
     /// [`ClaimFor::Successor`]: crate::node_rows::ClaimFor::Successor
-    pub(crate) async fn recipe_step(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) fn recipe_step<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, step: &'a rdm_core::build::RecipeStep, birth: Option<&'a crate::build::PinnedBirth>) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+        // Boxed where it is made, as `run_op`: a step runs `run_op` again, and neither holds the
+        // other's state machine inline.
+        Box::pin(self.recipe_step_body(build_id, lane, attempt, step, birth))
+    }
+
+    async fn recipe_step_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
         use rdm_core::build::RecipeStep as S;
         let me = self.held_name();
         let node = step.node();

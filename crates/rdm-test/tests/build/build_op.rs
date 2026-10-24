@@ -734,7 +734,8 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let held = door.wait_held("cut").await;
     assert_eq!(s(&held["hit"]["build_id"]), build_id.as_str(), "{held}");
     // The claim landed before the executor was lost: mesh2's row is on the store root.
-    let row: Value = serde_json::from_slice(&std::fs::read(root.join("meshes/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its row to the store root")).unwrap();
+    let name_claim: Value = serde_json::from_slice(&std::fs::read(root.join("mesh-names/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its name claim to the store root")).unwrap();
+    let row: Value = serde_json::from_slice(&std::fs::read(root.join(format!("mesh-records/{}.json", s(&name_claim["record"]["mesh_id"])))).expect("the fabric-primary's claim of mesh2 wrote its record to the store root")).unwrap();
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
     // The receipt reached the surviving admin before the fabric-primary is lost: its own Build log holds the

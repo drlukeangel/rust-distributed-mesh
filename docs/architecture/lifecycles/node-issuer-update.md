@@ -31,7 +31,7 @@ valid to their own expiry.
 3. The admin checks the material names its own mesh and its own `(node.id, incarnation)` and verifies
    the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root),
    installs it, and answers `IssuerUpdated`.
-4. The fabric-primary writes the signing cert's issue date and expiry on that admin's node row.
+4. The admin's mesh-primary writes the signing cert's issue date and expiry on the admin's record: its own at its install, another admin's when its `IssuerUpdated` returns through the mesh-primary as the carrier.
 
 ## Command and completion messages
 

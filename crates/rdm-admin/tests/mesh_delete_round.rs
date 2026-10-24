@@ -13,7 +13,7 @@ use rdm_core::{BuildId, MeshId, NodeId};
 use rdm_admin::deployment::pipeline::RuntimeProof;
 use rdm_admin::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteBook, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
 use rdm_admin::status_rpc::Declared;
-use rdm_admin::storage::{MemoryMeshStorage, MeshStatusRow, MeshStorage};
+use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_core::status::{MeshDeleteRound, MeshState, StatusReply};
 use serde_json::Value;
 
@@ -210,7 +210,7 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leav
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
-                let first = admit_delete_mesh(&runs, &storage, &declared, "mesh2", &held, &owner).await;
+                let first = admit_delete_mesh(&runs, &storage, &Default::default(), &declared, "mesh2", &held, &owner).await;
                 let m = manifest.clone();
                 let end = run_admitted(&runs, &mesh_id, move |_, _| {
                     let m = m.clone();
@@ -219,13 +219,13 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leav
                 .await;
                 // mesh.deleted: the mesh-primary's handoff commits its mesh row Dead before it calls
                 // mesh-deleted; the call is lost, so the owner sends delete-mesh again.
-                storage.put_mesh_status("mesh2", &MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
+                { let mut r = storage.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh2")); r.states.insert(MeshState::Dead); storage.put_mesh(&r).await.unwrap(); }
                 declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Dead);
                 let mut after = Vec::new();
                 for (k, sender) in [(&held, &owner), (&stale, &late), (&next, &owner)] {
-                    after.push(admit_delete_mesh(&runs, &storage, &declared, "mesh2", k, sender).await);
+                    after.push(admit_delete_mesh(&runs, &storage, &Default::default(), &declared, "mesh2", k, sender).await);
                 }
-                let row = storage.mesh_statuses().await.unwrap().get(&mesh_id).copied();
+                let row = storage.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().get(&mesh_id).copied();
                 (first, end, after, row)
             },
             root,

@@ -838,7 +838,7 @@ impl AcceptedStore {
     /// The Fabric identity held, when one is: the identity row, or the learned identity while the
     /// store holds none.
     pub async fn record(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
-        let held = self.storage.fabric().await?;
+        let held = self.storage.fabric().await?.map(|r| r.identity());
         Ok(held.or_else(|| self.learned.lock().unwrap().clone()))
     }
 

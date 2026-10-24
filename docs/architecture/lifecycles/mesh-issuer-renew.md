@@ -16,13 +16,13 @@ every member cert it signed, stay valid to their own expiry, so nothing is cut a
 | Target | One mesh; every node-admin of it, exact births, in the view |
 | Steps | Mint the issuing cert, then [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other admin as a command forwarded through the mesh-primary; the step keys are `mesh.issuer.renew:<mesh>` and `node.issuer.update:<path.name>` |
 | Order | The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others; a member renewal due in the window is signed with the new key once its own admin holds it |
-| Receipt | On each admin's `IssuerUpdated` its node row takes its signing cert issue date and expiry; the workflow is complete when every admin in the view holds the new dates |
+| Receipt | On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install); the workflow is complete when every admin in the view holds the new dates |
 | Never | A member cert re-issued by this workflow (that is [node.cert.renew](node-cert-renew.md)'s on its own schedule), the root rotated (a fabric re-birth), a status set, a frame published |
 | Spans | `rdm.fabric.issuer.update.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |
 
 ## Numbered end-to-end sequence
 
-1. The fabric-primary's tick reads the signing cert dates on each mesh's node-admin rows; a mesh with a
+1. The fabric-primary's tick reads the signing cert dates it holds in its cache, the dates it issued and each admin's `IssuerUpdated` confirmed; a mesh with a
    row whose `renew_at` has passed, and no newer issuing cert held, is renewed. It mints the issuing cert
    for that mesh with the root, on rafka-time, and holds it in process.
 2. [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the
@@ -30,7 +30,7 @@ every member cert it signed, stay valid to their own expiry, so nothing is cut a
 3. Each admin signs member certs with the new key from its install. [node.cert.renew](node-cert-renew.md)
    runs on its own schedule; a member whose cert would outlive the old issuer is renewed early, cut to
    the issuer's expiry (`MemberOutlivesIssuer`), which is what forces this workflow to run first.
-4. Each admin's node row holds the dates it answered. The old issuer expires on its own.
+4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own.
 
 ## Mermaid sequence diagram
 

@@ -139,6 +139,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         declared: Arc::new(std::sync::Mutex::new(Declared::default())),
         meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
         nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
+        caches: Default::default(),
         mesh_ids: Arc::new(std::collections::BTreeMap::new),
         durable: Default::default(),
         commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),

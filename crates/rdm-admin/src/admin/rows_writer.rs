@@ -62,6 +62,8 @@ pub(crate) struct MeshRowsWriter {
     pub(crate) mesh_id: MeshId,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
+    /// The records this admin writes, as it holds them.
+    pub(crate) caches: crate::record_cache::Caches,
     /// What this seat tenure knows the shared root holds for the mesh's contacts; `None` outside a tenure.
     pub(crate) written: Option<HashMap<NodeId, crate::storage::NodeRecord>>,
     /// The claim of the mesh's name this seat tenure decided: `None` outside a tenure or before the
@@ -71,8 +73,8 @@ pub(crate) struct MeshRowsWriter {
 }
 
 impl MeshRowsWriter {
-    pub(crate) fn new(me: &str, fabric_id: FabricId, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>) -> Self {
-        Self { me: me.to_string(), fabric_id, mesh: mesh.to_string(), mesh_id, nodes, meshes, written: None, claim: None }
+    pub(crate) fn new(me: &str, fabric_id: FabricId, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
+        Self { me: me.to_string(), fabric_id, mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, written: None, claim: None }
     }
 
     /// One round over the births `held` (every birth of the fabric this admin holds, itself
@@ -89,7 +91,7 @@ impl MeshRowsWriter {
         }
         if self.claim.is_none() {
             // A store that did not answer decides nothing: the next round asks again.
-            self.claim = claim_mesh_name(&*self.meshes, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
+            self.claim = claim_mesh_name(&*self.meshes, &self.caches, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
             if self.claim.is_none() {
                 return true;
             }
@@ -220,20 +222,23 @@ pub(crate) async fn take_recorded_primaries(nodes: &dyn crate::storage::NodesSto
 /// The Mesh row of the mesh a restarting node-admin's own row names, read by that mesh's id (R-MN1: a
 /// mesh created again under the same name is a new mesh with a new id; R-ML2: a dead mesh is never
 /// restarted): the point read at the mesh's key, the name, is taken as the admin's mesh only when it
-/// is the row of the mesh id its own row holds, and live. A row of another MeshId at the name means
-/// the admin's mesh was removed and a mesh created again under the name; refused by name, naming
-/// both ids, as are a Dead row and no row.
+/// is the record of the mesh id its own row holds, read by that id, and live. The name's claim held by
+/// another MeshId means the admin's mesh was removed and a mesh created again under the name; refused
+/// by name, naming both ids, as are a Dead record and no record.
 pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: &crate::storage::NodeRecord) -> Result<crate::storage::MeshRecord, String> {
     let (mesh, mesh_id) = (&own.name.mesh, &own.mesh_id);
-    match meshes.mesh(mesh).await.map_err(|e| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the row of {mesh}: {e}", own.name))? {
-        None => Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage holds no row of {mesh}", own.name)),
-        Some(row) if row.mesh_id != *mesh_id => Err(format!(
-            "this admin ({}) belongs to mesh {mesh_id} ({mesh}), which was removed: the name {mesh} is held by mesh {}, a mesh created again under it, and a removed mesh is never rejoined",
-            own.name, row.mesh_id
-        )),
-        Some(row) if row.dead => Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose row is Dead: a dead mesh is never restarted", own.name)),
-        Some(row) => Ok(row),
+    let unread = |e: crate::storage_error::StorageError| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the record of {mesh}: {e}", own.name);
+    let held = meshes.mesh(mesh_id).await.map_err(unread)?;
+    if held.as_ref().is_some_and(|row| row.dead) {
+        return Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose record is Dead: a dead mesh is never restarted", own.name));
     }
+    if let Some(other) = meshes.mesh_named(mesh).await.map_err(unread)?.filter(|row| row.mesh_id != *mesh_id) {
+        return Err(format!(
+            "this admin ({}) belongs to mesh {mesh_id} ({mesh}), which was removed: the name {mesh} is held by mesh {}, a mesh created again under it, and a removed mesh is never rejoined",
+            own.name, other.mesh_id
+        ));
+    }
+    held.ok_or_else(|| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage holds no record of {mesh}", own.name))
 }
 
 /// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7)
@@ -243,7 +248,7 @@ pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: 
 /// (the same MeshId re-claiming, idempotent). The Mesh row written, or this mesh's own row found
 /// standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span, `moment`
 /// `claim`. `Err`: the store did not answer, and nothing is decided.
-pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> {
+pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> {
     let span = tracing::info_span!(
         "rdm.node_admin.mesh.create.via-mesh-row",
         node = %me,
@@ -256,8 +261,24 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let record = crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: mesh.to_string(), dead: false };
-    let claimed = crate::storage::claim_mesh(&*meshes, &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"));
+    // The record this writer holds of the mesh (read when it holds none: the claim is its writing's
+    // first act), live under its name: the claim writes it whole.
+    let _one = caches.meshes.lock(mesh_id).await;
+    let claimed: Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> = async {
+        let held = match caches.meshes.get(mesh_id) {
+            Some(r) => Some(r),
+            None => meshes.mesh(mesh_id).await.map_err(|e| format!("{me}: mesh.storage did not answer the read of {mesh}'s record (mesh {mesh_id}): {e}"))?,
+        };
+        let mut record = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
+        record.name = mesh.to_string();
+        record.dead = false;
+        let claimed = crate::storage::claim_mesh(&*meshes, held.as_ref(), &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"))?;
+        if claimed.is_ok() {
+            caches.meshes.hold(mesh_id.clone(), record);
+        }
+        Ok(claimed)
+    }
+    .await;
     match &claimed {
         Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
             span.record("outcome", "row-written");
@@ -315,7 +336,7 @@ pub(crate) fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
 /// idempotent. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs
 /// no create of its nodes, so no node row of the mesh is claimed.
 pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, CreateMeshError> {
-    match claim_mesh_name(meshes, me, mesh, mesh_id).await {
+    match claim_mesh_name(meshes, &records.caches, me, mesh, mesh_id).await {
         Ok(Ok(_)) => {
             // The won claim's id is the mesh's: it replaces any id held for the name before (a
             // removed mesh's), so no launch of this mesh carries another.

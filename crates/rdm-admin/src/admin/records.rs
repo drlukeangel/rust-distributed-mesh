@@ -255,6 +255,10 @@ pub struct Records {
     /// The lifecycle states this admin applied as an authority (`status_rpc`): the view's
     /// `declared`, never its `status`.
     pub declared: Arc<Mutex<crate::status_rpc::Declared>>,
+    /// The records this admin writes, as it holds them (`crate::record_cache`): the one copy its
+    /// status authority, the writer of its mesh's rows, its config door, its offline tick and its cert
+    /// renewal start every write of a node, mesh or Fabric record from.
+    pub caches: crate::record_cache::Caches,
     /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
     /// `Dead` while they stay silent. Shared with the tick's recovery followers, whose verdict rows
     /// stand only for a birth still in it (`RecoverySubmitter::offline`).
@@ -475,7 +479,7 @@ impl Records {
     /// The facts on `mesh`'s births, on every mesh and on the fabric, which this admin (`name`, born as
     /// `me`) folds when it becomes `mesh`'s primary (set once, at start).
     pub fn set_status(&self, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, fabric: Arc<dyn crate::fabric_storage::FabricStorage>, mesh: String, name: PathName, me: NodeId) {
-        let _ = self.status.set(crate::status_rpc::SeatFold::new(nodes, meshes, fabric, mesh, name, me));
+        let _ = self.status.set(crate::status_rpc::SeatFold::new(self.caches.clone(), nodes, meshes, fabric, mesh, name, me));
     }
 
     /// The fabric-primary's own ready-for-traffic row (states.md, "Who sets each state": "The
@@ -490,7 +494,7 @@ impl Records {
             return Err(format!("no fabric store is held to put the ready-for-traffic fact of fabric {fabric_id}"));
         };
         let ready = crate::status_rpc::event_key(&rdm_core::status::FabricEvent::ReadyForTraffic);
-        match crate::status_rpc::commit_fabric_event(&**fold.fabric(), &self.declared, fabric_id, &ready).await {
+        match crate::status_rpc::commit_fabric_event(&**fold.fabric(), &self.caches, &self.declared, fabric_id, None, &ready).await {
             r @ (rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied) => {
                 self.first_ready.reach("ready-for-traffic");
                 Ok(r)

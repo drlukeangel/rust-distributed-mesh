@@ -132,44 +132,39 @@ async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -
     Ok(picked.unwrap_or_default())
 }
 
-/// The tags of the birth `n`: those of its row, a point read of the row at its `path.name`; when the
-/// row there is another birth's, a point read of the row the node row's id index names. None when it
-/// holds no row.
+/// The record of the birth `n`'s node: a point read of its key. None when it holds no record.
 async fn row_of(storage: &dyn NodesStorage, n: &Node) -> Result<Option<crate::storage::NodeRow>, ReadFailed> {
-    let failed = |op: String, e: crate::storage_error::StorageError| ReadFailed { source: format!("the nodes store's rows of {}", n.mesh), op, cause: e.to_string() };
-    let at = storage.node_row_at(&n.name).await.map_err(|e| failed(format!("read of the row at {}", n.name), e))?;
-    if let Some(row) = at.filter(|r| r.node_id == n.node_id) {
-        return Ok(Some(row));
-    }
-    let Some(name) = storage.node_row_name(&n.mesh, &n.node_id).await.map_err(|e| failed(format!("read of the id index entry of {} ({})", n.name, n.node_id), e))? else { return Ok(None) };
-    if name == n.name {
-        return Ok(None);
-    }
-    let row = storage.node_row_at(&name).await.map_err(|e| failed(format!("read of the row at {name}"), e))?;
-    Ok(row.filter(|r| r.node_id == n.node_id))
+    storage.node(&n.node_id).await.map_err(|e| ReadFailed { source: format!("the nodes store's records of {}", n.mesh), op: format!("read of the record of {} ({})", n.name, n.node_id), cause: e.to_string() })
 }
 
-/// The data-dir-lost fact at the birth `n`'s `path.name`: a point read of the path.name index, which
-/// holds the latest loss there (the exited birth's own, or the one the birth was recovered over).
-async fn data_dir_lost_of(facts: Option<&dyn NodesStorage>, n: &Node) -> Option<DataDirLost> {
-    let row = facts?.node_data_dir_lost_at(&n.mesh, &n.name).await.ok().flatten()?;
-    Some(DataDirLost { path: row.path, since: row.since })
+/// The `data-dir-lost` fact of the birth `n`: on its own birth's facts, else on the birth its record
+/// names as its predecessor (the exited birth it was recovered over), a point read of that record.
+async fn data_dir_lost_of(facts: Option<&dyn NodesStorage>, n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirLost> {
+    let row = row?;
+    let own = n.incarnation_id.as_ref().and_then(|i| row.birth(i)).and_then(|b| b.data_dir_lost.clone());
+    let lost = match own {
+        Some(l) => l,
+        None => {
+            let p = row.predecessor.as_ref()?;
+            facts?.node(&p.node_id).await.ok().flatten()?.birth(&p.incarnation_id)?.data_dir_lost.clone()?
+        }
+    };
+    Some(DataDirLost { path: lost.path, since: lost.since })
 }
 
-async fn data_dir_unreadable_of(facts: Option<&dyn NodesStorage>, n: &Node) -> Option<DataDirUnreadable> {
+fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirUnreadable> {
     if n.status == crate::model::NodeStatus::ReadyForTraffic {
         return None;
     }
-    let (s, inc) = (facts?, n.incarnation_id.as_ref()?);
-    let row = s.node_data_dir_unreadable(&n.mesh, &n.node_id, inc).await.ok().flatten()?;
-    Some(DataDirUnreadable { path: row.path, cause: row.cause })
+    let u = row?.birth(n.incarnation_id.as_ref()?)?.data_dir_unreadable.clone()?;
+    Some(DataDirUnreadable { path: u.path, cause: u.cause })
 }
 
 /// The births `view` holds that `chosen` selects, sorted by `path.name`, each with what `loads`
-/// carries for it and the tags its row carries: every birth the view holds, replaced predecessors
-/// included, its reads point reads made at once. A birth the view no longer holds is answered at a
-/// path `planned` names and no birth holds, from the data-dir-unreadable row at that path. No read
-/// lists a store.
+/// carries for it and what its record carries (its tags, app types, cert dates and data-dir facts):
+/// every birth the view holds, replaced predecessors included, its reads point reads made at once. A
+/// birth the view no longer holds is answered at a path `planned` names and no birth holds, from the
+/// data-dir-unreadable fact on the record the `path.name` index names there. No read lists a store.
 async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, facts: Option<&dyn NodesStorage>, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Result<Vec<NodeView>, ReadFailed> {
     let births: Vec<&Node> = view
         .births()
@@ -179,30 +174,22 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Ids(ids) => ids.contains(&n.node_id),
         })
         .collect();
-    // Each chosen mesh's cert rows, folded once (fabric-certs.md §Tracking: `node.get` surfaces the
-    // birth's held cert as `cert { issued_at, expires_at, issuer_expires_at }`).
-    let mut certs: BTreeMap<String, std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), crate::storage::NodeCertRow>> = BTreeMap::new();
-    if let Some(s) = facts {
-        for mesh in births.iter().map(|n| n.mesh.clone()).collect::<BTreeSet<String>>() {
-            if let Ok(folded) = crate::cert_renewal::fold_of(s, &mesh).await {
-                certs.insert(mesh, folded);
-            }
-        }
-    }
-    let certs = &certs;
     let read = births.iter().map(|n| async move {
-        let (row, data_dir_lost, data_dir_unreadable) = futures_util::join!(row_of(storage, n), data_dir_lost_of(facts, n), data_dir_unreadable_of(facts, n));
+        let row = row_of(storage, n).await?;
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        let row = row?;
         let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default());
-        if let Some(declared) = row.and_then(|r| r.app_types).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
+        if let Some(declared) = row.as_ref().and_then(|r| r.app_types.clone()).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
             v.types = declared.types;
             v.held = v.types.clone();
         }
         v.held_hash = rdm_core::app_types::hash(&v.held);
-        v.cert = n.incarnation_id.as_ref().and_then(|i| certs.get(&n.mesh)?.get(&(n.node_id.clone(), i.clone()))).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
-        v.data_dir_lost = data_dir_lost;
-        v.data_dir_unreadable = data_dir_unreadable;
+        if facts.is_some() {
+            // fabric-certs.md §Tracking: `node.get` surfaces the birth's held cert as `cert { issued_at,
+            // expires_at, issuer_expires_at }`.
+            v.cert = n.incarnation_id.as_ref().and_then(|i| row.as_ref()?.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
+            v.data_dir_lost = data_dir_lost_of(facts, n, row.as_ref()).await;
+            v.data_dir_unreadable = data_dir_unreadable_of(n, row.as_ref());
+        }
         Ok::<_, ReadFailed>(v)
     });
     let mut out = futures_util::future::try_join_all(read).await?;
@@ -211,9 +198,10 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Mesh(m) => planned.keys().filter(|k| k.as_str() == *m).collect(),
             _ => planned.keys().collect(),
         };
-        let unheld: Vec<(&String, &PathName)> = meshes.into_iter().flat_map(|m| planned[m].iter().map(move |p| (m, p))).filter(|(_, p)| !view.births().any(|n| &n.name == *p)).collect();
-        let found = futures_util::future::join_all(unheld.iter().map(|(m, p)| s.node_data_dir_unreadable_at(m, p))).await;
+        let unheld: Vec<&PathName> = meshes.into_iter().flat_map(|m| planned[m].iter()).filter(|p| !view.births().any(|n| &n.name == *p)).collect();
+        let found = futures_util::future::join_all(unheld.iter().map(|p| s.node_at(p))).await;
         for r in found.into_iter().filter_map(|r| r.ok().flatten()) {
+            let Some((incarnation, unreadable)) = r.births.iter().rev().find_map(|b| Some((b.incarnation_id.clone(), b.data_dir_unreadable.clone()?))) else { continue };
             let matches_chosen = match chosen {
                 Chosen::Id(id) => &r.node_id == *id,
                 Chosen::Mesh(m) => r.name.mesh == *m,
@@ -222,19 +210,15 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             if !matches_chosen || out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
                 continue;
             }
-            let row = storage.node_row_at(&r.name).await.ok().flatten();
             let mut n = Node::allocated(r.name.clone());
             n.node_id = r.node_id.clone();
-            n.incarnation_id = Some(r.incarnation_id.clone());
+            n.incarnation_id = Some(incarnation);
             n.provider = Some(view.fabric.provider);
-            n.data_dir = Some(r.path.clone());
+            n.data_dir = Some(unreadable.path.clone());
             n.status = crate::model::NodeStatus::Dead;
-            if let Some(ref nr) = row {
-                n.config = nr.config.clone();
-            }
-            let tags = row.map(|nr| nr.tags).unwrap_or_default();
-            let mut v = node_view(&n, None, None, tags);
-            v.data_dir_unreadable = Some(DataDirUnreadable { path: r.path, cause: r.cause });
+            n.config = r.config.clone();
+            let mut v = node_view(&n, None, None, r.tags.clone());
+            v.data_dir_unreadable = Some(DataDirUnreadable { path: unreadable.path, cause: unreadable.cause });
             out.push(v);
         }
     }

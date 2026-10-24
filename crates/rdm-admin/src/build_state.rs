@@ -3733,7 +3733,7 @@ mod tests {
             [format!("{b1}/1-claim"), format!("{b1}/1-step-admit-node:mesh1.admin.1-DeployRuntime"), format!("{b1}/accepted")],
             "before state-commit, each committed fact is one record at its own key on the store root, and a receipt written again writes nothing"
         );
-        assert!(!root.dir().join("fabric/identity.json").exists(), "nothing else of RDM's rows is on the root before state-commit");
+        assert!(!root.dir().join("fabric/record.json").exists(), "nothing else of RDM's rows is on the root before state-commit");
         let published = root.scratchpad().unwrap().publish().await.unwrap();
         assert!(!published.stores.iter().any(|s| s.store.starts_with("fabric/builds")), "state-commit publishes no Build record: none was held: {published:?}");
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();

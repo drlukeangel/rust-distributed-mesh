@@ -166,8 +166,9 @@ async fn a_launch_whose_container_is_never_created_leaves_a_record_that_reads_ex
 
 /// CONTRACT: a container runtime is named by its provider control domain (the Docker daemon) and
 /// its immutable container id. The deterministic container name is reused by the next birth at the
-/// same path, and it never stands for the old runtime: the old id inspects as not running and
-/// cannot be controlled, while the new runtime keeps running.
+/// same path, and it never stands for the old runtime (deployment-provider.md: "a reused name never
+/// impersonates"): the old id inspects as not running, and a TerminateRuntime of it, a runtime already
+/// removed, terminates as done (Q145) without reaching the new runtime, which keeps running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_never_impersonates_it() {
     let fabric = fabric_name("identity");
@@ -195,7 +196,7 @@ async fn a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_nev
     let old = adopt(&fresh, &fact).expect("same domain: the old fact is adopted as what it names");
     assert_ne!(fresh.inspect(&old).await, DeploymentStatus::Running, "the old id never inspects as the new runtime");
     assert_ne!(p.inspect(&first).await, DeploymentStatus::Running);
-    assert!(fresh.terminate(&old, TerminationMode::Immediate).await.is_err(), "controlling the old id fails by name");
+    assert!(fresh.terminate(&old, TerminationMode::Immediate).await.is_ok(), "the old id, already removed, terminates as done (Q145)");
     assert_eq!(daemon_state(&id2), "running", "no control of the old id reached the runtime the name now runs");
     let found = p.find(&spec).await.unwrap().running().expect("the name resolves to its current runtime");
     assert_eq!(container_id(&found), id2);

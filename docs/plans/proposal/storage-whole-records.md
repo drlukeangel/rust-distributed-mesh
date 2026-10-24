@@ -1,7 +1,9 @@
 ## Storage as whole records: one cached object, one writer, one whole write
 
 Proposal for i143, for Luke's yes before anything is built. It replaces the per-fact storage interface
-landed at `749c796f5` (storage-by-object.md). Nothing below is built.
+landed at `749c796f5` (storage-by-object.md). **Built (2026-10-23, lead), in the landing that carries
+this line:** the code, the page lines below, and the cells below (the carrier write of another admin's
+signing cert dates through `rdm_transport::CarriedReplies`, span `rdm.node_admin.issuer.update.via-carried`).
 
 ### What is wrong at 749c796f5
 

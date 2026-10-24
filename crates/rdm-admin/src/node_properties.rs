@@ -145,7 +145,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config included.
     let _one = door.one_at_a_time().await;
-    let known = match door.written().known_row(storage, &subject.mesh, node_id).await {
+    let known = match door.written().known_row(storage, node_id).await {
         Ok(row) => row,
         Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &format!("{me}: {why}: the tags of {} are not written", subject.name)),
     };
@@ -153,15 +153,9 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // node-properties-own-commands.md §2.1), whether or not this command writes; one that fails again
     // stays pending, named on its span.
     if let Some(r) = &known {
-        let _ = crate::node_rows::finish_release(storage, me, r, "tags-put").await;
+        let _ = crate::node_rows::finish_release(storage, door.written(), me, r, "tags-put").await;
     }
     let was: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
-    // The key a rename moved the row from, and the successor that inherited it (its labels stay out of
-    // the tags index), stay the row's while it stands at the same key.
-    let renamed_from = known.as_ref().and_then(|r| r.renamed_from.clone().filter(|_| r.name == subject.name));
-    let inherited_by = known.as_ref().and_then(|r| r.inherited_by.clone().filter(|_| r.name == subject.name));
-    let executable = known.as_ref().and_then(|r| r.executable.clone());
-    let config = known.map(|r| r.config).unwrap_or_else(|| subject.config.clone());
     let (tags, done) = match change {
         Change::Create(labels) => {
             let already: BTreeSet<String> = labels.intersection(&was).cloned().collect();
@@ -187,19 +181,16 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // Nothing to change writes nothing: a label carried is a key already put, one not carried a key
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
-    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by, app_types: door.written().row_of(node_id).and_then(|r| r.app_types), executable };
-    match crate::storage::claim_node_row(&*storage, &row).await {
-        Ok(Ok(())) => {
-            door.written().hold(&row);
-            done
-        }
-        Ok(Err(held)) => {
-            let why = format!("{me}: nodes.storage refused the row of {} ({node_id}): {held}", subject.name);
-            span.record("detail", why.as_str());
-            rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &why)
-        }
-        Err(e) => {
-            let why = format!("{me}: nodes.storage refused the row of {} ({node_id}): {e}", subject.name);
+    // The record this writer holds, its tags changed: written whole, its tags index moves with it.
+    let base = NodeRow { config: subject.config.clone(), ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
+    let status = subject.status;
+    match door.written().update(storage, node_id, Some(base), |r| {
+        r.status = status;
+        r.tags = tags;
+    }).await {
+        Ok(_) => done,
+        Err(why) => {
+            let why = format!("{me}: {} ({node_id}): {why}", subject.name);
             span.record("detail", why.as_str());
             rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &why)
         }

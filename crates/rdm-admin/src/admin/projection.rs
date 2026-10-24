@@ -216,7 +216,7 @@ pub(crate) fn publishes(book: &DigestBook, records: &Records, node_id: &NodeId, 
 /// never changes the mesh). An index entry that cannot be read is one span on every projection that
 /// reads it, until it can be read.
 pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
-    match store.node_row_name(&published.mesh, node_id).await {
+    match store.node(node_id).await.map(|r| r.filter(|r| r.name.mesh == published.mesh).map(|r| r.name)) {
         Ok(Some(name)) => RowName::At(name),
         // The node holds no row: no rename moved it, and the name it published stands.
         Ok(None) => RowName::At(published.clone()),

@@ -35,7 +35,7 @@ pub use rdm_core::launch::ENV_STORE_DIR;
 
 /// The Fabric row's file under the root: the fabric-primary publishes it at the fabric's first
 /// state-commit, so a root that holds it is a store that exists.
-const FABRIC_ROW: &str = "fabric/identity.json";
+const FABRIC_ROW: &str = "fabric/record.json";
 
 /// The fabrics' name index, `<store_dir>/fabrics/`, beside the per-fabric roots (R-FN1).
 pub const FABRIC_NAMES: &str = "fabrics";

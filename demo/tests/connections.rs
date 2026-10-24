@@ -73,14 +73,14 @@ async fn boot_admin_with_committed_store_root(root_dir: &Path) -> (Running, Path
     .unwrap();
     let fabric_id = root.digest.lock().unwrap().fabric_id.clone();
     let fabric_root = root_dir.join(fabric_id.to_string());
-    let identity = fabric_root.join("fabric").join("identity.json");
+    let identity = fabric_root.join("fabric").join("record.json");
     tokio::time::timeout(BOUND, async {
         while !identity.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("Day-0 admin state-commit must write fabric/identity.json so StoreRoot opens on the shared store-root");
+    .expect("Day-0 admin state-commit must write fabric/record.json so StoreRoot opens on the shared store-root");
     root.stop_reconciling();
     (root, fabric_root)
 }

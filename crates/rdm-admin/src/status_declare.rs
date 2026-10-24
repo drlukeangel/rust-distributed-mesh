@@ -184,6 +184,20 @@ pub(crate) struct Declarer {
     pub(crate) fabric_recovery: crate::fabric_recovery::ReaderSlot,
     /// The admin that made this node (its maker, node-mesh-join.md "Report"), when one did.
     pub(crate) maker: std::sync::OnceLock<NodeId>,
+    /// How this admin, as its mesh's primary, records a Mesh state the fabric-primary answered on its
+    /// own Mesh record (Q144): a declaration of it stays owed until that write lands.
+    pub(crate) record_mesh: std::sync::OnceLock<RecordMesh>,
+}
+
+/// The write of a Mesh state on the mesh-primary's own Mesh record, by mesh id: `Err` names why it
+/// did not land.
+#[derive(Clone)]
+pub(crate) struct RecordMesh(pub(crate) Arc<dyn Fn(crate::model::MeshId, MeshState) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>);
+
+impl std::fmt::Debug for RecordMesh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecordMesh")
+    }
 }
 
 impl Declarer {
@@ -379,7 +393,7 @@ impl Declarer {
                 match authority {
                     Some(auth) => {
                         let reply = auth.apply(Some(target.clone()), &p.request).await;
-                        let (o, f) = classify(&reply);
+                        let (o, f) = self.recorded(&p, &reply, classify(&reply)).await;
                         self.declared(me, &p, &target, "self", addressed_now, o, f, true);
                     }
                     None => {
@@ -411,7 +425,7 @@ impl Declarer {
                 let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &owed).instrument(completion_span(&p, &target)).await;
                 let (outcome, finished, typed) = match &out {
                     RpcOutcome::Reply(r) => {
-                        let (o, f) = classify(r.value());
+                        let (o, f) = this.recorded(&p, r.value(), classify(r.value())).await;
                         (o, f, true)
                     }
                     other => (format!("{}: {}", other.name(), other.code().name()), false, false),
@@ -428,6 +442,20 @@ impl Declarer {
                 wake.poke();
             });
             inflight.insert(key, Inflight { to, task });
+        }
+    }
+
+    /// A Mesh ReadyForTraffic the fabric-primary answered (`Applied` or `AlreadyApplied`) is recorded on
+    /// this admin's own Mesh record before its declaration is finished (Q144): a write that does not
+    /// land leaves the declaration owed, and the next answer writes it again.
+    async fn recorded(&self, p: &Pending, reply: &StatusReply, (outcome, finished): (String, bool)) -> (String, bool) {
+        let (StatusRequest::DeclareMeshState { mesh_id, state: state @ MeshState::ReadyForTraffic }, StatusReply::Applied | StatusReply::AlreadyApplied) = (&p.request, reply) else {
+            return (outcome, finished);
+        };
+        let Some(record) = self.record_mesh.get() else { return (outcome, finished) };
+        match (record.0)(mesh_id.clone(), *state).await {
+            Ok(()) => (outcome, finished),
+            Err(why) => (format!("{outcome}; the Mesh record write did not land: {why}"), false),
         }
     }
 
@@ -1124,7 +1152,7 @@ mod tests {
     /// the fabric's ready-for-traffic row.
     #[tokio::test]
     async fn a_fabric_primary_that_never_heard_ready_owes_the_event_on_the_ready_row_on_the_store_root() {
-        use crate::fabric_storage::{FabricEventRow, FabricStorage, MemoryFabricStorage};
+        use crate::fabric_storage::{FabricRecord, FabricStorage, MemoryFabricStorage};
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let mut v = view("mesh1.admin.1", "mesh1.admin.1");
         v.fabric.status = ScopeStatus::Pending;
@@ -1140,7 +1168,7 @@ mod tests {
         assert!(!d.read_first_ready(&rows, &v).await.unwrap(), "no ready-for-traffic row of the fabric on the root");
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
         assert!(events(&d).is_empty(), "nothing owed before the fabric first reached ready-for-traffic");
-        rows.put_fabric_event(&FabricEventRow { fabric_id: v.fabric.id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+        rows.put_fabric(&FabricRecord { fabric_id: v.fabric.id.clone(), name: v.fabric.name.clone(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
         assert!(d.read_first_ready(&rows, &v).await.unwrap(), "the root's row says the fabric first reached ready-for-traffic");
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
         assert_eq!(events(&d), vec![Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "owed at each mesh primary, decided on the root's row");
@@ -1163,6 +1191,42 @@ mod tests {
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ReadyForTraffic, true, None, &v, &ids);
         let both = d.due(&NodeId::mint(), &v, &none).len();
         assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
+    }
+
+    /// CONTRACT (Q144; lifecycles/states.md "Who sets each state", mesh ReadyForTraffic: "the
+    /// fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and
+    /// the state is durable at that write; the declaration stays owed until then and is answered
+    /// `Applied` again if repeated"): a mesh-primary answered `Applied` whose Mesh record write does not
+    /// land (killed between the answer and its write) keeps its declaration owed; the next answer,
+    /// `Applied` again, is written on the record and finishes it. Must NOT happen: the declaration
+    /// finished on the answer alone, so a lost write leaves the state answered and never durable.
+    #[tokio::test]
+    async fn a_mesh_ready_answered_stays_owed_until_its_mesh_record_write_lands() {
+        let d = Declarer::new();
+        let landed: Arc<std::sync::Mutex<Vec<(crate::model::MeshId, MeshState)>>> = Default::default();
+        let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (l, r) = (landed.clone(), refuse.clone());
+        let _ = d.record_mesh.set(RecordMesh(Arc::new(move |id, state| {
+            let (l, r) = (l.clone(), r.clone());
+            Box::pin(async move {
+                if r.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err("the writer was lost before its write".to_string());
+                }
+                l.lock().unwrap().push((id, state));
+                Ok(())
+            })
+        })));
+        let mesh_id = crate::model::MeshId::mint();
+        let request = StatusRequest::DeclareMeshState { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic };
+        let p = Pending { key: Key::Mesh(mesh_id.to_string(), MeshState::ReadyForTraffic), to: Authority::FabricPrimary, request, attempts: 0, last: None, sent: None, trace: None };
+        let applied = StatusReply::Applied;
+        let (outcome, finished) = d.recorded(&p, &applied, classify(&applied)).await;
+        assert!(!finished && outcome.contains("did not land"), "answered, not written: still owed: {outcome}");
+        assert!(landed.lock().unwrap().is_empty());
+        refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (outcome, finished) = d.recorded(&p, &applied, classify(&applied)).await;
+        assert!(finished, "the next Applied is written and finishes the declaration: {outcome}");
+        assert_eq!(*landed.lock().unwrap(), vec![(mesh_id, MeshState::ReadyForTraffic)], "the state is on the mesh's own record");
     }
 
     /// CONTRACT (states.md: "One commit stores the row, applies it, gossips it and answers the op";

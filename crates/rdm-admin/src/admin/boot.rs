@@ -365,6 +365,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
     let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, connections: open_connections, builds: journal, round_actions, finish_writes, writes_to } = storage.open(&scope, embedding_round_actions).await?;
     storage_step.record("writes_to", writes_to.as_str());
+    // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
+    // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
+    let caches = crate::record_cache::Caches::default();
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
     let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::on(journal.clone()));
     // Each mesh's in-flight row (R-BI7 caveat 3): the one set of rows the claim door, the drive's
@@ -475,7 +478,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             }
             // The inherited birth's node.delete, then this node's claim of its path.name: the first writes
             // of this birth (`take_inherited_name`). A name another node holds refuses the start by name.
-            crate::node_rows::take_inherited_name(&*nodes_storage, own, &node_id)
+            crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, own, &node_id)
                 .instrument(step.clone())
                 .await
                 .map_err(|e| format!("refusing to start: {}: {} takes {} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name, own.node_id))?;
@@ -505,7 +508,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
             // is written when it holds its mesh's seat, as every member's is (`NodeRows::arrivals`).
             if !cfg.mesh_primary && !cfg.fabric_primary {
-                crate::node_rows::claim_day0_name_in_boot(&boot, &*nodes_storage, &name, &node_id)
+                crate::node_rows::claim_day0_name_in_boot(&boot, &*nodes_storage, &caches.nodes, &name, &node_id)
                     .await
                     .map_err(|e| format!("refusing to start: {}: Day 0's {node_id} claims {name}: {e}", cfg.data_dir.display()))?;
             }
@@ -857,7 +860,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The current Build: Day 0 accepts the first Build itself; every other admin fetches it from
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
-                let records = Arc::new(Records::default());
+                let records = Arc::new(Records { caches: caches.clone(), ..Records::default() });
                 records.set_me(node_id.clone());
                 {
                     if inherited.is_some() {
@@ -1133,7 +1136,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     Arc::new(std::sync::OnceLock::new());
                                 // The record the writer of this admin's mesh rows holds, shared with its config door: a config
                                 // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
-                                let written = Arc::new(crate::node_rows::WrittenRows::default());
+                                let written = records.caches.nodes.clone();
                                 let _ = configs_slot.set(Arc::new(
                                     crate::node_config::NodeConfigs::new(
                                         node_rpc.client.clone(),
@@ -1152,6 +1155,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     meshes_storage: mesh_storage.clone(),
                                     fabric_storage: fabric_storage.clone(),
                                     nodes_storage: nodes_storage.clone(),
+                                    caches: records.caches.clone(),
                                     me: name.clone(),
                                     node_id: node_id.clone(),
                                     fabric_id: cfg.fabric_id.clone(),
@@ -1199,6 +1203,22 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // a fabric round is owed through it.
                             let declarer = crate::status_declare::Declarer::with_first_ready(records.first_ready.clone());
                             declarer.fabric_recovery.set(crate::fabric_recovery::reader(book.clone(), records.clone()));
+                            // As its mesh's primary, this admin records the Mesh state the fabric-primary
+                            // answered on its own Mesh record (Q144).
+                            let _ = declarer.record_mesh.set(crate::status_declare::RecordMesh({
+                                let (meshes, caches, mesh) = (mesh_storage.clone(), records.caches.clone(), cfg.mesh.clone());
+                                Arc::new(move |mesh_id: MeshId, state: rdm_core::status::MeshState| {
+                                    let (meshes, caches, mesh) = (meshes.clone(), caches.clone(), mesh.clone());
+                                    Box::pin(async move {
+                                        let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh.clone());
+                                        let written = caches.update_mesh(&*meshes, &mesh_id, Some(base), |r| { r.states.insert(state); }).await;
+                                        let outcome = if written.is_ok() { "recorded" } else { "record-refused" };
+                                        tracing::info_span!("rdm.node_admin.mesh.update.via-applied", mesh = %mesh, mesh_id = %mesh_id, state = ?state, outcome, error = %written.as_ref().err().cloned().unwrap_or_default(), "otel.kind" = "internal")
+                                            .in_scope(|| tracing::info!("the fabric-primary answered the mesh's state: its primary records it on the mesh's own record"));
+                                        written.map(|_| ())
+                                    })
+                                })
+                            }));
                             if let Some(maker) = cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()) {
                                 let _ = declarer.maker.set(maker.node_id.clone());
                             }
@@ -1465,7 +1485,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let (own_seat_tx, own_seat) = tokio::sync::watch::channel(false);
                             let contacts_task = {
                                 let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
-                                let writer = MeshRowsWriter::new(&name.to_string(), cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
+                                let writer = MeshRowsWriter::new(&name.to_string(), cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone());
                                 let park = park_gate.clone();
                                 tokio::spawn(super::rows_writer::keep_mesh_rows(writer, book, fabric_id, own_seat, park))
                             };
@@ -1545,12 +1565,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }),
                                     primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
                                     issuer: issuer.clone(),
-                                    nodes: Some(nodes_storage.clone()),
+                                    nodes: Some((nodes_storage.clone(), records.caches.nodes.clone())),
                                     row: Arc::new({
                                         let rows = nodes_storage.clone();
                                         move |name: PathName| {
                                             let rows = rows.clone();
-                                            Box::pin(async move { rows.node_row_at(&name).await.map_err(|e| e.to_string()) })
+                                            Box::pin(async move { crate::node_rows::record_at(&*rows, &name).await.map_err(|e| e.to_string()) })
                                         }
                                     }),
                                 });
@@ -1676,7 +1696,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             }
                                                         }
                                                     }
-                                                } else if let Ok(Some(row)) = rows.node_row_at(&d.node.name).await {
+                                                } else if let Ok(Some(row)) = crate::node_rows::record_at(&*rows, &d.node.name).await {
                                                     if row.node_id == birth.0 {
                                                         if let Some(t) = row.app_types.filter(|t| t.incarnation == birth.1) {
                                                             // A member of this admin's own mesh: its types are held, it is dialled by no one but §6's repair (Q84).
@@ -2101,6 +2121,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     book: book.clone(),
                                                     provider: runner.provider.clone(),
                                                     nodes_storage: nodes_storage.clone(),
+                                                    written: records.caches.nodes.clone(),
                                                     door: build_slot.clone(),
                                                     client: Some(node_rpc.client.clone()),
                                                     builds: control.builds.clone(),
@@ -2157,6 +2178,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         cfg.mesh.clone(),
                                                         recovery.clone(),
                                                     );
+                                                    let silence_records = records.caches.nodes.clone();
                                                     let park = park_gate.clone();
                                                     let mut cadence =
                                                         crate::offline::Cadence::every(
@@ -2271,7 +2293,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                     // A refusal is spanned where it happened (`offline::put_silence_status`); the memo
                                                     // keeps the last status that stands, and nothing below waits on this row.
-                                                    if crate::offline::put_silence_status(&*silence_nodes, &node, status).await.is_ok() {
+                                                    if crate::offline::put_silence_status(&*silence_nodes, &silence_records, &node, status).await.is_ok() {
                                                         written.insert(node.node_id.clone(), fact);
                                                     }
                                                 };
@@ -2411,6 +2433,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             node_id.clone(),
                                             issuer.clone(),
                                             nodes_storage.clone(),
+                                            records.caches.clone(),
                                             node_rpc.client.clone(),
                                             Arc::new(move |bytes: Vec<u8>| {
                                                 if let Some(own) = own_cert.get() {

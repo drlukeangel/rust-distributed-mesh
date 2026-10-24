@@ -3,6 +3,8 @@
 //! nothing falls back to its data dir. An admin started on a root prepared through the storage adapters,
 //! with no previous process, boots from its rows (R-SB1).
 
+use rdm_admin::node_rows::WriteRecord as _;
+use rdm_admin::node_rows::RecordAt as _;
 use std::time::{Duration, Instant};
 
 /// A bootstrap `rdm-node-admin` run on `env` until it exits: its exit status, its stderr and the
@@ -150,8 +152,7 @@ impl Day0 {
 
     /// The ready-for-traffic row of the fabric, in the status rows of mesh1: the file the fabric event is put as.
     fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        let dir = self.fabric().join("fabric").join("events");
-        std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
+        ready_event_on(&self.fabric().join("fabric").join("record.json"))
     }
 
     /// Day 0 to the end of the fabric's first climb: the Fabric row published at state-commit, the admin saying it
@@ -161,7 +162,7 @@ impl Day0 {
         let running = self.run();
         let until = Instant::now() + Duration::from_secs(30);
         loop {
-            let published = fabric_dirs(&self.store).first().is_some_and(|f| self.store.join(f).join("fabric").join("identity.json").exists());
+            let published = fabric_dirs(&self.store).first().is_some_and(|f| self.store.join(f).join("fabric").join("record.json").exists());
             let said: Vec<String> = first_ready_reasons(&spans_of(&self.dir, running.pid));
             if published && said == ["ready-for-traffic"] && (!row || !self.ready_rows().is_empty()) {
                 return running;
@@ -187,8 +188,8 @@ fn first_ready_reasons(spans: &[serde_json::Value]) -> Vec<String> {
 /// primary"; states.md, "Who sets each state": the fabric-primary sets the fabric's
 /// ready-for-traffic): the fabric-primary puts the ready-for-traffic fabric event on the fabric and
 /// applies it at every mesh primary, its own mesh's included. On a one-mesh fabric the Day-0 admin is
-/// that primary: the fact `fabric/events/<fabric id>-<hex of "ready-for-traffic">.json` stands on the
-/// root once the fabric first reaches ready-for-traffic. What must NOT happen: the fact that the fabric first reached ready-for-traffic
+/// that primary: the event stands on the Fabric record, `fabric/record.json`, on the root once the
+/// fabric first reaches ready-for-traffic. What must NOT happen: the fact that the fabric first reached ready-for-traffic
 /// written on every mesh but the fabric-primary's, so that no row says it on a fabric of one mesh.
 #[test]
 fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
@@ -198,8 +199,8 @@ fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
     let rows = day0.ready_rows();
     assert_eq!(rows.len(), 1, "one ready-for-traffic row on the root: {rows:?}");
     let fabric = fabric_dirs(&day0.store).remove(0);
-    let hex: String = "ready-for-traffic".bytes().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(rows[0].file_name().and_then(|n| n.to_str()), Some(format!("{fabric}-{hex}.json").as_str()), "the row is keyed by the fabric and the event");
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&rows[0]).unwrap()).unwrap();
+    assert_eq!(record["record"]["fabric_id"].as_str(), Some(fabric.as_str()), "the event stands on the fabric's own record: {record}");
     let put = spans.iter().find(|s| s["name"] == "rdm.node_admin.status.update.via-declare" && format!("{}", s["attributes"]["key"]).contains("FabricEventAt")).unwrap_or_else(|| panic!("the fabric-primary declared no fabric event: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
     assert_eq!(put["attributes"]["via"].as_str(), Some("self"), "the Day-0 admin is its own mesh's primary: {put}");
     println!("trace_id={}", put["trace_id"].as_str().unwrap_or(""));
@@ -250,12 +251,11 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
     }
     let fabric_id = rdm_admin::model::FabricId::parse(&fabric_dirs(&day0.store).remove(0)).unwrap();
     let row = {
-        use rdm_admin::storage::NodesStorage as _;
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&day0.store, &fabric_id).unwrap();
             let reader = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&day0.data_dir, &root, "mesh1", &reader).await.unwrap();
-            nodes.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap()
+            nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap()
         })
     };
     let row = row.expect("the store root holds the row at mesh1.admin.1");
@@ -299,7 +299,7 @@ impl Prepared {
     fn at(name: &str, history: History) -> Self {
         use rdm_admin::fabric_storage::FabricStorage as _;
         use rdm_admin::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId};
-        use rdm_admin::storage::{MeshStorage as _, NodesStorage as _};
+        use rdm_admin::storage::NodesStorage as _;
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
         let _ = std::fs::remove_dir_all(&dir);
         let store = dir.join("store");
@@ -316,7 +316,7 @@ impl Prepared {
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
             rdm_admin::fabric_storage::claim_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &incarnation).await.unwrap();
-            rdm_admin::storage::claim_mesh(&meshes, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false }).await.unwrap().expect("mesh1's name is free");
+            rdm_admin::storage::claim_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false, states: Default::default() }).await.unwrap().expect("mesh1's name is free");
             let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &incarnation).await.unwrap();
             let own = rdm_admin::storage::NodeRecord {
                 node_id: node_id.clone(),
@@ -356,10 +356,12 @@ impl Prepared {
                 renamed_from: None,
                 app_types: None, inherited_by: None,
                 executable: None,
+                births: Vec::new(),
+                predecessor: None,
             };
-            nodes.put_node_row(&row).await.unwrap();
+            nodes.write_record(&row).await.unwrap();
             if history == History::ReadyForTraffic {
-                fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+                { let mut r = fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new() }); r.events.push("ready-for-traffic".into()); fabric.put_fabric(&r).await.unwrap(); }
             }
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &incarnation).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
@@ -381,12 +383,11 @@ impl Prepared {
     }
 
     fn fabric_row(&self) -> std::path::PathBuf {
-        self.store.join(self.fabric_id.to_string()).join("fabric").join("identity.json")
+        self.store.join(self.fabric_id.to_string()).join("fabric").join("record.json")
     }
 
     fn ready_rows(&self) -> Vec<std::path::PathBuf> {
-        let dir = self.store.join(self.fabric_id.to_string()).join("fabric").join("events");
-        std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
+        ready_event_on(&self.fabric_row())
     }
 
     /// The own row the admin wrote: its incarnation, fabric id and mesh id.
@@ -410,7 +411,7 @@ impl Prepared {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let reader = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &reader).await.unwrap();
-            let row = nodes.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
+            let row = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
             let contacts = nodes.contacts().await.unwrap().into_iter().map(|c| c.node_id.to_string()).collect();
             (row, contacts)
         })
@@ -570,7 +571,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     assert_eq!(ready["trace_id"], opened["trace_id"], "Ready ends the boot's own story");
     root.end(running);
     assert_eq!(fabric_dirs(&root.store), vec![root.fabric_id.to_string()], "no second fabric directory");
-    let mesh_row: serde_json::Value = serde_json::from_slice(&std::fs::read(root.store.join(root.fabric_id.to_string()).join("meshes").join("mesh1.json")).unwrap()).unwrap();
+    let mesh_row: serde_json::Value = serde_json::from_slice(&std::fs::read(root.store.join(root.fabric_id.to_string()).join("mesh-records").join(format!("{}.json", root.mesh_id))).unwrap()).unwrap();
     assert_eq!(mesh_row["record"]["mesh_id"].as_str(), Some(root.mesh_id.to_string().as_str()), "mesh1's row keeps its MeshId: {mesh_row}");
     let (row, contacts) = root.rows_after();
     let row = row.expect("a row at mesh1.admin.1");
@@ -621,7 +622,11 @@ fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_
     let mut running = root.start();
     let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     assert_zero_contact_recovery(&spans);
-    assert!(first_ready_reasons(&spans).is_empty(), "the admin knew at boot: {:?}", first_ready_reasons(&spans));
+    // By the time it reloads its Build it has said no first-ready: an ordering, read from the spans'
+    // starts (its own climb may say `ready-for-traffic` soon after, before this read sees the reload).
+    let reloaded_at = spans.iter().find(|s| s["name"] == BUILD_RELOADED).and_then(|s| s["start_unix_nano"].as_u64()).unwrap();
+    let before: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready" && s["start_unix_nano"].as_u64().is_some_and(|t| t <= reloaded_at)).collect();
+    assert!(before.is_empty(), "the admin knew at boot: {before:?}");
     let spans = root.end(running);
     let reasons = first_ready_reasons(&spans);
     assert!(reasons.iter().all(|r| r == "ready-for-traffic"), "the admin knew from something other than the fabric reaching ready-for-traffic: {reasons:?}");
@@ -641,13 +646,16 @@ fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_
 #[test]
 fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
     let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::StateCommit);
-    let mesh_row = root.store.join(root.fabric_id.to_string()).join("meshes").join("mesh1.json");
-    let held: serde_json::Value = serde_json::from_slice(&std::fs::read(&mesh_row).unwrap()).unwrap();
+    let fabric_root = root.store.join(root.fabric_id.to_string());
+    let own_record = fabric_root.join("mesh-records").join(format!("{}.json", root.mesh_id));
+    let name_claim = fabric_root.join("mesh-names").join("mesh1.json");
+    let held: serde_json::Value = serde_json::from_slice(&std::fs::read(&own_record).unwrap()).unwrap();
+    let claim: serde_json::Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap()).unwrap();
     let own_id = root.mesh_id.to_string();
-    // A start against `row` at mesh1 on the root: refused by name at its storage step, before it writes
-    // its own row again.
-    let refused = |row: serde_json::Value, what: &str| -> (String, u32) {
-        std::fs::write(&mesh_row, serde_json::to_vec(&row).unwrap()).unwrap();
+    // A start against `row` written at `file` on the root: refused by name at its storage step, before it
+    // writes its own row again.
+    let refused = |file: &std::path::Path, row: serde_json::Value, what: &str| -> (String, u32) {
+        std::fs::write(file, serde_json::to_vec(&row).unwrap()).unwrap();
         let mut running = root.start();
         let until = Instant::now() + BOOTS_WITHIN;
         loop {
@@ -663,7 +671,9 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
         }
     };
     let recreated_id = rdm_admin::model::MeshId::mint().to_string();
-    let (err, pid) = refused(serde_json::json!({"format": held["format"], "record": {"mesh_id": recreated_id, "name": "mesh1", "dead": false}}), "mesh1 created again");
+    // mesh1 created again: its record at its own id, and the name's claim naming it.
+    std::fs::write(fabric_root.join("mesh-records").join(format!("{recreated_id}.json")), serde_json::to_vec(&serde_json::json!({"format": held["format"], "record": {"mesh_id": recreated_id, "name": "mesh1", "dead": false}})).unwrap()).unwrap();
+    let (err, pid) = refused(&name_claim, serde_json::json!({"format": claim["format"], "record": {"name": "mesh1", "mesh_id": recreated_id}}), "mesh1 created again");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
     let spans = spans_of(&root.dir, pid);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));
@@ -671,7 +681,14 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(root.fabric_id.to_string().as_str()), "{opened}");
     assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(own_id.as_str()), "the storage step names the mesh id the own row holds: {opened}");
     assert!(opened["attributes"]["error"].as_str().is_some_and(|e| e.contains(&recreated_id)), "the storage step names the refusal and the mesh created again: {opened}");
-    let (err, _) = refused(serde_json::json!({"format": held["format"], "record": {"mesh_id": own_id, "name": "mesh1", "dead": true}}), "mesh1 Dead");
+    std::fs::write(&name_claim, serde_json::to_vec(&claim).unwrap()).unwrap();
+    let (err, _) = refused(&own_record, serde_json::json!({"format": held["format"], "record": {"mesh_id": own_id, "name": "mesh1", "dead": true, "states": ["Dead"]}}), "mesh1 Dead");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
 }
 
+/// The Fabric record at `file` when it holds the ready-for-traffic event: the fact the fabric first
+/// reached it, as a list of the one record that holds it (empty while it holds none).
+fn ready_event_on(file: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let held = std::fs::read(file).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).is_some_and(|v| v["record"]["events"].as_array().is_some_and(|e| e.iter().any(|x| x == "ready-for-traffic")));
+    if held { vec![file.to_path_buf()] } else { Vec::new() }
+}

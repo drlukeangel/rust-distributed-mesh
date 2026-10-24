@@ -417,21 +417,29 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert_eq!(held["call_outcome"].as_str(), Some("reply"), "mesh1.rpc.1 originated its connection to mesh2.rpc.1 during state-sync: {held}");
     let before = rows_on(&root);
     estate.artifact("rows-before-state-commit.json", &json!(before));
-    // Q97: every birth that made a join holds the Pending its join report's acceptance recorded beside
-    // its ReadyForTraffic; the Day-0 root joined nobody. Each is a fact on the birth among its own mesh's nodes.
+    // Q54 with whole records (storage-whole-records.md, "Durability"): a Node record is written straight
+    // to the store, before state-commit too, with its name claim and its path.name entry; Q97: every
+    // birth that made a join holds the Pending its join report's acceptance recorded beside its
+    // ReadyForTraffic, the Day-0 root joined nobody, each on its node's record.
     let mut declarations: Vec<String> = nodes.iter().flat_map(|n| {
         let name = s(&n["name"]);
         let mesh = name.split('.').next().unwrap().to_string();
-        let joined = name != "mesh1.admin.1";
-        let states: &[&str] = if joined { &["Pending", "ReadyForTraffic"] } else { &["ReadyForTraffic"] };
-        states.iter().map(|state| format!("nodes/{mesh}/declared/{}--{}--{state}.json", s(&n["node_id"]), s(&n["incarnation_id"]))).collect::<Vec<_>>()
+        vec![format!("nodes/{mesh}/names/{name}.json"), format!("nodes/{mesh}/paths/{name}.json"), format!("nodes/{mesh}/records/{}.json", s(&n["node_id"]))]
     }).collect();
     declarations.sort();
+    for n in &nodes {
+        let name = s(&n["name"]);
+        let mesh = name.split('.').next().unwrap().to_string();
+        let record: Value = serde_json::from_slice(&std::fs::read(root.join(format!("nodes/{mesh}/records/{}.json", s(&n["node_id"])))).unwrap()).unwrap();
+        let birth = record["record"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
+        let want: &[&str] = if name != "mesh1.admin.1" { &["Pending", "ReadyForTraffic"] } else { &["ReadyForTraffic"] };
+        assert_eq!(birth["declared"], json!(want), "{name}'s record holds the states its join and its ready recorded: {record}");
+    }
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
     // meshes' attempt claims are there before state-commit, beside the declarations.
     let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("fabric/builds/") || (r.starts_with("meshes/") && (r.contains("/builds/") || r.contains("/claims/"))));
     assert!(build_facts.iter().any(|r| r.starts_with("fabric/builds/")), "Q61: the two-mesh Build's committed facts stand on {} before state-commit: {before:#?}", root.display());
-    assert_eq!(rows, declarations, "Q54, Q97: of every other row, only the four exact births' acknowledged declarations (each joined birth's Pending and every birth's ReadyForTraffic, under the birth's own mesh) reach {} before state-commit; the rest stay held", root.display());
+    assert_eq!(rows, declarations, "Q54, Q97: of every other row, only the four births' node records, each with its name claim and its path.name entry, reach {} before state-commit; the rest stay held", root.display());
     // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
     // `<store_dir>/fabrics/fabric1`, and is held in the fabric-primary's scratchpad like every row.
     let name_claim = root.parent().expect("the store root sits under the store_dir").join(rdm_admin::store_root::FABRIC_NAMES).join("fabric1.json");
@@ -444,17 +452,18 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert_eq!(claimed["record"]["fabric_id"].as_str(), root.file_name().and_then(|n| n.to_str()), "the name claim names this fabric: {claimed}");
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
-    assert!(holds("fabric/identity.json"), "the fabric-primary published the Fabric row: {after:#?}");
+    assert!(holds("fabric/record.json"), "the fabric-primary published the Fabric record: {after:#?}");
     assert!(holds("fabric/builds/"), "the fabric-primary's Build journal stands under fabric/builds/ (R-BI6): {after:#?}");
     // The per-seat rows under `fabric/seats` go (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C2: "the leadership view is folded from the
     // transfer rows"): under fabric/ the fabric-primary holds its identity row, its `fabric/builds/`
     // Build journal (R-BI6) and the fabric's events (storage-by-object.md), and nothing else.
-    let only_identity_builds_and_events = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/identity.json" || r.starts_with("fabric/builds/") || r.starts_with("fabric/events/"));
+    let only_identity_builds_and_events = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/record.json" || r.starts_with("fabric/builds/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity, fabric/builds/ and fabric/events/ and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
-        assert!(holds(&format!("meshes/{mesh}.json")), "{mesh}'s primary published its Mesh row: {after:#?}");
+        assert!(holds(&format!("mesh-names/{mesh}.json")), "{mesh}'s primary published its Mesh name claim: {after:#?}");
     }
+    assert_eq!(after.iter().filter(|r| r.starts_with("mesh-records/")).count(), 2, "each mesh's record stands on the root: {after:#?}");
     for name in &want {
         let mesh = name.split('.').next().unwrap();
         assert!(holds(&format!("nodes/{mesh}/contacts/{}.json", id_of[name])), "{mesh}'s primary published {name}'s Node row: {after:#?}");
@@ -510,7 +519,9 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         }
         assert_eq!(stores.contains("connections"), name == "mesh1.rpc.1", "only mesh1.rpc.1, which originated a connection, published connections rows: {name}: {stores}");
         if name.contains(".admin.") {
-            assert!(stores.contains("meshes") && stores.contains("nodes"), "{name}, its mesh's primary, published its Mesh row and its members' Node rows: {stores}");
+            // A Node record is written straight to the store (states.md :51, Q54): what a mesh's primary
+            // publishes is its Mesh record with its name claim, and its mesh's contacts.
+            assert!(stores.contains("mesh-records") && stores.contains("mesh-names") && stores.contains("/contacts"), "{name}, its mesh's primary, published its Mesh record, its name claim and its mesh's contacts: {stores}");
         }
         if name != "mesh1.admin.1" {
             // fabric/ has one writer, the fabric-primary (R14 item 2): no other node holds a row there.

@@ -100,12 +100,11 @@ side of its validity.
 
 ## Tracking
 
-The issuer writes the birth's cert row when the birth holds the cert, at its join's admission and on each renewal's `CertRenewed`: `NodeCertRow { node_id,
-name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a row on the birth in `nodes.storage` beside
-`data-dir-lost` and `data-dir-unreadable`, keyed by the birth (format `node-cert/2`); the written expiry is the receipt, and the row
-is the birth's renewal state. `node.get` surfaces it as
-`cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary reads the rows and
-continues the schedule from them; nothing about renewal lives only in memory. Every cert row is in the
+The node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `issuer_expires_at`, `renew_at`) on the node's record when the birth
+holds the cert: a member's at its join's admission and on its renewal's `CertRenewed`, the mesh-primary's own when it installs the cert the fabric-primary
+issued. They sit beside `data-dir-lost` and `data-dir-unreadable`; the written expiry is the receipt, and the dates are the birth's renewal state.
+`node.get` surfaces them as `cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary reads its nodes' records and continues the
+schedule from them; nothing about renewal lives only in memory. Every cert row is in the
 fabric-level projection: `fabric.get` shows the next expiry across the fabric, and a mesh whose renewals
 stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) is surfaced on `fabric.get` as `renewals: stalled`. There is no revocation: expiry is the revocation, which is why the
 member TTL is a day. The TTLs and the renewal point are fabric policy, read once by the bootstrap admin

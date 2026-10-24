@@ -186,6 +186,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         meshes_storage: stores.clone(),
         fabric_storage: stores,
         nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
+        caches: Default::default(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
         commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
@@ -591,14 +592,24 @@ impl Refusing {
 
 #[async_trait::async_trait]
 impl MeshStorage for Refusing {
-    async fn mesh(&self, name: &str) -> Result<Option<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
-        self.meshes.mesh(name).await
+    async fn mesh(&self, mesh_id: &MeshId) -> Result<Option<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
+        self.meshes.mesh(mesh_id).await
+    }
+    async fn mesh_named(&self, name: &str) -> Result<Option<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
+        self.meshes.mesh_named(name).await
     }
     async fn put_mesh(&self, record: &rdm_admin::storage::MeshRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.check(&format!("mesh-records/{}.json", record.mesh_id))?;
         self.meshes.put_mesh(record).await
     }
     async fn meshes(&self) -> Result<Vec<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
         self.meshes.meshes().await
+    }
+    async fn claim_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<Result<(), MeshId>, rdm_admin::storage_error::StorageError> {
+        self.meshes.claim_mesh_name(name, mesh_id).await
+    }
+    async fn release_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.meshes.release_mesh_name(name, mesh_id).await
     }
     async fn take_in_flight(&self, mesh: &str, claim: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::mesh_claims::Taken, rdm_admin::storage_error::StorageError> {
         self.meshes.take_in_flight(mesh, claim).await
@@ -609,22 +620,16 @@ impl MeshStorage for Refusing {
     async fn in_flight(&self, mesh: &str) -> Result<Option<rdm_admin::mesh_claims::InFlight>, rdm_admin::storage_error::StorageError> {
         self.meshes.in_flight(mesh).await
     }
-    async fn put_mesh_status(&self, mesh: &str, row: &rdm_admin::storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check(&format!("meshes/{mesh}/status/refused.json"))?;
-        self.meshes.put_mesh_status(mesh, row).await
-    }
-    async fn mesh_status_held(&self, mesh: &str, row: &rdm_admin::storage::MeshStatusRow) -> Result<bool, rdm_admin::storage_error::StorageError> {
-        self.meshes.mesh_status_held(mesh, row).await
-    }
-    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, rdm_admin::storage_error::StorageError> {
-        self.meshes.mesh_statuses().await
-    }
 }
 
 #[async_trait::async_trait]
 impl FabricStorage for Refusing {
-    async fn fabric(&self) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
+    async fn fabric(&self) -> Result<Option<rdm_admin::fabric_storage::FabricRecord>, rdm_admin::storage_error::StorageError> {
         self.fabric.fabric().await
+    }
+    async fn put_fabric(&self, record: &rdm_admin::fabric_storage::FabricRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.check("fabric/record.json")?;
+        self.fabric.put_fabric(record).await
     }
     async fn name_claim(&self, name: &str) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
         self.fabric.name_claim(name).await
@@ -634,16 +639,6 @@ impl FabricStorage for Refusing {
     }
     async fn remove_name_claim(&self, name: &str) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.fabric.remove_name_claim(name).await
-    }
-    async fn put_identity(&self, identity: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fabric.put_identity(identity).await
-    }
-    async fn put_fabric_event(&self, row: &rdm_admin::fabric_storage::FabricEventRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.check("fabric/events/refused.json")?;
-        self.fabric.put_fabric_event(row).await
-    }
-    async fn fabric_events(&self) -> Result<Vec<rdm_admin::fabric_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
-        self.fabric.fabric_events().await
     }
 }
 
@@ -671,14 +666,14 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
 
         let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
-        assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("mesh.storage refused the Mesh status fact") && reason.contains("the disk refused the put")), "{refused:?}");
+        assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("mesh.storage refused the record") && reason.contains("the disk refused the put")), "{refused:?}");
         assert!(rig.authority.declared.lock().unwrap().meshes.is_empty(), "a refused row holds nothing as applied");
-        assert!(store.meshes.mesh_statuses().await.unwrap().is_empty());
+        assert!(store.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().is_empty());
 
         store.refuse.store(false, Ordering::SeqCst);
         let first = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(first, StatusReply::Applied, "the retry of a refused put applies; it is not AlreadyApplied");
-        assert_eq!(store.meshes.mesh_statuses().await.unwrap().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
+        assert_eq!(store.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
         let again = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(again, StatusReply::AlreadyApplied);
 
@@ -687,10 +682,10 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
-        assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event fact")), "{ev_refused:?}");
+        assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event")), "{ev_refused:?}");
         assert!(rig3.authority.declared.lock().unwrap().fabric.is_empty());
         // The fabric-primary puts the fact on the fabric, then applies it.
-        store.fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new() }); r.events.push("ready-for-traffic".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same facts: what it folds is what it applied.
@@ -879,7 +874,7 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ReadyForTraffic };
         // Each event is the fabric-primary's fact on the fabric before it applies it at a mesh-primary.
-        store.fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new() }); r.events.push("ready-for-traffic".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The seat moves: fp2 holds it, fp1 does not.
         {
@@ -894,7 +889,7 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
             }
         }
         let shutdown = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } };
-        store.fabric.put_fabric_event(&rdm_admin::fabric_storage::FabricEventRow { fabric_id: fabric.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new() }); r.events.push("shutdown-initiated:mesh1.admin.1".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         let old = reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await);
         assert_eq!(old, StatusReply::AlreadyApplied, "the old authority's repeat of an applied key is the same event");
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
@@ -915,8 +910,8 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
         }
         assert_eq!(reply(&call(&rig2, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "the restarted receiver folded the event");
         assert_eq!(reply(&call(&rig2, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied);
-        let spans = finish(&capture, &dir, json!({"cell": cell, "old_authority": format!("{old:?}"), "events_held": store.fabric_events().await.unwrap().len()}));
-        assert_eq!(store.fabric_events().await.unwrap().len(), 2, "each event is one row");
+        let spans = finish(&capture, &dir, json!({"cell": cell, "old_authority": format!("{old:?}"), "events_held": store.fabric().await.unwrap().map_or(0, |r| r.events.len())}));
+        assert_eq!(store.fabric().await.unwrap().map_or(0, |r| r.events.len()), 2, "each event is on the Fabric record once");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 2);
         assert!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-primary")]).is_empty(), "no event refused for its caller");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 5);
@@ -1166,14 +1161,14 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
         let applied = reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await);
         assert_eq!(applied, StatusReply::Applied, "mesh1's primary, a Mesh this holder only heard of");
         let not_primary = reply(&call(&rig, &mesh1_other, &declare(&id1), &CallOptions::default()).await);
-        assert_eq!(not_primary, StatusReply::AlreadyApplied, "decided for mesh1, whoever sends it");
+        assert_eq!(not_primary, StatusReply::Applied, "decided for mesh1, whoever sends it, and answered Applied again (Q144)");
         let own_mesh = reply(&call(&rig, &mesh1_primary, &declare(&id2), &CallOptions::default()).await);
         assert_eq!(own_mesh, StatusReply::Applied, "the Mesh this holder's own Build created");
         let unknown = reply(&call(&rig, &mesh1_primary, &declare(&MeshId::mint()), &CallOptions::default()).await);
         assert_eq!(unknown, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a Mesh this holder holds neither way");
-        assert_eq!(reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await), StatusReply::AlreadyApplied);
+        assert_eq!(reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await), StatusReply::Applied, "a repeated declaration is answered Applied again (Q144)");
         let spans = finish(&capture, &dir, json!({"cell": cell, "applied": format!("{applied:?}"), "non_primary": format!("{not_primary:?}"), "own_mesh": format!("{own_mesh:?}"), "unknown_mesh": format!("{unknown:?}")}));
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "applied")]).len(), 2);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "applied")]).len(), 4, "the two repeats answered Applied (Q144)");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-primary")]).len(), 1);
     });
 }

@@ -39,7 +39,7 @@ pub const ALPN: &[u8] = b"rafka-node-rpc/1";
 
 pub use client::{AcceptTrigger, Budget, CallEvidence, CallOptions, CarriedIdentity, ConnectionObserver, Decode, NodeRpcClient, RoutePolicy};
 pub use delivery::{Acceptance, Delivery, DeliverySeams, DeliveryStats, Pacing};
-pub use forward::CarrierEdges;
+pub use forward::{CarriedReplies, CarrierEdges};
 pub use before_ready::{CancelToken, BeforeReadyGate, Retirement};
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
 pub use pool::{ClosedConnection, Failpoint, PoolKey};

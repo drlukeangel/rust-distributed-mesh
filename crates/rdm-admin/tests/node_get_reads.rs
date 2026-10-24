@@ -1,9 +1,11 @@
-//! `node.get`'s reads (i144): every read is a keyed point read and none lists a store. A birth's
-//! status-row facts are read by its exact key or through their `path.name` index; a birth the view
-//! no longer holds is named at a path the current Build plans.
+//! `node.get`'s reads (i144): every read is a keyed point read and none lists a store. A birth's facts
+//! are read on its node's record, by its id, or on the record its `predecessor` names, or on the
+//! record the `path.name` index names; a birth the view no longer holds is named at a path the
+//! current Build plans.
 
 use rdm_admin::model::*;
-use rdm_admin::storage::{NodeDataDirLostRow, NodeDataDirUnreadableRow, NodesStorage};
+use rdm_admin::storage::{BirthRef, DataDirLost, DataDirUnreadable, NodeRow};
+use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::storage::MemoryNodesStorage;
 use rdm_admin::topology::Topology;
 use rdm_core::status::{NodeSelect, StatusReply};
@@ -29,15 +31,17 @@ async fn answer(view: &Topology, storage: &MemoryNodesStorage, status: &MemoryNo
     }
 }
 
-/// CONTRACT (i144; a read is a point read through an index, never a scan): a birth recovered over a
+/// CONTRACT (i144; a read is a point read through a key or an index, never a scan;
+/// storage-whole-records.md: "A birth recovered over a fresh data dir reads its predecessor's
+/// `data-dir-lost` through the `predecessor` reference on its own record"): a birth recovered over a
 /// fresh data dir at the path.name of a birth whose data dir was lost answers that loss on
-/// `node.get`, read from the data-dir-lost rows' `path.name` index; a birth the view no longer holds
-/// (deleted by its recovery, held with its data dir unreadable) is answered, by mesh and by its id,
-/// at the path the current Build plans, read from the data-dir-unreadable rows' `path.name` index;
-/// a birth with neither fact answers neither. A Build that cannot be read names no path: the births
-/// the view holds are still answered. A removed unreadable fact is gone from its index too. Must NOT
-/// happen: the loss answered only on the exited birth, the held birth missing while the Build plans
-/// its path, a store listed (the status store has no list on this path to call).
+/// `node.get`, read on the record its own record names as its predecessor; a birth the view no longer
+/// holds (deleted by its recovery, held with its data dir unreadable) is answered, by mesh and by its
+/// id, at the path the current Build plans, read on the record the `path.name` index names there; a
+/// birth with neither fact answers neither. A Build that cannot be read names no path: the births the
+/// view holds are still answered. A cleared unreadable fact is answered no more. Must NOT happen: the
+/// loss answered only on the exited birth, the held birth missing while the Build plans its path, a
+/// store listed (the status store has no list on this path to call).
 #[tokio::test]
 async fn node_get_answers_data_dir_facts_by_point_reads_at_their_path_name() {
     let (admin, plain, recovered) = (node("mesh1.admin.1"), node("mesh1.rpc.1"), node("mesh1.rpc.2"));
@@ -50,10 +54,19 @@ async fn node_get_answers_data_dir_facts_by_point_reads_at_their_path_name() {
     let status = &storage;
     // mesh1.rpc.2's predecessor lost its data dir; mesh1.rpc.3 was deleted by its recovery and is held
     // with its data dir unreadable.
-    let lost = NodeDataDirLostRow { node_id: NodeId::mint(), name: path("mesh1.rpc.2"), incarnation_id: IncarnationId::mint(), path: "/data/mesh1.rpc.2".into(), since: 1_700 };
-    status.put_node_data_dir_lost("mesh1", &lost).await.unwrap();
-    let held = NodeDataDirUnreadableRow { node_id: NodeId::mint(), name: path("mesh1.rpc.3"), incarnation_id: IncarnationId::mint(), path: "/data/mesh1.rpc.3".into(), cause: "node-key: not hex".into() };
-    status.put_node_data_dir_unreadable("mesh1", &held).await.unwrap();
+    let lost = DataDirLost { path: "/data/mesh1.rpc.2".into(), since: 1_700 };
+    let (exited_id, exited_birth) = (NodeId::mint(), IncarnationId::mint());
+    let mut exited = NodeRow::new(path("mesh1.rpc.2"), exited_id.clone(), NodeStatus::Deleted);
+    exited.birth_mut(&exited_birth, &path("mesh1.rpc.2")).data_dir_lost = Some(lost.clone());
+    status.write_record(&exited).await.unwrap();
+    let mut successor = NodeRow::new(path("mesh1.rpc.2"), recovered.node_id.clone(), NodeStatus::ReadyForTraffic);
+    successor.predecessor = Some(BirthRef { node_id: exited_id, incarnation_id: exited_birth });
+    status.write_record(&successor).await.unwrap();
+    let held = DataDirUnreadable { path: "/data/mesh1.rpc.3".into(), cause: "node-key: not hex".into() };
+    let (held_id, held_birth) = (NodeId::mint(), IncarnationId::mint());
+    let mut unreadable = NodeRow::new(path("mesh1.rpc.3"), held_id.clone(), NodeStatus::Deleted);
+    unreadable.birth_mut(&held_birth, &path("mesh1.rpc.3")).data_dir_unreadable = Some(held.clone());
+    status.write_record(&unreadable).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::from([("mesh1".to_string(), ["mesh1.admin.1", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"].map(path).to_vec())]));
 
     let nodes = answer(&view, &storage, &status, &planned, NodeSelect::Mesh("mesh1".into())).await;
@@ -63,16 +76,17 @@ async fn node_get_answers_data_dir_facts_by_point_reads_at_their_path_name() {
     assert_eq!((r2.node_id.clone(), r2.data_dir_lost.as_ref().map(|l| (l.path.clone(), l.since))), (recovered.node_id.clone(), Some((lost.path.clone(), lost.since))), "the recovered birth answers the loss it was recovered over");
     assert!(at("mesh1.rpc.1").data_dir_lost.is_none() && at("mesh1.rpc.1").data_dir_unreadable.is_none(), "a birth with neither fact answers neither");
     let r3 = at("mesh1.rpc.3");
-    assert_eq!((r3.node_id.clone(), r3.status, r3.data_dir_unreadable.as_ref().map(|u| (u.path.clone(), u.cause.clone()))), (held.node_id.clone(), rdm_core::views::NodeStatus::Dead, Some((held.path.clone(), held.cause.clone()))), "the held birth is answered at its planned path");
+    assert_eq!((r3.node_id.clone(), r3.status, r3.data_dir_unreadable.as_ref().map(|u| (u.path.clone(), u.cause.clone()))), (held_id.clone(), rdm_core::views::NodeStatus::Dead, Some((held.path.clone(), held.cause.clone()))), "the held birth is answered at its planned path");
 
-    let by_id = answer(&view, &storage, &status, &planned, NodeSelect::Id(held.node_id.clone())).await;
-    assert_eq!(by_id.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![held.node_id.clone()], "the held birth is answered by its id");
+    let by_id = answer(&view, &storage, &status, &planned, NodeSelect::Id(held_id.clone())).await;
+    assert_eq!(by_id.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![held_id.clone()], "the held birth is answered by its id");
 
     let unread: rdm_admin::views::Planned = Err("the current Build could not be read: refused".into());
     let without = answer(&view, &storage, &status, &unread, NodeSelect::Mesh("mesh1".into())).await;
     assert_eq!(without.len(), 3, "a Build that cannot be read names no path: the births the view holds are answered: {without:#?}");
 
-    status.remove_node_data_dir_unreadable("mesh1", &held.node_id, &held.incarnation_id, &held.name).await.unwrap();
+    unreadable.birth_mut(&held_birth, &path("mesh1.rpc.3")).data_dir_unreadable = None;
+    status.write_record(&unreadable).await.unwrap();
     let cleared = answer(&view, &storage, &status, &planned, NodeSelect::Mesh("mesh1".into())).await;
-    assert!(cleared.iter().all(|n| n.name != path("mesh1.rpc.3")), "a removed unreadable fact is gone from its path.name index: {cleared:#?}");
+    assert!(cleared.iter().all(|n| n.name != path("mesh1.rpc.3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
 }
