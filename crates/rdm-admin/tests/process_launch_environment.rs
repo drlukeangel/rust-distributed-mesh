@@ -31,7 +31,7 @@ async fn a_launched_process_sees_the_launch_contract_its_spec_names_and_never_it
     }
     let dir = std::env::temp_dir().join(format!("rafka-launch-env-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let spec = ResolvedNodeLaunch {
+    let spec = ResolvedNodeLaunch { reads: Vec::new(),
         node: "mesh2.admin.1".parse().unwrap(),
         deployment_id: DeploymentId::mint(),
         executable: "/bin/sh".into(),

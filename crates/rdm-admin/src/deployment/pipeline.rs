@@ -877,6 +877,11 @@ pub struct LaunchTemplate {
     pub env: BTreeMap<String, String>,
     /// The root of every node's data directory.
     pub data_root: PathBuf,
+    /// The host directories a launched node-admin reads at their host paths: those of the launch set's
+    /// bound executables, which it re-hashes and launches (the current Build's set, never a file
+    /// handed on). A container runtime has them mounted read-only; a process reads the host. Empty for
+    /// every other launch.
+    pub reads: Vec<PathBuf>,
     /// The fabric's shared store root every launch carries (R14): the estate's one directory,
     /// handed on unchanged.
     pub store_dir: PathBuf,
@@ -1490,7 +1495,7 @@ impl DeploymentPipeline<'_> {
         let data_dir = req.data_dir.clone().unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", req.node, identity.node_id)));
         // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
         // its identity is decided.
-        let spec = ResolvedNodeLaunch { node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
+        let spec = ResolvedNodeLaunch { reads: Vec::new(), node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
         let span = tracing::info_span!(
             "rdm.node_admin.node.resolve.via-claimed-allocation",
             node = %req.node,
@@ -1696,7 +1701,7 @@ impl DeploymentPipeline<'_> {
             if let Some(tp) = traceparent {
                 env.insert("TRACEPARENT".into(), tp);
             }
-            ResolvedNodeLaunch {
+            ResolvedNodeLaunch { reads: self.template.reads.clone(),
                 node: req.node.clone(),
                 deployment_id: id.deployment_id.clone(),
                 executable: self.template.executable.clone(),
@@ -2709,7 +2714,7 @@ mod tests {
     /// fresh directory named `cell`.
     fn cell_template(cell: &str) -> LaunchTemplate {
         let data_root = tempdir(cell);
-        LaunchTemplate {
+        LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),

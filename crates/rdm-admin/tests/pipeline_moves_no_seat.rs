@@ -104,7 +104,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             .await
             .unwrap();
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-node-admin".into(),

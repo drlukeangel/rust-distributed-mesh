@@ -172,7 +172,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     node.status = NodeStatus::ReadyForTraffic;
     node.endpoint_id = Some(EndpointId("i143-3093-endpoint".into()));
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
-    let template = LaunchTemplate {
+    let template = LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
@@ -277,7 +277,7 @@ async fn a_restart_whose_reissued_start_is_already_applied_takes_no_new_join() {
     node.status = NodeStatus::ReadyForTraffic;
     node.endpoint_id = Some(EndpointId("i143-3093-endpoint".into()));
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
-    let template = LaunchTemplate {
+    let template = LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
@@ -348,7 +348,7 @@ async fn a_restart_takes_its_stops_stopped_reply_as_the_left_reply() {
     node.status = NodeStatus::ReadyForTraffic;
     node.endpoint_id = Some(EndpointId("i143-3093-endpoint".into()));
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
-    let template = LaunchTemplate {
+    let template = LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
@@ -421,7 +421,7 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
     node.status = NodeStatus::ReadyForTraffic;
     node.endpoint_id = Some(EndpointId("i143-3093-endpoint".into()));
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
-    let template = LaunchTemplate {
+    let template = LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
@@ -537,7 +537,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     node.status = NodeStatus::ReadyForTraffic;
     node.endpoint_id = Some(EndpointId("i143-s52-endpoint".into()));
     node.data_dir = Some("/nonexistent/i143-s52/mesh1.rpc.1".into());
-    let template = LaunchTemplate {
+    let template = LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/start-order".into(),

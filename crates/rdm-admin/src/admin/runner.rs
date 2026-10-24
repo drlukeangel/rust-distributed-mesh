@@ -322,6 +322,11 @@ impl AdminRunner {
         t.binding = binding;
         if kind == NodeKind::NodeAdmin {
             t.env.extend(self.admin_env.clone());
+            // The set's bound executables, read at their host paths by the admin launched.
+            let set = self.launch_set().await?;
+            let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+            dirs.extend(set.iter().flat_map(|s| s.bindings.iter()).filter_map(|b| b.executable.parent().map(std::path::Path::to_path_buf)));
+            t.reads = dirs.into_iter().collect();
         }
         // Every node of a mesh carries its id: it names the mesh's channel.
         if let Some(id) = known {

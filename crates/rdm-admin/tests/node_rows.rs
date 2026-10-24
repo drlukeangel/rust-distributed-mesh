@@ -749,7 +749,7 @@ mod writer {
     /// its error, if it failed.
     async fn create(records: &Records, provider: &Counted, name: &str) -> Result<(), String> {
         let data_root = std::env::temp_dir().join(format!("node-rows-create-{}", NodeId::mint()));
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-rows".into(),
@@ -893,7 +893,7 @@ mod writer {
     /// by the executor whose rows writer `records` feeds, over `provider`: its error.
     async fn create_attempt(records: &Records, provider: &Counted, builds: &dyn rdm_admin::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32) -> Result<(), String> {
         let data_root = std::env::temp_dir().join(format!("node-rows-create-{}", NodeId::mint()));
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-rows".into(),
@@ -1052,7 +1052,7 @@ mod writer {
     /// [`create_attempt_over`] for a template whose executable is `executable`.
     #[allow(clippy::too_many_arguments)]
     async fn create_attempt_executing(executable: &str, records: &Records, provider: &dyn DeploymentProvider, observer: &dyn NodeObserver, builds: &dyn rdm_admin::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32, data_root: &std::path::Path) -> Result<(), String> {
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: executable.into(),
@@ -1449,7 +1449,7 @@ mod writer {
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.12", &data_root).await;
             // A launched the birth: its process runs, and the provider's launch record names it.
             let dir = data_root.join(format!("mesh1.rpc.12-{}", a_identity["node_id"].as_str().unwrap()));
-            let spec = ResolvedNodeLaunch {
+            let spec = ResolvedNodeLaunch { reads: Vec::new(),
                 node: "mesh1.rpc.12".parse().unwrap(),
                 deployment_id: DeploymentId::parse(a_identity["deployment_id"].as_str().unwrap()).unwrap(),
                 executable: "/bin/sleep".into(),

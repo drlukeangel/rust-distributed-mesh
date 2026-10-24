@@ -369,7 +369,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -515,7 +515,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
         let outer = operation(&mesh_id);
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 1, operation: outer.clone() };
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -605,7 +605,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let outer = operation(&mesh_id);
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 1, operation: outer.clone() };
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -830,7 +830,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -982,7 +982,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -1785,7 +1785,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),

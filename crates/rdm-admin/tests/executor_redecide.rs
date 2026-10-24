@@ -270,7 +270,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
     let joins = Arc::new(Joins::default());
     fleet.executors.lock().unwrap().insert(key.to_string(), joins.clone());
     Executor {
-        template: LaunchTemplate {
+        template: LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),

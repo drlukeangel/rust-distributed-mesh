@@ -263,7 +263,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
     // The fabric's one store root, handed to every launch (R14).
     let store_dir = data_root.join("store");
     std::fs::create_dir_all(&store_dir).expect("the store root");
-    LaunchTemplate {
+    LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: admin.fabric.clone(),
         executable: env!("CARGO_BIN_EXE_rdm-rpc-node").into(),

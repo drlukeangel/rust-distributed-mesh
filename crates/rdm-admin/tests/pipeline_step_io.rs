@@ -94,7 +94,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             .await
             .unwrap();
         builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io".into(),
@@ -212,7 +212,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
         ));
         let sink = WithRows(rows);
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io-s83".into(),

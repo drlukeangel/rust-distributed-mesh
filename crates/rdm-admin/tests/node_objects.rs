@@ -396,7 +396,7 @@ struct Rig {
 impl Rig {
     fn new() -> Rig {
         let data_root = std::env::temp_dir().join(format!("node-objects-{}", NodeId::mint()));
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-objects".into(),

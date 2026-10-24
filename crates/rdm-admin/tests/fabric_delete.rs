@@ -258,7 +258,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 
     let joins = Joins::default();
     let view_sink = View::default();
-    let template = LaunchTemplate {
+    let template = LaunchTemplate { reads: Vec::new(),
         fabric: "fabric1".into(),
         fabric_id: fabric_id.clone(),
         executable: "/nonexistent/rdm-rpc-node".into(),
@@ -506,7 +506,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let joins = Joins::default();
         let sink = View::default();
         sink.writes_through(rows_fp.clone());
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -601,7 +601,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let joins = Joins::default();
         let view_sink = View::default();
         view_sink.writes_through(rows_fp.clone());
-        let fp_template = LaunchTemplate {
+        let fp_template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rdm-rpc-node".into(),
@@ -664,7 +664,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
 
         // mesh2.admin.2 executes its members' node.deletes: their rows Deleted are node.delete's own.
         view_sink.writes_through(rows_a2.clone());
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rdm-rpc-node".into(),

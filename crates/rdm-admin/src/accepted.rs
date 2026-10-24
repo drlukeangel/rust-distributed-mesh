@@ -1454,7 +1454,7 @@ mod tests {
         let o = mn();
         assert_eq!(
             plan(&cur, &o, Some(&backbone)).operations,
-            vec![BuildOperation::RetireNode { node: path.clone(), exited: Some(lost.clone()) }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost) }]
+            vec![BuildOperation::RetireNode { node: path.clone(), exited: Some(lost.clone()) }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost), executable: None }]
         );
         let wire = crate::wire::action_round_trip(&backbone);
         assert_eq!(wire, backbone, "the backbone action crosses the Build topic as itself");

@@ -33,7 +33,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
         // A cell that fails before its own terminate leaves no node running.
         let _reap = common::ReapOnDrop(data_root.clone());
         // No seeds and no fabric: the node refuses to start (exit 2) before binding.
-        let template = LaunchTemplate {
+        let template = LaunchTemplate { reads: Vec::new(),
             fabric: String::new(),
             fabric_id: FabricId::mint(),
             executable: env!("CARGO_BIN_EXE_rdm-rpc-node").into(),

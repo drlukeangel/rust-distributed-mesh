@@ -1273,7 +1273,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let mut admin_env = BTreeMap::new();
                             admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
                             let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
-                            let template = LaunchTemplate {
+                            let template = LaunchTemplate { reads: Vec::new(),
                                 fabric: cfg.fabric.clone(),
                                 fabric_id: cfg.fabric_id.clone(),
                                 executable: PathBuf::new(),

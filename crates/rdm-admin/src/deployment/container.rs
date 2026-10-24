@@ -214,7 +214,7 @@ struct LaunchDisk {
 /// Prepare a launch's disk: make the data dir, look at what is mounted, and remove a runtime
 /// record an earlier birth left in the data dir (the birth waits for the one the pipeline makes
 /// available). Every failure names its file. A blocking call: run it on the blocking pool.
-fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<String, String>) -> Result<LaunchDisk, String> {
+fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<String, String>, reads: &[PathBuf]) -> Result<LaunchDisk, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir {}: {e}", data_dir.display()))?;
     let mut disk = LaunchDisk::default();
     if let Some(dir) = env.get(rdm_core::launch::ENV_STORE_DIR) {
@@ -246,15 +246,11 @@ fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<St
         if let Some(root) = data_dir.parent() {
             disk.data_root = dir_present(root).map_err(|e| format!("data root {e}"))?.then(|| root.to_path_buf());
         }
-        if let Some(file) = env.get(rdm_core::binding::ENV_EXECUTABLE_BINDINGS) {
-            let mut dirs: std::collections::BTreeSet<PathBuf> = Path::new(file).parent().map(Path::to_path_buf).into_iter().collect();
-            let set = rdm_core::binding::BindingSet::load(Path::new(file)).map_err(|e| format!("executable bindings {file}: {e}"))?;
-            dirs.extend(set.bindings.iter().filter_map(|b| b.executable.parent().map(Path::to_path_buf)));
-            let bin_dir = disk.bin_dir.as_ref().map(PathBuf::from);
-            for d in dirs {
-                if Some(&d) != bin_dir.as_ref() && !disk.data_root.as_ref().is_some_and(|r| d.starts_with(r)) && dir_present(&d).map_err(|e| format!("executable binding directory {e}"))? {
-                    disk.binding_dirs.push(d);
-                }
+        // The launch set's bound executables the admin re-hashes and launches, at their host paths.
+        let bin_dir = disk.bin_dir.as_ref().map(PathBuf::from);
+        for d in reads {
+            if Some(d) != bin_dir.as_ref() && !disk.data_root.as_ref().is_some_and(|r| d.starts_with(r)) && dir_present(d).map_err(|e| format!("executable binding directory {e}"))? && !disk.binding_dirs.contains(d) {
+                disk.binding_dirs.push(d.clone());
             }
         }
     }
@@ -515,8 +511,8 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         // The data dir, the mounts and an earlier birth's runtime record, on the blocking pool.
         let admin = spec.node.kind == rdm_core::NodeKind::NodeAdmin;
         let disk = {
-            let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
-            crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
+            let (data_dir, env, reads) = (spec.data_dir.clone(), spec.env.clone(), spec.reads.clone());
+            crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env, &reads)).await.map_err(err)?
         };
         // Which launch the container realises, durable before the container exists, so one that runs
         // always has its record and a later `find` knows the launch ran once the container is removed.
@@ -573,9 +569,8 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             if let Some(root) = &disk.data_root {
                 args.extend(["-v".into(), format!("{}:{}", root.display(), root.display())]);
             }
-            // Explicit executable bindings: the admin validates and re-hashes them at every launch, so it
-            // reads the binding file and every bound executable at their host paths. A directory the
-            // admin already has mounted is not mounted twice.
+            // The launch set's bound executables: the admin re-hashes them at every launch, so it reads
+            // each at its host path. A directory the admin already has mounted is not mounted twice.
             for d in &disk.binding_dirs {
                 args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
             }
@@ -863,13 +858,13 @@ mod tests {
     fn a_stale_runtime_record_that_cannot_be_removed_fails_the_launch_naming_it() {
         let dir = crate::test_support::tempdir("container-launch-disk");
         let ok = dir.join("clean");
-        let disk = launch_disk(&ok, false, &std::collections::BTreeMap::new()).unwrap();
+        let disk = launch_disk(&ok, false, &std::collections::BTreeMap::new(), &[]).unwrap();
         assert!(ok.is_dir(), "the data dir is made");
         assert!(disk.runtime_mounts.contains(&"/usr"), "{:?}", disk.runtime_mounts);
         let stale = dir.join("stale");
         let record = stale.join(rdm_core::runtime::RUNTIME_FILE);
         std::fs::create_dir_all(record.join("held")).unwrap();
-        let err = launch_disk(&stale, false, &std::collections::BTreeMap::new()).unwrap_err();
+        let err = launch_disk(&stale, false, &std::collections::BTreeMap::new(), &[]).unwrap_err();
         assert!(err.contains(&record.display().to_string()), "{err}");
     }
 
