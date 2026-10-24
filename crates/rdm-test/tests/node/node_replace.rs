@@ -153,6 +153,16 @@ fn in_trace(spans: &[Value], of: &Value) -> Vec<Value> {
     spans.iter().filter(|sp| sp["trace_id"] == of["trace_id"]).cloned().collect()
 }
 
+/// Whether `run` holds the fabric-primary's spans of the reported recovery of `before`: its serve of
+/// the report (the open's parent) and its run of `attempt`. They close with the report's stream, the
+/// instant the submit does, but in the fabric-primary's process, whose evidence file is written on
+/// its own 200 ms batch: a wait on the mesh-primary's spans alone does not hold them.
+fn report_served(run: &[Value], before: &Value, attempt: &str) -> bool {
+    let Some(open) = named(run, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]) else { return false };
+    run.iter().any(|sp| sp["span_id"] == open["parent_span_id"])
+        && named(run, "rdm.node_admin.build.update.via-drift-run").into_iter().any(|sp| s(&sp["attributes"]["attempt"]) == attempt)
+}
+
 /// Whether `sp` is a Node RPC call of `op` (the call span names the op number).
 fn calls_op(sp: &Value, op: u8) -> bool {
     sp["attributes"]["op"] == op.to_string().as_str() || sp["attributes"]["op"] == json!(op)
@@ -449,9 +459,10 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     );
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
-    let spans = wait_for("the recovery's last operation, the exited birth's fence and the new node's boot span are exported", SETTLE, || async {
+    let spans = wait_for("the recovery's last operation, the fabric-primary's serve of its report, the exited birth's fence and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
-        (create_span(&in_trace(&spans, &recovery), &birth_build, &attempt, node_path).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
+        let run = in_trace(&spans, &recovery);
+        (create_span(&run, &birth_build, &attempt, node_path).is_some() && (mesh_primary == s(&primary["name"]) || report_served(&run, &before, &attempt)) && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // The recovery's own run, one trace from the mesh-primary's submit: the report, the fabric-primary's
@@ -802,17 +813,13 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
     );
 
     let spans = wait_for(
-        "the completing attempt's reconcile span is exported",
+        "the completing attempt's reconcile span and the fabric-primary's serve of its report are exported",
         Duration::from_secs(30),
         || async {
             let spans = estate.spans();
-            lane_reconcile_span(
-                &in_trace(&spans, &done),
-                &birth_build,
-                "mesh2",
-                &attempt.to_string(),
-            )
-            .is_some()
+            let run = in_trace(&spans, &done);
+            (lane_reconcile_span(&run, &birth_build, "mesh2", &attempt.to_string()).is_some()
+                && (heir == fp || report_served(&run, &before, &attempt.to_string())))
             .then_some(spans)
         },
     )
@@ -2188,9 +2195,10 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
         "mesh2's primary opened it in mesh2's lane of the accepted Build: {done}"
     );
     let attempt = s(&done["attributes"]["attempt"]);
-    let spans = wait_for("the recovery's reconcile is exported", Duration::from_secs(30), || async {
+    let spans = wait_for("the recovery's reconcile and the fabric-primary's serve of its report are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        lane_reconcile_span(&in_trace(&spans, &done), &build, "mesh2", &attempt).is_some().then_some(spans)
+        let run = in_trace(&spans, &done);
+        (lane_reconcile_span(&run, &build, "mesh2", &attempt).is_some() && report_served(&run, &before, &attempt)).then_some(spans)
     })
     .await;
     let run = in_trace(&spans, &done);
