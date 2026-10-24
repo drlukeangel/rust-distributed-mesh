@@ -22,7 +22,10 @@ life; a new executable is a new birth at the same `path.name`.**
    `PathConfig { storage, placement }`; it gains `executable`. A Build request that creates nodes names
    each path with its config, executable included. There is no per-type section in RDM and no stored
    default anywhere: a created path whose config names no executable is refused by name at acceptance,
-   nothing runs. Per-type convenience is Rafka's door's: its `shape_bins` is per type and the door
+   nothing runs. The refusal is acceptance's, for new requests only: a Build decoded from the journal
+   whose paths name none, every Build accepted before `614d01653` among them, is valid history with its
+   births' rows as the record, and an admin restarted over an old store reads its current Build as it
+   is, never as malformed. Per-type convenience is Rafka's door's: its `shape_bins` is per type and the door
    expands it into per-path entries before the typed call.
 2. **Compiled at acceptance, explicit after it.** The fabric-primary compiles the request against the
    current topology; every created path's entry holds its executable and is never re-read from the
@@ -36,9 +39,16 @@ life; a new executable is a new birth at the same `path.name`.**
    missing file or a differing hash is refused by name and nothing else is launched in its place.
 5. **Replaced only by re-birth.** A request that names a different executable on an existing path is a
    planned replacement, not a refusal: RDM realizes it as node.delete then node.create at the path, a
-   new node.id and incarnation, in RDM's order with RDM's guards (admins before the primary, the
-   fabric-primary's move and the caller's resubmit on `FabricPrimaryMoved`, R5's one-node type, the
-   no-successor refusal). The successor's storage follows the path's config: `Persistent` inherits the
+   new node.id and incarnation, in RDM's order with RDM's guards: a type's non-primary members before
+   its primary, the primary's move first by node.primary.update, the fabric-primary's move ending the
+   caller's stream `FabricPrimaryMoved` and the caller resubmitting the same build_id, R5's one-node type
+   with no update, and the one-admin mesh (R4, Luke's arm A, kept): a mesh whose only node-admin is to be
+   replaced first gets a second node-admin created on the new executable at `<mesh>.admin.<next free>`,
+   ReadyForTraffic and mesh-primary by node.primary.update before the original is replaced, and the
+   added admin stays in the topology, since deleting a mesh's only admin would leave its own create with
+   no executor. A path whose birth is under node recovery is replaced after that recovery's attempt
+   completes, never in the same attempt: one attempt in flight per mesh (R-BI7) and the planner's
+   recompute per attempt order the two. The successor's storage follows the path's config: `Persistent` inherits the
    predecessor's data dir and its endpoint key (`RDM_INHERITED_DATA_DIR=1`), `Ephemeral` allocates a
    fresh one; its config and tags are inherited from the Deleted row (node-replace.md "Inherited"). A
    request that changes the path's storage or placement with its executable is one re-birth with the
@@ -59,12 +69,18 @@ Every Build that puts the fabric to pending completes only after its own ready-f
 
 - **Removed:** `BuildChange::Roll` and `TopologyChange::Roll` (their positional slots reserved, no format
   move, as the Status enums did); `FabricTopology.bindings` and its carry-forward and every read of it
-  at launch (`runner.rs` `launch_set`); the plan and progress of the removed operation (`roll_progress`,
-  `roll_operations`, the interrupted-delete arm of `9fbf7efba`) and its cells; `docs/plans/proposal/roll.md`.
+  at launch (`runner.rs` `launch_set`); the removed operation's cells and `docs/plans/proposal/roll.md`;
+  R6's check of the running executable against a configured `node_admin` sha, with its cell, since the
+  configuration goes (§2).
+- **Kept and moved to the replacement, renamed without the banned word:** the planner and its progress
+  (`roll_operations`, `roll_progress`) are exactly rule 5's order, non-primaries first, the primary's move,
+  the fabric-primary last, and the interrupted-delete resume of `9fbf7efba` is rule 5's resume; they
+  become the replacement's planner, driven by each path's entry versus its row rather than by a fabric
+  set. Nothing is deleted and rewritten.
 - **Kept:** R6 (every row records what its birth runs); R5's page sentence (a type's only node needs no
   primary update; its predecessor half is one `node.delete`, never a standalone connections delete,
-  which the executor refuses on a type's only node); Q154's generic `fabric-climb` hold for every Build
-  that puts the fabric to pending, only the removed operation's branch of it goes.
+  which the executor refuses on a type's only node); Q154's generic hold for every Build that puts the
+  fabric to pending (Blocked naming `fabric-change`), only the removed operation's branch of it goes.
 - **Corrected on Architect 1's review:** a containerized admin loses the launch set that told it which
   directories to mount, so executable directories become the admin's launch configuration: read-only
   mounts at stable host paths, given at the admin's launch, and an executable outside them is refused
@@ -91,10 +107,17 @@ executable it is running (R6); a configured sha to hold it to would be a claim a
 harness validates the entries of its own requests; the fabric-primary refuses a missing file or a wrong
 sha by name at acceptance. A containerized admin's executable directories become its launch
 configuration, `RDM_EXECUTABLE_DIRS`, comma-separated host directories mounted read-only at their host
-paths, a row in CLAUDE.md's env table; an executable outside them is refused by name at acceptance.
+paths, a row in CLAUDE.md's env table; an executable outside them is refused by name at acceptance. The
+bootstrap admin reads it from its environment; the launching admin writes its own value into every
+node-admin launch, as it writes the root, so every admin of the fabric mounts the same directories; as an
+`RDM_*` name it is already in Q150's refused set for declared variables.
 `RDM_BIN_DIR` stays only as where the harness and the bootstrap find `rdm-node-admin` itself, never a
 launch source: the built-in mode that launched a kind's binary from `bin_dir` with no sha goes with the
-file, since every create now names its executable.
+file, since every create now names its executable. Priced (the dev): every estate that boots without a
+set, `Estate::bootstrap`, most of rdm-test and the demo, relies on built-in mode, so every
+`reconcile_shape` and create in those cells names executables per path, the harness expanding per-type
+to per-path as Rafka's door does; hundreds of call sites, so it is its own landing with the gate's full
+set, landed before the product change.
 
 ### 3. Pages that change: exact old and new text for Luke's yes, landing with the code
 
@@ -142,7 +165,9 @@ realizes it as node.delete then node.create at the path, a new node.id and incar
 with its guards: a type's non-primary members before its primary, the primary's move first by
 node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
-"No-successor cases"). The successor's storage follows the path's config: `Persistent` inherits the
+"No-successor cases"), and a mesh whose only node-admin is to be replaced first given a second node-admin
+on the new executable, ReadyForTraffic and mesh-primary, which stays. A path under node recovery is
+replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows the path's config: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
 same re-birth with the new config. The row then records the new executable. node.restart keeps the executable
@@ -292,6 +317,13 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 - a request replacing every node of a two-mesh fabric: Complete only after the ready-for-traffic round
   (Q154), Blocked naming the climb meanwhile;
 - a one-broker mesh's broker replaced: one `node.delete` then the create, no refusal at any step;
+- a one-admin mesh whose admin's executable changes: a second admin created first on the new executable,
+  ReadyForTraffic and mesh-primary, then the original replaced, the added admin in the topology after;
+- a recovery open on a path whose entry names a new executable: the recovery completes on the row's, then
+  the replacement runs as the next attempt's step; never both in one attempt;
+- an admin restarted over a store whose current Build predates the field: it reads it as valid history
+  and serves;
+- a containerized admin launched by another admin mounts the launching admin's `RDM_EXECUTABLE_DIRS`;
 - a recovery runs the executable the lost birth's row records, with a newer entry pending on the path;
 - a created path naming no executable refused by name at acceptance, nothing run; a missing file or a
   differing hash refused by name at the launch;
