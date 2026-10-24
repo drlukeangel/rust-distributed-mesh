@@ -11,7 +11,7 @@
 use crate::build_log;
 use rdm_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeSelector, NodeStatus, Nodes, PathName};
 use rdm_core::build::RecipeStep;
-use rdm_test::estate::{named, wait_for, Estate, Owner};
+use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
 use rdm_test::recipes::{predecessor_steps, replace as replace_recipe, rollback as rollback_recipe};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::process_faults::{ExactRuntime, Fault};
@@ -151,6 +151,27 @@ fn lane_steps(b: &Value, mesh: &str) -> Vec<Value> {
 /// and the fabric lane both hold that number (R-BI7).
 fn in_trace(spans: &[Value], of: &Value) -> Vec<Value> {
     spans.iter().filter(|sp| sp["trace_id"] == of["trace_id"]).cloned().collect()
+}
+
+/// The run of the recovery of `before` at `attempt` of `lane` that the submit `done` completed: its
+/// own trace and, when an earlier report opened that attempt (`done`'s open is `held-open`), the
+/// attempt's execution under the open that opened it. The fabric-primary runs an attempt in the
+/// context recorded when it was opened (build_op.rs, `contexts.get_lane`), so its
+/// `build.attempt.run` and reconcile continue the opening report's trace, not the completing one's.
+fn recovery_run(spans: &[Value], done: &Value, before: &Value, lane: &str, attempt: &str) -> Vec<Value> {
+    let mut run = in_trace(spans, done);
+    let opened = named(spans, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| {
+        sp["attributes"]["node_id"] == before["node_id"]
+            && sp["attributes"]["mesh"] == lane
+            && s(&sp["attributes"]["attempt"]) == attempt
+            && sp["attributes"]["open_attempt"] == "opened-here"
+            && sp["trace_id"] != done["trace_id"]
+    });
+    if let Some(open) = opened {
+        run.extend(in_trace(spans, open).into_iter().filter(|sp| descends_from(spans, sp, open)));
+        run.sort_by_key(start);
+    }
+    run
 }
 
 /// Whether `run` holds the fabric-primary's spans of the reported recovery of `before`: its serve of
@@ -817,7 +838,7 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
         Duration::from_secs(30),
         || async {
             let spans = estate.spans();
-            let run = in_trace(&spans, &done);
+            let run = recovery_run(&spans, &done, &before, "mesh2", &attempt.to_string());
             (lane_reconcile_span(&run, &birth_build, "mesh2", &attempt.to_string()).is_some()
                 && (heir == fp || report_served(&run, &before, &attempt.to_string())))
             .then_some(spans)
@@ -825,8 +846,8 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
     )
     .await;
     // The admin that took the seat reported it, claimed it and ran it, at that attempt of mesh2's lane
-    // the fabric-primary opened.
-    let run = in_trace(&spans, &done);
+    // the fabric-primary opened (its run under the report that opened it, when that was an earlier one).
+    let run = recovery_run(&spans, &done, &before, "mesh2", &attempt.to_string());
     assert_mesh_primary_ran_the_recovery(
         &run,
         &heir,
