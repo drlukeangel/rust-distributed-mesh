@@ -1144,7 +1144,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
         span.in_scope(|| tracing::info!("node.delete: the inherited birth's Deleted row decided; its record, config and tags stay"));
         r?;
     }
-    own_claim(None, storage, written, name, node_id, operation, ClaimFor::Recovery).await
+    own_claim(None, storage, written, name, node_id, operation, ClaimFor::Recovery, None).await
 }
 
 /// Day 0's claim of the bootstrap admin's own `path.name` (R-OW1 item 2: the bootstrap admin, as
@@ -1155,21 +1155,24 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
 /// its own row; the claim is the first write of its birth, made before anything else of it is written or
 /// published. It is the create door's claim ([`ClaimFor::Create`], [`take_name`]), the record
 /// `Pending`, one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`.
-/// Another node's live claim of the name is `NameHeld` naming it, and nothing is written.
-pub async fn claim_day0_name(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId) -> Result<Claimed, RowRefused> {
-    own_claim(None, storage, written, name, node_id, "fabric-create", ClaimFor::Create).await
+/// Another node's live claim of the name is `NameHeld` naming it, and nothing is written. The record
+/// carries `executable`, the binding the bootstrap admin's birth runs (proposal roll.md R6), as a
+/// create's claim carries a launched node's.
+pub async fn claim_day0_name(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {
+    own_claim(None, storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable).await
 }
 
 /// [`claim_day0_name`] as a child of `boot` without entering `boot` (the boot root is never entered so
 /// background tasks spawned during start do not inherit it and its close time stays at `via-ready`).
-pub async fn claim_day0_name_in_boot(boot: &tracing::Span, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId) -> Result<Claimed, RowRefused> {
-    own_claim(Some(boot), storage, written, name, node_id, "fabric-create", ClaimFor::Create).await
+pub async fn claim_day0_name_in_boot(boot: &tracing::Span, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {
+    own_claim(Some(boot), storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable).await
 }
 
 /// The claim of `name` by the admin born at it as `node_id`, the writer of its own row before it holds a
 /// view: [`seeded_put`] under one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`, the
 /// one write a claim is wherever it is made.
-async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, operation: &str, of: ClaimFor) -> Result<Claimed, RowRefused> {
+#[allow(clippy::too_many_arguments)]
+async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, operation: &str, of: ClaimFor, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {
     let span = match parent {
         Some(p) => tracing::info_span!(
             parent: p,
@@ -1206,7 +1209,7 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, w
         ),
     };
     let mut guard = ClaimGuard { span: span.clone(), done: false };
-    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, None, of, &span, ""), span.clone()).await;
+    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, executable, of, &span, ""), span.clone()).await;
     guard.done = true;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));

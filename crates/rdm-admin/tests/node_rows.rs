@@ -291,10 +291,10 @@ fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_
         let held = NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
         storage.write_record(&held).await.unwrap();
         let me = NodeId::mint();
-        let refused = rdm_admin::node_rows::claim_day0_name(&*storage, &Default::default(), &name, &me).await;
+        let refused = rdm_admin::node_rows::claim_day0_name(&*storage, &Default::default(), &name, &me, None).await;
         let row = storage.record_at(&name).await.unwrap();
         let free = Arc::new(MemoryNodesStorage::default());
-        let written = rdm_admin::node_rows::claim_day0_name(&*free, &Default::default(), &name, &me).await;
+        let written = rdm_admin::node_rows::claim_day0_name(&*free, &Default::default(), &name, &me, None).await;
         (refused, row, held, written, me)
     });
     assert!(matches!(&refused, Err(rdm_admin::node_rows::RowRefused::NameHeld(h)) if h.by == held.node_id), "{refused:?}");

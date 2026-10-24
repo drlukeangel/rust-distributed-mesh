@@ -1418,6 +1418,23 @@ pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: N
     checked.map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The binding the bootstrap admin's own birth runs, recorded by its Day-0 claim (proposal roll.md
+/// R6): its running executable (`current_exe`) hashed now, on the blocking pool. With an explicit set,
+/// that hash must be the set's `node_admin` sha, and the set's binding is the one recorded: a valid
+/// binding file proves what was configured, not what started this process. With none, the running
+/// executable is the built-in binding.
+pub(crate) async fn running_binding(set: Option<&rdm_core::binding::Validated>, provider: ProviderKind) -> Result<rdm_core::binding::Binding, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("this admin's running executable could not be named: {e}"))?;
+    let Some(set) = set else { return built_in_binding(NodeKind::NodeAdmin, &exe, provider).await };
+    let bound = set.set().of(NodeKind::NodeAdmin).cloned().ok_or_else(|| "the explicit executable bindings bind no `node_admin`".to_string())?;
+    let path = exe.clone();
+    let sha256 = crate::blocking::blocking_io(move || rdm_core::binding::sha256_file(&path)).await.map_err(|e| format!("this admin's running executable {} could not be hashed: {e}", exe.display()))?;
+    if sha256 != bound.sha256 {
+        return Err(format!("this admin's running executable {} hashes to {sha256}, the explicit executable bindings' `node_admin` ({}) to {}: the set configures another executable than the one started", exe.display(), bound.executable.display(), bound.sha256));
+    }
+    Ok(bound)
+}
+
 /// The built-in executable `kind` launches at this admin, as a binding: its file hashed now, so the
 /// row of the node created from it records exactly these bytes, and the image `provider` runs it in
 /// (the container provider's runtime image; none under the process provider), so a recovery seeded from
