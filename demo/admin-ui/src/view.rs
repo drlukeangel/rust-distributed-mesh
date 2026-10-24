@@ -12,7 +12,7 @@ fn text(v: &Value, k: &str) -> Option<String> {
 
 /// The seat a node holds, as the tabs label it. "mesh primary" is the node-admin cohort's primary
 /// only; the fabric-primary is that cohort's primary of its own mesh as well.
-pub fn seat_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
+pub fn primary_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
     match (kind, is_primary, is_fabric_primary) {
         (_, _, true) => "fabric primary · mesh primary",
         ("node_admin", true, false) => "mesh primary",
@@ -97,7 +97,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
             let kind = text(&n, "kind").unwrap_or_default();
             let (p, fp) = (n["is_primary"].as_bool().unwrap_or(false), n["is_fabric_primary"].as_bool().unwrap_or(false));
             json!({
-                "name": n["name"], "kind": kind, "mesh": n["mesh"], "status": n["status"], "seat": seat_label(&kind, p, fp),
+                "name": n["name"], "kind": kind, "mesh": n["mesh"], "status": n["status"], "seat": primary_label(&kind, p, fp),
                 "is_primary": p, "is_fabric_primary": fp, "declared": n["declared"], "incarnation_id": n["incarnation_id"], "node_id": n["node_id"],
                 "has_runtime": n["data_dir"].is_string(),
             })
@@ -152,10 +152,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_node_admin_cohorts_primary_is_labelled_mesh_primary() {
-        assert_eq!(seat_label("rpc_node", true, false), "", "an rpc node first in its cohort is not a mesh primary");
-        assert_eq!(seat_label("node_admin", true, false), "mesh primary");
-        assert_eq!(seat_label("node_admin", false, false), "");
-        assert_eq!(seat_label("node_admin", true, true), "fabric primary · mesh primary");
+    fn only_the_node_admins_node_type_primary_is_labelled_mesh_primary() {
+        assert_eq!(primary_label("rpc_node", true, false), "", "an rpc node first in its cohort is not a mesh primary");
+        assert_eq!(primary_label("node_admin", true, false), "mesh primary");
+        assert_eq!(primary_label("node_admin", false, false), "");
+        assert_eq!(primary_label("node_admin", true, true), "fabric primary · mesh primary");
     }
 }

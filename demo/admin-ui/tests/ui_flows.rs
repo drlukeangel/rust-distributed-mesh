@@ -116,7 +116,7 @@ async fn without_a_node_admin_the_ui_says_so_by_name() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn topology_labels_mesh_primary_on_the_node_admin_cohort_only_and_serves_node_admins_connection_facts() {
+async fn topology_labels_mesh_primary_on_node_admins_only_and_serves_node_admins_connection_facts() {
     let d = dir("topology");
     let (_running, admin) = node_admin(&d).await;
     let t = rafka_admin_ui::view::topology(&admin).await.unwrap();

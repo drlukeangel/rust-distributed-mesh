@@ -4,7 +4,7 @@ use rafka_mesh_audit::admin_ui::lifecycle_violations;
 use rafka_mesh_audit::workspace_root;
 
 #[test]
-fn admin_ui_holds_no_lifecycle_authority() {
+fn admin_ui_holds_no_lifecycle_mutation() {
     let v = lifecycle_violations(&workspace_root());
     assert!(v.is_empty(), "admin-ui must be a client of node-admin core:\n{}", v.join("\n"));
 }

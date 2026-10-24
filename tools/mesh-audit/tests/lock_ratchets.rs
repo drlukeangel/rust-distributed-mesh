@@ -137,7 +137,7 @@ fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
 }
 
 #[test]
-fn retire_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
+fn node_delete_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rdm-admin/src/deployment/pipeline.rs",
@@ -149,7 +149,7 @@ fn retire_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
 }
 
 #[test]
-fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
+fn node_delete_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n        /// Standard code of the original typed command outcome.\n        #[serde(default = \"rdm_core::outcome::legacy_failed_code\")]\n        code: rdm_core::outcome::Code,\n    },\n", "");
     let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
@@ -157,7 +157,7 @@ fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
 }
 
 #[test]
-fn drift_silence_is_not_retire_authority_fails_without_its_proof() {
+fn drift_silence_never_deletes_a_node_fails_without_its_proof() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rdm-admin/tests/drift_convergence.rs",
@@ -168,7 +168,7 @@ fn drift_silence_is_not_retire_authority_fails_without_its_proof() {
 }
 
 #[test]
-fn retire_receipt_names_command_arm_fails_an_untagged_outcome() {
+fn node_delete_receipt_names_command_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rdm-admin/src/deployment/pipeline.rs",
