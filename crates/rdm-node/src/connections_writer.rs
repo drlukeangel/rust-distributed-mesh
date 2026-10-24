@@ -479,7 +479,7 @@ impl ConnectionsWriter {
     }
 
     /// [`Self::settle_owed`], as the integration cells name it.
-    pub async fn retire_owed(&self) -> Result<usize, String> {
+    pub async fn disconnect_owed(&self) -> Result<usize, String> {
         self.settle_owed().await
     }
 

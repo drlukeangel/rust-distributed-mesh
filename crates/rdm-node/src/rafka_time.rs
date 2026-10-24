@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mesh_primary_adopts_only_from_a_fabric_primary_seat() {
+    fn a_mesh_primary_adopts_only_from_the_fabric_primary() {
         assert_eq!(verdict(Puller::MeshPrimary, Some(PrimaryKind::FabricPrimary)), Ok(()));
         assert_eq!(verdict(Puller::MeshPrimary, None), Err(Refusal::ServedByAReplica));
         assert_eq!(verdict(Puller::MeshPrimary, Some(PrimaryKind::MeshPrimary)), Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));

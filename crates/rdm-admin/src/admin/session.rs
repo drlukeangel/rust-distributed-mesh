@@ -446,7 +446,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         crate::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
     }
 
-    async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
+    async fn resolve_join_to(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
         Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 

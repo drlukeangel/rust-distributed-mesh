@@ -264,7 +264,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
 
     /// Whom the join goes to; called inside the join step. A start after a stop answers
     /// [`JoinTo::Commander`], whatever the node kind.
-    async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed>;
+    async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed>;
     /// The operation the start's join runs for, when the start was commanded with one (a start after
     /// a stop: its `node.start`; a commanded `node.mesh.join`: that command's); `None` names the kind's.
     fn operation(&self) -> Option<String> {
@@ -297,7 +297,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let (through, joined, membership) = match node.joining() {
         Joining::Authority { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
-            let to = node.resolve_authority().await?;
+            let to = node.resolve_join_to().await?;
             let mesh_id = node.join_digest().mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
             let operation = node.operation().unwrap_or_else(|| match kind {
                 StartKind::FirstStart => format!("node.create:{name}"),
@@ -557,7 +557,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
         }
     }
 
-    async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed> {
+    async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed> {
         (self.resolve.take().expect("the authority is resolved once"))()
     }
 

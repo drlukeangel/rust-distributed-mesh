@@ -33,7 +33,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
 }
 
 #[test]
-fn the_seat_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
+fn the_primary_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
     // The view's seat is read as advertised: the product neither re-elects nor second-guesses it.
     let view = vec![
         row("mesh1.admin.1", NodeKind::NodeAdmin, true, true),
@@ -50,7 +50,7 @@ fn the_seat_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
 }
 
 #[test]
-fn an_election_in_flight_is_no_seat_not_a_guess() {
+fn an_election_in_flight_is_no_primary_not_a_guess() {
     let view = vec![row("mesh1.broker.1", NodeKind::Broker, false, false), row("mesh1.broker.2", NodeKind::Broker, false, false)];
     assert_eq!(primary_of(&view, "mesh1", NodeKind::Broker), None);
 }

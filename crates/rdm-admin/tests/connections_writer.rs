@@ -117,7 +117,7 @@ async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts
     let retired = storage.history().await.unwrap().into_iter().last().unwrap();
     assert_eq!((retired.kind, retired.state, retired.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
     assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
-    assert_eq!(writer.retire_owed().await.unwrap(), 0, "nothing owed once the retirement landed");
+    assert_eq!(writer.disconnect_owed().await.unwrap(), 0, "nothing owed once the retirement landed");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

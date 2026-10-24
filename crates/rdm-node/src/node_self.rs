@@ -344,7 +344,7 @@ impl NodeSelf {
     }
 
     /// This surface, cancelling `retire` when `node.connections.delete { All }` or a stop is admitted.
-    pub fn with_retire(mut self, retire: rdm_transport::Retirement) -> Self {
+    pub fn with_cancel(mut self, retire: rdm_transport::Retirement) -> Self {
         self.retire = Some(retire);
         self
     }
