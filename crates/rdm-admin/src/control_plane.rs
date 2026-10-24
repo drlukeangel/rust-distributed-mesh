@@ -219,24 +219,8 @@ impl ControlPlane {
     /// or failed with its intent retained. Its attempt is the one its drive covers now; `true` when
     /// that attempt follows a failed one.
     pub async fn fabric_delete_in_force(&self) -> Result<Option<(Opened, bool)>, Refusal> {
-        let current = self.builds.current().await.map_err(Refusal::State)?;
-        if let Some(c) = current.as_ref().filter(|c| c.deletes_fabric()) {
-            return Ok(Some((Opened { build_id: c.build_id.clone(), attempt: c.attempt_to_drive(), mesh: None }, false)));
-        }
-        // A delete whose attempt failed is never current (R-BI3): it is the newest acceptance.
-        let Some(newest) = self.builds.newest_accepted_at_ms().await.map_err(Refusal::State)? else { return Ok(None) };
-        if current.as_ref().is_some_and(|c| c.submitted_at_ms >= newest) {
-            return Ok(None);
-        }
-        let facts = self.builds.facts().await.map_err(Refusal::State)?;
-        let Some(id) = facts.iter().rev().find_map(|f| match f {
-            crate::build_state::BuildFact::Accepted(a) if a.submitted_at_ms == newest && matches!(a.submitted_change, Some(TopologyChange::DeleteFabric)) => Some(a.build_id.clone()),
-            _ => None,
-        }) else {
-            return Ok(None);
-        };
-        let p = self.builds.read_build(&id).await.map_err(Refusal::State)?;
-        Ok((p.state == BuildState::Failed).then(|| (Opened { build_id: p.build_id.clone(), attempt: p.attempt_to_drive(), mesh: None }, true)))
+        let in_force = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(Refusal::State)?;
+        Ok(in_force.map(|(p, failed)| (Opened { build_id: p.build_id.clone(), attempt: p.attempt_to_drive(), mesh: None }, failed)))
     }
 
     /// The current Build (R-BI3) for an attempt that acts in `mesh` alone with `action`, and the
@@ -888,6 +872,17 @@ impl ControlPlane {
                         .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt, mesh }));
+            }
+            // Under an in-force fabric.delete nothing is recovered for being absent and nothing is
+            // re-created (fabric-delete.md "Failure"; fabric-recovery.md step 4, Q155): the delete's own
+            // node.delete of the birth is its end. Refused naming the delete before anything is read or
+            // written, its attempts included.
+            if let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(Refusal::State)? {
+                outer.in_scope(|| {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str())
+                        .in_scope(|| tracing::info!("a fabric.delete is in force: nothing is recovered and nothing is re-created"))
+                });
+                return Err(Refusal::BuildInProgress(InProgress { current_build_id: delete.build_id.clone(), mesh: Some(path.mesh.clone()), held_by: None }));
             }
             let me = self.held_name().await;
             let t = self.topology.read().await.clone();

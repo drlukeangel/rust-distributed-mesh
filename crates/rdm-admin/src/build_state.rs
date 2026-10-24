@@ -561,6 +561,31 @@ pub async fn interrupted_by(builds: &dyn BuildStateAdapter, p: &BuildProjection)
     Ok((current.deletes_fabric() && (current.submitted_at_ms, &current.build_id) > (p.submitted_at_ms, &p.build_id)).then_some(current))
 }
 
+/// The fabric.delete in force (build.md §1: a successor fabric-primary reads the delete as the current
+/// Build and continues the teardown): the current Build when it is a fabric.delete, or else the newest
+/// Build accepted when it is a fabric.delete whose attempt failed, its intent retained (a failed Build is
+/// never current, R-BI3). With the delete, `true` when its attempt failed. `None`: no fabric.delete is in
+/// force.
+pub async fn fabric_delete_in_force(builds: &dyn BuildStateAdapter) -> Result<Option<(BuildProjection, bool)>, BuildStateError> {
+    let current = builds.current().await?;
+    if let Some(c) = current.as_ref().filter(|c| c.deletes_fabric()) {
+        return Ok(Some((c.clone(), false)));
+    }
+    let Some(newest) = builds.newest_accepted_at_ms().await? else { return Ok(None) };
+    if current.as_ref().is_some_and(|c| c.submitted_at_ms >= newest) {
+        return Ok(None);
+    }
+    let facts = builds.facts().await?;
+    let Some(id) = facts.iter().rev().find_map(|f| match f {
+        BuildFact::Accepted(a) if a.submitted_at_ms == newest && matches!(a.submitted_change, Some(TopologyChange::DeleteFabric)) => Some(a.build_id.clone()),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let p = builds.read_build(&id).await?;
+    Ok((p.state == BuildState::Failed).then_some((p, true)))
+}
+
 /// Why the run of `interrupted` ends: the fabric.delete `delete` accepted after it (build.md §1).
 pub fn interrupted_reason(interrupted: &BuildId, delete: &BuildId) -> String {
     format!("Build {interrupted} is interrupted by fabric.delete Build {delete}, accepted after it: its open attempts have ended, it opens no further operation and is never resumed")

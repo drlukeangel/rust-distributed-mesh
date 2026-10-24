@@ -9,6 +9,8 @@
 //! at that path.name is ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary
 //! (node.primary.update's call on it): the node installs both roles, acknowledges, and records them on
 //! its own row; the workflow completes on the acknowledgement.
+//! Under an in-force fabric.delete it re-creates and restores nothing: the executor of the lost birth's
+//! mesh holds the fabric-primary's roles to the end and continues the delete (step 4, Q155).
 //!
 //! Every fact the workflow acts on is read again from the view, the records and the Build on each pass:
 //! an executor that replaces a lost one starts it over and resumes from what is recorded.
@@ -217,6 +219,25 @@ impl FabricRecoveryDoor {
                 return "the lost birth's path.name is not known here".into();
             };
             span.record("at", at.to_string().as_str()).record("arm", if fr.own_mesh { "own-mesh" } else { "backbone" });
+            // Under an in-force fabric.delete the workflow re-creates and restores nothing: the delete is the
+            // current Build and names no node, so the executor holds the fabric-primary's roles to the end and
+            // continues the delete; no hand-back follows (fabric-recovery.md step 4, Q155).
+            match crate::build_state::fabric_delete_in_force(&*self.recovery.builds).await {
+                Ok(Some((delete, _))) => {
+                    span.record("arm", if fr.own_mesh { "own-mesh-under-delete" } else if fr.executor.is_none() { "launched-under-delete" } else { "backbone-under-delete" });
+                    if let Some(end) = self.hold_under_delete(span, target, &fr, &delete.build_id).await {
+                        return end;
+                    }
+                    tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::info!(error = %e, "the Build log could not be read for a fabric.delete in force: nothing is re-created on this pass");
+                    tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+                    continue;
+                }
+            }
             let view = self.topology.read().await.clone();
             let lost = view.members().find(|n| n.node_id == target.node_id && n.incarnation_id.as_ref() == Some(&target.incarnation)).cloned();
             // ReadyForTraffic in the view, or re-created by this workflow's completed attempt, whose create
@@ -283,6 +304,32 @@ impl FabricRecoveryDoor {
                 _ => {}
             }
             tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+        }
+    }
+
+    /// Under the in-force fabric.delete `delete` (fabric-recovery.md step 4, Q155): the executor of its
+    /// own mesh holds the fabric-primary's roles, mesh-primary and fabric-primary, installed on its own
+    /// node as node.primary.update's receiver installs them, with no call; its drive then continues the
+    /// delete as fabric-primary; so does the admin a person launched at the fabric-primary's path.name when
+    /// nothing was alive ("Nothing alive": it continues the teardown and revives nothing). `Some` ends the
+    /// workflow; `None` holds nothing on this pass (the next pass reads again). From the backbone the
+    /// workflow ends having written and re-created nothing: an executor of another mesh holds no
+    /// mesh-primary record of the lost birth's mesh.
+    async fn hold_under_delete(&self, span: &tracing::Span, target: &Primary, fr: &FabricRecovery, delete: &crate::build::BuildId) -> Option<String> {
+        if !fr.own_mesh && fr.executor.is_some() {
+            return Some(format!("from the backbone under fabric.delete {delete}: nothing is re-created"));
+        }
+        let me = self.topology.read().await.own(&self.me_id).cloned()?;
+        match self.restore(target, &me).await {
+            Ok(entries) => {
+                span.record("restored", me.name.to_string().as_str());
+                tracing::info!(build_id = %delete.log(), "under an in-force fabric.delete the executor holds the fabric-primary's roles and continues the delete; nothing is re-created");
+                Some(format!("holds the fabric-primary's roles under fabric.delete {delete}: {}", rdm_node::member_handover::entries_named(&entries)))
+            }
+            Err(reply) => {
+                tracing::info!(build_id = %delete.log(), refused = ?reply, "the executor could not hold the fabric-primary's roles on this pass");
+                None
+            }
         }
     }
 

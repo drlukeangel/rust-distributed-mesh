@@ -73,7 +73,10 @@ the same order starts the workflow again, resuming the attempt from its recorded
    completes on the acknowledgement. The fabric's shared store root stays where it was. The fabric
    resolves to a fabric-primary at the original path.name over the original data dir and endpoint key
    when the investigation's provider step found the old runtime exited, and over a newly allocated data
-   dir and endpoint key otherwise (R-FM2).
+   dir and endpoint key otherwise (R-FM2). Under an in-force fabric.delete (build.md §1), the workflow
+   re-creates and restores nothing: the delete is the current Build and names no node, so the executor
+   holds the fabric-primary's roles to the end and continues the delete, whose mesh.delete of the lost
+   birth's mesh deletes its row with the rest; no hand-back follows (Q155).
 
 | from the fabric-primary's last frame | default (floor 30 s) | gate (floor 3 s) |
 |---|---|---|
@@ -164,6 +167,8 @@ the fabric brings it back: a person or a script launches a node-admin.
 - Nothing ran mesh.delete or fabric.delete, so the fabric and its meshes were never deleted.
   The launched node-admin reuses the fabric id and each MeshId it reads from the store, and
   mints none.
+- A fabric.delete in force when nothing was alive is the current Build (build.md §1): the launched
+  node-admin reads it from the store and continues the teardown; it revives nothing.
 - A channel with no active listener ends by definition. A mesh's channel is derived from its
   MeshId ([a mesh is an entity](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)),
   and it is created again under that id by its first listener. It is never resumed.

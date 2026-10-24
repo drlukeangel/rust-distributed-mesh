@@ -925,6 +925,23 @@ fn plan_with(
     // fabric.deleted while the fabric-primary stays alive for its separate node.delete.
     if topology.meshes.is_empty() && action.is_none() {
         let fp_mesh = observed.fabric_primary().map(|n| n.mesh.as_str());
+        // A deleted mesh the view no longer holds: its final primary's node.delete, once this Build began
+        // it, is owed its receipt (fabric-delete.md "Failure": a runtime whose delete has no receipt is
+        // never reported deleted).
+        let mut begun_ops: std::collections::BTreeSet<&str> = steps.iter().filter(|r| r.operation.starts_with("mesh.delete:")).map(|r| r.operation.as_str()).collect();
+        begun_ops.retain(|op| !observed.meshes.iter().any(|m| m.id.as_ref().is_some_and(|id| crate::mesh_delete::operation(id) == *op)));
+        for op_key in begun_ops {
+            if let Ok(crate::mesh_delete::OwnerResume::Deleted(manifest)) = crate::mesh_delete::owner_resume(steps, op_key) {
+                if let Ok(node) = manifest.final_primary.node.parse::<PathName>() {
+                    let retire_key = BuildOperation::RetireNode { node: node.clone(), exited: None }.key();
+                    let completed = steps.iter().any(|r| r.operation == retire_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+                    let begun = steps.iter().any(|r| r.operation == retire_key);
+                    if !completed && begun && Some(node.mesh.as_str()) != fp_mesh {
+                        ops.push(BuildOperation::RetireNode { node, exited: None });
+                    }
+                }
+            }
+        }
         let mut meshes: Vec<&crate::model::Mesh> = observed.meshes.iter().collect();
         meshes.sort_by(|a, b| (Some(a.name.as_str()) == fp_mesh).cmp(&(Some(b.name.as_str()) == fp_mesh)).then_with(|| a.name.cmp(&b.name)));
         for m in meshes {
@@ -942,7 +959,10 @@ fn plan_with(
                             let retire_key = BuildOperation::RetireNode { node: node.clone(), exited: None }.key();
                             let completed = steps.iter().any(|r| r.operation == retire_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
                             let held = observed.nodes.iter().any(|n| n.node_id.as_str() == manifest.final_primary.node_id);
-                            if !completed && held {
+                            // A delete this Build began is owed its receipt whether or not the view still
+                            // holds the birth (fabric-delete.md "Failure").
+                            let begun = steps.iter().any(|r| r.operation == retire_key);
+                            if !completed && (held || begun) {
                                 ops.push(BuildOperation::RetireNode { node, exited: None });
                             }
                         }
@@ -1244,9 +1264,24 @@ mod tests {
             executor: Some("mesh2.admin.1".into()),
         };
         assert_eq!(
-            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &[mesh_deleted], None).operations,
+            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &[mesh_deleted.clone()], None).operations,
             vec![BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None }, shutdown("mesh3"), shutdown("mesh2"), deleted],
             "step 2: mesh1's mesh.deleted stands, so its mesh-primary's node.delete takes its place"
+        );
+
+        // The view no longer holds mesh1 or its final primary: a node.delete of it this Build began is
+        // owed its receipt, planned first (fabric-delete.md "Failure").
+        let mut fp = n("mesh2.admin.1", R, true);
+        fp.is_fabric_primary = true;
+        let gone = observed(vec![fp, n("mesh2.rpc.1", R, false), n("mesh3.admin.1", R, true), n("mesh3.rpc.1", R, false)], &["mesh2", "mesh3"]);
+        let gid = |m: &str| gone.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();
+        let gshutdown = |m: &str| BuildOperation::ShutdownMesh { mesh: m.into(), mesh_id: gid(m) };
+        let gdeleted = BuildOperation::DeleteFabric { fabric_id: gone.fabric.id.clone() };
+        let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: "node.delete:mesh1.admin.1".into(), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
+        assert_eq!(
+            plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &[mesh_deleted, begun], None).operations,
+            vec![BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None }, gshutdown("mesh3"), gshutdown("mesh2"), gdeleted],
+            "the begun node.delete of a deleted mesh's final primary the view no longer holds is still owed"
         );
     }
 

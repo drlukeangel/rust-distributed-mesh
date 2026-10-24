@@ -1054,7 +1054,8 @@ impl DriveEnv {
                     if let Ok(Some(delete)) = crate::build_state::interrupted_by(&*self.builds, &p).await {
                         return self.end_of_interrupted(&me, drive, &p, &delete).await;
                     }
-                    return self.stalled(&me, drive, format!("{me}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it"));
+                    let current = self.builds.current_build().await.ok().and_then(|c| c.into_build_id()).map(|c| c.to_string()).unwrap_or_else(|| "none".into());
+                    return self.stalled(&me, drive, format!("{me}: Build {id} ({:?} at attempt {}, completed {:?}) is neither the current Build ({current}) nor a failed Build accepted after it: nothing drives it", p.state, p.attempt, p.completed_at.is_some()));
                 }
                 Err(e) => return self.stalled(&me, drive, format!("{me}: the current Build could not be read to admit Build {id}: {e}")),
             }

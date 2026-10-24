@@ -66,3 +66,8 @@ no fabric.deleted follows. Completion of steps 1 to 3 rests on each deleted runt
 its node.delete receipt: a runtime inside the workflow whose delete has no receipt is never
 reported deleted. A node the fabric-primary cannot reach, directly or through a node-admin, and
 cannot prove exited is named in `Failed { step, reason }`.
+
+A fabric-primary lost mid-delete is fabric recovery's: its executor continues the delete as
+fabric-primary and re-creates nothing ([fabric recovery](fabric-recovery.md) step 4, Q155); a mesh
+left with no node-admin is deleted in process at the executor, as any mesh with no mesh-primary is.
+Once a runtime's deletion receipt is durable, nothing recovers it for being absent.

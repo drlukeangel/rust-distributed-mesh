@@ -1065,7 +1065,14 @@ impl AdminRunner {
                 let held = self.handles.lock().unwrap().get(node).cloned();
                 match held {
                     Some(h) => h,
-                    None => return Err(format!("node.delete:{node}: {} holds no birth at {node} in its view and no runtime handle of one", self.held_name()).into()),
+                    // A delete this Build began, whose birth has since left the view (its runtime
+                    // terminated): the exact birth its own NodeDeleting receipt names, its runtime read
+                    // from the birth's durable row, so the delete ends with its receipt (fabric-delete.md
+                    // "Failure": a runtime whose delete has no receipt is never reported deleted).
+                    None => match self.begun_delete_birth(build_id, node).await? {
+                        Some(birth) => self.handle_for(&birth).await?,
+                        None => return Err(format!("node.delete:{node}: {} holds no birth at {node} in its view and no runtime handle of one", self.held_name()).into()),
+                    },
                 }
             }
         };
@@ -1078,6 +1085,20 @@ impl AdminRunner {
         };
         self.delete_birth(build_id, attempt, record.clone(), handle).await?;
         Ok(Some(record))
+    }
+
+    /// The exact birth whose `node.delete:<node>` this Build began: the one its `NodeDeleting` receipt
+    /// names. `None` when no attempt of the Build receipted that step.
+    async fn begun_delete_birth(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<Node>, String> {
+        let key = format!("node.delete:{node}");
+        let build = self.builds.read_build(build_id).await.map_err(|e| format!("{key}: the Build {build_id} could not be read for its receipts: {e}"))?;
+        let Some(op) = build.steps.iter().filter(|r| r.operation == key && r.step == "NodeDeleting").find_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<rdm_core::lifecycle::LifecycleOp>(v).ok())) else {
+            return Ok(None);
+        };
+        let mut birth = Node::allocated(node.clone());
+        birth.node_id = op.node_id;
+        birth.incarnation_id = Some(op.incarnation);
+        Ok(Some(birth))
     }
 
     /// node.delete of the live or stopped exact birth `record` (node-delete.md): the ordinary

@@ -98,8 +98,9 @@ async fn terminal_of(what: &str, stream: &mut BuildStream, within: Duration) -> 
 }
 
 /// The delete's stream followed to `Complete` across the loss of the fabric-primary that accepted it: a
-/// stream that breaks is reattached by its build id at the fabric-primary `admin` names (an elected
-/// successor, or the birth fabric recovery re-created and restored at the lost one's path), bounded.
+/// stream that breaks is reattached by its build id at the fabric-primary `admin` names (under the delete,
+/// fabric recovery's executor, which holds the fabric-primary's roles: fabric-recovery.md step 4, Q155),
+/// bounded.
 /// The fabric-primary the stream ended at.
 async fn delete_followed(estate: &Estate, stream: BuildStream, admin: &str) -> String {
     let id = stream.build_id().clone();
@@ -133,6 +134,20 @@ async fn delete_followed(estate: &Estate, stream: BuildStream, admin: &str) -> S
     }
     let fp = at.lock().unwrap().clone();
     fp.unwrap_or_else(|| panic!("fabric.delete {id} completed with no reattachment after its fabric-primary was lost"))
+}
+
+/// Fabric recovery under an in-force fabric.delete re-creates nothing (fabric-recovery.md step 4, Q155):
+/// no node.create span opens after the delete's acceptance (`accepted_ns`), and the workflow's executor
+/// `fp` holds the fabric-primary's roles, its own node named restored.
+fn nothing_recreated_under_the_delete(spans: &[Value], accepted_ns: u64, fp: &str) {
+    // A mesh-primary's write of the rows of the members it now writes for (`moment = arrival`) creates nothing.
+    let created: Vec<&Value> = spans.iter().filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns).collect();
+    assert!(created.is_empty(), "nothing is created after the delete's acceptance: {created:?}");
+    let held: Vec<&Value> = named(spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| start(sp) >= accepted_ns && sp["attributes"]["restored"] == fp).collect();
+    assert!(!held.is_empty(), "fabric recovery's executor {fp} holds the fabric-primary's roles under the delete");
+    for sp in &held {
+        assert!(sp["attributes"]["arm"].as_str().is_some_and(|a| a.ends_with("under-delete")), "the workflow ran its arm under the delete: {sp}");
+    }
 }
 
 /// The receipts of Build `id` as the fabric-primary `admin` holds them.
@@ -259,13 +274,16 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
 
 /// CONTRACT (build.md §1: "its acceptance record is the durable intent ... a successor fabric-primary
 /// reads the delete as the current Build and continues the teardown"; "the interrupted Build opens no
-/// further operation and is never resumed"): on a two-mesh fabric (two node-admins in mesh1), the
+/// further operation and is never resumed"; fabric-recovery.md step 4: "Under an in-force fabric.delete
+/// ... the workflow re-creates and restores nothing ... the executor holds the fabric-primary's roles to
+/// the end and continues the delete"): on a two-mesh fabric (two node-admins in mesh1), the
 /// fabric-primary's growth of mesh1 is held by its fault door inside mesh1.rpc.2's launch, fabric.delete
-/// is accepted, and once mesh1.admin.2's log holds the acceptance the fabric-primary is killed. Its
-/// successor reads the delete as current: the growth's attempt ends with its executor's proven
-/// departure and reads `Failed` naming the delete, mesh1.rpc.2's create is never run again, and its
-/// launched runtime is deleted with the fabric, which reports fabric.deleted. What must NOT happen: the
-/// growth resumed by the successor, or the outstanding runtime left running.
+/// is accepted, and once mesh1.admin.2's log holds the acceptance the fabric-primary is killed. Fabric
+/// recovery's executor, mesh1.admin.2, holds the fabric-primary's roles and reads the delete as current:
+/// the growth's attempt ends once its executor's exit is read and reads `Failed` naming the delete,
+/// mesh1.rpc.2's create is never run again, and its launched runtime is deleted with the fabric, which
+/// reports fabric.deleted. What must NOT happen: the growth resumed, the lost fabric-primary re-created
+/// (no node.create after the acceptance), or the outstanding runtime left running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor() {
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
@@ -279,6 +297,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let launched: Vec<u32> = estate.live_runtimes().into_iter().filter(|(dir, _)| of_node(dir, "mesh1.rpc.2")).map(|(_, pid)| pid).collect();
     assert_eq!(launched.len(), 1, "mesh1.rpc.2's runtime is launched: {:?}", estate.live_runtimes());
 
+    let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
     build_log::build_fact(&estate.carrier_at(&path("mesh1.admin.2")).await, &id, "the delete's acceptance", SETTLE, |_| true).await.unwrap_or_else(|end| panic!("{end}"));
@@ -295,20 +314,25 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     assert!(!left.contains(&launched[0]), "the outstanding runtime of mesh1.rpc.2 is captured and deleted: {left:?}");
     assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp} is left, for its separate node.delete");
     estate.stop().await;
+    nothing_recreated_under_the_delete(&estate.spans(), accepted_ns, &fp);
 }
 
 /// CONTRACT (lifecycles/fabric-delete.md "Numbered end-to-end sequence"; build.md §1: "a successor
-/// fabric-primary reads the delete as the current Build and continues the teardown"): on a two-mesh
-/// fabric, fabric.delete's executor (the fabric-primary) is held by its fault door at mesh2's primary's
-/// node.delete, after mesh2 is deleted, and killed. Its successor in mesh1 runs the next attempt: mesh2's
-/// primary is deleted once, mesh1 is deleted, and fabric.deleted is reported. What must NOT happen: a
-/// mesh deleted twice, the teardown left unfinished, or a runtime left beside the fabric-primary.
+/// fabric-primary reads the delete as the current Build and continues the teardown"; fabric-delete.md
+/// "Failure": "A fabric-primary lost mid-delete is fabric recovery's: its executor continues the delete as
+/// fabric-primary and re-creates nothing"): on a two-mesh fabric, fabric.delete's executor (the
+/// fabric-primary) is held by its fault door at mesh2's primary's node.delete, after mesh2 is deleted, and
+/// killed. Fabric recovery's executor in mesh1 holds the fabric-primary's roles and runs the next attempt:
+/// mesh2's primary is deleted once, its row written by that executor, mesh1 is deleted, and fabric.deleted
+/// is reported. What must NOT happen: a mesh deleted twice, the lost fabric-primary re-created, the
+/// teardown left unfinished, or a runtime left beside the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt() {
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
     let mut estate = ready_fabric("the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt", &shape).await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("first-mesh", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete:mesh2.admin.1"})).await;
+    let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
     let held = door.wait_held("first-mesh").await;
@@ -325,4 +349,5 @@ async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next
     torn_down(&receipts, 2);
     assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp} is left, for its separate node.delete");
     estate.stop().await;
+    nothing_recreated_under_the_delete(&estate.spans(), accepted_ns, &fp);
 }

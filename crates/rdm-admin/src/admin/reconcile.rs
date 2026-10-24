@@ -311,6 +311,25 @@ pub async fn reconcile_drift(
     if matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
         return None;
     }
+    // A fabric.delete in force, its attempt failed, is never current (R-BI3), yet its intent is retained:
+    // nothing reconciles toward the Build before it, and no deleted runtime is recovered for being absent
+    // (build.md §1; fabric-delete.md "Failure", Q155).
+    match crate::build_state::fabric_delete_in_force(builds).await {
+        Ok(None) => {}
+        Ok(Some((delete, _))) => {
+            let key = (delete.build_id.clone(), 0u32, vec!["fabric-delete-in-force".to_string()]);
+            if started.insert(key) {
+                tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route = "proven-drift", node = %me, build_id = %delete.build_id.log())
+                    .in_scope(|| tracing::info!("a fabric.delete is in force: no drift attempt is opened"));
+            }
+            return None;
+        }
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "proven-drift", node = %me, error = %e)
+                .in_scope(|| tracing::info!("the Build log could not be read for a fabric.delete in force: no drift attempt is opened"));
+            return None;
+        }
+    }
     // Every unheard birth the provider was asked about, with its verdict (node-recovery.md step 3: any
     // verdict but `reached` opens the recovery, Q111).
     let mut exited = HashSet::new();
