@@ -459,3 +459,61 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
         .collect();
     assert!(!others.is_empty(), "the births the fabric recreated adopted rafka-time");
 }
+
+/// CONTRACT (node-stop.md, Entry: "Live exact `(node.id, incarnation)`", Status: "stopped with a live
+/// process"; node-rpc-envelope.md, Workflow: "A later attempt resumes from the recorded receipts, never
+/// from step 1, and validates those receipts against the accepted operation and exact births before it
+/// reuses them"): a recipe Build stops `mesh1.rpc.1` (its `Complete` receipt durable: stopped, its
+/// process alive) and then creates `mesh1.rpc.3`; every runtime of the fabric is lost inside that
+/// Build, the create's first receipt held by the faulted fabric-primary's door. The fabric-primary,
+/// restarted on its own data dir as both primaries, resumes the Build and completes it. The stopped
+/// node's runtime exited with the fault: the completed stop's receipt is not taken into any book after
+/// the restart (no NodeStopped of it), and it is recovered (node-recovery.md step 3): node.delete of the
+/// exited birth, then node.create at its path.name under a new node id, and the view settles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped() {
+    let cell = "a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped";
+    let sha = rdm_test::faults::candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    let before = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
+    let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    assert_eq!(fp, "mesh1.admin.1", "the bootstrap admin holds the fabric seat: {before:#?}");
+    let stopped = before.iter().find(|n| n["name"] == "mesh1.rpc.1").cloned().expect("mesh1.rpc.1");
+    let stopped_id = s(&stopped["node_id"]);
+
+    // The fabric-primary's door holds the create's first receipt: the stop before it is complete and
+    // durable, and the Build's attempt is open.
+    let door = rdm_test::faults::Door::at(&estate, &fp).await;
+    let cut = "recipe:create";
+    door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create:mesh1.rpc.3"})).await;
+    let rpc1: rdm_client::PathName = Estate::path("mesh1.rpc.1");
+    let stream = estate.nodes_obj().await.recipe(vec![rdm_core::build::RecipeStep::Stop { node: rpc1 }, rdm_core::build::RecipeStep::Create { node: Estate::path("mesh1.rpc.3"), executable: None }]).await.unwrap_or_else(|e| panic!("the recipe is accepted: {e}"));
+    let held = door.wait_held(cut).await;
+
+    // The fault: every runtime of the fabric, at once, inside the Build.
+    for (_, pid) in estate.live_runtimes() {
+        estate.kill_pid(pid);
+    }
+    estate.kill_bootstrap();
+    drop(stream);
+    assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
+
+    let fp_dir = estate.bootstrap_data_dir("mesh1");
+    let restarted = estate.restart_admin_with(&fp_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&restarted).await;
+    let after = values(&estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(240)).await);
+    let back = after.iter().find(|n| n["name"] == "mesh1.rpc.1").cloned().unwrap_or_else(|| panic!("mesh1.rpc.1 is in the settled view: {after:#?}"));
+    assert_ne!(s(&back["node_id"]), stopped_id, "mesh1.rpc.1 is re-created by recovery under a new node id: {back}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let t0 = named(&spans, "rdm.node_admin.node.update.via-recovery-start").into_iter().filter(|sp| attr(sp, "node") == fp).map(|sp| at(sp)).min().expect("the restarted fabric-primary recorded its recovery start");
+    let taken: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-stopped").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
+    assert!(taken.is_empty(), "no book takes a NodeStopped of the exited birth after the restart: {taken:#?}; the cut held {held}");
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| at(sp) >= t0 && attr(sp, "node_id") == stopped_id).collect();
+    assert_eq!(deleted.len(), 1, "the exited birth is recovered: node.delete of it once, then node.create at its path.name: {deleted:#?}");
+}
