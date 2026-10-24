@@ -1967,7 +1967,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         d.node.name = asked;
                                                         d.clone()
                                                     };
-                                                    if !crate::node_self::parking().is_parked() {
+                                                    if !crate::node_self::process_stop().is_stopped() {
                                                         let _ = membership.publish(&d).await;
                                                     }
                                                 }

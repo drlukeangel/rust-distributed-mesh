@@ -89,9 +89,9 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
         }
     }
     // A parked birth (its stop published): the book dropped it, and so does the path it held.
-    let parked = book.parked().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+    let parked = book.stopped_digests().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(book.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
     for (node_id, incarnation, name) in parked {
-        if resolver.park(&node_id, &incarnation) {
+        if resolver.stop(&node_id, &incarnation) {
             tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Parked")
                 .in_scope(|| tracing::info!("the resolver holds the parked birth by its exact id only: its path is given up"));
         }

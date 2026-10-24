@@ -1462,7 +1462,7 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
     tokio::time::timeout(Duration::from_secs(5), running.wait_for(|b| *b)).await.expect("attempt 1 never reached its operation").unwrap();
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
     // The stop parks the gate while the attempt runs.
-    let at = gate.park();
+    let at = gate.stop();
     assert!(at.turns.contains_key("build-drive"), "the park finds the drive's turn in progress while its attempt runs; turns at the park: [{}]", at.named());
     let quiesce = tokio::spawn({
         let gate = gate.clone();
@@ -1486,7 +1486,7 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
 async fn a_drive_that_begins_once_its_admin_stopped_claims_and_dispatches_nothing_until_the_admin_starts() {
     let r = rig().await;
     let gate = r.env.turns.clone();
-    gate.park();
+    gate.stop();
     let drive = Drive::detached(r.build.clone());
     let (env, d) = (r.env.clone(), drive.clone());
     let mut driving = tokio::spawn(async move { env.run(&d).await });

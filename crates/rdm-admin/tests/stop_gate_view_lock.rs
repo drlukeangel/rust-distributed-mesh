@@ -61,7 +61,7 @@ fn a_parked_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lo
         submitted.notify_one();
         tokio::time::sleep(Duration::from_millis(500)).await;
         // The stop parks the admin while they wait; then the holder lets go.
-        running.gate().park();
+        running.gate().stop();
         drop(holder);
 
         // A handler of the parked admin (its start's) takes the view lock.

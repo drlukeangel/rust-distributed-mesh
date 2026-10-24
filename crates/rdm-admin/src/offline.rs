@@ -754,12 +754,12 @@ impl OfflineTickle {
             };
             // The round: the one ladder over the birth (`tickle`). It takes no lock and waits on
             // nothing of this admin's; a stop's park cancels it where it stands
-            // (`StopGate::until_parked`), and it never resumes.
+            // (`StopGate::until_stopped`), and it never resumes.
             let ladder = tickle(id.clone());
             // The verdict's instant on the tick clock: this tick's `now_ms` plus the time since it began.
             let (tick_ms, tick_began) = (now_ms, began);
             let (cancelled_id, cancelled_path, cancelled_by) = (id.clone(), path.clone(), self.observer.clone());
-            let round = self.gate.until_parked(async move {
+            let round = self.gate.until_stopped(async move {
                 match ladder.await {
                     Ok(Tickle::Reached { answer, carrier }) => RoundEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
                     Ok(Tickle::Unreached(unreached)) => {
@@ -786,14 +786,14 @@ impl OfflineTickle {
 /// The recovery of a TRUE OFFLINE birth (`follow`: the provider's proof, the submit, and the Build
 /// followed to its end, `RecoverySubmitter::recover_if_proven`), run beside the mesh-primary's loop.
 /// A stop's park cancels it where it stands, the view lock it holds or waits on included, and does not
-/// wait for it (`StopGate::until_parked`); a submit it already made is answered AlreadyApplied or
+/// wait for it (`StopGate::until_stopped`); a submit it already made is answered AlreadyApplied or
 /// BuildInProgress when it comes again. The birth leaves `in_flight` either way, so the first tick
 /// that finds it due again, after a start or at the seat's next holder, submits it again.
 pub(crate) fn spawn_recovery_follower<F>(gate: &crate::stop_gate::StopGate, in_flight: std::sync::Arc<std::sync::Mutex<HashSet<(crate::model::NodeId, crate::model::IncarnationId)>>>, birth: (crate::model::NodeId, crate::model::IncarnationId), follow: F) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    let follow = gate.until_parked(follow);
+    let follow = gate.until_stopped(follow);
     tokio::spawn(async move {
         if follow.await.is_none() {
             tracing::info!(node_id = %birth.0, incarnation = %birth.1 .as_str(), "the recovery follower was cancelled at the stop's park: the next tick that finds the birth due submits it again");

@@ -1602,9 +1602,9 @@ impl Channel {
     }
 
     /// Leave the topic: the sender and the receiver are dropped, so this node is a neighbour of no
-    /// one on it, and nothing is sent or heard until [`Self::unpark`]. Resolves once the topic is
+    /// one on it, and nothing is sent or heard until [`Self::start`]. Resolves once the topic is
     /// left. Parking a parked channel is a no-op.
-    async fn park(&self) {
+    async fn stop(&self) {
         if *self.parked.borrow() {
             return;
         }
@@ -1615,7 +1615,7 @@ impl Channel {
     }
 
     /// Join the topic again through the peers this channel knows.
-    async fn unpark(&self) {
+    async fn start(&self) {
         let mut ready = self.sender.read().await.is_some();
         self.parked.send_replace(false);
         while !ready {
@@ -2166,7 +2166,7 @@ impl View {
                 let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
                 let taken = self.book.stopped_carried(op.clone(), carried);
                 if taken {
-                    self.note_member_parked(op, prior, via);
+                    self.note_member_stopped(op, prior, via);
                 }
                 taken
             }
@@ -2464,7 +2464,7 @@ impl View {
             } else if op.is_stop() {
                 let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
                 if self.book.stopped(op.clone()) {
-                    self.note_member_parked(&op, prior, side.name());
+                    self.note_member_stopped(&op, prior, side.name());
                 }
             } else {
                 self.book.deleting(op);
@@ -2555,7 +2555,7 @@ impl View {
     /// A peer mesh's member this node now holds parked, from its mesh primary's `NodeStopped` overlay
     /// (gossip.md, node-stopped lifecycle overlay): Leaving and parked, not routable. `channel` is
     /// where the overlay arrived: the frame itself, or the aggregate's `in_flight`.
-    fn note_member_parked(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::MemberStatus>, channel: &str) {
+    fn note_member_stopped(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::MemberStatus>, channel: &str) {
         if op.name.mesh == self.mesh {
             return;
         }
@@ -2987,18 +2987,18 @@ impl Membership {
     }
 
     /// Leave this mesh's gossip topic: this node is a neighbour of no one on it and sends and hears
-    /// nothing there until [`Membership::unpark`]. Resolves once the topic is left.
-    pub async fn park(&self) {
+    /// nothing there until [`Membership::start`]. Resolves once the topic is left.
+    pub async fn stop(&self) {
         self.apps.suspend().await;
-        self.mesh.park().await;
+        self.mesh.stop().await;
     }
 
     /// Join this mesh's gossip topic again through the peers it knows. Resolves once the topic is
     /// re-subscribed.
-    pub async fn unpark(&self) {
-        self.mesh.unpark().await;
+    pub async fn start(&self) {
+        self.mesh.start().await;
         // Back on the topic, this node heard nothing while it was off it: every member's silence is
-        // measured from now, never from before the park (node-recovery.md step 1: the window already
+        // measured from now, never from before the stop (node-recovery.md step 1: the window already
         // running is the durable silence rows', which the tick reads). On the topic again it hears its
         // members at once: the reopen dialled them (Q88).
         self.book.restart_silence();
@@ -3411,14 +3411,14 @@ impl Backbone {
     }
 
     /// Leave the backbone topic: this admin is a neighbour of no one on it and sends and hears
-    /// nothing there until [`Backbone::unpark`]. Resolves once the topic is left.
-    pub async fn park(&self) {
-        self.channel.park().await;
+    /// nothing there until [`Backbone::start`]. Resolves once the topic is left.
+    pub async fn stop(&self) {
+        self.channel.stop().await;
     }
 
     /// Join the backbone topic again through the peers it knows.
-    pub async fn unpark(&self) {
-        self.channel.unpark().await;
+    pub async fn start(&self) {
+        self.channel.start().await;
     }
 
     /// Join the backbone with the author's exact birth. Every publication retains this supplied
@@ -5063,7 +5063,7 @@ impl DigestBook {
     /// The last digest this book held of each stopped birth: a node-admin keeps showing the birth,
     /// `Leaving`, in its view though the book dropped it. A birth this book never held a digest of
     /// (a late joiner) is not listed.
-    pub fn parked(&self) -> Vec<MeshDigest> {
+    pub fn stopped_digests(&self) -> Vec<MeshDigest> {
         self.stopped_marks.lock().unwrap().values().filter_map(|m| m.held.clone()).collect()
     }
 
@@ -5116,7 +5116,7 @@ impl DigestBook {
     /// The open stop overlays of stopped births this book never held a digest of (an admin that
     /// joined after the stop and read the overlay from the mesh topology): the only facts it has of
     /// them are the overlay's own, the node's path, id and incarnation.
-    pub fn parked_unheard(&self) -> Vec<LifecycleOp> {
+    pub fn stopped_unheard(&self) -> Vec<LifecycleOp> {
         let marks = self.stopped_marks.lock().unwrap();
         self.in_flight
             .lock()
@@ -5664,7 +5664,7 @@ impl DigestBook {
         for (d, _) in self.projected_unheard_at(Instant::now()).into_iter().filter(|(d, _)| d.node.name.mesh == mesh) {
             roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone()));
         }
-        for d in self.parked().into_iter().filter(|d| d.node.name.mesh == mesh) {
+        for d in self.stopped_digests().into_iter().filter(|d| d.node.name.mesh == mesh) {
             roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone()));
         }
         for op in self.in_flight().into_iter().filter(|op| op.name.mesh == mesh) {

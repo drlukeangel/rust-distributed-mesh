@@ -1800,7 +1800,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             // is sent again, whatever its last outcome.
             wake.addressed_by(sender.map(|n| &n.node_id), peer);
             // A parked admin presents nothing: it says it is parked.
-            if crate::node_self::parking().is_parked() {
+            if crate::node_self::process_stop().is_stopped() {
                 tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "parked", "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("probed by a node-admin: parked, nothing re-published"));
                 return Some(StatusReply::CurrentParked { node_id: me.node_id.clone(), incarnation: held.clone() });

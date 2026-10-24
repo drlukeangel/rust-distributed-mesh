@@ -821,7 +821,7 @@ mod tests {
     }
 
     /// Park the one blocking thread until the returned sender is sent to (or dropped).
-    fn park_the_blocking_pool() -> std::sync::mpsc::Sender<()> {
+    fn hold_the_blocking_pool() -> std::sync::mpsc::Sender<()> {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         drop(tokio::task::spawn_blocking(move || {
             let _ = rx.recv();
@@ -855,7 +855,7 @@ mod tests {
         one_blocking_thread().block_on(async {
             let d = tempdir("records-cancel");
             let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();
-            let release = park_the_blocking_pool();
+            let release = hold_the_blocking_pool();
             assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was parked");
             assert!(r.0.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
             release.send(()).unwrap();

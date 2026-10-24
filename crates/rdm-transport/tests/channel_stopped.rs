@@ -83,7 +83,7 @@ async fn a_parked_membership_is_no_neighbour_and_sends_nothing_until_it_unparks(
     let seq_before = ma.book.get(db.node.node_id.as_str()).unwrap().0.digest_seq;
 
     // B parks: A no longer counts it a neighbour, and B refuses to send, by name.
-    mb.park().await;
+    mb.stop().await;
     until("A has lost its neighbour", || ma.neighbours() == 0).await;
     assert_eq!(mb.neighbours(), 0, "a parked node holds no neighbour");
     let refused = mb.publish(&db).await.expect_err("a publish on a parked channel is refused");
@@ -92,7 +92,7 @@ async fn a_parked_membership_is_no_neighbour_and_sends_nothing_until_it_unparks(
     assert_eq!(ma.book.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was parked");
 
     // B unparks: the topic is joined again, the neighbours return and B's digest sequence continued.
-    mb.unpark().await;
+    mb.start().await;
     until("A and B are neighbours again", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
     mb.publish(&db).await.unwrap();
     until("A hears B again", || ma.book.get(db.node.node_id.as_str()).is_some_and(|(d, _)| d.digest_seq > seq_before)).await;

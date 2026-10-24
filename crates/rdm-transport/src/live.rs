@@ -100,7 +100,7 @@ struct Live {
 }
 
 impl Live {
-    fn is_parked(&self, n: &ResolvedNode) -> bool {
+    fn is_stopped(&self, n: &ResolvedNode) -> bool {
         self.parked.contains(&(n.node_id.clone(), n.incarnation.clone()))
     }
 
@@ -111,11 +111,11 @@ impl Live {
     /// The path's holder after `gone` left it: another live node heard at the
     /// same path, if any. A holder is kept only while it is live and still at `path`.
     fn rehold(&mut self, path: &PathName) {
-        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| &n.name == path && !self.is_parked(n)) {
+        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| &n.name == path && !self.is_stopped(n)) {
             return;
         }
         self.by_path.remove(path);
-        let mut at: Vec<&NodeId> = self.nodes.values().filter(|n| &n.name == path && !self.is_parked(n)).map(|n| &n.node_id).collect();
+        let mut at: Vec<&NodeId> = self.nodes.values().filter(|n| &n.name == path && !self.is_stopped(n)).map(|n| &n.node_id).collect();
         at.sort();
         if let Some(id) = at.first() {
             self.by_path.insert(path.clone(), (*id).clone());
@@ -233,7 +233,7 @@ impl LiveNodeResolver {
     /// It gives up its path, which passes to another node heard at it, if any; it still resolves by
     /// its exact node id until it rejoins as itself ([`Self::apply`]) or departs. `false` when this
     /// process holds another birth of the node, none, or the birth is parked already.
-    pub fn park(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+    pub fn stop(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
         let mut live = self.live.write().unwrap();
         let Some(path) = live.nodes.get(node_id).filter(|n| &n.incarnation == incarnation).map(|n| n.name.clone()) else { return false };
         if !live.parked.insert((node_id.clone(), incarnation.clone())) {
@@ -412,13 +412,13 @@ mod tests {
         let old = birth("mesh1.rpc.1", 7000);
         r.apply(old.clone(), None);
         let path = NodeTarget::CurrentPath(old.name.clone());
-        assert!(r.park(&old.node_id, &old.incarnation));
-        assert!(!r.park(&old.node_id, &old.incarnation), "parked once");
+        assert!(r.stop(&old.node_id, &old.incarnation));
+        assert!(!r.stop(&old.node_id, &old.incarnation), "parked once");
         assert_eq!(r.resolve(&path), Err(ResolveFailure::Unknown), "a parked birth holds no path");
         assert_eq!(exact(&r, &old).unwrap().incarnation, old.incarnation, "reachable by its exact id");
         assert_eq!(r.apply(old.clone(), None), Applied::Updated, "heard again: it rejoined as itself");
         assert_eq!(r.resolve(&path).unwrap().node_id, old.node_id, "the rejoined birth holds its path again");
-        assert!(r.park(&old.node_id, &old.incarnation));
+        assert!(r.stop(&old.node_id, &old.incarnation));
         let new = birth("mesh1.rpc.1", 7001);
         r.apply(new.clone(), None);
         assert_eq!(r.resolve(&path).unwrap().node_id, new.node_id, "the successor holds the path the parked predecessor gave up");

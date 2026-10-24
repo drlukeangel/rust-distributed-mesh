@@ -510,7 +510,7 @@ fn a_late_reader_lists_a_stopped_node_parked_from_the_stop_overlay_a_read_carrie
         let t = target_of(&caller, &server);
         get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh3"), None).await.unwrap();
         assert!(caller.membership.book.get(stopped.node.node_id.as_str()).is_none(), "the reader never held the stopped node's digest");
-        assert_eq!(caller.membership.book.parked_unheard(), vec![op]);
+        assert_eq!(caller.membership.book.stopped_unheard(), vec![op]);
         let view = rdm_admin::admin::project("fabric1", &fabric, rdm_admin::model::ProviderKind::Process, &caller.membership.book, &rdm_admin::admin::Records::default());
         let n = view.node(&stopped.node.name).expect("the parked node is listed");
         assert_eq!((n.status, n.parked, n.routable), (rdm_admin::model::NodeStatus::Leaving, true, false));

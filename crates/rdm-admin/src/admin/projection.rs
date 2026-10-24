@@ -175,8 +175,8 @@ impl RowNames {
                 quiet.push((d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.clone()));
             }
         }
-        quiet.extend(book.parked().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
-        quiet.extend(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+        quiet.extend(book.stopped_digests().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
+        quiet.extend(book.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
         for (node_id, incarnation, published) in quiet {
             let name = row_name(me, &*store, &node_id, &incarnation, &published).await;
             rows.names.insert((node_id, incarnation), (published, name));
@@ -374,7 +374,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     }
     // A parked birth (stopped, its process alive): the book dropped it, and this view keeps it,
     // `Leaving` and `parked`, until it rejoins as itself or departs.
-    for d in book.parked() {
+    for d in book.stopped_digests() {
         if &d.fabric_id != fabric_id || book.is_departed(d.node.node_id.as_str()) {
             continue;
         }
@@ -411,7 +411,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     }
     // A parked birth this admin never held a digest of (it joined after the stop): the stop
     // overlay the mesh topology carried names it, `Leaving` and `parked`, until it rejoins or departs.
-    for op in book.parked_unheard() {
+    for op in book.stopped_unheard() {
         if book.is_departed(op.node_id.as_str()) {
             continue;
         }

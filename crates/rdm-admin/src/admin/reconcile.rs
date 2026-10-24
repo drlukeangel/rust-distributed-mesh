@@ -170,7 +170,7 @@ pub(crate) fn lost_birth_name(book: &DigestBook, lost: &rdm_core::handover::Hand
     book.get(lost.node_id.as_str())
         .map(|(d, _)| d)
         .filter(exact)
-        .or_else(|| book.parked().into_iter().find(exact))
+        .or_else(|| book.stopped_digests().into_iter().find(exact))
         .map(|d| d.node.name)
         .or_else(|| book.departed().into_iter().find(|op| op.node_id == lost.node_id && op.incarnation == lost.incarnation).map(|op| op.name))
 }

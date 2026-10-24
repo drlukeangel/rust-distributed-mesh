@@ -55,7 +55,7 @@ pub struct Deployed {
     /// stands at that path.name (R-JN1 item 6), and handed its row's config when that row is its own
     /// create's claim. Set by the one that registers the deployment, never
     /// inferred from the last accepted name, which an admin that joined after the stop lacks
-    /// (`MeshMembership::parked_unheard`).
+    /// (`MeshMembership::stopped_unheard`).
     pub held: bool,
 }
 

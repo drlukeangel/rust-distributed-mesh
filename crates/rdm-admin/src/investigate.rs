@@ -1208,7 +1208,7 @@ mod tests {
         assert!(asked, "probe 1 was asked at its 2 s rung");
         tokio::task::yield_now().await;
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the probe made its first call");
-        gate.park();
+        gate.stop();
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the admin is parked: its probe made no step");
         gate.resume();

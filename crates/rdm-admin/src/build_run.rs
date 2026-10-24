@@ -833,7 +833,7 @@ impl RunDoor {
                             t
                         }
                         None => {
-                            let waited = gate.is_parked();
+                            let waited = gate.is_stopped();
                             let t = gate.turn("build-run").instrument(gated.clone()).await;
                             gated.record("turn", if waited { "waited-for-start" } else { "begun" });
                             t

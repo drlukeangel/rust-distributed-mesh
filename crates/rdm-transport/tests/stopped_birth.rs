@@ -378,7 +378,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         // so the projection listing the birth again reaches it only through its top-up.
         let start = LifecycleOp { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
         assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
-        m.park().await;
+        m.stop().await;
         round().await;
         let served = p.held_topology(&p.book.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
         let read_version = served.iter().find(|s| s.mesh == "mesh1").map(|s| s.topology_version).expect("the primary serves its own mesh");
@@ -389,7 +389,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         assert_eq!(version_at_m(), Some(read_version), "the top-up installed the primary's projection");
         assert!(!m.book.in_flight().contains(&stop), "the top-up's projection, past the version the stop changed the birth at, ends the stop");
         assert_eq!(m.book.get(id.as_str()).map(|(d, _)| (d.node.incarnation.clone(), d.status)), Some((inc.clone(), MemberStatus::Pending)), "the member holds the birth again with the projection's status");
-        m.unpark().await;
+        m.start().await;
 
         drop(bb);
         for n in [&p_node, &m_node] {

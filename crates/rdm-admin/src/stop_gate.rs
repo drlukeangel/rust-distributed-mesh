@@ -12,7 +12,7 @@
 //!   its own and waits on begins its own turn under it ([`Turn::under`]), never at the wait point;
 //! - a task that takes no such lock is spawned through the gate ([`StopGate::spawn`]): while the
 //!   gate is parked its future is not polled, so it holds its place at the await it was at.
-//! Work a stop retires with the birth instead of holding it runs as [`StopGate::until_parked`]: it
+//! Work a stop retires with the birth instead of holding it runs as [`StopGate::until_stopped`]: it
 //! ends at the park and never resumes. The gate restarts nothing.
 
 use std::collections::BTreeMap;
@@ -94,7 +94,7 @@ impl StopGate {
 
     /// Stop polling every task spawned through this gate, and begin no turn. Answers the gate as it
     /// stood at that moment: each turn in progress runs to its end.
-    pub fn park(&self) -> GateState {
+    pub fn stop(&self) -> GateState {
         let mut at = GateState::default();
         self.state.send_modify(|s| {
             s.parked = true;
@@ -107,7 +107,7 @@ impl StopGate {
     /// ended, on their own completion, and no other begins. Answers the gate as it stood at the park.
     /// A turn holds no lock at its wait point, and none is held here, so every turn can end.
     pub async fn quiesce(&self) -> GateState {
-        let at = self.park();
+        let at = self.stop();
         let mut rx = self.state.subscribe();
         let _ = rx.wait_for(|s| s.turns.is_empty()).await;
         at
@@ -119,7 +119,7 @@ impl StopGate {
     }
 
     /// Whether the gate is parked.
-    pub fn is_parked(&self) -> bool {
+    pub fn is_stopped(&self) -> bool {
         self.state.borrow().parked
     }
 
@@ -193,7 +193,7 @@ impl StopGate {
     /// recovery follower): it is dropped where it stands, a lock it held or was queued on included, and
     /// never resumes; the next turn after a start decides again. The park is looked at first, so work
     /// woken by its own progress and by the park at once is never polled past the park.
-    pub fn until_parked<F>(&self, work: F) -> impl Future<Output = Option<F::Output>> + Send + 'static
+    pub fn until_stopped<F>(&self, work: F) -> impl Future<Output = Option<F::Output>> + Send + 'static
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
@@ -229,7 +229,7 @@ mod tests {
         let quiesce = gate.quiesce();
         tokio::pin!(quiesce);
         assert!((&mut quiesce).now_or_never().is_none(), "two turns are in progress: the quiesce waits");
-        assert!(gate.is_parked(), "the quiesce parked the gate at once");
+        assert!(gate.is_stopped(), "the quiesce parked the gate at once");
         let late = gate.turn("declarer");
         tokio::pin!(late);
         assert!((&mut late).now_or_never().is_none(), "no turn begins on a parked gate");
@@ -266,7 +266,7 @@ mod tests {
             // The task polls once and waits on its work; then its work and the park come together.
             tokio::task::yield_now().await;
             work.notify_one();
-            gate.park();
+            gate.stop();
             tokio::time::sleep(Duration::from_millis(5)).await;
             assert_eq!(steps.load(Ordering::SeqCst), 0, "trial {trial}: the parked task made a step past the park");
             task.abort();
@@ -289,7 +289,7 @@ mod tests {
             }
         });
         tokio::time::sleep(Duration::from_millis(45)).await;
-        gate.park();
+        gate.stop();
         tokio::time::sleep(Duration::from_millis(20)).await;
         let held = ticks.load(Ordering::SeqCst);
         assert_eq!(held, 1, "one tick before the park");

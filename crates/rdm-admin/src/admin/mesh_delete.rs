@@ -50,7 +50,7 @@ impl AdminRunner {
     /// The record this admin's membership holds of the exact roster birth `b`: its digest, live or
     /// parked, as the view projects a digest (the leave's records, [`crate::mesh_delete::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
-        let d = self.book.get(&b.node_id).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
+        let d = self.book.get(&b.node_id).map(|(d, _)| d).or_else(|| self.book.stopped_digests().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
         let mut n = Node::allocated(d.node.name.clone());
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());

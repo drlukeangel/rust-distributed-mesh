@@ -42,22 +42,22 @@ pub struct Parking {
 }
 
 /// The process's parking.
-pub fn parking() -> &'static Parking {
+pub fn process_stop() -> &'static Parking {
     static PARKING: std::sync::OnceLock<Parking> = std::sync::OnceLock::new();
     PARKING.get_or_init(|| Parking { parked: std::sync::atomic::AtomicBool::new(false) })
 }
 
 impl Parking {
     /// A `stop-node` completed: the process is parked.
-    pub fn park(&self) {
+    pub fn stop(&self) {
         self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     /// A `start-node` rejoined: the process is live again.
-    pub fn unpark(&self) {
+    pub fn start(&self) {
         self.parked.store(false, std::sync::atomic::Ordering::SeqCst);
     }
     /// Whether the process is parked.
-    pub fn is_parked(&self) -> bool {
+    pub fn is_stopped(&self) -> bool {
         self.parked.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
@@ -144,7 +144,7 @@ pub trait Session: Send + Sync {
     /// resolves once every turn already past its wait point has ended, so nothing a turn does
     /// follows the stop's declaration or its cut. A surface whose tasks need no holding has nothing
     /// to wait for.
-    async fn park_tasks(&self) -> TasksParked {
+    async fn hold_tasks(&self) -> TasksParked {
         TasksParked::default()
     }
     /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
@@ -687,7 +687,7 @@ impl NodeSelf {
 
     /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.
     /// A birth whose start is under way is parked until the start ends.
-    pub fn is_parked(&self) -> bool {
+    pub fn is_stopped(&self) -> bool {
         matches!(*self.cycle.lock().unwrap(), Cycle::Stopped(_) | Cycle::Starting { .. })
     }
 
@@ -1183,7 +1183,7 @@ impl NodeSelf {
         let operation = op.map_or(SIGNAL_STOP, |o| o.operation.as_str());
         // A commanded stop parks its live process; a signal's process ends with its stop.
         if op.is_some() {
-            parking().park();
+            process_stop().stop();
         }
         if let Some(retire) = &self.retire {
             retire.cancel();
@@ -1217,7 +1217,7 @@ impl NodeSelf {
                 "rdm.node_admin.node.update.via-stop-quiesce",
                 node = %self.held_name(), operation = %operation, turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
             );
-            let held = session.park_tasks().instrument(span.clone()).await;
+            let held = session.hold_tasks().instrument(span.clone()).await;
             span.record("turns_in_progress", held.turns_in_progress);
             span.record("waited_for", held.waited_for.as_str());
         }
@@ -1386,7 +1386,7 @@ impl NodeSelf {
                     let mut cycle = self.cycle.lock().unwrap();
                     *cycle = Cycle::Live(Some((op.build_id.clone(), op.operation.clone())));
                     drop(cycle);
-                    parking().unpark();
+                    process_stop().start();
                     StatusReply::Started
                 }
                 Err(failed) => {
@@ -1422,7 +1422,7 @@ impl NodeSelf {
 /// channel leave is written: each session's `leave_channels`, a birth that holds no session, and a
 /// commanded `node.mesh.join` whose start failed at a step call it.
 pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_transport::membership::Backbone>, node_id: &NodeId) {
-    membership.park().await;
+    membership.stop().await;
     tracing::info_span!(
         "rdm.node.mesh.update.via-left",
         node = %membership.node_name(),
@@ -1433,7 +1433,7 @@ pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_trans
     )
     .in_scope(|| tracing::info!("left the mesh channel"));
     if let Some(backbone) = backbone {
-        backbone.park().await;
+        backbone.stop().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-left",
             node = %membership.node_name(),

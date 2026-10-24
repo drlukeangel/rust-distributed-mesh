@@ -2921,7 +2921,7 @@ mod tests {
         assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from: {names:?}");
         // The book's held stopped digest keeps the name the node last published (R-JN1's last accepted
         // name): only the view names the birth by its row.
-        assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
+        assert_eq!(book.stopped_digests().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
         // The row moved back (node-replace.md Rollback): the next projection reads it there.
         crate::node_rows::move_row(&primary, &Default::default(), &"mesh1.admin.1".parse().unwrap(), &record, &to, &held.node.name).await.unwrap();
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
@@ -3115,7 +3115,7 @@ mod tests {
         let gate = crate::stop_gate::StopGate::new();
         let hour = Duration::from_secs(3600);
         facts.seen();
-        gate.park();
+        gate.stop();
         let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(book.statuses.take(&f, &fabric1()));
         let due = view_rebuild_due(&mut facts, hour, &gate);

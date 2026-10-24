@@ -568,7 +568,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parke
         // The started birth's stop is a stop of its own cycle.
         let after = birth.call(&birth.stop(4)).await;
         assert!(matches!(after, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
-        assert!(birth.running.own.is_parked(), "the stop that answered Stopped left the birth parked");
+        assert!(birth.running.own.is_stopped(), "the stop that answered Stopped left the birth parked");
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })

@@ -84,7 +84,7 @@ struct CallingOut {
 impl OperationRunner for CallingOut {
     async fn run(&self, _: &BuildId, _: Option<&str>, _: u32, op: &BuildOperation) -> Result<(), RunEnd> {
         let first = self.calls.log().iter().all(|c| !c.starts_with("call "));
-        self.calls.push(format!("call {}{}", op.key(), if self.gate.is_parked() { " (gate parked)" } else { "" }));
+        self.calls.push(format!("call {}{}", op.key(), if self.gate.is_stopped() { " (gate parked)" } else { "" }));
         if first && self.hold_first {
             self.calls.entered.notify_one();
             self.calls.release.notified().await;
@@ -224,7 +224,7 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
         }
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(gate.is_parked(), "the stop parked the gate while the pass was in its turn");
+    assert!(gate.is_stopped(), "the stop parked the gate while the pass was in its turn");
     let Attached::Live { disposition, mut reader, .. } = door.attempt_run_under(&pass, &build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the pass's own attempt is started") };
     assert_eq!(disposition, Disposition::Started);
     let terminal = tokio::time::timeout(Duration::from_secs(20), async {

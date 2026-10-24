@@ -156,7 +156,7 @@ pub async fn birth_runtime(book: &rdm_transport::membership::DigestBook, nodes: 
         .map(|(d, _)| d)
         .filter(exact)
         .or_else(|| book.projected_at(id, std::time::Instant::now()).map(|(d, _)| d).filter(exact))
-        .or_else(|| book.parked().into_iter().find(|d| d.node.node_id == n.node_id && exact(d)));
+        .or_else(|| book.stopped_digests().into_iter().find(|d| d.node.node_id == n.node_id && exact(d)));
     let row = match (digest.as_ref().is_some_and(|d| d.node.runtime.is_some()), nodes) {
         (false, Some(nodes)) => nodes.runtime(&n.node_id, &incarnation).await.map_err(|e| format!("the durable runtime row of {} at {} could not be read: {e}", n.node_id, incarnation.as_str()))?,
         _ => None,

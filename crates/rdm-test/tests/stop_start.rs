@@ -97,7 +97,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         let seq_at_stop = book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert_eq!(book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a parked node reaches the admin");
-        assert!(running.own.is_parked(), "the birth is stopped, its process live");
+        assert!(running.own.is_stopped(), "the birth is stopped, its process live");
 
         // The start: the same birth rejoins through the admin that commands it.
         admin.deployed(&launch, &key);
@@ -126,7 +126,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         };
         assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
-        assert!(!running.own.is_parked(), "the birth is live again");
+        assert!(!running.own.is_stopped(), "the birth is live again");
         // The same start reissued by a later attempt of its Build (a successor executor whose
         // predecessor was lost after the node started) settles as AlreadyApplied: the command is
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a

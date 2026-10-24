@@ -905,7 +905,7 @@ impl NodeSession {
             install_join_cert(&self.data_connections, &joined.control.member_cert, &self.membership.node_name().to_string(), &self.node_id, &self.incarnation);
         }
         drop(rows);
-        self.membership.unpark().await;
+        self.membership.start().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %self.membership.node_name(),
@@ -1466,7 +1466,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
                 StatusRequest::ProbeNodeState { .. } => {
                     // A parked node is Leaving with a live process: it says so and presents nothing.
-                    if me.own.is_parked() {
+                    if me.own.is_stopped() {
                         return Ok(StatusReply::CurrentParked { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone() });
                     }
                     // node-start.md step 3: while its hook is Blocked, the probe served this exact birth
@@ -1510,7 +1510,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // digest. It is held first, so every later publish carries it; a live node
                     // publishes now, a parked one presents nothing until it starts.
                     me.membership.set_config(config.clone());
-                    let published = if me.own.is_parked() {
+                    let published = if me.own.is_stopped() {
                         "parked"
                     } else {
                         let mut d = me.digest.clone();

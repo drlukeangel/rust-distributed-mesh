@@ -311,7 +311,7 @@ pub(crate) struct AdminSession {
 
 #[async_trait::async_trait]
 impl crate::node_self::Session for AdminSession {
-    async fn park_tasks(&self) -> crate::node_self::TasksParked {
+    async fn hold_tasks(&self) -> crate::node_self::TasksParked {
         // The gate parks, so no turn begins; the turns already past their wait point end on their
         // own completion, and only then does the stop go on to its cut.
         let at = self.gate.quiesce().await;
@@ -373,7 +373,7 @@ impl AdminSession {
             // Only now are its connections recorded: the join's names the handed name.
             drop(rows.take());
         }
-        s.membership.unpark().await;
+        s.membership.start().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %s.membership.node_name(),
@@ -383,7 +383,7 @@ impl AdminSession {
             which = rdm_core::status::WhichMesh::Own.name(),
         )
         .in_scope(|| tracing::info!("joined the mesh channel"));
-        s.backbone.unpark().await;
+        s.backbone.start().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %s.membership.node_name(),

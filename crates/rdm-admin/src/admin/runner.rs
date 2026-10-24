@@ -396,7 +396,7 @@ impl AdminRunner {
             .get(node.node_id.as_str())
             .or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now()))
             .map(|(d, _)| d)
-            .or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id == node.node_id))
+            .or_else(|| self.book.stopped_digests().into_iter().find(|d| d.node.node_id == node.node_id))
             .filter(|d| d.node.incarnation == *incarnation);
         let row = match (&held, self.records.contacts.get()) {
             (None, Some(store)) => birth_runtime_row(&**store, &me, &node.name, &node.node_id, incarnation).await?,
@@ -933,7 +933,7 @@ impl AdminRunner {
         birth.incarnation_id = Some(from.clone());
         birth.parked = true;
         birth.status = NodeStatus::Leaving;
-        if let Some(d) = self.book.parked().into_iter().find(|d| &d.node.incarnation == from) {
+        if let Some(d) = self.book.stopped_digests().into_iter().find(|d| &d.node.incarnation == from) {
             birth.node_id = d.node.node_id.clone();
             birth.endpoint_id = Some(d.node.endpoint_id.clone());
             birth.transport_addr = Some(d.node.transport_addr);
@@ -954,7 +954,7 @@ impl AdminRunner {
     /// verified against, as the birth was admitted.
     pub(crate) fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.name))?;
-        let admitted = self.book.parked().into_iter().find(|d| d.node.node_id == record.node_id && d.node.incarnation == incarnation);
+        let admitted = self.book.stopped_digests().into_iter().find(|d| d.node.node_id == record.node_id && d.node.incarnation == incarnation);
         Ok(crate::join::Deployed {
             name: record.name.clone(),
             node_id: record.node_id.clone(),

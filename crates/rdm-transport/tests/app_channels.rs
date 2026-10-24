@@ -627,7 +627,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     // Rejoining uses the reporting holders retained for this type, without acquiring boot seeds.
     drop(receiver);
     drop(observed);
-    a.membership.park().await;
+    a.membership.stop().await;
     while middle.neighbors().any(|p| p == a.endpoint_id()) {
         middle
             .next()
@@ -645,7 +645,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     while b.membership.neighbours() > 1 || c.membership.neighbours() > 1 {
         tokio::task::yield_now().await;
     }
-    a.membership.unpark().await;
+    a.membership.start().await;
     let mut rejoined = a
         .gossip()
         .subscribe(channel_id(&fabric, LATER), vec![])
