@@ -10,7 +10,9 @@ set lives on the accepted topology, so every later Build carries it (step 2), an
 node-admin primary from a primary of another type. R4 is ruled (Luke 2026-10-24, arm A). Revised a
 third time on Architect 1's review of `4de516d30`: a type with one node in its mesh met the
 primary-update page's no-successor refusal; R5 is ruled (Luke 2026-10-24, arm (a)), its page sentence
-landing with the roll's code. Nothing below is built.
+landing with the roll's code. Revised a fourth time on Architect 1's review of `c028a6ae9`: the
+predecessor half is one `node.delete`, with no standalone connections delete or mesh leave before it
+(step 4), so a type's only node reaches the step R5 exempts. Nothing below is built.
 
 ### What the pages already say
 
@@ -35,9 +37,9 @@ landing with the roll's code. Nothing below is built.
   Build fixes the binding a create launches; whichever admin runs or resumes the step launches it,
   re-hashed at the launch, and the node's record keeps it. `lifecycles/node-recovery.md` "Retained": a
   recovered node runs the bin its row records, never the recovering admin's.
-- `lifecycles/node-replace.md`: the predecessor half (connections deleted, mesh left, then deleted when
-  no rollback is wanted) and "Immutable exe: new bin/budgets require this new node, never a restart of
-  the stopped one". `lifecycles/node-delete.md`: delete releases node.id and name, never storage; "a
+- `lifecycles/node-replace.md`: "Immutable exe: new bin/budgets require this new node, never a restart
+  of the stopped one"; its "Inherited" row for the successor's config and tags. `lifecycles/node-stop.md`:
+  "`node.stop` runs node.connections.delete with `{ scope: All }`" as its step 2. `lifecycles/node-delete.md`: delete releases node.id and name, never storage; "a
   later spec can inherit them"; the peer-location book blocks the old `(node.id, incarnation)` "even
   when a successor uses the same endpoint key".
 
@@ -110,14 +112,21 @@ behaviour that depends on the product is Rafka's):
    not yet ReadyForTraffic: it is a member of its mesh like any other, and its mesh-primary's node
    investigation reconciles it (reached: it joins; exited: node recovery at the same path.name on the
    row's bin, which is the set's). No member is replaced twice. This closes Architect 1's third gap.
-4. **Replace one member** (node-replace.md step 2's deleted arm: "If no rollback is wanted"): the
-   predecessor's `node.connections.delete { All }`, `node.mesh.leave`, `node.delete` (which composes
-   the whole stop; its identity and name released, its storage kept); then `node.create` at the same
-   `path.name`, the Create step carrying the set's binding of its kind, with a new node.id and
-   incarnation, over the kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint key
-   loaded from it), config and tags from the Deleted record (node-replace.md "Inherited"). The
-   peer-location book's block of the old `(node.id, incarnation)` covers a successor on the same
-   endpoint key (node-delete.md step 5). The create ends at the member's ReadyForTraffic check-in.
+4. **Replace one member**: two operations, the shape node recovery already runs (build.md §4.1:
+   "node.delete of the lost node, node.create at the same path.name"). First the predecessor's
+   `node.delete` (node-delete.md), one operation keyed `node.delete:<path>`, which composes the whole
+   `node.stop`, which runs the whole `node.connections.delete { All }` inside it (node-stop.md step 2),
+   then terminates the exact runtime and releases identity and name, storage kept. No standalone
+   `node.connections.delete` and no `node.mesh.leave` precede it: those are node-replace.md's steps
+   for a predecessor that is renamed live, and the roll renames nothing. For a primary with a
+   successor, the delete runs `node.primary.update` first (step 5; `executor.rs` `seat_move`, as for a
+   removal's delete); for a type's only node it runs none (R5), and since nothing precedes the delete,
+   nothing before it can be refused `no-secondary`. Then `node.create` at the same `path.name`, the
+   Create step carrying the set's binding of its kind, with a new node.id and incarnation, over the
+   kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint key loaded from it), config
+   and tags from the Deleted record (node-replace.md "Inherited"). The peer-location book's block of
+   the old `(node.id, incarnation)` covers a successor on the same endpoint key (node-delete.md
+   step 5). The create ends at the member's ReadyForTraffic check-in.
 5. **A primary's own replacement.** A primary is replaced last of its type and goes through
    `node.primary.update` first, as every delete or replace of a primary does (node-primary-update.md);
    the successor is a node of the same type already on the set, since the non-primaries went first.
@@ -234,8 +243,9 @@ receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value an
   the original is replaced; it is in the accepted topology after the roll;
 - a non-admin primary (a broker-primary with another broker in its mesh): the primary moves to the
   other broker by `node.primary.update` with the mesh-primary as writer, then the old primary is
-  replaced; a type with one node (R5): replaced with no update, the new birth its primary once
-  ReadyForTraffic, and the mesh's only broker re-created at its path.name;
+  replaced; a type with one node (R5): the complete roll sequence runs on it, its `node.delete` first
+  with the connections delete inside the composed stop, no update, no `no-secondary` at any step, the
+  new birth its primary once ReadyForTraffic, the mesh's only broker re-created at its path.name;
 - roll, then a resize, then an admin restart, then an ordinary `node.create`: every launch runs the
   roll's set, which the resize's Build carried forward;
 - the executor killed after a predecessor's `node.deleted` and before its create: the next attempt
