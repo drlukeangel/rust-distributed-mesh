@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod certs;
 pub mod codes;
 pub mod connections;
+pub mod custody;
 pub mod context;
 pub mod digest;
 pub mod dispatch;

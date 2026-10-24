@@ -58,11 +58,18 @@ pub const ENV_ROOTS: &str = "RDM_ROOTS";
 pub const ENV_FABRIC_CA_KEY: &str = "RDM_FABRIC_CA_KEY";
 /// The declared secrets a launched node-admin holds in custody (deployment-provider.md §2.3: "a
 /// declared secret is written to the admins that may launch its kinds and to those processes, never
-/// to a record or a projection"): each declared name and its value's bytes as hex, as `NAME=hex`
-/// entries joined by commas. Written into every node-admin's launch beside the root by a launcher that
-/// holds declared values, the way `RDM_CA_SECRET` is. A secret: it travels only in a launch's
-/// environment.
+/// to a record or a projection"): the custody document, `{"v":1,"declared":[{"name","kinds","value"}]}`
+/// ([`encode_custody`]), so a value holding a separator, `=`, a newline or nothing at all round-trips.
+/// Written into every node-admin's launch beside the root by a launcher that holds declared values, the
+/// way `RDM_CA_SECRET` is. A secret: it travels only in a launch's environment and in the file an admin
+/// keeps it in beside its data dir.
 pub const ENV_DECLARED_SECRETS: &str = "RDM_DECLARED_SECRETS";
+/// RDM's own secrets a launch can carry: the root, the mesh's issuing key, the fabric CA's key and the
+/// custody document. A provider keeps each off a command line it runs (the container provider's
+/// `docker run`), and RDM's diagnostics are scrubbed of each before they reach a receipt or a span.
+pub const RDM_SECRETS: [&str; 4] = [ENV_CA_SECRET, ENV_ISSUING_KEY, ENV_FABRIC_CA_KEY, ENV_DECLARED_SECRETS];
+/// The custody document's version ([`ENV_DECLARED_SECRETS`]).
+pub const CUSTODY_VERSION: u64 = 1;
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
@@ -195,10 +202,9 @@ pub struct Launch {
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the eligible work in flight is let finish until it
     /// passes, then the closure answers `Deadline`.
     pub connections_delete_deadline: Duration,
-    /// The declared secrets a node-admin is launched with in custody (`RDM_DECLARED_SECRETS`), by
-    /// name, each value's bytes as hex: every declared value its launcher holds. Empty for every other
-    /// birth.
-    pub declared: BTreeMap<String, SecretHex>,
+    /// The declared secrets a node-admin is launched with in custody (`RDM_DECLARED_SECRETS`): every
+    /// declaration whose value its launcher holds, with that value. Empty for every other birth.
+    pub declared: Vec<(DeclaredSecret, SecretHex)>,
 }
 
 /// Lowercase hex of `bytes`.
@@ -306,27 +312,7 @@ pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<St
     }
 }
 
-/// `declared` as `RDM_DECLARED_SECRETS` carries it: `NAME=hex` entries joined by commas.
-pub fn encode_declared(declared: &BTreeMap<String, SecretHex>) -> String {
-    declared.iter().map(|(n, v)| format!("{n}={}", v.0)).collect::<Vec<_>>().join(",")
-}
-
-/// The declared secrets `RDM_DECLARED_SECRETS` carries: absent or empty is none; an entry that is not
-/// `NAME=hex` is refused by name, never echoing its value.
-pub fn decode_declared(v: Option<&str>) -> Result<BTreeMap<String, SecretHex>> {
-    v.unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
-        .map(|e| {
-            let Some((name, hex)) = e.split_once('=').filter(|(n, _)| !n.is_empty()) else {
-                return Err(format!("{ENV_DECLARED_SECRETS} carries an entry that is not NAME=hex"));
-            };
-            decode_hex(&format!("{ENV_DECLARED_SECRETS} entry {name}"), hex)?;
-            Ok((name.to_string(), SecretHex(hex.to_string())))
-        })
-        .collect()
-}
+pub use crate::custody::{decode_custody, encode_custody};
 
 /// `<path.name>,<node id>,<incarnation id>`
 pub fn decode_launcher(s: &str) -> Result<Launcher> {
@@ -386,7 +372,7 @@ impl Launch {
             m.insert(ENV_ROOTS.into(), encode_roots(&self.roots));
         }
         if !self.declared.is_empty() {
-            m.insert(ENV_DECLARED_SECRETS.into(), encode_declared(&self.declared));
+            m.insert(ENV_DECLARED_SECRETS.into(), encode_custody(&self.declared));
         }
         m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
@@ -413,7 +399,7 @@ impl Launch {
             issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT), get(ENV_CA_SECRET), get(ENV_FABRIC_CA_KEY))?,
             roots: decode_roots(get(ENV_ROOTS).as_deref())?,
             connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
-            declared: decode_declared(get(ENV_DECLARED_SECRETS).as_deref())?,
+            declared: decode_custody(get(ENV_DECLARED_SECRETS).as_deref())?,
         })
     }
 }
@@ -421,6 +407,54 @@ impl Launch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node-admin's launch environment with `custody` as its `RDM_DECLARED_SECRETS`.
+    fn admin_env_with_custody(custody: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (ENV_FABRIC.to_string(), "fabric1".to_string()),
+            (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
+            (ENV_NODE_NAME.to_string(), "mesh2.admin.1".to_string()),
+            (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
+            (ENV_INCARNATION.to_string(), IncarnationId::mint().to_string()),
+            (ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),
+            (ENV_DATA_DIR.to_string(), "/tmp/x".to_string()),
+            (ENV_STORE_DIR.to_string(), "/tmp/store".to_string()),
+            (ENV_DECLARED_SECRETS.to_string(), custody.to_string()),
+        ])
+    }
+
+    /// CONTRACT (Q150 §0.1, the custody document): `RDM_DECLARED_SECRETS` is the JSON document
+    /// `{"v":1,"declared":[{"name","kinds","value"}]}`, so a value holding a separator, `=`, a newline or
+    /// nothing at all round-trips through a launch unchanged; a document that does not parse, names an
+    /// unknown version or repeats a name is refused by name, echoing none of it.
+    #[test]
+    fn the_custody_document_round_trips_every_value_and_refuses_a_malformed_one_by_name() {
+        let values = [("APP_SEPARATED", "a,b=c\nd=,"), ("APP_EMPTY", ""), ("APP_PLAIN", "plain-value")];
+        let doc = serde_json::json!({ "v": 1, "declared": values.iter().map(|(n, v)| serde_json::json!({ "name": n, "kinds": ["broker", "gateway"], "value": v })).collect::<Vec<_>>() }).to_string();
+        let env = admin_env_with_custody(&doc);
+        let launch = Launch::from_env(|k| env.get(k).cloned()).expect("a launch carrying the custody document");
+        assert!(!format!("{launch:?}").contains("plain-value") && !format!("{launch:?}").contains("a,b=c"), "a declared value never prints: {launch:?}");
+        let written = launch.to_env();
+        let back: serde_json::Value = serde_json::from_str(written.get(ENV_DECLARED_SECRETS).expect("the launch writes the custody document back")).expect("the custody document is JSON");
+        assert_eq!(back["v"], 1, "{back}");
+        for (name, value) in values {
+            let entry = back["declared"].as_array().into_iter().flatten().find(|e| e["name"] == name).unwrap_or_else(|| panic!("{name} is carried: {back}"));
+            assert_eq!(entry["value"].as_str(), Some(value), "{name} round-trips unchanged");
+            assert_eq!(entry["kinds"], serde_json::json!(["broker", "gateway"]), "{name}'s kinds round-trip");
+        }
+        assert_eq!(Launch::from_env(|k| written.get(k).cloned()).unwrap(), launch, "written and read back, the launch is the same");
+        let secret = "s3cret-never-echoed";
+        let repeated = serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "kinds": ["broker"], "value": secret }, { "name": "APP_KEY", "kinds": ["gateway"], "value": secret }] }).to_string();
+        let unknown = serde_json::json!({ "v": 2, "declared": [{ "name": "APP_KEY", "kinds": ["broker"], "value": secret }] }).to_string();
+        let broken = format!("{{\"v\":1,\"declared\":[{{\"name\":\"APP_KEY\",\"value\":\"{secret}\"");
+        let unkinded = serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "kinds": ["nowhere"], "value": secret }] }).to_string();
+        for (bad, says) in [(repeated, "repeats a name"), (unknown, "unknown version"), (broken.clone(), "does not parse"), (format!("APP_KEY={}", encode_hex(secret.as_bytes())), "does not parse"), (unkinded, "does not parse")] {
+            let env = admin_env_with_custody(&bad);
+            let e = Launch::from_env(|k| env.get(k).cloned()).unwrap_err();
+            assert!(e.starts_with(ENV_DECLARED_SECRETS) && e.contains(says), "refused by name ({says}): {e}");
+            assert!(!e.contains(secret) && !e.contains(&encode_hex(secret.as_bytes())) && !e.contains("APP_KEY") && !e.contains("nowhere"), "the refusal echoes none of the document: {e}");
+        }
+    }
 
     #[test]
     fn launch_round_trips_through_the_environment() {
@@ -441,7 +475,7 @@ mod tests {
             issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)), ca_key: SecretHex("0c".repeat(32)) }),
             roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(750),
-            declared: BTreeMap::from([("APP_KEY".to_string(), SecretHex::of_value("app-secret-value"))]),
+            declared: vec![(DeclaredSecret { name: "APP_KEY".into(), kinds: vec![NodeKind::Broker] }, SecretHex::of_value("app-secret-value"))],
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
@@ -459,9 +493,9 @@ mod tests {
         assert!(!format!("{l:?}").contains(&"0b".repeat(32)), "the root never prints: {l:?}");
         assert_eq!(env.get(ENV_FABRIC_CA_KEY).map(String::len), Some(64), "the CA key rides beside the root");
         assert!(!format!("{l:?}").contains(&"0c".repeat(32)), "the CA key never prints: {l:?}");
-        assert_eq!(env.get(ENV_DECLARED_SECRETS).map(String::as_str), Some(format!("APP_KEY={}", encode_hex(b"app-secret-value")).as_str()), "the custody copy rides the launch as NAME=hex");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&env[ENV_DECLARED_SECRETS]).unwrap(), serde_json::json!({ "v": 1, "declared": [{ "name": "APP_KEY", "kinds": ["broker"], "value": "app-secret-value" }] }), "the custody document rides the launch");
         assert!(!format!("{l:?}").contains(&encode_hex(b"app-secret-value")) && !format!("{l:?}").contains("app-secret-value"), "a declared value never prints: {l:?}");
-        assert_eq!(l.declared["APP_KEY"].value("APP_KEY").unwrap(), "app-secret-value");
+        assert_eq!(l.declared[0].1.value("APP_KEY").unwrap(), "app-secret-value");
         let mut no_root = env.clone();
         no_root.remove(ENV_CA_SECRET);
         assert!(Launch::from_env(|k| no_root.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY and RDM_ISSUING_CERT are set without RDM_CA_SECRET"), "issuing material without the root is refused by name");
@@ -476,15 +510,9 @@ mod tests {
         let mut half = env.clone();
         half.remove(ENV_ISSUING_CERT);
         assert!(Launch::from_env(|k| half.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY is set without RDM_ISSUING_CERT"));
-        // A launch that carries no declared value writes no custody variable; a malformed one is
-        // refused by name, never echoing the value.
-        assert!(!Launch { declared: BTreeMap::new(), ..l.clone() }.to_env().contains_key(ENV_DECLARED_SECRETS));
-        for (bad, says) in [("APP_KEY", "not NAME=hex"), ("=6162", "not NAME=hex"), ("APP_KEY=zz", "is not hex"), ("APP_KEY=abc", "odd number")] {
-            let mut env = env.clone();
-            env.insert(ENV_DECLARED_SECRETS.into(), bad.into());
-            let e = Launch::from_env(|k| env.get(k).cloned()).unwrap_err();
-            assert!(e.starts_with(ENV_DECLARED_SECRETS) && e.contains(says), "{e}");
-        }
+        // A launch that carries no declared value writes no custody variable (a malformed one:
+        // `the_custody_document_round_trips_every_value_and_refuses_a_malformed_one_by_name`).
+        assert!(!Launch { declared: Vec::new(), ..l.clone() }.to_env().contains_key(ENV_DECLARED_SECRETS));
         // A launch that carries no issuing material sets no variable.
         let none = Launch { issuing: None, ..l.clone() }.to_env();
         assert!(!none.contains_key(ENV_ISSUING_KEY) && !none.contains_key(ENV_ISSUING_CERT) && !none.contains_key(ENV_CA_SECRET) && !none.contains_key(ENV_FABRIC_CA_KEY));
@@ -532,7 +560,7 @@ mod tests {
             issuing: None,
             roots: vec![a],
             connections_delete_deadline: DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-            declared: BTreeMap::new(),
+            declared: Vec::new(),
         };
         for roots in [vec![a], vec![a, b]] {
             let l = Launch { roots: roots.clone(), ..base.clone() };

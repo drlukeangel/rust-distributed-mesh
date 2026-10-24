@@ -59,7 +59,9 @@ pub struct AdminConfig {
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
     pub spawn_type: Option<String>,
-    /// The HTTP bind of a bootstrap admin (`RDM_NODE_ADMIN_API_BIND`).
+    /// `RDM_NODE_ADMIN_API_BIND` of a bootstrap admin: its address is the one the admin's transport
+    /// binds, with port 0 (a containerised Day-0 admin binds its container's address). RDM serves no
+    /// HTTP (rdm-crate-and-test-layout.md §2).
     pub api_bind: SocketAddr,
     /// Set when a deployment pipeline launched this admin.
     pub launch: Option<Launch>,

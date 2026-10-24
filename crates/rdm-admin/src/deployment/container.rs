@@ -77,8 +77,14 @@ pub struct ContainerDeploymentProvider {
 }
 
 async fn docker(args: &[&str]) -> Result<String, String> {
+    docker_with_env(args, &std::collections::BTreeMap::new()).await
+}
+
+/// [`docker`], the client run with `env` in its own environment as well (each secret a `-e K` names).
+async fn docker_with_env(args: &[&str], env: &std::collections::BTreeMap<String, String>) -> Result<String, String> {
     let out = Command::new("docker")
         .args(args)
+        .envs(env)
         .stdin(std::process::Stdio::null())
         .output()
         .await
@@ -88,6 +94,30 @@ async fn docker(args: &[&str]) -> Result<String, String> {
     } else {
         Err(format!("docker {}: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim()))
     }
+}
+
+/// The `docker run` environment arguments of `spec`, and the environment the docker client itself is
+/// run with (Q150 §0.1, the container boundary). A secret, every declared value set for the kind
+/// (`spec.secrets`, decoded here, at the spawn) and RDM's four ([`rdm_core::launch::RDM_SECRETS`]),
+/// rides as a bare `-e K` with its value in the client's environment, which keeps it off the
+/// command-line arguments; the daemon's container configuration still holds a container's environment,
+/// the accepted boundary. Every other entry is `-e K=V`.
+pub(crate) fn env_args(spec: &ResolvedNodeLaunch) -> Result<(Vec<String>, std::collections::BTreeMap<String, String>), String> {
+    let mut args = Vec::new();
+    let mut client = std::collections::BTreeMap::new();
+    for (k, v) in &spec.env {
+        if rdm_core::launch::RDM_SECRETS.contains(&k.as_str()) {
+            args.extend(["-e".into(), k.clone()]);
+            client.insert(k.clone(), v.clone());
+        } else {
+            args.extend(["-e".into(), format!("{k}={v}")]);
+        }
+    }
+    for (k, v) in &spec.secrets {
+        args.extend(["-e".into(), k.clone()]);
+        client.insert(k.clone(), v.value(k)?);
+    }
+    Ok((args, client))
 }
 
 /// One launch's container: fixed by node and deployment id, so a re-run finds it.
@@ -582,20 +612,17 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         if let Some(dir) = &disk.evidence_dir {
             args.extend(["-v".into(), format!("{dir}:{dir}")]);
         }
-        for (k, v) in &spec.env {
-            args.extend(["-e".into(), format!("{k}={v}")]);
-        }
-        // The declared values set for this kind (Q150), decoded here, at the spawn.
-        for (k, v) in &spec.secrets {
-            args.extend(["-e".into(), format!("{k}={}", v.value(k).map_err(err)?)]);
-        }
+        // Each secret rides as a bare `-e K`, its value in the docker client's own environment
+        // (`env_args`): never on the command-line arguments.
+        let (env_args, client_env) = env_args(spec).map_err(err)?;
+        args.extend(env_args);
         args.push(RUNTIME_IMAGE.into());
         args.push(exe_in.display().to_string());
         args.extend(spec.args.iter().cloned());
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
-        let id = docker(&argv).await.map_err(err)?.trim().to_string();
+        let id = docker_with_env(&argv, &client_env).await.map_err(err)?.trim().to_string();
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
         let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &id]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
         // The pipeline registers this exact handle and makes its runtime fact
@@ -916,5 +943,43 @@ mod tests {
             let refused = container_launch(other).expect_err(other);
             assert!(refused.contains(other), "{refused}");
         }
+    }
+
+    /// CONTRACT (Q150 §0.1, the container boundary): `docker run` carries each secret as a bare `-e K`,
+    /// its value in the docker client's own environment, never on the command-line arguments: every
+    /// declared value set for the kind and RDM's four (`RDM_CA_SECRET`, `RDM_ISSUING_KEY`,
+    /// `RDM_FABRIC_CA_KEY`, `RDM_DECLARED_SECRETS`). Every other entry stays `-e K=V`.
+    #[test]
+    fn a_secret_rides_the_docker_clients_environment_and_never_its_arguments() {
+        let secrets = [
+            (rdm_core::launch::ENV_CA_SECRET, "root-secret-hex"),
+            (rdm_core::launch::ENV_ISSUING_KEY, "issuing-key-hex"),
+            (rdm_core::launch::ENV_FABRIC_CA_KEY, "ca-key-hex"),
+            (rdm_core::launch::ENV_DECLARED_SECRETS, "{\"v\":1,\"declared\":[]}"),
+        ];
+        let spec = ResolvedNodeLaunch {
+            reads: Vec::new(),
+            secrets: std::collections::BTreeMap::from([("APP_KEY".to_string(), rdm_core::launch::SecretHex::of_value("app,value=with\nnewline")), ("APP_EMPTY".to_string(), rdm_core::launch::SecretHex::of_value(""))]),
+            withhold: vec!["APP_KEY".into(), "APP_EMPTY".into()],
+            node: "mesh1.admin.2".parse().unwrap(),
+            deployment_id: crate::model::DeploymentId::mint(),
+            executable: "/bin/true".into(),
+            args: vec![],
+            env: secrets.iter().map(|(k, v)| (k.to_string(), v.to_string())).chain([("RDM_FABRIC".to_string(), "fabric1".to_string())]).collect(),
+            data_dir: "/tmp/x".into(),
+            transport: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+        };
+        let (args, client) = env_args(&spec).unwrap();
+        let argv = args.join(" ");
+        for (k, v) in secrets.iter().copied().chain([("APP_KEY", "app,value=with\nnewline"), ("APP_EMPTY", "")]) {
+            assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == k), "{k} rides as a bare -e {k}: {argv}");
+            assert_eq!(client.get(k).map(String::as_str), Some(v), "{k}'s value is in the docker client's environment");
+            if !v.is_empty() {
+                assert!(!argv.contains(v), "{k}'s value is never on the arguments: {argv}");
+            }
+        }
+        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "RDM_FABRIC=fabric1"), "a non-secret entry stays -e K=V: {argv}");
+        assert!(!client.contains_key("RDM_FABRIC"), "only secrets ride the client's environment");
     }
 }

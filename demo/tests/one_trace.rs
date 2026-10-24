@@ -56,6 +56,7 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
+        declared: Vec::new(),
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.into(),
@@ -65,7 +66,7 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
-    let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
+    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { listeners: Vec::new(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

@@ -904,6 +904,17 @@ pub struct LaunchTemplate {
 }
 
 impl LaunchTemplate {
+    /// `text` with every secret this template launches with replaced by name
+    /// ([`super::declared::scrub`]): each declared value the launching admin holds, in every spelling,
+    /// the custody document, and the root, the issuing key and the fabric CA's key.
+    pub fn scrub(&self, text: &str) -> String {
+        let mut secrets = self.declared.spellings();
+        if let Some(m) = &self.issuing {
+            secrets.extend([(rdm_core::launch::ENV_CA_SECRET, &m.root), (rdm_core::launch::ENV_ISSUING_KEY, &m.key), (rdm_core::launch::ENV_FABRIC_CA_KEY, &m.ca_key)].map(|(k, v)| (k.to_string(), v.0.clone())));
+        }
+        super::declared::scrub(text, &secrets)
+    }
+
     /// The executing admin, as its receipts record it: the endpoint (`key@addr`) every launch
     /// from this template carries as its seed. Another birth of the same admin path has another
     /// endpoint, so a decision recorded under one executor is told from another's.
@@ -1324,7 +1335,12 @@ impl DeploymentPipeline<'_> {
         }
         let io = crate::blocking::IoTime::default();
         let mut guard = StepGuard { span: span.clone(), started, io: io.clone(), done: false };
-        let r = crate::blocking::io_time_with(io.clone(), work.instrument(span.clone())).await;
+        // RDM's diagnostics (a spawn error, a runtime's last words) are scrubbed of every declared value
+        // and RDM's four secrets before they reach the receipt or the span (Q150 §0.1).
+        let r = crate::blocking::io_time_with(io.clone(), work.instrument(span.clone())).await.map_err(|mut f| {
+            f.reason = self.template.scrub(&f.reason);
+            f
+        });
         guard.done = true;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
         if io.calls() > 0 {
@@ -1699,7 +1715,7 @@ impl DeploymentPipeline<'_> {
             roots: self.template.roots.current(),
             connections_delete_deadline: self.template.connections_delete_deadline,
             // A node-admin is written every declared value it may launch with, beside the root (Q150).
-            declared: if req.node.kind == rdm_core::NodeKind::NodeAdmin { self.template.declared.values.clone() } else { BTreeMap::new() },
+            declared: if req.node.kind == rdm_core::NodeKind::NodeAdmin { self.template.declared.custody() } else { Vec::new() },
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.

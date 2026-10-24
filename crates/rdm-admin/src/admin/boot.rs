@@ -299,10 +299,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     if wiring.fabric_hooks.sync_state.is_none() {
         return Err("refusing to start: no `sync_state` choice was made; pass SyncState::NoAppWork for an embedding with no application work in state-sync, or the application's sync_state hook".into());
     }
-    // The app's declared secrets (Q150): a name RDM sets or passes through refuses the start here, by
-    // name, before anything is bootstrapped. Each value is read once: from the launch's custody copy
-    // when a pipeline launched this admin, else from its own environment, as the fabric's root is.
-    let declared_secrets = crate::deployment::declared::DeclaredSecrets::read(std::mem::take(&mut wiring.declared), cfg.launch.as_ref(), |k| std::env::var(k).ok())?;
+    // The app's declared secrets (Q150): a name RDM sets or passes through, or a name declared twice,
+    // refuses the start here, by name and naming the fabric's provider (R-D3.3), before anything is
+    // bootstrapped. Each value is read once: from the values this admin's data dir keeps, else from the
+    // launch's custody document when a pipeline launched this admin, else from its own environment, as
+    // the fabric's root is; they are kept beside the data dir below.
+    let provider_named = match (crate::deployment::provider::parse(cfg.spawn_type.as_deref()), &cfg.launch) {
+        (Ok(Some(ProviderKind::Container)), _) => "container",
+        (Ok(Some(ProviderKind::Process)), _) | (Ok(None), None) => "process",
+        _ => "the one its entry pull names",
+    };
+    let declared_secrets = crate::deployment::declared::DeclaredSecrets::read(std::mem::take(&mut wiring.declared), cfg.launch.as_ref(), |k| std::env::var(k).ok(), &cfg.data_dir, provider_named)?;
     // The app's listeners (Q151): a duplicate name in a kind or a name RDM owns refuses the start
     // here, by name, before anything is bootstrapped.
     let listener_names = crate::deployment::endpoint::ListenerNames::read(&wiring.listeners)?;
@@ -323,6 +330,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     if cfg.launch.is_none() {
         issuer.set_policy(cfg.cert_policy);
     }
+    // The declared values this admin holds, kept beside its data dir as the root is (`ca-secret`), so
+    // the same admin started again holds the same values: the value never changes while the fabric runs.
+    declared_secrets.keep(&cfg.data_dir).map_err(|e| format!("refusing to start: {e}"))?;
     let key_file = cfg.data_dir.join("node-key");
     let key_held = crate::blocking::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
     let step = if key_held {
@@ -449,11 +459,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // node over its inherited data dir"). A new node supersedes no birth (node-restart.md: a restart
     // alone keeps the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
-    let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &inherited) {
-        (Some(l), _) => {
-            let control = cfg.api_bind;
-            (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, control, l.seeds.clone())
-        }
+    let (name, node_id, incarnation, supersedes, mesh_addr, seeds) = match (&cfg.launch, &inherited) {
+        (Some(l), _) => (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
         (None, Some(own)) => {
             let node_id = NodeId::mint();
             let step = tracing::info_span!(
@@ -489,7 +496,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 .instrument(step.clone())
                 .await
                 .map_err(|e| format!("refusing to start: {}: {} takes {} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name, own.node_id))?;
-            let addr_of = |s: &str| own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a);
             let mut contacts = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &own.name.mesh).await.map_err(storage_err)?;
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
@@ -503,7 +509,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The inherited endpoint key and a fresh port (the operating system assigns it), never the
                 // one the inherited birth held: peers learn the new address from its digest.
                 SocketAddr::new(own.transport_addr.ip(), 0),
-                addr_of("control").unwrap_or(cfg.api_bind),
                 seeds,
             )
         }
@@ -523,7 +528,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     .await
                     .map_err(|e| format!("refusing to start: {}: Day 0's {node_id} claims {name}: {e}", cfg.data_dir.display()))?;
             }
-            (name, node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), cfg.api_bind, cfg.seeds.clone())
+            (name, node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), cfg.seeds.clone())
         }
     };
 
@@ -653,7 +658,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     }
     // No crate of RDM serves a route or opens an HTTP listener (rdm-crate-and-test-layout.md §2): the
     // admin's application contact (`admin_api_base`, config, never checked) names this admin's node id.
-    let _ = control_addr;
     let api_base = format!("rdm://{node_id}");
     // A launched admin takes the runtime record its launcher's pipeline made available; it is
     // part of the digest it reports at its join.

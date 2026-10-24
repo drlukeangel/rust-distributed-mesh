@@ -132,6 +132,7 @@ async fn spawn_member_with_time(
         supersedes: supersedes.clone(),
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
+        declared: Vec::new(),
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher {
             name: d.node.name.clone(),
@@ -145,7 +146,7 @@ async fn spawn_member_with_time(
         roots: vec![rdm_test::test_certs::test_root_public()],
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
-    let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
+    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { listeners: Vec::new(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

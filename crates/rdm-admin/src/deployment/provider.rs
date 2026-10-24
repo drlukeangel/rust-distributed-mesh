@@ -78,13 +78,6 @@ impl FabricPolicy {
     }
 }
 
-/// True when a Build request body tries to choose a provider (a top-level or
-/// per-mesh `provider` field): the Build is refused, provider is fabric policy.
-pub(crate) fn build_names_a_provider(body: &serde_json::Value) -> bool {
-    body.get("provider").is_some()
-        || body.get("meshes").and_then(|m| m.as_array()).is_some_and(|ms| ms.iter().any(|m| m.get("provider").is_some()))
-}
-
 
 // ---------------------------------------------------------------------------
 // The provider contract (mesh-control-plane.md §6). A provider realises or
@@ -633,14 +626,6 @@ mod tests {
             Err(PolicyRefusal::ProviderMismatch { fabric: ProviderKind::Container, local: ProviderKind::Process })
         );
         assert!(matches!(FabricPolicy::inherit(fabric, Some("vm")), Err(PolicyRefusal::UnknownProvider { .. })));
-    }
-
-    #[test]
-    fn a_build_body_naming_a_provider_is_detected_anywhere() {
-        use serde_json::json;
-        assert!(build_names_a_provider(&json!({"fabric": "f", "provider": "process", "meshes": []})));
-        assert!(build_names_a_provider(&json!({"fabric": "f", "meshes": [{"name": "m", "node_admin": 1, "rpc_node": 1, "provider": "container"}]})));
-        assert!(!build_names_a_provider(&json!({"fabric": "f", "meshes": [{"name": "m", "node_admin": 1, "rpc_node": 1}]})));
     }
 
     /// CONTRACT: the default failure detail reads `stderr.log` on the blocking pool.
