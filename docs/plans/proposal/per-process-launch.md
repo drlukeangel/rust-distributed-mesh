@@ -1,19 +1,86 @@
 ## R-D3: what a node-admin hands each process it launches
 
-Proposal for i143 R-D3 (`docs/plans/i143-prd.md:2938`, assigned to the lead 2026-10-24). Draft. Read at
-RDM `origin/main` `7811eb4a3` (the roll landed, `614d01653..5e070d089`, while this was drafted from
-`90c2783be`; every RDM line below was read again at `7811eb4a3`) and rafka-v2 `origin/main`
-`f52217511f`. RDM `file:line` is bare; rafka-v2 `file:line` is prefixed `rafka-v2`. Nothing below is
-built.
-
-Tags: **[page]** quoted from a page, plan or ruling; **[code]** read at the cited line; **[inferred]**
-deduced, listed again together in §8. The three open questions are R-D3.1 to R-D3.3 (each takes a Q
-number when asked). They follow the ruling-packet sections; the brief asks a recommendation first, so in
-each the recommended arm is A and is marked so (the packet skill marks none; the difference is
-deliberate).
+Proposal for i143 R-D3 (`docs/plans/i143-prd.md:2938`, assigned to the lead 2026-10-24). **Ruled
+2026-10-24; being built.** Q150 (R-D3.1) and Q151 (a product kind's listeners) are ruled A by the
+architect under delegation, A1 concurring, and Luke approved the one page sentence; R-D3.2 and R-D3.3 are
+A, no code, accepted as read from the pages. The rulings are in `docs/plans/rulings/INDEX.md` (Q150,
+Q151). The decided contract is §0; §1-§8 are the analysis the rulings were made on, read at RDM
+`7811eb4a3` and rafka-v2 `f52217511f`, kept as the record. RDM `file:line` is bare; rafka-v2
+`file:line` is prefixed `rafka-v2`.
 
 RDM carries and enforces the contract. Rafka's variable names (`RAFKA_SYSTEM_KEY`,
-`RAFKA_ALLOW_INSECURE_DEV_KEY`) and the kinds that receive them stay Rafka's.
+`RAFKA_SIGNING_KEY_HEX`, `RAFKA_ALLOW_INSECURE_DEV_KEY`) and the kinds that receive them stay Rafka's.
+
+---
+
+### 0. Decided: what is built
+
+#### 0.1 Declared secrets (Q150: A with three amendments)
+
+- **The declaration.** Rafka's wiring declares each per-process variable by name with the node kinds it
+  is set on, registered at boot like the hook registry: never config, never a row. Rafka declares
+  `RAFKA_SYSTEM_KEY` on compute, gateway and broker, and `RAFKA_SIGNING_KEY_HEX` on gateway.
+- **The value.** Read once from the bootstrap admin's own environment at its start, as the fabric root is.
+- **Custody.** Every node-admin RDM launches is written every declared value beside the root, in one
+  launch variable (`RDM_DECLARED_SECRETS`), so whichever admin runs a create can launch the named kinds.
+  A node-admin's process carries the app's variable itself only when `node_admin` is a named kind.
+- **Use.** The value is set in the process environment of the named kinds only.
+- **Redaction.** Held as `SecretHex` (its debug form names its length, never its value) until the spawn;
+  never written to a row, a Build record, a receipt, the launch record or a span.
+- **Amendment 1.** A declared name is removed from the inherited environment before the spec's env is
+  applied, exactly as `RDM_*` is (`process.rs:388-397`). The spawn comment at `process.rs:388-391`,
+  which says the child inherits nothing while it inherits the host environment, is corrected to what
+  the code does.
+- **Amendment 2.** The order has no host tier: RDM's own launch variables, then the declared ones, then
+  RDM's fixed pass-through list. The host environment reaches a child only for other names (`PATH`,
+  `HOME`), never for a declared or an RDM name.
+- **Amendment 3.** Refused by name at the admin's start, nothing bootstrapped: a declared name that RDM
+  sets or passes through (`RDM_*`, `TRACEPARENT`, `TRACESTATE`, the pass-through list).
+- **The page sentence (Luke, 2026-10-24), landing with the code.** deployment-provider.md §2.3, old:
+  "the operational context needed to manage it: data_dir, the resolved executable, the launch's
+  environment". New: "the operational context needed to manage it: data_dir, the resolved executable,
+  the launch's environment with its declared secrets excepted (a declared secret is written to the
+  admins that may launch its kinds and to those processes, never to a record or a projection)".
+- **Cells, RED first.** A declared secret reaches only the named kinds and no other process, admin
+  included, read from each child's environment; a declared secret set in the bootstrap admin's
+  environment is absent from a kind not named; a declared name colliding with an RDM or a pass-through
+  name is refused at start with nothing bootstrapped; a create run by a launched admin, not the
+  bootstrap, sets the declared value; no span, log, row, Build record or receipt carries the value,
+  checked against the run's span JSONL, node logs and store root.
+
+#### 0.2 A product kind's listeners (Q151: A with A1's requirements)
+
+- **The sequence.** The product names each kind's listeners in the same wiring declaration (Rafka's
+  gateway: `kafka`, `rest`, `proxy`). `spec_for` returns those names. The pipeline assigns each the
+  birth's address with port 0, as the transport gets today; `RDM_LISTENERS` carries the assigned
+  addresses, port 0 included, before the bind. The node binds them and keeps every successful bind open
+  through its join; it reports the OS-selected ports at join; the accepting primary reads them back
+  (`Bound::of`); they are published on the node row's `listeners` (R-D2).
+- **Requirements.** Listener names are unique within a kind; a name RDM owns is refused at the admin's
+  start. A join report with a declared listener missing, duplicated or undeclared is refused by name and
+  installs nothing (node-create.md step 4); nothing is dropped. Nothing probes and releases a port: a
+  successful bind stays open through the join (node-create.md: the executor never picks, reserves or
+  predicts a port).
+- **No page text changes.** The sentences on assigned endpoints, port 0, the provider honouring and
+  never inventing a port, and the report at join cover the transport and the listeners alike. The
+  landing corrects CLAUDE.md's env table row from `RDM_ENDPOINTS` (`slot=addr=freshness`) to
+  `RDM_LISTENERS` (`name=addr`): §7 D1, a table-versus-code difference, not a page.
+- **Cells, RED first.** A gateway's three listeners bound, reported and published on its row; two
+  gateways launched at once with no conflict; a join report missing one, duplicating one and naming an
+  undeclared one, each refused by name; a container fabric's listeners on the container's own address.
+  This is the demo-surface plan's A1 cell.
+
+#### 0.3 Settled without code
+
+- **R-D3.2, the endpoint assignment's lifetime: A.** Today's lifetime (§5) is the contract; its one gap
+  with evidence, listeners, is §0.2.
+- **R-D3.3, the no-slot refusal: A.** No RDM code: Rafka's front door names the provider from
+  `FabricView.provider`; RDM's typed calls cannot carry a field the type lacks; the one setting §0.1 adds
+  is refused at the admin's start, naming it.
+- **The "restart env override"** (§2): a restart keeps the process; a changed non-secret setting is a
+  `node.config.update`, a changed secret or executable is a replace or a roll.
+- **Non-secret per-node settings** (§1): the row's `config`, read by the role at its entry; Rafka moves
+  `RAFKA_GATEWAY_CONFIG`, `RAFKA_KAFKA_CLIENT_HOST`, `RAFKA_STATEFUL` and the rest there.
 
 ---
 
@@ -233,6 +300,8 @@ By case:
 
 #### R-D3.1: the allow-list's owner and precedence, and the redaction point
 
+**Ruled: A with three amendments (Q150). The decided contract is §0.1.**
+
 ##### 1. Spec
 i50 Q3 arm (b) (§1.2): the key reaches exactly compute, gateway and broker, in both providers, through
 the provider's per-process spec env only; never config, tags or a durable row. The PRD row (`:2938`):
@@ -323,6 +392,8 @@ and RDM's secrets already take that path; arm A does not change it.
 
 #### R-D3.2: the endpoint assignment's lifetime
 
+**Ruled: A, no code. Its listener gap is ruled separately as Q151, §0.2.**
+
 ##### 1. Spec
 [page] node-create.md:17 and :37, node-mesh-join.md:38-39, deployment-provider.md:76, :185, :234 (§1.1).
 Owner: the executing node-admin assigns the address; the node binds port 0 and reports; the mesh's row
@@ -379,6 +450,8 @@ Every arm assumes the transport port is never picked or reserved (node-create.md
 - **X: something else.**
 
 #### R-D3.3: the no-slot refusal names the setting and the provider before anything launches
+
+**Ruled: A, no RDM code (§0.3).**
 
 ##### 1. Spec
 The brief (PRD `:2938`): "a setting with no slot refused `no-rdm-slot` at the front door (i141 B3 packet
