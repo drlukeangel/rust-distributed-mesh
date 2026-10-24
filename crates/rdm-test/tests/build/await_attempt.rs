@@ -39,12 +39,23 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     assert_eq!(shape.attempt, 1, "an accepted Build answers its first attempt: {shape:?}");
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
-    let node = "mesh1.rpc.1";
+    let first = "mesh1.rpc.1";
     let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
+    estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    // A second rpc node, and the restart is of the one that does not hold the cohort's seat: a restart
+    // of the seat's node moves the seat first and needs a secondary to move it to
+    // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The restart opens an
+    // attempt of the second create's Build, the accepted one.
+    let mut second = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a second rpc node in mesh1: {e}"));
+    let created = Estate::complete(&mut second).await;
+    assert_eq!(created.attempt, 1, "{created:?}");
     let build_id = created.build_id.to_string();
-    estate.until_node(node, &format!("{node} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    let views = estate.node_views().await;
+    let node_name = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).map(|n| n.name.to_string()).expect("one of mesh1's two rpc nodes does not hold the cohort's seat");
+    let node = node_name.as_str();
 
     let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
     let door = Door::at(&estate, &primary.name.to_string()).await;

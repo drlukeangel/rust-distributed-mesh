@@ -102,7 +102,9 @@ async fn pending_contract(cell: &str) {
             let spans = estate.spans();
             named(&spans, DECLARATION)
                 .into_iter()
-                .any(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && d["attributes"]["outcome"] == "applied")
+                // Applied, or AlreadyApplied when mesh2's primary already holds the event from the
+                // Fabric record the fabric-primary wrote before sending it (storage-whole-records.md).
+                .any(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")))
                 .then_some(())
         })
         .await;
@@ -158,14 +160,15 @@ async fn pending_contract(cell: &str) {
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
     let fabric_event: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && d["attributes"]["outcome"] == "applied")
+        .filter(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")))
         .collect();
+    let fabric_event_applied = fabric_event.iter().filter(|d| d["attributes"]["outcome"] == "applied").count();
     // The fabric primary sends the fabric's readiness to every OTHER mesh's primary: a fabric seat held
     // inside mesh2 sends none to mesh2 (the seat goes to the lowest node id fabric-wide).
     if fabric_primary.starts_with("mesh2.") {
         assert!(fabric_event.is_empty(), "a fabric primary inside mesh2 applies no event at its own mesh: {fabric_event:?}");
     } else {
-        assert_eq!(fabric_event.len(), 1, "the fabric's readiness applied once at mesh2's elected primary: {fabric_event:?}");
+        assert!(!fabric_event.is_empty() && fabric_event_applied <= 1, "the fabric's readiness stands at mesh2's elected primary, applied at most once: {fabric_event:?}");
     }
     // Every attempt the accepting fabric-primary decides descends from the REST request (the
     // rectifier); an attempt decided after the seat moved starts its own trace.
