@@ -8,10 +8,12 @@
 //! 4. An admin born later holds the current Build before Ready, and none of the history: it reads
 //!    the Build facts last in, first out from its own Build log (R-BI3; R14: the fabric-primary is
 //!    the one writer of `fabric/`), the Build its own Build log's copy.
-//! 5. A birth stopped (silent, its runtime alive) is held: nothing is reopened.
-//! 6. An admin that missed a Build while stopped catches up to the current Build when it is back: it
-//!    reads the Build facts written while it was stopped and holds the newest in progress or
-//!    completed (R-BI3: no pointer names the current Build).
+//! 5. A birth stopped (silent, its runtime alive) is node investigation's (node-recovery.md step 3): a
+//!    birth that answers its tickle, or is heard again by its digest, is reached and commanded back
+//!    through node.mesh.join; the fabric-primary opens no drift for it.
+//! 6. An admin stopped for less than the staleness floor misses a Build's acceptance and catches up to
+//!    the current Build when it is back: it reads the Build facts written while it was stopped and
+//!    holds the newest in progress or completed (R-BI3: no pointer names the current Build).
 //! 7. A member killed (its exact runtime exited) is node recovery (node-recovery.md): its
 //!    mesh-primary proves the exit and opens the recovery itself, the next attempt of its mesh's lane
 //!    of the same Build (R-BI7), once: node.delete of the exited birth, then node.create at the same
@@ -132,11 +134,15 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let quiet = estate.node_values().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
     let quiet_name = quiet["name"].as_str().unwrap().to_string();
     let stopped = estate.pid_of(&quiet_name).await;
+    // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
+    // acceptance and is never silent, so no investigation looks at it.
     signal(stopped, "-STOP");
-    let r4 = estate.reconcile(&fabric_of(&[("mesh1", 3, 4)])).await.build_id.to_string();
+    let stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 3, 4)]))).await;
+    let r4 = stream.build_id().to_string();
     assert_eq!(current_build(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
+    estate.follow(stream).await;
     let quiet_carrier = estate.carrier_at(&quiet_name.parse().unwrap()).await;
     Fabrics::new(quiet_carrier.clone()).fact(&format!("the paused admin names {r4} its current Build"), Duration::from_secs(30), |f| f.build_id.as_deref() == Some(r4.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
     build_log::build_fact(&quiet_carrier, &r4, "the paused admin's log holds the Build", Duration::from_secs(30), |_| true).await.unwrap_or_else(|end| panic!("{end}"));
@@ -157,11 +163,23 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
         })
         .await;
     assert_eq!(current_build(&estate).await, r4, "recovery writes no Build");
-    build_log::lane_attempt_complete(&estate.carrier().await, &r4, "mesh1", lane_before + 1, Duration::from_secs(120)).await;
+    // Exactly the next attempt of mesh1's, complete: a later one is a second recovery, named.
+    let expected = lane_before + 1;
+    build_log::build_fact(&estate.carrier().await, &r4, &format!("attempt {expected} of mesh1 complete, exactly"), Duration::from_secs(120), |b| {
+        let Some(m) = b.lanes.get("mesh1") else { return false };
+        assert!(u64::from(m.attempt) <= expected, "mesh1 of Build {r4} is past attempt {expected}: a second recovery was opened: {b:#?}");
+        match m.state {
+            rdm_admin::build_state::BuildState::Complete => u64::from(m.attempt) == expected,
+            rdm_admin::build_state::BuildState::Failed => panic!("attempt {} of mesh1 of Build {r4} failed: {b:#?}", m.attempt),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"));
     estate.settled_views(&[("mesh1", 3, 4)]).await;
     let after = build_log::build_value(&estate.carrier().await, &r4).await;
     let lane = &after["lanes"]["mesh1"];
-    assert_eq!((lane["state"].as_str(), lane["attempt"].as_u64()), (Some("complete"), Some(lane_before + 1)), "one more attempt of mesh1's lane of the same Build: {after}");
+    assert_eq!((lane["state"].as_str(), lane["attempt"].as_u64()), (Some("complete"), Some(expected)), "one more attempt of mesh1's lane of the same Build: {after}");
     assert_eq!(lane["reason"], "recovery", "the lane's attempt is the recovery: {after}");
     assert_eq!((after["state"].as_str(), after["attempt"].as_u64()), (Some("complete"), Some(attempts_before)), "the fabric lane gained no attempt: {after}");
     assert_ne!(back["node_id"], lost["node_id"], "a lost birth's path gets a new logical node");

@@ -1,10 +1,10 @@
 //! A silent primary node-admin is looked at by node investigation (node-recovery.md step 2): an admin
 //! of the primary's mesh (a standby included), any admin looking at the fabric-primary's mesh from
-//! outside it, and the fabric-primary for a peer mesh's primary, look at the exact silent birth: the
+//! outside it, and the fabric-primary for an unheard mesh-primary, look at the exact silent birth: the
 //! one tickle ladder (node-tickle.md: one probe direct, then the same probe through up to two live
 //! members of its mesh at once), and on `unreached` the provider's inspection of the birth's exact
 //! runtime. An answer from the exact birth is `reached`: the fabric-primary commands it back (Q87).
-//! Any other verdict of a peer mesh's primary is the fabric-primary's recovery of it, at once
+//! Any other verdict of an unheard mesh-primary is the fabric-primary's recovery of it, at once
 //! (node-recovery.md step 3, Q111); the fabric-primary itself is superseded by its successor
 //! ([`takeover_due`]).
 //!
@@ -108,12 +108,13 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said, w
     // and, when this admin holds the fabric seat, any silent primary node-admin of a peer mesh, the one
     // the election has replaced as mesh-primary included (node-recovery.md step 2: "For an unheard
     // mesh-primary the fabric-primary runs it, without the half-floor wait, after the election has named
-    // the new mesh-primary").
+    // the new mesh-primary"). The fabric-primary looks at no other silent node-admin of its own mesh:
+    // step 2's "Only the mesh-primary acts" makes a secondary node-admin its mesh-primary's tick's.
     let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
     let holds_fabric = view.is_fabric_primary(&me_birth.0);
     for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && n.node_id != me_birth.0) {
-        let own_holder = &n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
-        let incumbent = fabric_mesh.as_ref() == Some(&n.mesh);
+        let own_holder = &n.mesh == mesh && (n.is_primary || n.is_fabric_primary || (holds_fabric && was_mesh_primary(n)));
+        let incumbent = !holds_fabric && fabric_mesh.as_ref() == Some(&n.mesh);
         let peer_primary = holds_fabric && &n.mesh != mesh && (n.is_primary || was_mesh_primary(n));
         if !(own_holder || incumbent || peer_primary) {
             continue;
@@ -237,6 +238,9 @@ pub async fn run(w: Watch) {
         }
         // Held here while the admin is parked: its own wait, outside every lock.
         turn = Some(w.gate.turn("seat-watch").await);
+        // The instant this pass reads its view: a digest of a birth heard after it ends the silence the
+        // pass's verdicts are read in.
+        let read_at = std::time::Instant::now();
         let view = w.topology.read().await.clone();
         // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
         let fabric_mesh = w.membership.primaries().fabric().map(|h| h.mesh.clone());
@@ -298,32 +302,16 @@ pub async fn run(w: Watch) {
                     said.unreachable.remove(&b);
                 }
             }
-            // Any verdict but `reached` of a peer mesh's primary is this fabric-primary's recovery of it,
-            // at once (node-recovery.md step 3, Q111): nothing holds and nothing waits for a proof.
-            // Submitted once per silence and owed until it is opened: a submit refused (an attempt still
-            // holds the mesh) is made again after a delay that doubles, while this admin's view holds the
-            // exact birth and this admin the fabric seat. A recovery that ends Failed is the drift pass's
-            // to open again.
+            // Any verdict but `reached` of an unheard mesh-primary is this fabric-primary's recovery of it,
+            // at once (node-recovery.md steps 2-3, Q111): nothing holds and nothing waits for a proof.
+            // Submitted once per silence and owed until it is opened ([`submit_recovery`]). A recovery that
+            // ends Failed is the drift pass's to open again.
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
-                (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) => {
-                    let (node, topology, me_id) = (node.clone(), w.topology.clone(), me_birth.0.clone());
+                (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node)) => {
+                    let (node, topology, me_id, book) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.membership.book.clone());
                     tokio::spawn(async move {
-                        let mut backoff = rdm_transport::membership::gossip_interval();
-                        let ceiling = rdm_transport::membership::staleness_floor() * 4;
-                        loop {
-                            match recovery.submit(&node, &inspected).await {
-                                Ok(_) => break,
-                                Err(e) => tracing::info!(node = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery"),
-                            }
-                            tokio::time::sleep(backoff).await;
-                            backoff = (backoff * 2).min(ceiling);
-                            let t = topology.read().await;
-                            let held = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id);
-                            if !held || !t.is_fabric_primary(&me_id) {
-                                break;
-                            }
-                        }
+                        submit_recovery(&node, || recovery.submit(&node, &inspected), &topology, &book, &me_id, read_at).await;
                     });
                     true
                 }
@@ -337,6 +325,43 @@ pub async fn run(w: Watch) {
             span.in_scope(|| tracing::info!("a silent seat holder was looked at"));
         }
     }
+}
+
+/// The fabric-primary's recovery of an unheard mesh-primary (node-recovery.md step 3), submitted at
+/// once and owed until it is opened: a submit refused (an attempt still holds the mesh) is made again
+/// after a delay that doubles, once per silence. The silence the verdict was read in lasts while this
+/// admin's view holds the exact birth, this admin is the fabric-primary, and the book has not heard the
+/// birth since `since`, the instant the pass that read the verdict read its view (node-recovery.md
+/// step 1: the mark "ends when a digest of the exact birth arrives after it, when the birth answers its
+/// tickle, or when the view no longer holds that birth"). A birth heard again is reached (step 3): it
+/// is commanded back, and its old verdict is never submitted again.
+pub async fn submit_recovery<S, F>(node: &Node, mut submit: S, topology: &tokio::sync::RwLock<Topology>, book: &rdm_transport::membership::DigestBook, me_id: &NodeId, since: std::time::Instant)
+where
+    S: FnMut() -> F,
+    F: std::future::Future<Output = Result<(), String>>,
+{
+    let mut backoff = rdm_transport::membership::gossip_interval();
+    let ceiling = rdm_transport::membership::staleness_floor() * 4;
+    loop {
+        match submit().await {
+            Ok(()) => break,
+            Err(e) => tracing::info!(node = %node.name, error = %e, "the recovery submit of an unheard mesh-primary ended without the recovery"),
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(ceiling);
+        let t = topology.read().await;
+        let held = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id);
+        if !held || !t.is_fabric_primary(me_id) || heard_since(book, node, since) {
+            break;
+        }
+    }
+}
+
+/// Whether the book has heard `node`'s exact birth after `since`: a digest of it arrived after that
+/// instant, as `heard_again` reads a birth heard since its command.
+fn heard_since(book: &rdm_transport::membership::DigestBook, node: &Node, since: std::time::Instant) -> bool {
+    let now = std::time::Instant::now();
+    book.get_at(node.node_id.as_str(), now).is_some_and(|(d, unheard)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && now.checked_sub(unheard).is_some_and(|heard_at| heard_at > since))
 }
 
 #[cfg(test)]
@@ -452,5 +477,115 @@ mod tests {
         let p = plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &replaced);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary only");
         assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false).investigate.is_empty(), "no silent primary of a peer mesh");
+    }
+
+    fn digest_of(n: &Node) -> rdm_core::MeshDigest {
+        use crate::model::FabricId;
+        rdm_core::MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: FabricId::mint(),
+            node: rdm_core::MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            status: rdm_core::MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 0,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            config: Default::default(),
+            load: None,
+            gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
+        }
+    }
+
+    /// The fabric-primary mesh1.admin.1 and mesh2's primary mesh2.admin.1, unheard past the floor.
+    fn unheard_peer_primary() -> (Node, Node, Topology) {
+        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        fp.is_primary = true;
+        fp.is_fabric_primary = true;
+        let mut peer = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::PendingReconnect);
+        peer.is_primary = true;
+        let t = view(vec![fp.clone(), peer.clone()]);
+        (fp, peer, t)
+    }
+
+    /// CONTRACT (node-recovery.md step 1: the mark "ends when a digest of the exact birth arrives after
+    /// it, when the birth answers its tickle, or when the view no longer holds that birth"; step 3:
+    /// "once per silence"): the fabric-primary's recovery of an unheard mesh-primary whose submit was
+    /// refused build-in-progress is never submitted again once the exact birth is heard again after the
+    /// pass that read its verdict: the birth answered and rejoined, and its old verdict would re-create
+    /// a running node-admin.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_recovery_is_not_submitted_again_once_the_birth_is_heard_again() {
+        let (fp, peer, t) = unheard_peer_primary();
+        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::membership::DigestBook::default());
+        let since = std::time::Instant::now();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let (calls_ref, book_ref, heard) = (&calls, &book, digest_of(&peer));
+        let submit = || {
+            let heard = heard.clone();
+            async move {
+                // Refused: an attempt still holds the mesh. The birth answers its tickle and rejoins
+                // after the refusal: its digest arrives.
+                if calls_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    assert!(book_ref.record(heard), "the book takes the birth's digest");
+                }
+                Err("build-in-progress: BuildInProgress { mesh: Some(\"mesh2\") }".to_string())
+            }
+        };
+        let ended = tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, since)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth heard again after its refused submit is never submitted again (no recovery, no TerminateRuntime of the rejoined birth)");
+        assert!(ended.is_ok(), "the owed submit ends with the silence");
+    }
+
+    /// CONTRACT (node-recovery.md step 3: "Any other verdict ...: the recovery below, at once"): a
+    /// birth still unheard keeps its refused recovery owed until a submit opens it.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_recovery_of_a_birth_still_unheard_is_submitted_until_opened() {
+        let (fp, peer, t) = unheard_peer_primary();
+        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::membership::DigestBook::default());
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let calls_ref = &calls;
+        let submit = || async move {
+            match calls_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 | 1 => Err("build-in-progress".to_string()),
+                _ => Ok(()),
+            }
+        };
+        tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await.expect("the submit that opens the recovery ends the loop");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3, "submitted until a submit opens it");
+    }
+
+    /// CONTRACT (node-recovery.md step 2: "Only the mesh-primary acts. ... For an unheard mesh-primary
+    /// the fabric-primary runs it"): the fabric-primary opens no investigation of a silent secondary
+    /// node-admin of its own mesh (its mesh-primary's tick looks at it); an admin that is not the
+    /// fabric-primary still looks at it, and a fabric-primary that is not its mesh's primary looks at
+    /// that mesh-primary when it is unheard.
+    #[test]
+    fn the_fabric_primary_leaves_a_silent_secondary_admin_of_its_own_mesh_to_its_mesh_primary() {
+        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        fp.is_primary = true;
+        fp.is_fabric_primary = true;
+        let secondary = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::PendingReconnect);
+        let other = admin("mesh1.admin.3", "500000000000", "s3", NodeStatus::ReadyForTraffic);
+        let t = view(vec![fp.clone(), secondary.clone(), other.clone()]);
+        assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
+        assert_eq!(plan(&t, &other.name, &me_of(&other), &mut Said::default(), &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
+        let mut fp_only = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        fp_only.is_fabric_primary = true;
+        let mut primary = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::PendingReconnect);
+        primary.is_primary = true;
+        let t = view(vec![fp_only.clone(), primary.clone(), other.clone()]);
+        assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "an unheard mesh-primary of its own mesh is the fabric-primary's");
+        // The election replaced it: the view names another mesh-primary, the seat book the replaced birth.
+        let former = Node { is_primary: false, ..primary.clone() };
+        let elected = Node { is_primary: true, ..other };
+        let never = admin("mesh1.admin.4", "600000000000", "s4", NodeStatus::PendingReconnect);
+        let t = view(vec![fp_only.clone(), former.clone(), elected, never]);
+        let replaced = |n: &Node| n.node_id == former.node_id;
+        assert_eq!(plan(&t, &fp_only.name, &me_of(&fp_only), &mut Said::default(), &replaced).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&former)], "the replaced mesh-primary of its own mesh only, never a secondary node-admin");
     }
 }
