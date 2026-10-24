@@ -246,10 +246,12 @@ fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<St
         if let Some(root) = data_dir.parent() {
             disk.data_root = dir_present(root).map_err(|e| format!("data root {e}"))?.then(|| root.to_path_buf());
         }
-        // The launch set's bound executables the admin re-hashes and launches, at their host paths.
+        // The launch set's bound executables the admin re-hashes and launches, at their host paths,
+        // read-only: one under the writable data root is mounted again over it, read-only (proposal
+        // roll.md, the container cell: "a write inside them refused").
         let bin_dir = disk.bin_dir.as_ref().map(PathBuf::from);
         for d in reads {
-            if Some(d) != bin_dir.as_ref() && !disk.data_root.as_ref().is_some_and(|r| d.starts_with(r)) && dir_present(d).map_err(|e| format!("executable binding directory {e}"))? && !disk.binding_dirs.contains(d) {
+            if Some(d) != bin_dir.as_ref() && dir_present(d).map_err(|e| format!("executable binding directory {e}"))? && !disk.binding_dirs.contains(d) {
                 disk.binding_dirs.push(d.clone());
             }
         }

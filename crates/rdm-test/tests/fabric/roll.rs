@@ -145,6 +145,17 @@ async fn replaced_on(estate: &Estate, before: &BTreeMap<String, Member>, set: &B
     }
 }
 
+/// The sha256 of `kind`'s launch id in `set`.
+fn sha_in(set: &BindingSet, kind: &str) -> String {
+    set.bindings.iter().find(|b| b.launch_id == kind).unwrap_or_else(|| panic!("the set binds {kind}")).sha256.clone()
+}
+
+/// The Node record of `node_id` in `mesh` on the estate's store root, as written.
+fn record_of(estate: &Estate, mesh: &str, node_id: &str) -> Value {
+    let file = estate.fabric_store_root().join(format!("nodes/{mesh}/records/{node_id}.json"));
+    serde_json::from_slice(&std::fs::read(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))).unwrap()
+}
+
 /// The index, in the Build's receipts (attempt order, then the order each was written), of the first
 /// receipt of `operation`'s `step`.
 fn first_receipt(receipts: &[rdm_core::build::StepReceipt], operation: &str, step: &str) -> usize {
@@ -264,9 +275,10 @@ async fn a_mesh_with_one_admin_gains_a_second_first_and_its_only_rpc_node_is_rep
 /// CONTRACT (proposal roll.md step 2, R3: "an ordinary create (a resize, an added node) from a replaced
 /// or an unreplaced admin launches the new set ... and a node recovery still runs its row's bin"; "An
 /// admin whose executable already hashes to the set's is not replaced and launches from the new set
-/// all the same"; step 3: a row that records no executable "is replaced"): a roll whose set changes
-/// only the rpc node replaces every rpc node, and no node-admin whose row records the set's
-/// node-admin; the bootstrap admin, whose row records none, is replaced. Then a resize, an admin
+/// all the same"; R6: "the Day-0 claim hashes the bootstrap admin's running executable ... and the
+/// binding is recorded"): a roll whose set changes only the rpc node replaces every rpc node and no
+/// node-admin, the bootstrap admin included: its row records the set's node-admin from its Day-0 claim,
+/// and the fabric-primary does not move. Then a resize, an admin
 /// restart and an ordinary node.create: every launch, by an admin the roll did not replace, runs the
 /// set's rpc node, and the resize's Build carried the set; a member killed after it is recovered on the
 /// binary its row records, the set's.
@@ -278,12 +290,14 @@ async fn after_a_roll_an_unreplaced_admin_launches_the_set_and_a_recovery_runs_i
     let next = rolled(&estate, &set, &["rpc_node"]);
     let before = members(&estate).await;
     let stream = estate.submit_change(Change::Roll { bindings: next.clone() }).await;
-    follow_roll(&estate, stream, &["mesh2.admin.1", "mesh2.admin.2", "mesh1.admin.2", "mesh1.admin.1"]).await;
-    // The bootstrap admin's row records no executable: it is replaced, on the set's node-admin.
-    replaced_on(&estate, &before, &next, |n| n.contains(".rpc.") || n == "mesh1.admin.1").await;
-    for (name, m) in before.iter().filter(|(n, _)| n.contains(".admin.") && *n != "mesh1.admin.1") {
+    let (frames, moved) = follow_roll(&estate, stream, &["mesh2.admin.1", "mesh2.admin.2", "mesh1.admin.2", "mesh1.admin.1"]).await;
+    assert!(!moved, "no node-admin is replaced, so the fabric-primary does not move: {frames:?}");
+    replaced_on(&estate, &before, &next, |n| n.contains(".rpc.")).await;
+    for (name, m) in before.iter().filter(|(n, _)| n.contains(".admin.")) {
         assert_eq!(estate.node_value(name).await["node_id"], m.view["node_id"], "{name}'s row records the set's node-admin: not replaced");
     }
+    let day0 = record_of(&estate, "mesh1", &s(&before["mesh1.admin.1"].view["node_id"]));
+    assert_eq!(day0["record"]["executable"]["sha256"], json!(sha_in(&set, "node_admin")), "the bootstrap admin's Day-0 claim recorded the binding it runs: {day0}");
 
     // A resize: mesh2's admins, none replaced, launch the set's rpc node.
     let grown = [("mesh1", 2, 1), ("mesh2", 2, 2)];
@@ -439,5 +453,129 @@ async fn a_roll_is_refused_by_name_before_the_fabric_is_ready_and_for_each_defec
     assert_eq!(reason, "bindings-refused", "{detail}");
     assert!(detail.contains("not-required-by-the-set") && detail.contains("rpc_node"), "{detail}");
     assert_eq!(estate.accepted_build_id().await, first, "nothing is accepted");
+    estate.shutdown().await;
+}
+
+/// CONTRACT (proposal roll.md R6: "with `RDM_EXECUTABLE_BINDINGS` set, that hash must equal the set's
+/// `node_admin` sha, else the start is refused by name (a valid binding file proves what was configured,
+/// not what started this process)"): a bootstrap admin started with a set whose `node_admin` binding is
+/// another executable than the one running is refused at start, naming both hashes, and bootstraps
+/// nothing: no Node record is written. Must NOT happen: the admin comes up recording a binding it does
+/// not run.
+#[test]
+fn a_bootstrap_admin_whose_set_binds_another_node_admin_than_it_runs_is_refused_and_bootstraps_nothing() {
+    let cap = crate::common::capture("a_bootstrap_admin_whose_set_binds_another_node_admin_than_it_runs_is_refused_and_bootstraps_nothing");
+    cap.run(crate::common::Threads::Current, async move {
+        let dir = std::env::temp_dir().join(format!("roll-r6-refused-{}", rdm_core::NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The set binds the testkit's faulted node-admin; this process is the cell binary.
+        let sha = candidate_sha();
+        let set = binding_set(&sha);
+        let file = dir.join("executable-bindings.json");
+        std::fs::write(&file, serde_json::to_vec_pretty(&set).unwrap()).unwrap();
+        let (d, f) = (dir.display().to_string(), file.display().to_string());
+        let cfg = rdm_admin::admin::AdminConfig::from_env(|k| match k {
+            "RDM_DATA_DIR" | "RDM_STORE_DIR" | "RDM_BIN_DIR" => Some(d.clone()),
+            "RDM_NODE_ADMIN_API_BIND" => Some("127.0.0.1:0".into()),
+            "MESH_SPAWN_TYPE" => Some("process".into()),
+            "RDM_EXECUTABLE_BINDINGS" => Some(f.clone()),
+            "RDM_EXECUTABLE_CANDIDATE" => Some(sha.clone()),
+            _ => None,
+        })
+        .expect("the set is a valid configuration");
+        let wiring = rdm_admin::wiring::Wiring { certs: rdm_test::test_certs::root_choice(), fabric_hooks: rdm_admin::wiring::FabricHooks::no_app_work(), ..rdm_admin::wiring::Wiring::default() };
+        let why = rdm_admin::admin::start_with(cfg, wiring).await.err().expect("a set binding another node-admin than the one running is refused");
+        assert!(why.contains("refusing to start") && why.contains(&sha_in(&set, "node_admin")) && why.contains("hashes to"), "the refusal names the running executable's hash and the set's: {why}");
+        let records: Vec<_> = walk(&dir).into_iter().filter(|p| p.components().any(|c| c.as_os_str() == "records")).collect();
+        assert!(records.is_empty(), "nothing bootstrapped: no Node record is written: {records:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// CONTRACT (proposal roll.md R6: "with no set, the running executable's hash is recorded as the
+/// built-in binding. A built-in launch records the executable it resolved from `bin_dir`, hashed, the
+/// same way"): on a fabric started with no binding set, the bootstrap admin's row records its running
+/// executable's sha256 and an rpc node's row the sha256 of the `bin_dir` executable it was launched
+/// from. Must NOT happen: a row that records nothing it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_a_built_in_fabric_every_row_records_the_hash_of_the_executable_its_birth_runs() {
+    let estate = Estate::bootstrap(owner("on_a_built_in_fabric_every_row_records_the_hash_of_the_executable_its_birth_runs"), "fabric1", "mesh1").await;
+    let shape = [("mesh1", 1, 1)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, SETTLE).await;
+    for name in ["mesh1.admin.1", "mesh1.rpc.1"] {
+        let record = record_of(&estate, "mesh1", &s(&estate.node_value(name).await["node_id"]));
+        // The bootstrap admin is the estate's own process, launched by no pipeline: the binary it starts.
+        let exe = if name == "mesh1.admin.1" { rdm_test::estate::binary("rdm-node-admin") } else { exe_of(&estate, name).await };
+        assert_eq!(record["record"]["executable"]["sha256"], json!(sha256_file(&exe).unwrap()), "{name}'s row records the hash of {} it runs: {record}", exe.display());
+    }
+    estate.shutdown().await;
+}
+
+/// CONTRACT (proposal roll.md step 2: "the forwarding of `bindings_env` to a launched admin goes; the
+/// bootstrap env is day 0's input only"; the container cell: "a replacement admin launches from the
+/// current Build's set after the bootstrap admin's `RDM_EXECUTABLE_BINDINGS` file is gone, and the
+/// executable directories its container mounts are read-only (a write inside them refused), mounted at
+/// their host paths"): on a container fabric, the bootstrap admin's bindings file removed, a roll of the
+/// node-admins replaces each in a container that mounts the set's executable directory at its host path,
+/// read-only, a write inside it refused; a resize after it launches from the set. Opt-in: the
+/// container-proof step (`RDM_CONTAINER_PROOF=1`, or `RDM_REQUIRE_CONTAINER=1`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_container_fabrics_replacement_admin_launches_from_the_builds_set_and_reads_it_read_only() {
+    if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+        eprintln!("SKIP container roll: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
+        return;
+    }
+    let test = "a_container_fabrics_replacement_admin_launches_from_the_builds_set_and_reads_it_read_only";
+    let sha = candidate_sha();
+    let mut set = binding_set(&sha);
+    for b in set.bindings.iter_mut() {
+        b.image = Some(rdm_test::estate::RUNTIME_IMAGE.into());
+    }
+    let estate = Estate::bootstrap_external(Owner { provider: "container".into(), ..owner(test) }, "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the container set is accepted");
+    // Two meshes, as every roll cell: the estate relearns each re-created admin from a live view.
+    let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    std::fs::remove_file(estate.root.join("executable-bindings.json")).expect("the bootstrap admin's bindings file");
+    let next = rolled(&estate, &set, &["node_admin", "rpc_node"]);
+    let before = members(&estate).await;
+    let stream = estate.submit_change(Change::Roll { bindings: next.clone() }).await;
+    follow_roll(&estate, stream, &["mesh2.admin.1", "mesh2.admin.2", "mesh1.admin.1", "mesh1.admin.2"]).await;
+    let dir = exe_in(&next, "node_admin").parent().unwrap().to_path_buf();
+    for name in ["mesh1.admin.1", "mesh1.admin.2", "mesh2.admin.1", "mesh2.admin.2"] {
+        estate.until_node(name, &format!("{name} replaced"), SETTLE, |n| {
+            let v = serde_json::to_value(n?).expect("a view serializes");
+            (v["status"] == "ready-for-traffic" && v["node_id"] != before[name].view["node_id"]).then_some(())
+        })
+        .await;
+        let id = estate.container_of(name).await.unwrap_or_else(|| panic!("{name} runs in a container"));
+        let mounts = std::process::Command::new("docker").args(["inspect", "--format", "{{json .Mounts}}", &id]).output().unwrap();
+        let mounts: Value = serde_json::from_slice(&mounts.stdout).unwrap();
+        let held = mounts.as_array().unwrap().iter().find(|m| m["Source"] == json!(dir.display().to_string())).unwrap_or_else(|| panic!("{name} mounts the set's executable directory {}: {mounts}", dir.display()));
+        assert_eq!((held["Destination"].clone(), held["RW"].clone()), (json!(dir.display().to_string()), json!(false)), "{name}: at its host path, read-only: {held}");
+        let wrote = std::process::Command::new("docker").args(["exec", &id, "/bin/sh", "-c", &format!("echo x > {}/written", dir.display())]).output();
+        assert!(wrote.map(|o| !o.status.success()).unwrap_or(true), "{name}: a write inside the mounted executable directory is refused");
+    }
+    let grown = [("mesh1", 2, 2), ("mesh2", 2, 1)];
+    estate.reconcile_shape("fabric1", &grown).await;
+    estate.settles_to(&grown, SETTLE).await;
+    let added = record_of(&estate, "mesh1", &s(&estate.node_value("mesh1.rpc.2").await["node_id"]));
+    assert_eq!(added["record"]["executable"]["sha256"], json!(sha_in(&next, "rpc_node")), "the resize launched the set's rpc node: {added}");
     estate.shutdown().await;
 }
