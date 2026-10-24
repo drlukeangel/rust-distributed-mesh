@@ -285,6 +285,9 @@ receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value an
   admin; a bootstrap admin started with a set whose `node_admin` sha differs from its running
   executable: refused by name at start, nothing bootstrapped; and a built-in launch's row records its
   hashed executable;
+- a container fabric: a replacement admin launches from the current Build's set after the bootstrap
+  admin's `RDM_EXECUTABLE_BINDINGS` file is gone, and the executable directories its container mounts
+  are read-only (a write inside them refused), mounted at their host paths;
 - the Build `Complete` only after the fabric's ready-for-traffic round;
 - refused `fabric-not-ready` before first ready-for-traffic; a sha that does not match, a launch id the
   topology uses with no binding, and a container fabric's set without the image, each refused by name
