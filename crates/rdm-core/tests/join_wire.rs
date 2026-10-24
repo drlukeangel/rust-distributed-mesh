@@ -89,6 +89,21 @@ fn a_join_request_carries_the_listeners_the_node_bound_after_its_types() {
     assert_eq!(back, listeners);
 }
 
+/// The listeners round-trip in order, none and three alike (Q151): an empty list is one `00` count byte;
+/// three named listeners come back with their names and addresses.
+#[test]
+fn a_join_request_round_trips_no_listeners_and_three() {
+    let d = digest();
+    let none = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
+    assert_eq!(none.last(), Some(&0u8), "no listeners is a zero count");
+    let JoinRequest::JoinNode { listeners: back, .. } = Join::decode_request(&none).unwrap();
+    assert!(back.is_empty());
+    let three: Vec<(String, std::net::SocketAddr)> = [("kafka", "10.0.0.7:41001"), ("rest", "10.0.0.7:41002"), ("proxy", "10.0.0.7:41003")].iter().map(|(n, a)| (n.to_string(), a.parse().unwrap())).collect();
+    let wire = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: three.clone() }).unwrap();
+    let JoinRequest::JoinNode { listeners: back, .. } = Join::decode_request(&wire).unwrap();
+    assert_eq!(back, three, "three listeners come back as sent");
+}
+
 /// The digest's wire shape ends `load`, `gossip`, the held hash, then the primary revision and the
 /// fabric-primary revision (gossip.md "A primary change on gossip"), every field present: `gossip`
 /// absent is one `00` byte after the `00` of an absent `load`; present it is `01` then `heard`,

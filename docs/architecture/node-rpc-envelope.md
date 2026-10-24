@@ -1018,7 +1018,7 @@ joining birth.
 
 ```rust
 pub enum JoinRequest {
-    JoinNode { digest: MeshDigest, types: Vec<String> },
+    JoinNode { digest: MeshDigest, types: Vec<String>, listeners: Vec<(String, SocketAddr)> },
 }
 ```
 
@@ -1026,6 +1026,8 @@ pub enum JoinRequest {
 at most 256 and 8 KiB encoded; over the bound the join is `Malformed { kind: TypesOverCap }` and
 the birth is never a member. The serving node-admin records the declaration beside the row, joins
 every type it does not already hold before it answers, and writes its own row's `held_hash`.
+
+`listeners` is each listener the application's wiring declares on the birth's kind, by name, at the address the birth bound: the IP address node-admin assigned and a nonzero port the operating system chose (Q151). The serving node-admin validates the whole report before it installs any part of the join, and refuses it by name, installing nothing, unless it carries exactly the declared names, each once, on its assigned IP address with a nonzero OS-selected port; it writes them on the birth's row.
 
 The reply alternatives and their complete named fields are:
 
