@@ -156,7 +156,7 @@ RuntimeFact
     exact runtime identity
 
 current runtime metadata of the birth
-    the operational context needed to manage it: data_dir, the resolved executable, the launch's environment
+    the operational context needed to manage it: data_dir, the resolved executable, the launch's environment with its declared secrets excepted (a declared secret is written to the admins that may launch its kinds and to those processes, never to a record or a projection)
 ```
 
 Required runtime-management metadata converges to every node-admin as current birth projection state. It never stays launcher-private.

@@ -125,6 +125,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
         let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))

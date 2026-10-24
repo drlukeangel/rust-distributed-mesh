@@ -107,8 +107,15 @@ pub struct ResolvedNodeLaunch {
     pub executable: PathBuf,
     /// The arguments to run it with.
     pub args: Vec<String>,
-    /// The environment to run it with.
+    /// The environment to run it with: RDM's own launch variables, then RDM's fixed pass-through.
     pub env: BTreeMap<String, String>,
+    /// The declared secrets set in this runtime's environment (Q150): those whose declaration names
+    /// the node's kind, by name, each value's bytes as hex. Held so its debug form never shows a value;
+    /// the provider decodes each at the spawn and writes it nowhere else.
+    pub secrets: BTreeMap<String, rdm_core::launch::SecretHex>,
+    /// Every declared name, set here or not: a process runtime never inherits one from its launcher's
+    /// environment, as it never inherits `RDM_*` or the trace context.
+    pub withhold: Vec<String>,
     /// The node's data directory.
     pub data_dir: PathBuf,
     /// The advertised sockets the runtime must bind: its Iroh transport and its

@@ -81,6 +81,7 @@ impl Birth {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: deadline,
+            declared: Default::default(),
         };
         admin.deployed(&launch, &key);
         let pull = PullServer::new(vec![]);

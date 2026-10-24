@@ -26,6 +26,10 @@ pub fn data_dir_gone_hold_ms() -> u64 {
     data_dir_gone_floors().saturating_mul(rdm_core::cadence::staleness_floor().as_millis() as u64)
 }
 
+/// RDM's fixed pass-through list: each, when set on a node-admin, is passed on to every runtime it
+/// launches ([`AdminConfig::passthrough`]). A declared secret is never one of them (Q150).
+pub const PASSTHROUGH: [&str; 9] = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_DATA_DIR_GONE_FLOORS];
+
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
@@ -136,7 +140,7 @@ impl AdminConfig {
                 Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_DATA_DIR_GONE_FLOORS]
+        let passthrough = PASSTHROUGH
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();

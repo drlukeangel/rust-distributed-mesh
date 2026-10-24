@@ -299,6 +299,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     if wiring.fabric_hooks.sync_state.is_none() {
         return Err("refusing to start: no `sync_state` choice was made; pass SyncState::NoAppWork for an embedding with no application work in state-sync, or the application's sync_state hook".into());
     }
+    // The app's declared secrets (Q150): a name RDM sets or passes through refuses the start here, by
+    // name, before anything is bootstrapped. Each value is read once: from the launch's custody copy
+    // when a pipeline launched this admin, else from its own environment, as the fabric's root is.
+    let declared_secrets = crate::deployment::declared::DeclaredSecrets::read(std::mem::take(&mut wiring.declared), cfg.launch.as_ref(), |k| std::env::var(k).ok())?;
     let fabric_hooks = wiring.fabric_hooks.clone();
     // The embedding's own round action, if it binds one: run after this admin publishes its
     // scratchpad at commit-state (bound once the store root is open, below).
@@ -1292,6 +1296,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 issuing: None,
                                 roots: data_connections.roots(),
                                 connections_delete_deadline: cfg.connections_delete_deadline,
+                                declared: declared_secrets,
                                 binding: None,
                             };
                             let mut registry = HookRegistry::new();

@@ -84,6 +84,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
                 issuing: None,
                 roots: Vec::new(),
                 connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+                declared: Default::default(),
             };
             admin.deployed(&launch, &key);
             launch
@@ -312,6 +313,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         admin.deployed(&launch, &key);
         let seams: Arc<OnceLock<Seams>> = Arc::default();

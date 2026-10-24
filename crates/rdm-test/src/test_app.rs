@@ -11,12 +11,27 @@
 //!   boot) until the fault door releases it, then answers `StateSynced` for the round.
 //!
 //! `traffic_opened` is the one notice after the open-traffic round; it only records a span.
+//!
+//! It declares one secret (Q150), [`DECLARED_SECRET`], set on the broker and the gateway only: a
+//! scenario sets its value in the bootstrap admin's environment and reads which processes hold it.
 
 use crate::admin_faults::{AdminFaults, CutSpec, Probe};
 use rdm_admin::wiring::{FabricHooks, StateSyncRound, SyncState};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
+
+/// The testkit application's declared secret: set in the process environment of [`DECLARED_KINDS`]
+/// only.
+pub const DECLARED_SECRET: &str = "TESTKIT_DECLARED_SECRET";
+
+/// The kinds [`DECLARED_SECRET`] is set on.
+pub const DECLARED_KINDS: [rdm_core::NodeKind; 2] = [rdm_core::NodeKind::Broker, rdm_core::NodeKind::Gateway];
+
+/// The testkit application's declarations, as its wiring registers them.
+pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {
+    vec![rdm_core::launch::DeclaredSecret { name: DECLARED_SECRET.into(), kinds: DECLARED_KINDS.to_vec() }]
+}
 
 /// How the application answers `sync_state`.
 #[derive(Debug, Clone, PartialEq, Eq)]

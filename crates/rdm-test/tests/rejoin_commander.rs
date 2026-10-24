@@ -90,6 +90,7 @@ pub(crate) async fn rig_before_ready(tag: &str, carry: bool, before_ready: Optio
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     };
     primary.deployed(&launch, &key);
     let running = match before_ready {

@@ -52,6 +52,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
         let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))

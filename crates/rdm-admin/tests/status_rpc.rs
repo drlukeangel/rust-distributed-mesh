@@ -502,6 +502,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         issuing: None,
         roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
         binding: None,
     };
     let joins = rdm_admin::join::Joins::default();

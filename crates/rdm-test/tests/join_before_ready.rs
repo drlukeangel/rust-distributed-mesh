@@ -43,6 +43,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         let started = node::start(&launch, |b, _| b).await;
         let outcome = match started {
@@ -90,6 +91,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         let started = node::start(&launch, |b, _| b).await;
         let _ = std::fs::remove_dir_all(&dir);

@@ -125,6 +125,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         issuing: None,
         roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
         binding: None,
     };
     let (provider, observer, joins) = (Exits::default(), Recorded::default(), rdm_admin::join::Joins::default());

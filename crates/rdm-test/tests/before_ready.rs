@@ -62,6 +62,7 @@ async fn birth(status: MemberStatus) -> Birth {
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     };
     admin.deployed(&launch, &key);
     Birth { admin, authority, launch, dir }

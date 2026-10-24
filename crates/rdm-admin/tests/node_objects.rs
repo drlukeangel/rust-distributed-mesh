@@ -408,6 +408,7 @@ impl Rig {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
             binding: None,
         };
         let runs = Arc::new(AttemptRuns::default());

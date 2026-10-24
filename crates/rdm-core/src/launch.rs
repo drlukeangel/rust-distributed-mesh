@@ -2,7 +2,7 @@
 //! reads back. One contract, one owner.
 
 type Result<T> = std::result::Result<T, String>;
-use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
+use crate::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use crate::certs::VerifyingKey;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -55,6 +55,13 @@ pub const ENV_ROOTS: &str = "RDM_ROOTS";
 /// both (fabric-ca-renew.md "Launch": "a launched node-admin is also written ... the current CA
 /// material"); the CA's cert travels inside the issuing cert. A secret: only in a launch's environment.
 pub const ENV_FABRIC_CA_KEY: &str = "RDM_FABRIC_CA_KEY";
+/// The declared secrets a launched node-admin holds in custody (deployment-provider.md §2.3: "a
+/// declared secret is written to the admins that may launch its kinds and to those processes, never
+/// to a record or a projection"): each declared name and its value's bytes as hex, as `NAME=hex`
+/// entries joined by commas. Written into every node-admin's launch beside the root by a launcher that
+/// holds declared values, the way `RDM_CA_SECRET` is. A secret: it travels only in a launch's
+/// environment.
+pub const ENV_DECLARED_SECRETS: &str = "RDM_DECLARED_SECRETS";
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
@@ -84,6 +91,29 @@ impl std::fmt::Debug for SecretHex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SecretHex({} hex digits)", self.0.len())
     }
+}
+
+impl SecretHex {
+    /// `value`'s bytes as hex: how a declared secret is held from its read to the spawn.
+    pub fn of_value(value: &str) -> Self {
+        Self(encode_hex(value.as_bytes()))
+    }
+
+    /// The value whose bytes this hex spells; a spelling that is not hex, or bytes that are not
+    /// UTF-8, are refused by name.
+    pub fn value(&self, name: &str) -> Result<String> {
+        String::from_utf8(decode_hex(name, &self.0)?).map_err(|_| format!("{name} is not UTF-8"))
+    }
+}
+
+/// A per-process variable an application's wiring declares (Q150): its name and the node kinds whose
+/// process environment it is set in. Its value is a secret; this names none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredSecret {
+    /// The variable's name, as the processes of `kinds` read it.
+    pub name: String,
+    /// The kinds it is set on.
+    pub kinds: Vec<NodeKind>,
 }
 
 /// The issuing material a launched node-admin signs its mesh's member certs with (`RDM_ISSUING_KEY`,
@@ -153,6 +183,10 @@ pub struct Launch {
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the eligible work in flight is let finish until it
     /// passes, then the closure answers `Deadline`.
     pub connections_delete_deadline: Duration,
+    /// The declared secrets a node-admin is launched with in custody (`RDM_DECLARED_SECRETS`), by
+    /// name, each value's bytes as hex: every declared value its launcher holds. Empty for every other
+    /// birth.
+    pub declared: BTreeMap<String, SecretHex>,
 }
 
 /// Lowercase hex of `bytes`.
@@ -260,6 +294,28 @@ pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<St
     }
 }
 
+/// `declared` as `RDM_DECLARED_SECRETS` carries it: `NAME=hex` entries joined by commas.
+pub fn encode_declared(declared: &BTreeMap<String, SecretHex>) -> String {
+    declared.iter().map(|(n, v)| format!("{n}={}", v.0)).collect::<Vec<_>>().join(",")
+}
+
+/// The declared secrets `RDM_DECLARED_SECRETS` carries: absent or empty is none; an entry that is not
+/// `NAME=hex` is refused by name, never echoing its value.
+pub fn decode_declared(v: Option<&str>) -> Result<BTreeMap<String, SecretHex>> {
+    v.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            let Some((name, hex)) = e.split_once('=').filter(|(n, _)| !n.is_empty()) else {
+                return Err(format!("{ENV_DECLARED_SECRETS} carries an entry that is not NAME=hex"));
+            };
+            decode_hex(&format!("{ENV_DECLARED_SECRETS} entry {name}"), hex)?;
+            Ok((name.to_string(), SecretHex(hex.to_string())))
+        })
+        .collect()
+}
+
 /// `<path.name>,<node id>,<incarnation id>`
 pub fn decode_launcher(s: &str) -> Result<Launcher> {
     let mut it = s.split(',');
@@ -317,6 +373,9 @@ impl Launch {
         if !self.roots.is_empty() {
             m.insert(ENV_ROOTS.into(), encode_roots(&self.roots));
         }
+        if !self.declared.is_empty() {
+            m.insert(ENV_DECLARED_SECRETS.into(), encode_declared(&self.declared));
+        }
         m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
     }
@@ -342,6 +401,7 @@ impl Launch {
             issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT), get(ENV_CA_SECRET), get(ENV_FABRIC_CA_KEY))?,
             roots: decode_roots(get(ENV_ROOTS).as_deref())?,
             connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
+            declared: decode_declared(get(ENV_DECLARED_SECRETS).as_deref())?,
         })
     }
 }
@@ -369,6 +429,7 @@ mod tests {
             issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)), ca_key: SecretHex("0c".repeat(32)) }),
             roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(750),
+            declared: BTreeMap::from([("APP_KEY".to_string(), SecretHex::of_value("app-secret-value"))]),
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
@@ -386,6 +447,9 @@ mod tests {
         assert!(!format!("{l:?}").contains(&"0b".repeat(32)), "the root never prints: {l:?}");
         assert_eq!(env.get(ENV_FABRIC_CA_KEY).map(String::len), Some(64), "the CA key rides beside the root");
         assert!(!format!("{l:?}").contains(&"0c".repeat(32)), "the CA key never prints: {l:?}");
+        assert_eq!(env.get(ENV_DECLARED_SECRETS).map(String::as_str), Some(format!("APP_KEY={}", encode_hex(b"app-secret-value")).as_str()), "the custody copy rides the launch as NAME=hex");
+        assert!(!format!("{l:?}").contains(&encode_hex(b"app-secret-value")) && !format!("{l:?}").contains("app-secret-value"), "a declared value never prints: {l:?}");
+        assert_eq!(l.declared["APP_KEY"].value("APP_KEY").unwrap(), "app-secret-value");
         let mut no_root = env.clone();
         no_root.remove(ENV_CA_SECRET);
         assert!(Launch::from_env(|k| no_root.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY and RDM_ISSUING_CERT are set without RDM_CA_SECRET"), "issuing material without the root is refused by name");
@@ -400,6 +464,15 @@ mod tests {
         let mut half = env.clone();
         half.remove(ENV_ISSUING_CERT);
         assert!(Launch::from_env(|k| half.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY is set without RDM_ISSUING_CERT"));
+        // A launch that carries no declared value writes no custody variable; a malformed one is
+        // refused by name, never echoing the value.
+        assert!(!Launch { declared: BTreeMap::new(), ..l.clone() }.to_env().contains_key(ENV_DECLARED_SECRETS));
+        for (bad, says) in [("APP_KEY", "not NAME=hex"), ("=6162", "not NAME=hex"), ("APP_KEY=zz", "is not hex"), ("APP_KEY=abc", "odd number")] {
+            let mut env = env.clone();
+            env.insert(ENV_DECLARED_SECRETS.into(), bad.into());
+            let e = Launch::from_env(|k| env.get(k).cloned()).unwrap_err();
+            assert!(e.starts_with(ENV_DECLARED_SECRETS) && e.contains(says), "{e}");
+        }
         // A launch that carries no issuing material sets no variable.
         let none = Launch { issuing: None, ..l.clone() }.to_env();
         assert!(!none.contains_key(ENV_ISSUING_KEY) && !none.contains_key(ENV_ISSUING_CERT) && !none.contains_key(ENV_CA_SECRET) && !none.contains_key(ENV_FABRIC_CA_KEY));
@@ -447,6 +520,7 @@ mod tests {
             issuing: None,
             roots: vec![a],
             connections_delete_deadline: DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: BTreeMap::new(),
         };
         for roots in [vec![a], vec![a, b]] {
             let l = Launch { roots: roots.clone(), ..base.clone() };

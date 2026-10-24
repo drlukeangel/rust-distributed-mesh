@@ -203,6 +203,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     };
     let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
     let cuts = Arc::new(ApplyCuts::default());

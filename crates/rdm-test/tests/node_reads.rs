@@ -325,6 +325,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         admin.deployed(&launch, &key);
         let seams: Arc<OnceLock<Seams>> = Arc::default();

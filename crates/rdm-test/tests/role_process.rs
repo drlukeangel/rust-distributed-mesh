@@ -52,6 +52,7 @@ async fn born(name: &str) -> RoleProcess {
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     };
     launcher.deployed(&launch, &key);
     let role = Role::of(&launch);

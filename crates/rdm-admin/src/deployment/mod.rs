@@ -4,6 +4,7 @@
 //! replacement; a provider only realises or retires one runtime.
 
 pub mod container;
+pub mod declared;
 pub mod endpoint;
 pub mod pipeline;
 pub mod process;

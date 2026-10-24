@@ -210,6 +210,12 @@ pub struct Wiring {
     pub serve_app: Option<ServeApp>,
     /// Hooks registered, in order, before the lifecycle registry is built.
     pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
+    /// The app's declared secrets (Q150), registered at boot like the hooks: each per-process
+    /// variable by name, with the node kinds it is set on. The bootstrap admin reads each value once
+    /// from its own environment; every node-admin RDM launches is written them beside the root; a value
+    /// is set in the environment of the named kinds' processes only
+    /// ([`crate::deployment::declared`]). A name RDM sets or passes through refuses the start by name.
+    pub declared: Vec<rdm_core::launch::DeclaredSecret>,
     /// The cert material: the fabric's root ([`CertChoice::Ca`]) or no certs by name
     /// ([`CertChoice::NoCerts`]). There is no default: a
     /// node-admin started with [`CertChoice::Unchosen`] is refused at start by name.

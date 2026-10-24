@@ -197,6 +197,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         issuing: None,
         roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
         binding: None,
     };
     let joins = rdm_admin::join::Joins::default();
@@ -388,6 +389,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
         issuing: None,
         roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
         binding: None,
     };
     let joins = rdm_admin::join::Joins::default();

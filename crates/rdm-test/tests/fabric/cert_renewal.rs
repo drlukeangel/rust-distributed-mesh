@@ -112,6 +112,7 @@ fn launch_by(by: &Running, store: &Path, dir: &Path, name: &str) -> Launch {
         issuing: None,
         roots: vec![test_root_public()],
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     }
 }
 

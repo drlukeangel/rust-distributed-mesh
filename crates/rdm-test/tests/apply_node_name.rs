@@ -62,6 +62,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         admin.deployed(&launch, &key);
         // The node serves one op the cell can hold: a call into it stays in flight until released.

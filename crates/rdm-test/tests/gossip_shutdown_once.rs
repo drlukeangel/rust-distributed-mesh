@@ -81,6 +81,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide) -> Lau
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     }
 }
 

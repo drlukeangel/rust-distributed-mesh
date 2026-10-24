@@ -54,6 +54,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     }
 }
 

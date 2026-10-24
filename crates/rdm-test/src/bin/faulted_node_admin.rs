@@ -47,6 +47,8 @@ async fn main() {
         wiring.serve_app = Some(Box::new(move |b| rdm_test::fault_door::serve(b, door)));
         wiring.fabric_hooks = test_app::hooks(mode, faults).unwrap_or_else(|e| fail("test app", e));
         wiring.certs = rdm_admin::entry::material_or_exit("faulted-node-admin", cfg);
+        // The testkit application's declared secret, registered at boot like its hooks.
+        wiring.declared = test_app::declared();
         wiring
     })
     .await

@@ -67,7 +67,7 @@ pub(crate) fn launch(p: &ContainerDeploymentProvider, fabric: &str, n: u32) -> R
     let (first, _) = p.network().node_range();
     let ip = Ipv4Addr::from(u32::from(first) + n);
     let data_dir = std::env::temp_dir().join(format!("{fabric}-node{n}"));
-    ResolvedNodeLaunch { reads: Vec::new(),
+    ResolvedNodeLaunch { reads: Vec::new(), secrets: Default::default(), withhold: Vec::new(),
         node: format!("mesh1.rpc.{}", n + 1).parse().unwrap(),
         deployment_id: DeploymentId::mint(),
         executable: PathBuf::from("/usr/bin/tail"),

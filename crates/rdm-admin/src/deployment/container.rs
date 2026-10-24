@@ -585,6 +585,10 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         for (k, v) in &spec.env {
             args.extend(["-e".into(), format!("{k}={v}")]);
         }
+        // The declared values set for this kind (Q150), decoded here, at the spawn.
+        for (k, v) in &spec.secrets {
+            args.extend(["-e".into(), format!("{k}={}", v.value(k).map_err(err)?)]);
+        }
         args.push(RUNTIME_IMAGE.into());
         args.push(exe_in.display().to_string());
         args.extend(spec.args.iter().cloned());

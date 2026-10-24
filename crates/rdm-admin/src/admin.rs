@@ -3509,6 +3509,7 @@ mod tests {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(1250),
+            declared: Default::default(),
         };
         let launched = launch.to_env();
         assert_eq!(AdminConfig::from_env(|k| launched.get(k).cloned()).unwrap().connections_delete_deadline, Duration::from_millis(1250));

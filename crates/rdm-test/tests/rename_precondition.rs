@@ -78,6 +78,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 issuing: None,
                 roots: Vec::new(),
                 connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+                declared: Default::default(),
             };
             admin.deployed(&launch, &key);
             launch

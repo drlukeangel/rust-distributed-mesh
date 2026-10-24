@@ -761,6 +761,7 @@ mod writer {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
             binding: None,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
@@ -905,6 +906,7 @@ mod writer {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
             binding: None,
         };
         let joins = Joins::default();
@@ -1064,6 +1066,7 @@ mod writer {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
             binding: None,
         };
         let joins = Joins::default();
@@ -1449,7 +1452,7 @@ mod writer {
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.12", &data_root).await;
             // A launched the birth: its process runs, and the provider's launch record names it.
             let dir = data_root.join(format!("mesh1.rpc.12-{}", a_identity["node_id"].as_str().unwrap()));
-            let spec = ResolvedNodeLaunch { reads: Vec::new(),
+            let spec = ResolvedNodeLaunch { reads: Vec::new(), secrets: Default::default(), withhold: Vec::new(),
                 node: "mesh1.rpc.12".parse().unwrap(),
                 deployment_id: DeploymentId::parse(a_identity["deployment_id"].as_str().unwrap()).unwrap(),
                 executable: "/bin/sleep".into(),

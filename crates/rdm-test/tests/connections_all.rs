@@ -56,6 +56,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        declared: Default::default(),
     };
     admin.deployed(&launch, &key);
     let seams: std::sync::Arc<std::sync::OnceLock<Seams>> = Default::default();

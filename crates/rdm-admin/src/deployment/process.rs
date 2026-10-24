@@ -385,16 +385,20 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     }
     rdm_core::runtime::ExitRecord::clear(&spec.data_dir).map_err(err)?;
     let mut cmd = std::process::Command::new(&spec.executable);
-    // The launcher's environment is the child's host environment (PATH, HOME, RUST_LOG, OTLP
-    // endpoint, ...) and nothing of its launch contract: every `RDM_*` variable and the trace
-    // context are removed, then the spec's env is applied. The child sees exactly what the
-    // spec names, as a container does (`-e` per spec entry, no inheritance).
+    // The child inherits the launcher's host environment (PATH, HOME, ...) except every `RDM_*`
+    // variable, the trace context (`TRACEPARENT`, `TRACESTATE`) and every declared name
+    // (`spec.withhold`, Q150), which are removed; then the spec's env is applied, and the declared
+    // values it sets for this kind (`spec.secrets`). Unlike a container, which inherits nothing, a
+    // process keeps the host's other names.
     for (k, _) in std::env::vars_os() {
-        if k.to_str().is_some_and(|k| k.starts_with("RDM_") || k == "TRACEPARENT" || k == "TRACESTATE") {
+        if k.to_str().is_some_and(|k| k.starts_with("RDM_") || k == "TRACEPARENT" || k == "TRACESTATE" || spec.withhold.iter().any(|w| w == k)) {
             cmd.env_remove(&k);
         }
     }
     cmd.args(&spec.args).envs(&spec.env).stdin(Stdio::null()).stdout(log("stdout.log")?).stderr(log("stderr.log")?);
+    for (k, v) in &spec.secrets {
+        cmd.env(k, v.value(k).map_err(err)?);
+    }
     // A session of its own (deployment-provider.md §2.5: the provider signals no runtime the operating
     // system holds suspended outside a terminate). A member in a process group of its launcher's session
     // is orphaned when that launcher dies, and the kernel sends SIGHUP then SIGCONT to an orphaned group
@@ -754,7 +758,7 @@ mod tests {
     }
 
     fn launch(dir: &std::path::Path) -> ResolvedNodeLaunch {
-        ResolvedNodeLaunch { reads: Vec::new(),
+        ResolvedNodeLaunch { reads: Vec::new(), secrets: Default::default(), withhold: Vec::new(),
             node: "mesh1.rpc.1".parse().unwrap(),
             deployment_id: DeploymentId::mint(),
             executable: "/bin/sleep".into(),

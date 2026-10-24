@@ -897,6 +897,10 @@ pub struct LaunchTemplate {
     /// The bound of a `node.connections.delete { All }` every launch carries: the launching admin's
     /// own (`AdminConfig::connections_delete_deadline`).
     pub connections_delete_deadline: Duration,
+    /// The app's declared secrets and the values the launching admin holds (Q150): a launch sets the
+    /// values its kind is named for, withholds every declared name from inheritance, and a node-admin's
+    /// launch carries every value in custody (`RDM_DECLARED_SECRETS`).
+    pub declared: super::declared::DeclaredSecrets,
 }
 
 impl LaunchTemplate {
@@ -1495,7 +1499,7 @@ impl DeploymentPipeline<'_> {
         let data_dir = req.data_dir.clone().unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", req.node, identity.node_id)));
         // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
         // its identity is decided.
-        let spec = ResolvedNodeLaunch { reads: Vec::new(), node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
+        let spec = ResolvedNodeLaunch { reads: Vec::new(), secrets: Default::default(), withhold: Vec::new(), node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
         let span = tracing::info_span!(
             "rdm.node_admin.node.resolve.via-claimed-allocation",
             node = %req.node,
@@ -1691,17 +1695,25 @@ impl DeploymentPipeline<'_> {
             issuing: self.template.issuing.clone(),
             roots: self.template.roots.current(),
             connections_delete_deadline: self.template.connections_delete_deadline,
+            // A node-admin is written every declared value it may launch with, beside the root (Q150).
+            declared: if req.node.kind == rdm_core::NodeKind::NodeAdmin { self.template.declared.values.clone() } else { BTreeMap::new() },
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.
+        // In order (Q150): RDM's own launch variables, then the declared secrets of this node's kind
+        // (`secrets`), then RDM's fixed pass-through; a later tier never replaces an earlier one's name
+        // (a declared name RDM sets or passes through refused the admin's start). The host environment
+        // reaches a process runtime only for other names, and never a declared one (`withhold`).
         let spec_for = |traceparent: Option<String>| {
-            let mut env = self.template.env.clone();
-            env.extend(launch.to_env());
+            let mut env = launch.to_env();
             env.insert("RDM_INHERITED_DATA_DIR".into(), if inherits { "1".into() } else { "0".into() });
             if let Some(tp) = traceparent {
                 env.insert("TRACEPARENT".into(), tp);
             }
-            ResolvedNodeLaunch { reads: self.template.reads.clone(),
+            for (k, v) in &self.template.env {
+                env.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            ResolvedNodeLaunch { reads: self.template.reads.clone(), secrets: self.template.declared.set_on(req.node.kind), withhold: self.template.declared.names(),
                 node: req.node.clone(),
                 deployment_id: id.deployment_id.clone(),
                 executable: self.template.executable.clone(),
@@ -2726,6 +2738,7 @@ mod tests {
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
             binding: None,
         }
     }

@@ -42,6 +42,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
         };
         admin.deployed(&launch, &node::load_or_mint_key(&dir).unwrap());
         let running = node::start(&launch, |b, _| b).await.expect("the admitted node starts");
