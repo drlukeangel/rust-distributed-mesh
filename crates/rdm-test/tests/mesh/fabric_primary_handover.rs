@@ -273,10 +273,16 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert_eq!(left_receipts[0]["operation"], format!("mesh.delete:{mesh1_bare}"), "keyed by the mesh's minted id");
     assert_eq!(left_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(4), "a terminal receipt for every birth of mesh1, the final primary included: {}", left_receipts[0]);
 
-    // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's.
+    // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's. The run that ran
+    // `op` ends converged, or, its operations all done while the fabric it put back to pending has not
+    // climbed, handed back to the fabric-primary, which completes the Build after the climb (Q154).
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
     let converged = |build: &str, op: &str| -> String {
-        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == build && sp["attributes"]["outcome"] == "converged" && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains(op))).cloned().unwrap_or_else(|| panic!("a reconcile converged {op} under {build}"));
+        let r = reconciles
+            .iter()
+            .find(|sp| sp["attributes"]["build_id"] == build && (sp["attributes"]["outcome"] == "converged" || sp["attributes"]["outcome"] == "handed-off") && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains(op)))
+            .cloned()
+            .unwrap_or_else(|| panic!("a reconcile ran {op} under {build} to its end"));
         s(&r["attributes"]["executor"])
     };
     let owner_name = converged(&b, "mesh.delete:");

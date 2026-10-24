@@ -411,6 +411,18 @@ impl ControlPlane {
             if change.is_roll() {
                 self.admit_once_ready(route, "roll".into(), &outer).await?;
             }
+            // node.delete and mesh.delete write caller state: refused `fabric-not-ready` until the initial
+            // fabric first reached ready-for-traffic (states.md "The initial fabric before
+            // ready-for-traffic"), before the Build in progress is read, as the roll, a recipe and a node
+            // workflow are: the Build that climbs the initial fabric is in progress until its climb (Q154).
+            let deletes = match &change {
+                TopologyChange::RemoveNode { node } => Some(format!("node.delete {node}")),
+                TopologyChange::RemoveMesh { mesh } => Some(format!("mesh.delete {mesh}")),
+                _ => None,
+            };
+            if let Some(workflow) = deletes {
+                self.admit_once_ready(route, workflow, &outer).await?;
+            }
             let (_admitted, current) = self.current_settled().await?;
             if let TopologyChange::Roll { bindings } = &change {
                 let provider = self.topology.read().await.fabric.provider;

@@ -335,6 +335,18 @@ fn done_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
 }
 
 /// How many receipts each step of `operation` holds at `attempt`.
+
+/// The attempts a Build that put the fabric back to pending ends at when its one run ran every
+/// operation: that run, attempt 1, then the attempt claimed once the fabric climbed to
+/// ready-for-traffic, which completes it and runs no step (Q154; states.md "Resize and roll").
+const RUN_THEN_CLIMB: u64 = 2;
+
+/// Whether every step receipt of `build` (the Build view's JSON) is of its one run, attempt 1: the
+/// climb's Complete runs no step.
+fn run_alone_stepped(build: &Value) -> bool {
+    build["steps"].as_array().into_iter().flatten().all(|r| r["attempt"] == 1)
+}
+
 fn step_counts(build: &Value, operation: &str, attempt: u64) -> BTreeMap<String, usize> {
     let mut m = BTreeMap::new();
     for r in build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["attempt"] == attempt) {
@@ -677,7 +689,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     });
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
-    rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
+    rec.check("the Build completed at its one run and the climb's Complete", done["state"] == "complete" && attempt == RUN_THEN_CLIMB && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
     let current = run.fabric_build_id().await;
     rec.check("the current build_id names the Build", current == build_id, format!("{current} vs {build_id}"));
     rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
@@ -789,7 +801,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     });
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
-    rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
+    rec.check("the Build completed at its one run and the climb's Complete", done["state"] == "complete" && attempt == RUN_THEN_CLIMB && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
     rec.check("the current build_id names the Build", run.fabric_build_id().await == build_id && current_before != build_id, format!("previous {current_before}"));
     create_checks(run, &mut rec, &done).await;
     rec.check("the advertised seats equal the public candidates' after the release", seats_after, detail_after);

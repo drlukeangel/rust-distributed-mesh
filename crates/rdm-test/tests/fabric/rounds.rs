@@ -8,7 +8,7 @@
 //! wrote.
 
 use crate::build_log;
-use rdm_client::{CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
+use rdm_client::{BuildFrame, BuildSpec, BuildStream, CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
 use rdm_core::status::StatusReply;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};
@@ -366,6 +366,89 @@ async fn ready_under(estate: &Estate, build: &str) {
     until_fabric(estate, ScopeStatus::ReadyForTraffic, Some(build), Duration::from_secs(90)).await;
 }
 
+/// Read `stream`'s frames until the drive reports its Build Blocked naming the fabric's climb, bounded by
+/// `within`. A `Complete` before it is the defect: the Build said Complete while the fabric had not
+/// climbed under it, named with what `fabric.get` reports.
+async fn until_blocked_on_the_climb(estate: &Estate, stream: &mut BuildStream, within: Duration) -> BuildFrame {
+    let build = stream.build_id().to_string();
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let frame = match tokio::time::timeout_at(deadline, stream.next()).await {
+            Err(_) => panic!("Build {build} reported no Blocked naming the fabric's climb within {within:?}"),
+            Ok(None) => panic!("the stream of Build {build} ended before it reported Blocked naming the fabric's climb"),
+            Ok(Some(Err(e))) => panic!("the stream of Build {build} broke before it reported Blocked naming the fabric's climb: {e}"),
+            Ok(Some(Ok(frame))) => frame,
+        };
+        match &frame {
+            BuildFrame::Blocked { step, .. } if step == "fabric-change" => return frame,
+            BuildFrame::Complete { attempt } => {
+                let fabric = estate.fabric_view().await;
+                panic!("Build {build} is Complete at attempt {attempt} while fabric.get says {:?} under {:?}: a Build that put the fabric back to pending is Complete only after its own ready-for-traffic round", fabric.status, fabric.build_id);
+            }
+            BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming the fabric's climb"),
+            _ => {}
+        }
+    }
+}
+
+/// `stream` followed to its `Complete` (`Estate::follow`), bounded by `within`: `what` names the wait.
+async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Duration) -> rdm_test::typed::Reconciled {
+    tokio::time::timeout(within, estate.follow(stream)).await.unwrap_or_else(|_| panic!("{what}: no Complete within {within:?}"))
+}
+
+/// CONTRACT (Q154; states.md "Resize and roll": "Its Build is Complete only when the fabric is
+/// ready-for-traffic again from this Build's own climb, as fabric.create's is: while the fabric climbs,
+/// the Build reports Blocked naming the climb, never Complete"; build.md §10: "A Build that put the
+/// fabric back to pending completes with that round, not with its last step"): a resize whose climb the
+/// application holds in state-sync reports Blocked naming `fabric-change`, and while `fabric.get` says
+/// state-sync under it neither its stream nor `build.get` says Complete; released, it is Complete only
+/// after the fabric entered ready-for-traffic under it. Must NOT happen: a Build Complete while the
+/// fabric it put back to pending has not climbed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_own_ready_for_traffic_round() {
+    let test = "a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_own_ready_for_traffic_round";
+    let mut estate = estate_with(test, "hold").await;
+    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let shape = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]);
+    let mut stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1"), shape("mesh2")] })).await;
+    let build = stream.build_id().to_string();
+    let blocked = until_blocked_on_the_climb(&estate, &mut stream, Duration::from_secs(90)).await;
+    estate.artifact("blocked-on-the-climb.json", &json!(format!("{blocked:?}")));
+    until_fabric(&estate, ScopeStatus::StateSync, Some(build.as_str()), Duration::from_secs(60)).await;
+    door.wait_held("state-sync").await;
+    // The application holds the round: through the window fabric.get says state-sync under the Build, and
+    // neither the Build's stream nor build.get says Complete.
+    let id = rdm_client::BuildId::parse(&build).unwrap();
+    let carrier = estate.carrier().await;
+    let held_until = tokio::time::Instant::now() + Duration::from_secs(8);
+    while tokio::time::Instant::now() < held_until {
+        let fabric = estate.fabric_view().await;
+        assert_eq!((fabric.status, fabric.build_id.as_deref()), (ScopeStatus::StateSync, Some(build.as_str())), "the fabric is held in state-sync under {build}");
+        let got = carrier.get(&id).await.unwrap_or_else(|e| panic!("build.get {build}: {e}"));
+        assert_ne!(got.phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete at attempt {} while fabric.get says state-sync under it", got.attempt);
+        if let Ok(Some(frame)) = tokio::time::timeout(Duration::from_millis(250), stream.next()).await {
+            let frame = frame.unwrap_or_else(|e| panic!("the stream of Build {build} broke while the fabric was held in state-sync: {e}"));
+            assert!(!matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. }), "Build {build} ended {frame:?} while fabric.get says state-sync under it");
+        }
+    }
+    door.release("state-sync").await;
+    let done = followed(&estate, stream, &format!("Build {build} after the state-sync round was released"), Duration::from_secs(90)).await;
+    assert_eq!(carrier.get(&id).await.unwrap_or_else(|e| panic!("build.get {build}: {e}")).phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete once its stream did");
+    ready_under(&estate, &build).await;
+    estate.stop().await;
+
+    // The order, from the spans: the fabric entered ready-for-traffic under this Build's climb before the
+    // attempt that completed it was dispatched.
+    let spans = estate.spans();
+    let (_, climb) = climb_of(&spans, &build);
+    let ready = climb.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready-for-traffic").unwrap_or_else(|| panic!("the fabric entered ready-for-traffic under the climb of {build}"));
+    let completed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| sp["attributes"]["build_id"] == build.as_str() && sp["attributes"]["outcome"] == "complete").unwrap_or_else(|| panic!("the attempt that completed {build} is spanned"));
+    let Some(BuildFrame::Complete { attempt }) = done.frames.last() else { panic!("Build {build} ended {:?}", done.frames.last()) };
+    assert_eq!(num(&completed["attributes"]["attempt"]), Some(u64::from(*attempt)), "the dispatch span is of the attempt the stream reported Complete: {completed}");
+    assert!(start(ready) <= start(completed), "the fabric entered ready-for-traffic under {build} ({}) before the attempt that completed it was dispatched ({}): {completed}", start(ready), start(completed));
+    estate.record_trace_url(&s(&ready["trace_id"]));
+}
+
 /// CONTRACT (states.md, Rounds: "Before state-commit, RDM holds its rows in the scratchpad;
 /// state-commit publishes the required held rows to the configured stores"; fabric-state-commit.md
 /// step 2; node-identity-and-state.md §2.7, The write; node-admin-lifecycle.md §7; R14 item 9): while
@@ -408,7 +491,10 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let door = Door::at(&estate, "mesh1.admin.1").await;
     let root = estate.fabric_store_root();
     let shape = |m: &str, rpc: u32| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
-    let first = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
+    // The two-mesh Build is Complete only after its own climb (Q154), which the application holds: it is
+    // followed to its Complete once the hold is released.
+    let first_stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] })).await;
+    let first = first_stream.build_id().to_string();
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     // The application took the two-mesh Build's state-sync round and the door holds its answer: the
@@ -448,6 +534,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let name_claim = root.parent().expect("the store root sits under the store_dir").join(rdm_admin::store_root::FABRIC_NAMES).join("fabric1.json");
     assert!(!name_claim.exists(), "the fabric's name claim reaches {} only at state-commit", name_claim.display());
     door.release("state-sync").await;
+    followed(&estate, first_stream, &format!("the two-mesh Build {first} after its state-sync round was released"), Duration::from_secs(90)).await;
     ready_under(&estate, &first).await;
     let after = rows_on(&root);
     estate.artifact("rows-after-state-commit.json", &json!(after));
@@ -681,7 +768,10 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     // seat, so no seat moves (a seat holder's restart runs node.primary.update first, and a cohort of one
     // node has no successor, Q7).
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
-    let first = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
+    // The initial Build is Complete only after its own climb (Q154), which the application holds: it is
+    // followed to its Complete once the hold is released.
+    let mut first_stream = estate.submit_shape("fabric1", &shape).await;
+    let first = first_stream.build_id().to_string();
     estate.settled_views(&shape).await;
     let path = |n: &str| -> PathName { n.parse().unwrap() };
     let held_in_state_sync = |f: &FabricView| f.status == ScopeStatus::StateSync && f.build_id.as_deref() == Some(first.as_str()) && f.meshes.len() == 2 && f.meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic);
@@ -690,6 +780,9 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     // mesh2's primary holds the fabric's state too: the node.tags.create below is decided from its own view.
     let mesh2_primary = path("mesh2.admin.1");
     Fabrics::new(estate.carrier_at(&mesh2_primary).await).fact("mesh2's primary holds the fabric in state-sync", Duration::from_secs(30), |f| f.status == ScopeStatus::StateSync).await.unwrap_or_else(|end| panic!("{end}"));
+    // The Build's run ended, handed back for the climb: no attempt of it is in flight, and none is claimed
+    // while the fabric climbs (Q154).
+    until_blocked_on_the_climb(&estate, &mut first_stream, Duration::from_secs(60)).await;
 
     let carrier = estate.carrier().await;
     let log_before = build_log::build_value(&carrier, &first).await;
@@ -736,11 +829,14 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
 
     // The application answers: the fabric climbs, and the same kind of workflow is accepted.
     door.release("state-sync").await;
+    followed(&estate, first_stream, &format!("the initial Build {first} after its state-sync round was released"), Duration::from_secs(90)).await;
     estate.fabrics_obj().await.fact("ready-for-traffic under the initial Build", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic && f.build_id.as_deref() == Some(first.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
+    // The attempt that completed the initial Build after its climb is the last before the restart.
+    let log_done = build_log::build_value(&carrier, &first).await;
     let member = estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node of mesh2 holding no seat");
     let mut admitted = estate.nodes_obj().await.restart(&path(&member)).await.unwrap_or_else(|end| panic!("once the fabric is ready-for-traffic a restart is accepted: {end}"));
     let accepted = Estate::complete(&mut admitted).await;
-    assert_eq!((accepted.build_id.as_str(), accepted.attempt), (first.as_str(), log_before["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the initial Build");
+    assert_eq!((accepted.build_id.as_str(), accepted.attempt), (first.as_str(), log_done["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the initial Build");
     let log_end = build_log::build_value(&carrier, &first).await;
     assert_eq!(log_end["attempt"].as_u64(), Some(u64::from(accepted.attempt)), "the admitted restart is the only attempt the Build gained: {log_end}");
     estate.stop().await;

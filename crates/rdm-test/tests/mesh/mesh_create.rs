@@ -71,6 +71,16 @@ fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> 
     s(&reconcile["attributes"]["executor"])
 }
 
+/// The executor of the last attempt of `build` (the Build view's JSON) that ran a step. The Build put the
+/// fabric back to pending, so it is Complete only after its own climb (Q154): its last attempt, claimed
+/// once the fabric is ready-for-traffic, is the one after that run and runs no step.
+fn last_run_executor(build: &Value) -> String {
+    let last = build["attempt"].as_u64().expect("the Build's attempt");
+    let stepped = build["steps"].as_array().into_iter().flatten().filter_map(|r| r["attempt"].as_u64()).max().expect("the Build ran steps");
+    assert_eq!(stepped + 1, last, "the attempt after the Build's last run is the climb's Complete and runs no step: {build:#}");
+    s(&build["attempt_executors"][stepped.to_string()])
+}
+
 /// Build `id` complete in the Build log of the admin the estate asks, as the JSON the view serializes to.
 async fn built(estate: &Estate, id: &str) -> Value {
     let build = build_log::build_fact(&estate.carrier().await, id, "complete", Duration::from_secs(120), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
@@ -84,8 +94,8 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
     // mesh2 is created on a fabric past its first state-commit, so its rows are written to the store
     // (node-identity-and-state.md §2.7: "the scratchpad before state-commit, the store after"), where
-    // mesh2's own primary finds the row the fabric-primary's claim wrote. A Build completes on its own
-    // receipts, not on the fabric's state climb (build.md §10), so the cell waits for it here.
+    // mesh2's own primary finds the row the fabric-primary's claim wrote. The Build is Complete only after
+    // the fabric's climb from it (Q154; build.md §10); the wait records that the fabric has started.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     // {mesh1} -> {mesh1, mesh2}
@@ -98,7 +108,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "one fabric primary once the view settles");
     let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).unwrap();
-    assert_eq!(build["executor"], mesh2_primary.as_str(), "the Build's last attempt ran on mesh2's own primary: {build:#}");
+    assert_eq!(last_run_executor(&build), mesh2_primary, "the Build's last run ran on mesh2's own primary: {build:#}");
 
     // mesh2's control endpoint, from the advertised topology only.
     let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
@@ -119,12 +129,12 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let mut growing = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     let grow = Estate::complete(&mut growing).await.build_id.to_string();
     let b = built(&estate, &grow).await;
-    assert_eq!(b["executor"], mesh2_primary.as_str(), "{b:#}");
+    assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
     estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 ready for traffic", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
     let mut shrinking = estate.nodes_obj().await.delete(&"mesh2.rpc.4".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.rpc.4: {e}"));
     let shrink = Estate::complete(&mut shrinking).await.build_id.to_string();
     let b = built(&estate, &shrink).await;
-    assert_eq!(b["executor"], mesh2_primary.as_str(), "{b:#}");
+    assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
     estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 retired", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
 
     estate.artifact("nodes.json", &json!(estate.node_values().await));

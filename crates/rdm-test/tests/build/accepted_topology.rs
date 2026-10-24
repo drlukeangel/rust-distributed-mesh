@@ -66,6 +66,25 @@ fn paths(build: &Value, mesh: &str) -> Vec<String> {
     build["topology"]["meshes"][mesh]["nodes"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect()).unwrap_or_default()
 }
 
+/// Read `stream` until its Build is Blocked naming the fabric's climb (its operations all done, Q154),
+/// bounded by `within`; a terminal before it is a defect of the cell.
+async fn blocked_on_the_climb(stream: &mut rdm_client::BuildStream, within: Duration) {
+    let build = stream.build_id().to_string();
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let frame = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .unwrap_or_else(|_| panic!("Build {build} reported no Blocked naming the fabric's climb within {within:?}"))
+            .unwrap_or_else(|| panic!("the stream of Build {build} ended before it reported Blocked naming the fabric's climb"))
+            .unwrap_or_else(|e| panic!("the stream of Build {build} broke before it reported Blocked naming the fabric's climb: {e}"));
+        match frame {
+            rdm_client::BuildFrame::Blocked { step, .. } if step == "fabric-change" => return,
+            rdm_client::BuildFrame::Complete { .. } | rdm_client::BuildFrame::Failed { .. } | rdm_client::BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming the fabric's climb"),
+            _ => {}
+        }
+    }
+}
+
 fn fabric_of(meshes: &[(&str, u32, u32)]) -> FabricDesired {
     FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() }
 }
@@ -137,12 +156,16 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
     // acceptance and is never silent, so no investigation looks at it.
     signal(stopped, "-STOP");
-    let stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 3, 4)]))).await;
-    let r4 = stream.build_id().to_string();
+    // The Build is Complete only after its own climb (Q154), whose rounds wait for every member's
+    // check-in, the stopped admin's too: it misses the Build's acceptance and every operation, and is
+    // back once the Build is Blocked on the climb, before its Complete.
+    let mut r4_stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 3, 4)]))).await;
+    let r4 = r4_stream.build_id().to_string();
+    blocked_on_the_climb(&mut r4_stream, Duration::from_secs(30)).await;
     assert_eq!(current_build(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
-    estate.follow(stream).await;
+    tokio::time::timeout(Duration::from_secs(90), estate.follow(r4_stream)).await.unwrap_or_else(|_| panic!("{r4} reached no Complete within 90s of {quiet_name} being back"));
     let quiet_carrier = estate.carrier_at(&quiet_name.parse().unwrap()).await;
     Fabrics::new(quiet_carrier.clone()).fact(&format!("the paused admin names {r4} its current Build"), Duration::from_secs(30), |f| f.build_id.as_deref() == Some(r4.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
     build_log::build_fact(&quiet_carrier, &r4, "the paused admin's log holds the Build", Duration::from_secs(30), |_| true).await.unwrap_or_else(|end| panic!("{end}"));

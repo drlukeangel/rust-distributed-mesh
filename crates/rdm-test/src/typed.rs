@@ -607,8 +607,15 @@ impl Estate {
 
     /// Reconcile the fabric to `meshes`, each `(name, node_admin, rpc_node)`.
     pub async fn reconcile_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> Reconciled {
+        let stream = self.submit_shape(fabric, meshes).await;
+        self.follow(stream).await
+    }
+
+    /// `build.create` of the fabric reconciled to `meshes`, each `(name, node_admin, rpc_node)`, accepted:
+    /// the stream of the Build, for a cell that acts while the Build runs (its climb held, Q154).
+    pub async fn submit_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> BuildStream {
         let desired = FabricDesired { fabric: fabric.into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired { name: (*m).into(), node_admin: *a, rpc_node: *r, broker: 0, gateway: 0, compute: 0 }).collect() };
-        self.reconcile(&desired).await
+        self.submit(&BuildSpec::Fabric(desired)).await
     }
 
     /// Every frame of a Build stream, to its end; a failed step or a broken stream is a defect of the

@@ -94,8 +94,9 @@ pub trait Gate: Send + Sync {
     async fn recorded_executables(&self, _topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
         Ok(crate::accepted::Recorded::new())
     }
-    /// Whether the fabric holds ready-for-traffic now: a roll's Build is `Complete` only after the
-    /// fabric's climb (proposal roll.md step 8). A gate with no climb holds it.
+    /// Whether the fabric holds ready-for-traffic now: a Build that put the fabric back to pending is
+    /// `Complete` only after the fabric's climb (Q154; states.md "Resize and roll"). A gate with no
+    /// climb holds it.
     fn fabric_ready(&self) -> bool {
         true
     }
@@ -715,6 +716,15 @@ fn is_roll(p: &BuildProjection) -> bool {
     p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll)
 }
 
+/// Whether `p`'s Build puts the fabric back to pending (states.md "Resize and roll"; Q154): every Build a
+/// change was submitted for, a resize and a roll alike, except fabric.delete, after which the fabric
+/// never climbs. Day 0's Build carries no change and is not one of them (Q154: day 0 unchanged). A Build
+/// whose topology the change left as it was puts nothing back, and the fabric it finds ready-for-traffic
+/// holds it.
+fn climbs(p: &BuildProjection) -> bool {
+    p.submitted_change.as_ref().is_some_and(|c| !matches!(c, crate::accepted::TopologyChange::DeleteFabric))
+}
+
 /// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
 /// step receipt in an attempt held by an admin outside `mesh`, later than the last attempt an admin of
 /// `mesh` held (a mesh that has executed its own work since stands on its own again). That admin is
@@ -968,9 +978,10 @@ impl DriveEnv {
             plan.operations.truncate(i);
             plan.hand_off_to = Some(me.to_string());
         }
-        // A roll's last run hands back here rather than ending `Complete` while the fabric has not
-        // climbed (proposal roll.md step 8): the next pass waits for the climb.
-        if is_roll(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
+        // The last run of a Build that put the fabric back to pending hands back here rather than
+        // ending `Complete` while the fabric has not climbed (Q154; states.md "Resize and roll"; proposal
+        // roll.md step 8): the next pass waits for the climb.
+        if climbs(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
             plan.hand_off_to = Some(me.to_string());
         }
         Ok(plan)
@@ -1041,13 +1052,14 @@ impl DriveEnv {
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
                 }
-                // A roll whose replacements are all done completes only after the fabric's climb
-                // (proposal roll.md step 8; states.md "Resize and roll": the fabric cannot climb until the
-                // roll's last planned birth checks in): no attempt is claimed until the fabric holds
-                // ready-for-traffic, and the reconcile loop drives the Build again.
-                if is_roll(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
-                    let why = format!("{me}: every member of roll {id} is on its set, and the Build completes only after the fabric's climb to ready-for-traffic");
-                    self.blocked(drive, p.attempt, "", "fabric-climb", &why);
+                // A Build that put the fabric back to pending, its work all done, is Complete only after
+                // the fabric's climb from it (Q154; states.md "Resize and roll": "while the fabric climbs,
+                // the Build reports Blocked naming the climb, never Complete"; proposal roll.md step 8):
+                // no attempt is claimed until the fabric holds ready-for-traffic, and the reconcile loop
+                // drives the Build again.
+                if climbs(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
+                    let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only after the fabric's climb to ready-for-traffic");
+                    self.blocked(drive, p.attempt, "", "fabric-change", &why);
                     return self.stalled(&me, drive, why);
                 }
                 match self.update_primaries_first(&me, drive, &p).await {

@@ -286,7 +286,12 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })), "the Build ends Complete: {followed:?}");
 
     let receipts = Builds::new(carrier.clone()).get(&build_id).await.expect("build.get");
-    assert_eq!(receipts.attempt, attempt, "the close opened no second attempt: {receipts:?}");
+    // The Build put the fabric back to pending, so it is Complete only after its own climb (Q154): its run
+    // hands back to the fabric-primary, and the one attempt after it, claimed once the fabric is
+    // ready-for-traffic, completes it and runs no step. The close opened none: every step ran in the
+    // attempt the watcher watched.
+    assert_eq!(receipts.attempt, attempt + 1, "the close opened no second attempt; the one after the run is the climb's Complete: {receipts:?}");
+    assert!(receipts.steps.iter().all(|r| r.attempt == attempt), "every step ran in attempt {attempt}, the one the watcher watched: {receipts:?}");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
     let all = keys.len();
     keys.sort();
@@ -625,6 +630,13 @@ async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, St
     }
 }
 
+/// Whether `frame` is a Blocked frame of a step in flight: the Build's own Blocked naming the fabric's
+/// climb, which a Build that put the fabric back to pending reports once its operations are done
+/// (Q154; states.md "Resize and roll"), is no birth's.
+fn birth_blocked(frame: &BuildFrame) -> bool {
+    matches!(frame, BuildFrame::Blocked { step, .. } if step != "fabric-change")
+}
+
 /// How many attempts of `node`'s knob hook (`rdm_test::before_ready_probe::KnobBeforeReady`)
 /// ended blocked for `reason`.
 fn knob_attempts(knob: &std::path::Path, node: &str, reason: &str) -> usize {
@@ -653,7 +665,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let (carrier, shape_frames) = born_framed(&estate, &caller, &SHAPE1).await;
-    assert!(!shape_frames.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })), "births with no hook are plain Pending until Ready and frame no Blocked: {shape_frames:?}");
+    assert!(!shape_frames.iter().any(birth_blocked), "births with no hook are plain Pending until Ready and frame no Blocked: {shape_frames:?}");
 
     // The next birth's hook is blocked for A from its first attempt.
     let knob = rdm_test::before_ready_knob_dir(&estate.root);
@@ -677,7 +689,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     wait_for("an attempt blocked for B", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, B) >= 2).then_some(()) }).await;
     rdm_test::write_before_ready_knob(&estate.root, BLOCKED, "pass").unwrap();
     let rest = until_complete(&mut stream).await;
-    assert!(!rest.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })), "nothing is framed Blocked once the hook passed: {rest:?}");
+    assert!(!rest.iter().any(birth_blocked), "nothing of the birth is framed Blocked once the hook passed: {rest:?}");
     assert!(rest.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "WaitForNodeReady completed: {rest:?}");
     let a_reruns = knob_attempts(&knob, BLOCKED, A);
 

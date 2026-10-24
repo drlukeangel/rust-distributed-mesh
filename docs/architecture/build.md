@@ -472,7 +472,7 @@ Application work enters a lifecycle only through [Fabric and node hooks](fabric-
 
 SN/MN/MM are minimum proof rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
 
-The Fabric leaves `pending` for `state-sync` when every Mesh the accepted Build names is ready-for-traffic (every planned member ready). It reaches `ready-for-traffic` only through the completed state-commit and open-traffic rounds ([States](lifecycles/states.md#states)).
+The Fabric leaves `pending` for `state-sync` when every Mesh the accepted Build names is ready-for-traffic (every planned member ready). It reaches `ready-for-traffic` only through the completed state-commit and open-traffic rounds ([States](lifecycles/states.md#states)). A Build that put the fabric back to pending completes with that round, not with its last step; a failed round fails the Build ([States](lifecycles/states.md#resize-and-roll)).
 
 For a node-admin's `Pending -> ReadyForTraffic` transition, required generic hydration includes:
 

@@ -1,9 +1,9 @@
 //! i143 process E2E: a caller waits for the attempt its own request opened (RDM fabric-build).
 //!
-//! A real estate whose node-admin is the testkit's faulted one. A restart opens attempt 2 of the
-//! accepted Build and answers 202 naming it; a receipt cut holds that attempt in its retire half.
-//! While it is held, `await_attempt(build, 2)` must not return, whatever the Build's earlier
-//! attempt left behind; released, it returns the Build at attempt 2, complete.
+//! A real estate whose node-admin is the testkit's faulted one. A restart opens the next attempt of
+//! the accepted Build and answers 202 naming it; a receipt cut holds that attempt in its retire half.
+//! While it is held, `await_attempt(build, attempt)` must not return, whatever the Build's earlier
+//! attempts left behind; released, it returns the Build at that attempt, complete.
 
 use crate::build_log;
 use rdm_client::{Frame, LaunchKind as NodeKind, NodeSpec, NodeStatus};
@@ -24,10 +24,11 @@ fn owner() -> Owner {
     }
 }
 
-/// CONTRACT: after a restart is accepted at attempt 2, its reply stream carries no `Complete` while that
-/// attempt is held mid-flight, and ends `Complete` once the hold is released, with the Build, as the
-/// fabric-primary's log holds it, `complete` at attempt 2. The accepted call names the opened attempt, and
-/// the Build reports that attempt.
+/// CONTRACT: after a restart is accepted at the attempt after the accepted Build's Complete (the Build's
+/// run, then its climb's Complete, Q154), its reply stream carries no `Complete` while that attempt is
+/// held mid-flight, and ends `Complete` once the hold is released, with the Build, as the
+/// fabric-primary's log holds it, `complete` at that attempt. The accepted call names the opened
+/// attempt, and the Build reports that attempt.
 #[tokio::test]
 async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let sha = candidate_sha();
@@ -64,16 +65,19 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node})).await;
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
+    // The create put the fabric back to pending, so its Build is Complete at the attempt after its run,
+    // claimed once the fabric climbed (Q154): the restart opens the attempt after that one.
+    let attempt = estate.attempt_of_build(&build_id).await as u32 + 1;
     let mut restart = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
     let opened = restart.accepted().clone();
     assert_eq!(opened.build_id.to_string(), build_id, "a restart opens an attempt of the accepted Build: {opened:?}");
-    assert_eq!(opened.attempt, 2, "the restart answers the attempt it opened: {opened:?}");
+    assert_eq!(opened.attempt, attempt, "the restart answers the attempt it opened: {opened:?}");
     door.wait_held(cut).await;
 
     let mut seen = Vec::new();
     let waiting = tokio::time::timeout(Duration::from_secs(3), async {
         while let Some(frame) = restart.next().await {
-            let frame = frame.unwrap_or_else(|e| panic!("the restart's reply stream broke while attempt 2 was held: {e}"));
+            let frame = frame.unwrap_or_else(|e| panic!("the restart's reply stream broke while attempt {attempt} was held: {e}"));
             let complete = matches!(frame, Frame::Complete);
             seen.push(frame);
             if complete {
@@ -82,14 +86,14 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
         }
     })
     .await;
-    assert!(waiting.is_err(), "the restart's reply stream completed while attempt 2 was held: {seen:?}");
+    assert!(waiting.is_err(), "the restart's reply stream completed while attempt {attempt} was held: {seen:?}");
     let held = build_log::build_value(&estate.carrier().await, &build_id).await;
-    assert_ne!(held["state"], "complete", "attempt 2 is held mid-flight: {held}");
+    assert_ne!(held["state"], "complete", "attempt {attempt} is held mid-flight: {held}");
 
     door.release(cut).await;
     let finished = Estate::complete(&mut restart).await;
-    assert_eq!((finished.build_id.as_str(), finished.attempt), (build_id.as_str(), 2), "{finished:?}");
-    let done = build_log::build_fact(&estate.carrier().await, &build_id, "attempt 2 complete", Duration::from_secs(120), |b| b.attempt == 2 && b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
-    assert!(done.attempt == 2 && done.state == rdm_admin::build_state::BuildState::Complete, "{done:?}");
+    assert_eq!((finished.build_id.as_str(), finished.attempt), (build_id.as_str(), attempt), "{finished:?}");
+    let done = build_log::build_fact(&estate.carrier().await, &build_id, &format!("attempt {attempt} complete"), Duration::from_secs(120), |b| b.attempt == attempt && b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    assert!(done.attempt == attempt && done.state == rdm_admin::build_state::BuildState::Complete, "{done:?}");
     estate.stop().await;
 }
