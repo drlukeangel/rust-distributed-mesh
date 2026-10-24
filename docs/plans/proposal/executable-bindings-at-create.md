@@ -45,7 +45,13 @@ life; a new executable is a new birth at the same `path.name`.**
 2. **Compiled at acceptance, explicit after it.** The fabric-primary compiles the request against the
    current topology; every created path's entry holds its executable and is never re-read from the
    request, as counts are never re-read (build.md §1). The accepted topology is the one durable answer
-   to "what should this node run", beside the shape.
+   to "what should this node run", beside the shape. **The Build acts on the difference and nothing
+   else.** The compile takes two things, the current accepted topology and the requested one, and the
+   reconciler acts only where they differ: a node present in both whose config and executable are
+   unchanged, and whose row records that executable, is not touched, no delete, no create, no restart,
+   whatever else the request changes. A request that changes only the gateways' executables redeploys
+   the gateways and leaves every broker, compute and admin running as it was. Same path, same config,
+   same executable means nothing to do.
 3. **Recorded on the row at the claim.** The create's name claim records the executable on the node's
    row (R6, landed `11faeb419`), the bootstrap admin's own included: it hashes the executable it is
    running and records that; there is no configured sha to hold it to (§2). The row is the record of
@@ -181,6 +187,11 @@ life. A new executable is a new birth at the same `path.name` (Q157).
    by name at acceptance, before anything destructive.
 
 ## 3. Changing a node's executable
+
+The Build acts on the difference between the current accepted topology and the requested one, and on
+nothing else: a node present in both with the same config and the same executable, which its row
+records, is not touched, no delete, no create, no restart. A request that changes only the gateways'
+executables redeploys the gateways and leaves every other node running as it was.
 
 A request that names a different executable for an existing path is a planned replacement. RDM
 realizes it as node.delete then node.create at the path, a new node.id and incarnation, in its order
@@ -352,6 +363,8 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 - a node created with a named executable runs it and its row records it; a restart keeps it;
 - a request naming a different executable on an existing path: a new node.id at the path running the new
   one, the old birth deleted first, in RDM's order; the fabric-primary's own replacement moving it once;
+- a request changing only the gateways' executables in a two-mesh fabric: every gateway replaced, every
+  broker, compute and admin untouched, same node.id and incarnation before and after, no stop, no restart;
 - a request replacing every node of a two-mesh fabric: Complete only after the ready-for-traffic round
   (Q154), Blocked naming the climb meanwhile;
 - a one-broker mesh's broker replaced: one `node.delete` then the create, no refusal at any step;
