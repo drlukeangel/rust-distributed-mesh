@@ -15,7 +15,8 @@ Only an answer from the exact birth counts as `reached`.
 
 The verdict is the one decision (Q111). Reached: the node is commanded back through
 [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
-new node.id (Q110). A wrong verdict is fixed in the investigation.
+new node.id (Q110). Fabric recovery's backbone arm excepts `running`
+([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
 
 Nothing waits on a proof of termination: not node recovery, a primary change, a name's release,
 node.delete or mesh.delete.

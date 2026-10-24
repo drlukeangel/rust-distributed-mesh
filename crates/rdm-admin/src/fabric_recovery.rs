@@ -4,7 +4,8 @@
 //! lowest ReadyForTraffic mesh-primary on the backbone from mesh investigation's decision step, runs one
 //! workflow. It takes no primary role. Node investigation decides what becomes of the lost birth (Q111):
 //! reached, it is commanded back through node.mesh.join; any other verdict, node recovery re-creates the
-//! node-admin at its path.name, an attempt of the current Build that names the lost birth. When the node
+//! node-admin at its path.name, an attempt of the current Build that names the lost birth, except from the
+//! backbone on `running`, where the report stands and nothing is written (Q153). When the node
 //! at that path.name is ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary
 //! (node.primary.update's call on it): the node installs both roles, acknowledges, and records them on
 //! its own row; the workflow completes on the acknowledgement.
@@ -247,6 +248,16 @@ impl FabricRecoveryDoor {
                             investigated = false;
                             next_look = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
                         }
+                        // From the backbone, `running`: the investigation's report stands and the executor
+                        // writes nothing, no row, no name release, no mark against the birth in its own book,
+                        // no create (fabric-recovery.md step 3, Q153). A runtime this executor inspects running
+                        // but cannot reach is unreachable from it, not lost. The next investigation decides
+                        // again a staleness floor on, while the record still names the unheard birth.
+                        (crate::node_investigation::Finding::Running, _) if !fr.own_mesh && fr.executor.is_some() => {
+                            tracing::info!(subject = %node.name, verdict = finding.name(), "the backbone arm read the fabric-primary's runtime running: the report stands and nothing is written");
+                            investigated = false;
+                            next_look = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
+                        }
                         (_, Some(inspected)) => {
                             submitted = true;
                             done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
@@ -279,7 +290,7 @@ impl FabricRecoveryDoor {
     /// `backoff`, which doubles up to `ceiling`.
     /// From the backbone (`own_mesh` false) the re-create terminates nothing in the mesh (fabric-recovery.md
     /// step 3, Q148): its node.delete of the exact lost birth writes that birth's row deleted with no
-    /// `TerminateRuntime` and releases the name, then node.create at the path.name.
+    /// `TerminateRuntime` and releases the name, then node.create at the path.name; it is never submitted on `running` (Q153).
     async fn submit(&self, node: &Node, inspected: &crate::deployment::provider::Inspected, own_mesh: bool, next: &mut std::time::Instant, backoff: &mut std::time::Duration, ceiling: std::time::Duration) -> bool {
         let route = if own_mesh { "fabric-recovery" } else { "fabric-recovery-backbone" };
         match self.recovery.submit_route(node, inspected, route).await {
