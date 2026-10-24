@@ -39,8 +39,11 @@ life; a new executable is a new birth at the same `path.name`.**
    accepted result: a node left out is removed; one added is created; one whose executable differs from
    its row is replaced. A mesh named for the first time comes into being with the create of its first
    node-admin (node-create.md, the mesh-absent arm); a mesh absent from the request is mesh.delete, the
-   leaf-inward lifecycle with its row going Dead; a mesh with no nodes cannot be expressed, since a mesh
-   is alive while it holds a node. The partial count forms go. There is no per-type section in RDM and no stored
+   leaf-inward lifecycle with its row going Dead, and when it is the fabric-primary's mesh the
+   fabric-primary hands over to another mesh's primary first, inside that mesh.delete
+   (node-primary-update.md); a request that omits the last mesh, or lists no nodes at all, is refused by
+   name pointing to fabric.delete, never read as "delete everything"; a mesh with no nodes cannot be
+   expressed, since a mesh is alive while it holds a node. The partial count forms go. There is no per-type section in RDM and no stored
    default anywhere: a created path whose config names no executable is refused by name at acceptance,
    nothing runs. The refusal is acceptance's, for new requests only: a Build decoded from the journal
    whose paths name none, every Build accepted before `614d01653` among them, is valid history with its
@@ -71,11 +74,11 @@ life; a new executable is a new birth at the same `path.name`.**
    its primary, the primary's move first by node.primary.update, the fabric-primary's move ending the
    caller's stream `FabricPrimaryMoved` and the caller resubmitting the same build_id, R5's one-node type
    with no update, and the one-admin mesh (R4, Luke's arm A, kept): a mesh whose only node-admin is to be
-   replaced first gets a second node-admin created on the new executable at a new `path.name` of the
-   node-admin type in that mesh (the next free ordinal, `mesh1.admin.2`), ReadyForTraffic and
-   mesh-primary by node.primary.update before the original is replaced, and the
-   added admin stays in the topology, since deleting a mesh's only admin would leave its own create with
-   no executor. A path whose birth is under node recovery is replaced after that recovery's attempt
+   replaced first gets a second node-admin on the new executable at a new `path.name` of the node-admin
+   type in that mesh (the next free one, `mesh1.admin.2`), whose entry the compiler adds to the accepted
+   topology at acceptance, so every attempt and every read holds it and no attempt removes it as left
+   out; it is created, ReadyForTraffic and mesh-primary by node.primary.update before the original is
+   replaced, and stays, since deleting a mesh's only admin would leave its own create with no executor. A path whose birth is under node recovery is replaced after that recovery's attempt
    completes, never in the same attempt: one attempt in flight per mesh (R-BI7) and the planner's
    recompute per attempt order the two. The successor's storage follows the path's config: `Persistent` inherits the
    predecessor's data dir and its endpoint key (`RDM_INHERITED_DATA_DIR=1`), `Ephemeral` allocates a
@@ -403,7 +406,12 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
   next complete request, built from that read, keeps it; a request built without it, under a stale
   `based_on`, is refused;
 - a request naming a node in a mesh that does not exist: the mesh created with its first node-admin; a
-  request leaving a whole mesh out: that mesh's mesh.delete, its row Dead, its name released;
+  request leaving a whole mesh out: that mesh's mesh.delete, its row Dead, its name released; leaving the
+  fabric-primary's mesh out with another mesh remaining: the fabric-primary moves to the other mesh's
+  primary first, then the mesh.delete; leaving the last mesh out, or listing no nodes: refused by name
+  naming fabric.delete, nothing accepted;
+- the one-admin mesh's second admin is in the accepted topology from acceptance: the executor killed
+  after its create and before the original's replacement, the next attempt keeps it and finishes;
 - a container fabric: an executable outside the admin's configured directories refused by name at
   acceptance; one inside, from a directory absent from day 0's input, launched;
 - an executable-only replacement of a `Persistent` broker: the successor opens the predecessor's data dir
