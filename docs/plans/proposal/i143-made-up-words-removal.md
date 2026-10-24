@@ -312,3 +312,9 @@ hand-over makes the successor both primaries with the right writer and the recor
 fabric-primary is handed back) and move to a file named by the operation, not by
 "sticky", keeping the assertions that prove the operation and dropping those that prove removed
 machinery.
+
+## Added 2026-10-24 (Luke): path, name, delete
+
+- `PathName.ordinal` and `PathName.label` (`rdm-core/src/path.rs:81-92`) become one `name`, the third segment of `path.name`, with a `path()` accessor for the mesh and kind; the error text `<mesh>.<kind>.<ordinal>` becomes `<mesh>.<kind>.<name>`; the wire's node entry carries `path` and `name` as two fields. Page sentence for node-identity-and-state.md §2.2 in `executable-bindings-at-create.md` §3.12a, for Luke's yes when this lands.
+- `on_retire` and `PersistentRetireDisposition` (`rdm-core/src/meta.rs`) become `on_delete`: the word is banned and delete is what happens.
+- `roll` in every identifier the executable-replacement landing keeps (`roll_operations`, `roll_progress`, the `roll::` cells): renamed with that landing, not here.

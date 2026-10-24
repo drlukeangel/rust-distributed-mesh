@@ -26,7 +26,16 @@ life; a new executable is a new birth at the same `path.name`.**
    door as its vocabulary (build.md §1, "product-facing input"), where the door expands a count into
    named paths with configs, reading the current topology for the ordinals. RDM mints a `path.name`
    only for a create it originates itself: recovery reuses the path, and the one-admin mesh's second
-   admin (rule 5) takes the next free ordinal, as the compiler does today. There is no per-type section in RDM and no stored
+   admin (rule 5) takes the next free name, as the compiler does today. **The request shape (Luke,
+   2026-10-24):** the complete topology, an array of nodes, each with `path` (`mesh1.admin`, the mesh and
+   kind it lives in), `name` (`1`, or a label such as `north`), `tags`, `storage`, `placement` and
+   `executable`; a node takes its `path.name` from the request's path and name joined. RDM compiles the
+   diff against the current Build: a node left out is removed, one added is created, one whose
+   executable differs from its row is replaced. The partial count forms go. **Preserved as is, for the
+   name sweep, no code now:** RDM's `PathName` keeps `ordinal` and `label` as the third segment's two
+   forms; the sweep renames them to one `name` with a `path()` accessor, and `on_retire` becomes
+   `on_delete`; until then the door and the harness join path and name into the one string RDM parses.
+   There is no per-type section in RDM and no stored
    default anywhere: a created path whose config names no executable is refused by name at acceptance,
    nothing runs. The refusal is acceptance's, for new requests only: a Build decoded from the journal
    whose paths name none, every Build accepted before `614d01653` among them, is valid history with its
@@ -289,11 +298,11 @@ A resize or an executable replacement puts the fabric back to pending; meshes al
 (The rest of the paragraph, on Rafka's state-sync answer, stands. This folds Q154's states.md sentence
 in, so Q154's own sentence is not added twice.)
 
-**3.10 node-rpc-envelope.md.** (a) The `BuildChange` block: `AddNode { mesh, node_kind }` becomes
-`AddNode { node: PathName, config: PathConfig }`; `CreateMesh { mesh: MeshCounts }` becomes
-`CreateMesh { mesh: String, nodes: Vec<(PathName, PathConfig)> }`; `ReconcileFabric` and `ReconcileMesh`
-carry named nodes with configs the same way, their count forms reserved (positional, no format move);
-`RemoveNode { node }` is already by name. After the `Recipe` comment, a comment:
+**3.10 node-rpc-envelope.md.** (a) The `BuildChange` block: the topology change is the complete
+topology, `Reconcile { nodes: Vec<(PathName, PathConfig)> }`, each node by its `path.name` with its
+config and executable; the count forms `ReconcileFabric`, `ReconcileMesh`, `AddNode` and `CreateMesh`
+are reserved (positional, no format move); `RemoveNode { node }` and the node workflows stay. After the
+`Recipe` comment, a comment:
 
 ```
     // Every create names its path's config, PathConfig { storage, placement, executable }: the
@@ -316,6 +325,14 @@ generated wire page with its fields.
 **3.12 CLAUDE.md env table**: remove nothing (the two `RDM_EXECUTABLE_*` variables have no row); add
 `| RDM_EXECUTABLE_DIRS | _(unset)_ | rdm-node-admin under the container provider: comma-separated host directories mounted read-only at their host paths into a launched admin's container; an executable a Build names outside them is refused by name at acceptance. |`;
 `RDM_BIN_DIR`'s row becomes `rdm-node-admin: where rdm-node-admin itself is found; never a launch source: every created node's executable is the Build's.`
+
+**3.12a Deferred to the name sweep, no code now (Luke, 2026-10-24).** node-identity-and-state.md §2.2
+gains, for Luke's yes when the sweep lands: "A node's `path.name` is two things joined: its path, the
+mesh and kind it lives in (`mesh1.admin`), fixed for the birth; and its name within that path (`1`, or
+`2.old` after a rename), the one thing node.name.update changes. Placement stores the two joined." With
+it: `PathName.ordinal` and `PathName.label` become one `name` with a `path()` accessor; `on_retire` and
+`PersistentRetireDisposition` become `on_delete`; the wire's node entry carries `path` and `name` as two
+fields.
 
 **3.13 Records**: the PRD's R-D1 row (done, `e76fb7374`); the rulings index Q157 (done); rafka-v2's
 i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
