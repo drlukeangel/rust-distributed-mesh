@@ -38,8 +38,8 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// parked admin takes it at once. Must NOT happen: a parked task keeping the view lock it was
 /// waiting on, so the parked admin never serves the start that would open it.
 #[test]
-fn a_parked_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers() {
-    let cell = "a_parked_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers";
+fn a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers() {
+    let cell = "a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers";
     // Its own process, started with the stretched rounds: the cadence is read once per process.
     let stretched = Some(std::ffi::OsStr::new(STRETCHED_MS));
     if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", stretched), ("RDM_BACKBONE_INTERVAL_MS", stretched)]) {

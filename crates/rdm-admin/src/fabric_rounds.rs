@@ -562,7 +562,7 @@ impl FabricRounds {
         };
         let mut out = mesh_blockers(view, &meshes, &planned);
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
-            meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
+            meshes.iter().map(|m| { let p = view.node_type_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
         let reports = reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
         out.extend(fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
         out
@@ -751,7 +751,7 @@ impl FabricRounds {
         let mut planned = BTreeMap::new();
         let mut unresolved = Vec::new();
         for mesh in &meshes {
-            match view.cohort_primary(mesh, NodeKind::NodeAdmin) {
+            match view.node_type_primary(mesh, NodeKind::NodeAdmin) {
                 Some(p) if p.incarnation_id.is_some() => {
                     planned.insert(p.node_id.clone(), Expected { incarnation: p.incarnation_id.clone().expect("checked"), name: p.name.to_string() });
                 }
@@ -907,7 +907,7 @@ impl FabricRounds {
             }
             let view = self.env.topology.read().await.clone();
             let me = self.held_name_in(&view);
-            if !view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == self.env.node_id) {
+            if !view.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == self.env.node_id) {
                 tracing::info!("this admin no longer holds its mesh's primary seat: the round is the next primary's");
                 self.mesh_book.close_opening(key, opening);
                 return;
@@ -1020,7 +1020,7 @@ impl FabricRounds {
         let mut targets = Vec::new();
         let mut present = Vec::new();
         for m in &view.meshes {
-            let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.node_id != self.env.node_id) else { continue };
+            let Some(p) = view.node_type_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.node_id != self.env.node_id) else { continue };
             present.push(m.name.clone());
             let now = Addressed::of(p, m);
             if adopted.addressed.get(&m.name) != Some(&now) {
@@ -1093,12 +1093,12 @@ impl FabricRounds {
                 .meshes
                 .iter()
                 .map(|m| {
-                    let p = i.view.cohort_primary(&m.name, NodeKind::NodeAdmin);
+                    let p = i.view.node_type_primary(&m.name, NodeKind::NodeAdmin);
                     (m.name.clone(), p.and_then(|p| p.incarnation_id.clone()), p.is_some_and(|p| p.node_id == self.env.node_id))
                 })
                 .collect();
             if first {
-                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
+                let targets: Vec<(String, Option<Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.node_type_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
                 for (mesh, p) in &targets {
                     if let (Some(p), Some(m)) = (p, i.view.meshes.iter().find(|m| &m.name == mesh)) {
                         addressed.insert(mesh.clone(), Addressed::of(p, m));
@@ -1222,7 +1222,7 @@ impl FabricRounds {
             // sequence: "M->>N: commit-state", "N->>M: state-committed"): the caller, which a new
             // primary is before this admin's view names it. Only a caller the view does not hold is
             // checked in at the mesh's primary as the view names it.
-            let commander = sender.filter(|s| s.node_id != me.node_id).map(|s| s.node_id.clone()).or_else(|| view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone()));
+            let commander = sender.filter(|s| s.node_id != me.node_id).map(|s| s.node_id.clone()).or_else(|| view.node_type_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone()));
             match (own, commander) {
                 (Some(own), Some(commander)) => own.serve(Some(&commander), None, req).await.expect("a round op"),
                 (None, _) => rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; {} is refused", req.op())),
@@ -1778,7 +1778,7 @@ mod tests {
     /// with. What must NOT happen: the retired birth's row taken as this admin's, which refuses a
     /// round command naming this admin "the subject node itself" and strands the round.
     #[test]
-    fn an_admin_finds_its_own_row_by_node_id_while_its_retired_birth_is_still_in_the_view() {
+    fn an_admin_finds_its_own_row_by_node_id_while_its_superseded_birth_is_still_in_the_view() {
         let retired = node("mesh1.admin.1", NodeStatus::ConnectionsDeleting, false);
         let reborn = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, false);
         let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::ReadyForTraffic, true)]);
@@ -1805,7 +1805,7 @@ mod tests {
             node("mesh1.rpc.1", NodeStatus::Pending, false),
             node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true),
         ]);
-        assert!(one_pending.cohort_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
+        assert!(one_pending.node_type_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
         assert_eq!(blockers, ["mesh1.rpc.1(not-ready)"], "the one node that is not ready is what blocks entry");
     }
@@ -2010,7 +2010,7 @@ mod tests {
 
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn successor_fabric_holder_keeps_degraded_until_every_mesh_primary_reports_for_its_round() {
+    async fn successor_fabric_primary_keeps_degraded_until_every_mesh_primary_reports_for_its_round() {
         // The seat moved to mesh2's primary while mesh1 was being recovered; the new holder adopted degraded.
         let (me, recovered) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false));
         let v = view(vec![me.clone(), recovered.clone()]);

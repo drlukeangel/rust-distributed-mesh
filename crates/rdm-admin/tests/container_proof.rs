@@ -232,7 +232,7 @@ async fn a_successor_in_the_same_docker_domain_adopts_inspects_and_controls_a_co
 /// local. Adoption refuses by name, naming both domains, and nothing reaches the container. A
 /// process provider refuses a container fact as another provider's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing() {
+async fn an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing() {
     let fabric = fabric_name("foreign");
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());

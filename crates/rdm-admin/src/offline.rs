@@ -1107,7 +1107,7 @@ pub(crate) mod tests {
         /// it again. Must NOT happen: a round's probe or a follower running on past the park, one held
         /// at the gate while it waits on the view lock, or one resumed by the start.
         #[tokio::test(start_paused = true)]
-        async fn a_stops_park_cancels_the_tickle_round_and_the_recovery_follower_in_flight() {
+        async fn a_stops_gate_cancels_the_tickle_round_and_the_recovery_follower_in_flight() {
             use crate::model::{IncarnationId, NodeId};
             use std::collections::HashSet;
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1438,7 +1438,7 @@ pub(crate) mod tests {
         /// stopped holder's `CurrentParked` through a peer is the birth's answer and ends the ladder;
         /// a carrier's own refusal before it is not an answer.
         #[tokio::test(start_paused = true)]
-        async fn a_stopped_holder_answering_current_parked_through_a_peer_ends_the_ladder() {
+        async fn a_stopped_primary_answering_current_through_a_peer_ends_the_ladder() {
             let b = birth();
             let (node, view) = member_and_view(&b);
             let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_millis(5), Some(StatusReply::NotReady { reason: "carrier not ready".into() }))), ("mesh1.rpc.3", probe(Duration::from_millis(20), Some(parked(&b))))]);
@@ -1657,7 +1657,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn only_the_seat_holder_tickles_and_a_new_holder_keeps_the_window() {
+    async fn only_the_primary_tickles_and_a_new_primary_keeps_the_window() {
         let mut t = OfflineTickle::new();
         assert!(tick(&mut t, 0, false, silent("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
         let r = tick(&mut t, PROBE_DELAY, true, silent("a"), true, no_path()).await;

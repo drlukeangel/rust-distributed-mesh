@@ -71,7 +71,7 @@ pub trait Gate: Send + Sync {
     /// [`crate::fabric_handover::update_operation`]). `Err` names why the seat did not move, and
     /// whether the update was refused before the call or left incomplete after it ([`SeatMoveEnd`]). A
     /// gate with no primaries moves nothing.
-    async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _run: u32, _operation: &str) -> Result<(), SeatMoveEnd> {
+    async fn update_primaries(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _run: u32, _operation: &str) -> Result<(), SeatMoveEnd> {
         Ok(())
     }
     /// node.primary.updated for every update that precedes an operation the drive is about to dispatch
@@ -82,7 +82,7 @@ pub trait Gate: Send + Sync {
     /// successor's node.primary.updated obtained on a call and installed
     /// ([`crate::fabric_handover::HandoverDoor::row_acknowledged`]). `Err` names why an update was not
     /// acknowledged. A gate with no primaries has none to acknowledge.
-    async fn seats_acknowledged(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
+    async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
         Ok(())
     }
     /// Refresh the fabric-primary's book and view from any completed stop-node receipt of `build_id`
@@ -365,7 +365,7 @@ impl Drive {
 
     /// The fabric-primary moved: the callers' streams end, and a caller re-submits by build id at the
     /// new fabric-primary.
-    pub fn lose_seat(&self, loss: SeatLoss) {
+    pub fn lose_fabric_primary(&self, loss: SeatLoss) {
         let mut s = self.state.lock().unwrap();
         if s.lost.is_none() && s.terminal.is_none() {
             s.lost = Some(loss);
@@ -523,7 +523,7 @@ impl DriveReader {
     }
 }
 
-/// How a node.primary.update that did not complete ended ([`Gate::move_seats`]), as
+/// How a node.primary.update that did not complete ended ([`Gate::update_primaries`]), as
 /// lifecycles/node-primary-update.md's failure contract tells its branches apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatMoveEnd {
@@ -805,7 +805,7 @@ impl DriveEnv {
                     _ => None,
                 };
                 tracing::info_span!("rdm.node_admin.build.reject.via-seat-yielded", build_id = %drive.build_id.log(), node = %me, seat_yielded = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
-                drive.lose_seat(SeatLoss { why: why.clone(), to });
+                drive.lose_fabric_primary(SeatLoss { why: why.clone(), to });
                 return Some(DriveEnd::SeatLost(why));
             }
         };
@@ -813,7 +813,7 @@ impl DriveEnv {
         // another birth at the same path.name (a successor, a retired birth) is not this admin.
         let (held, seat) = {
             let t = self.topology.read().await;
-            (t.holds_fabric_seat(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
+            (t.is_fabric_primary(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
         };
         if !held {
             // Past the fence the installed result names this birth, none, or a birth proven gone
@@ -822,7 +822,7 @@ impl DriveEnv {
             let names = record_holder.as_deref().unwrap_or("none");
             let why = format!("{me} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the fabric-primary record it holds names {names}", self.door.node_id);
             tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id.log(), node = %me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
-            drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
+            drive.lose_fabric_primary(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
         }
         None
@@ -886,7 +886,7 @@ impl DriveEnv {
     fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName, crashed: &HashSet<String>) -> bool {
         op.created_node() == Some(node)
             && crashed.contains(&node.mesh)
-            && p.topology.meshes.get(&node.mesh).and_then(|m| m.cohort(NodeKind::NodeAdmin).min()).and_then(|first| first_admin_owed(p, &node.mesh, first)).as_ref() == Some(node)
+            && p.topology.meshes.get(&node.mesh).and_then(|m| m.nodes_of_type(NodeKind::NodeAdmin).min()).and_then(|first| first_admin_owed(p, &node.mesh, first)).as_ref() == Some(node)
     }
 
     /// The peer meshes of `p` no member of which answers (mesh-investigation.md step 5, "No member
@@ -900,7 +900,7 @@ impl DriveEnv {
     /// except the mesh's first recovering node-admin once the investigation decided its recovery
     /// ([`Self::recovery_admits`]). `Some` names the
     /// fence.
-    fn fenced(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
+    fn peer_mesh_held(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
         if p.topology.meshes.is_empty() || self.recovery_admits(p, op, crashed) {
             return None;
         }
@@ -909,7 +909,7 @@ impl DriveEnv {
 
     /// The drive stops at the fence on `op` by name: once per mesh, operation and verdict on its own
     /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
-    fn stop_at_fence(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
+    fn stop_at_peer_mesh_held(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
         let unreachable = self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided);
         let why = format!(
             "{me}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
@@ -948,7 +948,7 @@ impl DriveEnv {
         let mut plan = run_of(&ops, t, executor);
         let mut cut = None;
         for (i, op) in plan.operations.iter().enumerate() {
-            if let Some(f) = self.fenced(p, op, crashed) {
+            if let Some(f) = self.peer_mesh_held(p, op, crashed) {
                 if i == 0 {
                     return Err((op.clone(), f));
                 }
@@ -1050,7 +1050,7 @@ impl DriveEnv {
                     self.blocked(drive, p.attempt, "", "fabric-climb", &why);
                     return self.stalled(&me, drive, why);
                 }
-                match self.seats_first(&me, drive, &p).await {
+                match self.update_primaries_first(&me, drive, &p).await {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(end) => return end,
@@ -1084,7 +1084,7 @@ impl DriveEnv {
                 let t = self.topology.read().await.clone();
                 match self.plan_dispatch(&me, drive, &p, &t, &executor, &crashed) {
                     Ok(plan) => plan,
-                    Err((op, f)) => return self.stop_at_fence(&me, drive, attempt, &op, f, &crashed),
+                    Err((op, f)) => return self.stop_at_peer_mesh_held(&me, drive, attempt, &op, f, &crashed),
                 }
             };
             // A node.primary.update that precedes an operation of this run is acknowledged first,
@@ -1198,14 +1198,14 @@ impl DriveEnv {
     }
 
     /// Every node.primary.update that precedes an operation of `plan`, acknowledged through the gate
-    /// ([`Gate::seats_acknowledged`]); `Some` ends the drive stalled, the attempt blocked naming the
+    /// ([`Gate::primaries_updated`]); `Some` ends the drive stalled, the attempt blocked naming the
     /// updates and why, when one was not.
     async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
         let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id, run).into_iter().map(move |u| (op.key(), u))).collect();
         updates.dedup();
         let Some((first, _)) = updates.first().cloned() else { return None };
         let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
-        let why = self.gate.seats_acknowledged(&asked, &drive.build_id, attempt).await.err()?;
+        let why = self.gate.primaries_updated(&asked, &drive.build_id, attempt).await.err()?;
         let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
         let why = format!("{me}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id);
         self.blocked(drive, attempt, &first, "primary-update", &why);
@@ -1223,7 +1223,7 @@ impl DriveEnv {
     /// after it (ruling R-PU2, Q10): the attempt ends `Failed` and the Build is Failed (R-BI4).
     /// Every other end hands the attempt to the view's fabric-primary, and when the seat moved
     /// (`Ok(true)`) the loop passes the gates again.
-    async fn seats_first(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
+    async fn update_primaries_first(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
         let t = self.topology.read().await.clone();
         let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
         let Some(m) = crate::executor::seat_move(&op, &t) else { return Ok(false) };
@@ -1245,7 +1245,7 @@ impl DriveEnv {
         if let Some(tp) = &context.traceparent {
             rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
         }
-        let moved = self.gate.move_seats(&m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
+        let moved = self.gate.update_primaries(&m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
         let after = self.topology.read().await.clone();
         let still = still_holds(&op, &m, &after);
         let to = match after.fabric_primary() {
@@ -1331,8 +1331,8 @@ impl DriveEnv {
         let attempt = p.attempt + 1;
         let view = self.topology.read().await.clone();
         let first = left(drive, p, &view).into_iter().next();
-        if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op, crashed).map(|f| (op, f))) {
-            return Err(self.stop_at_fence(me, drive, attempt, op, f, crashed));
+        if let Some((op, f)) = first.as_ref().and_then(|op| self.peer_mesh_held(p, op, crashed).map(|f| (op, f))) {
+            return Err(self.stop_at_peer_mesh_held(me, drive, attempt, op, f, crashed));
         }
         // The mesh's first recovering node-admin under the investigation's recovery verdict is this
         // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose

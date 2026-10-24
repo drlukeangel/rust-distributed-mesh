@@ -33,7 +33,7 @@ pub trait PathProbe: Send + Sync {
 }
 
 /// Fence `path` before a new birth, given the birth this view holds there (`prev`).
-pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -> FenceOutcome {
+pub async fn investigate_path(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -> FenceOutcome {
     let Some(prev) = prev.filter(|p| p.incarnation_id.is_some()) else {
         tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-birth-held")
             .in_scope(|| tracing::info!("the view holds no birth at this path: nothing to fence"));

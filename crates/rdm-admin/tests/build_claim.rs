@@ -64,7 +64,7 @@ struct Seat {
     _router: Router,
 }
 
-async fn seat(
+async fn elect(
     b: &Birth,
     topology: Arc<RwLock<Topology>>,
     builds: Arc<dyn BuildStateAdapter>,
@@ -123,7 +123,7 @@ async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptConte
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     settled(&builds, id, "mesh1.admin.1", settled_attempts).await;
     let topology = view(vec![p.node.clone(), executor.node.clone()]);
-    let s = seat(&p, topology, builds.clone(), contexts).await;
+    let s = elect(&p, topology, builds.clone(), contexts).await;
     (p, s, builds)
 }
 
@@ -131,7 +131,7 @@ async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptConte
 /// naming the holder, and the log is unchanged by it. Whatever log the claimant holds is never
 /// consulted: only the fabric-primary's decides.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_of_a_held_attempt_is_lost_to_its_holder_and_changes_nothing() {
+async fn a_claim_of_a_held_attempt_is_lost_to_its_claimant_and_changes_nothing() {
     let id = BuildId::mint();
     let executor = birth("mesh1.admin.2", false);
     let (_p, p_seat, p_builds) = primary(&id, 6, Arc::new(AttemptContexts::in_memory()), &executor).await;
@@ -199,7 +199,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
     let (p, _p_seat, _p_builds) = primary(&id, 2, Arc::new(AttemptContexts::in_memory()), &executor).await;
     let q = birth("mesh1.admin.3", false);
     let q_view = view(vec![p.node.clone(), q.node.clone(), executor.node.clone()]);
-    let q_seat = seat(&q, q_view, Arc::new(MemoryBuildStateAdapter::new()), Arc::new(AttemptContexts::in_memory())).await;
+    let q_seat = elect(&q, q_view, Arc::new(MemoryBuildStateAdapter::new()), Arc::new(AttemptContexts::in_memory())).await;
     let names_both = BuildClaimReply::NotClaimant { mesh: Some("mesh1".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh1.admin.1".into()) };
     assert_eq!(q_seat.door.claim("mesh1.admin.2", &id, 1).await, names_both, "an admin holding neither seat decides no fabric-lane claim and names both claimants");
     assert_eq!(q_seat.door.claim_in("mesh1.admin.3", &id, Some("mesh1"), 1).await, names_both, "nor a claim of its mesh's drift lane");
@@ -211,7 +211,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
     let m_builds = Arc::new(MemoryBuildStateAdapter::new());
     settled(&m_builds, &id, "mesh1.admin.1", 2).await;
     m_builds.open_attempt(&AttemptOpened { mesh: Some("mesh2".into()), build_id: id.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
-    let m_seat = seat(&m, view(vec![p.node.clone(), m.node.clone()]), m_builds.clone(), Arc::new(AttemptContexts::in_memory())).await;
+    let m_seat = elect(&m, view(vec![p.node.clone(), m.node.clone()]), m_builds.clone(), Arc::new(AttemptContexts::in_memory())).await;
     let fabric_lane = m_seat.door.claim("mesh2.admin.1", &id, 3).await;
     assert_eq!(fabric_lane, BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, "a mesh-primary decides no fabric-lane claim");
     let own = m_seat.door.claim_in("mesh2.admin.1", &id, Some("mesh2"), 1).await;

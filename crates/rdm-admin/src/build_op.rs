@@ -192,7 +192,7 @@ impl BuildDoor {
     }
 
     /// Whether the seat book names this exact birth the fabric-primary.
-    fn holds_fabric_seat(&self) -> bool {
+    fn is_fabric_primary(&self) -> bool {
         self.seats.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
     }
 
@@ -559,7 +559,7 @@ impl BuildDoor {
         // FabricPrimaryMoved naming this admin, never with a write into
         // a stream the old driver stopped. The run goes on in its own task; this admin's own drive
         // reads its frames.
-        let held_at_start = self.holds_fabric_seat();
+        let held_at_start = self.is_fabric_primary();
         let me = self.held_name().await;
         let mut plan = RunPlan { operations: Vec::with_capacity(operations.len()), hand_off_to };
         for (i, bytes) in operations.iter().enumerate() {
@@ -598,7 +598,7 @@ impl BuildDoor {
                 }
                 // A cut call ends this stream and nothing else: the run is its own task.
                 while let Some(f) = reader.next().await {
-                    if !held_at_start && self.holds_fabric_seat() {
+                    if !held_at_start && self.is_fabric_primary() {
                         let me = self.held_name().await;
                         tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
                             .in_scope(|| tracing::info!("the inner stream ends with the new seat"));

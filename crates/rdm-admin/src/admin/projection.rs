@@ -67,8 +67,8 @@ pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (N
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
 pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::Primary)> {
-    let mesh_primary = t.holds_mesh_seat(mesh, me.0);
-    let fabric_primary = t.holds_fabric_seat(me.0);
+    let mesh_primary = t.is_mesh_primary(mesh, me.0);
+    let fabric_primary = t.is_fabric_primary(me.0);
     let mut said = Vec::new();
     for (seat, holds) in [(rdm_core::Seat::MeshPrimary, mesh_primary), (rdm_core::Seat::FabricPrimary, fabric_primary)] {
         if !holds {
@@ -84,7 +84,7 @@ pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
     // says each other cohort's seat the election filled with a birth the record does not name.
     if mesh_primary {
         for kind in NodeKind::ALL.into_iter().filter(|k| *k != NodeKind::NodeAdmin) {
-            let Some((node_id, incarnation)) = t.cohort_primary(mesh, kind).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
+            let Some((node_id, incarnation)) = t.node_type_primary(mesh, kind).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
             let held = decided.cohorts.get(&(mesh.to_string(), kind));
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
@@ -529,7 +529,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // A mesh becomes ready-for-traffic when every node of the mesh is (states.md); once heard
         // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
         // a round for the primary that takes over, never a mesh gone back to pending.
-        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some());
+        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
         // A mesh past ready-for-traffic is the state its row holds (states.md: pending ->
         // ready-for-traffic -> leaving -> dead): the leaving mesh's primary commits Leaving at
@@ -538,7 +538,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // primary, publishes MeshStatus Dead (R-NS1 item 1); an admin that does not author the
         // mesh's status also states the Dead it heard, bound to this mesh id (never to a name).
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
-        let authored_here = records.me.get().is_some_and(|me| topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
+        let authored_here = records.me.get().is_some_and(|me| topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
         let status = match row {
             Some(rdm_core::status::MeshState::Dead) => ScopeStatus::Dead,
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,

@@ -519,8 +519,8 @@
       "job": "rdm-admin:main"
     },
     {
-      "cell": "crates/rdm-admin/tests/node_objects.rs::a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary",
-      "test": "rdm-admin/main: node_objects::a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary",
+      "cell": "crates/rdm-admin/tests/node_objects.rs::a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_reject_span_naming_the_fabric_primary",
+      "test": "rdm-admin/main: node_objects::a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_reject_span_naming_the_fabric_primary",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:main"
     },
@@ -543,8 +543,8 @@
       "job": "late_authority"
     },
     {
-      "cell": "crates/rdm-admin/src/admin.rs::tests::an_admin_without_a_current_build_is_never_authority_capable",
-      "test": "rdm-admin/rdm_admin: admin::tests::an_admin_without_a_current_build_is_never_authority_capable",
+      "cell": "crates/rdm-admin/src/admin.rs::tests::an_admin_without_a_current_build_can_never_take_over",
+      "test": "rdm-admin/rdm_admin: admin::tests::an_admin_without_a_current_build_can_never_take_over",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:lib"
     },
@@ -681,8 +681,8 @@
       "job": "rdm-admin:main"
     },
     {
-      "cell": "crates/rdm-admin/tests/container_proof.rs::an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing",
-      "test": "rdm-admin/main: container_proof::an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing",
+      "cell": "crates/rdm-admin/tests/container_proof.rs::an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing",
+      "test": "rdm-admin/main: container_proof::an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:main"
     },
@@ -711,8 +711,8 @@
       "job": "rdm-admin:lib"
     },
     {
-      "cell": "crates/rdm-admin/src/admin.rs::tests::an_admin_is_authority_capable_only_when_every_held_birth_is_adoptable_here",
-      "test": "rdm-admin/rdm_admin: admin::tests::an_admin_is_authority_capable_only_when_every_held_birth_is_adoptable_here",
+      "cell": "crates/rdm-admin/src/admin.rs::tests::an_admin_can_take_over_only_when_every_held_birth_is_adoptable_here",
+      "test": "rdm-admin/rdm_admin: admin::tests::an_admin_can_take_over_only_when_every_held_birth_is_adoptable_here",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:lib"
     },
@@ -723,8 +723,8 @@
       "job": "rdm-admin:lib"
     },
     {
-      "cell": "crates/rdm-admin/src/election.rs::tests::ordinal_and_mesh_name_never_decide_a_seat",
-      "test": "rdm-admin/rdm_admin: election::tests::ordinal_and_mesh_name_never_decide_a_seat",
+      "cell": "crates/rdm-admin/src/election.rs::tests::ordinal_and_mesh_name_never_decide_a_primary",
+      "test": "rdm-admin/rdm_admin: election::tests::ordinal_and_mesh_name_never_decide_a_primary",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:lib"
     },
@@ -735,8 +735,8 @@
       "job": "rdm-admin:lib"
     },
     {
-      "cell": "crates/rdm-admin/src/election.rs::tests::provider_locality_and_runtime_metadata_never_decide_a_seat",
-      "test": "rdm-admin/rdm_admin: election::tests::provider_locality_and_runtime_metadata_never_decide_a_seat",
+      "cell": "crates/rdm-admin/src/election.rs::tests::provider_locality_and_runtime_metadata_never_decide_a_primary",
+      "test": "rdm-admin/rdm_admin: election::tests::provider_locality_and_runtime_metadata_never_decide_a_primary",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:lib"
     },
@@ -747,8 +747,8 @@
       "job": "cohort_election"
     },
     {
-      "cell": "crates/rdm-admin/src/election.rs::tests::losing_a_winner_moves_each_seat_to_the_next_lowest",
-      "test": "rdm-admin/rdm_admin: election::tests::losing_a_winner_moves_each_seat_to_the_next_lowest",
+      "cell": "crates/rdm-admin/src/election.rs::tests::losing_a_winner_moves_each_primary_to_the_next_lowest",
+      "test": "rdm-admin/rdm_admin: election::tests::losing_a_winner_moves_each_primary_to_the_next_lowest",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:lib"
     },
@@ -765,8 +765,8 @@
       "job": "sticky_seat"
     },
     {
-      "cell": "crates/rdm-admin/src/admin.rs::tests::a_leaving_holder_keeps_both_seats_in_the_readers_until_its_yield_is_held",
-      "test": "rdm-admin/rdm_admin: admin::tests::a_leaving_holder_keeps_both_seats_in_the_readers_until_its_yield_is_held",
+      "cell": "crates/rdm-admin/src/admin.rs::tests::a_leaving_primary_stays_both_primaries_in_the_readers_until_its_hand_over_is_held",
+      "test": "rdm-admin/rdm_admin: admin::tests::a_leaving_primary_stays_both_primaries_in_the_readers_until_its_hand_over_is_held",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "rdm-admin:lib"
     },

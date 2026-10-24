@@ -234,7 +234,7 @@ impl Ladder {
     /// ([`Rungs::track`]), whether or not the ladder has stepped it yet (a fabric-primary that took the
     /// seat a moment ago has stepped nothing), and its decided recovery is the ladder's; a mesh the
     /// backbone never carried is what the ladder holds of it (watched from the seat).
-    pub fn fence(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
+    pub fn peer_mesh_unheard(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
         match unheard {
             Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), recovery_decided: self.recovery_decided(mesh), unreachable_decided: self.unreachable_decided(mesh) }),
             None => self.peer_mesh(mesh),
@@ -405,7 +405,7 @@ pub async fn run(w: Watch) {
         let view = Arc::new(w.topology.read().await.clone());
         let me = w.held_name_in(&view);
         inv.set_me(me.to_string());
-        let fabric_primary = view.holds_fabric_seat(&w.me_id);
+        let fabric_primary = view.is_fabric_primary(&w.me_id);
         was_fabric_primary = fabric_primary;
         if ladder_role_fabric_primary != Some(fabric_primary) {
             if ladder_role_fabric_primary.is_some() {
@@ -420,7 +420,7 @@ pub async fn run(w: Watch) {
             // while a node-admin lives" step 2; elections §4.3): the fabric-primary first, then its
             // other node-admins; no answer from any of them by the decision step is the backbone rule.
             // An admin whose view is cut off or healing acts on nothing (gossip.md §6).
-            match fabric_seat_mesh_to_investigate(&w, &view, &me) {
+            match fabric_primary_mesh_to_investigate(&w, &view, &me) {
                 Some(mesh) => {
                     forget_unheard_meshes(&w.ladder, &BTreeSet::from([mesh.clone()]));
                     if let Some(unheard) = w.membership.book.mesh_unheard(&mesh, Instant::now()) {
@@ -494,8 +494,8 @@ pub async fn run(w: Watch) {
 /// fabric-primary is unheard: the fabric seat record's mesh, when it is not this admin's own (its own
 /// mesh's standby is the seat watch's arm, node-recovery.md step 2) and the record's birth is held off
 /// ready-for-traffic in this admin's view. `None` otherwise.
-fn fabric_seat_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
-    if !view.holds_mesh_seat(&me.mesh, &w.me_id) {
+fn fabric_primary_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
+    if !view.is_mesh_primary(&me.mesh, &w.me_id) {
         return None;
     }
     let record = w.membership.primaries().fabric()?;
@@ -530,8 +530,8 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
 /// report, is not this (`crate::round::recovered`).
 pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) {
     for recovery in records.peer_recoveries() {
-        let primary = view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
-        let report = records.declared.lock().unwrap().report_of(&recovery.mesh, view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin));
+        let primary = view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
+        let report = records.declared.lock().unwrap().report_of(&recovery.mesh, view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin));
         if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
             records.close_peer_recovery(&recovery.mesh);
             tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = ?recovery.verdict_rafka_ms)
@@ -664,14 +664,14 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                 // lowest ReadyForTraffic mesh-primary is fabric-primary (fabric-recovery.md "Outside its
                 // mesh"; elections §4.3). The re-creation of the lost mesh's node-admin follows it.
                 let record = w.membership.primaries().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
-                if let (Some(_), false) = (record, view.holds_fabric_seat(&w.me_id)) {
+                if let (Some(_), false) = (record, view.is_fabric_primary(&w.me_id)) {
                     verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule applies");
                     continue;
                 }
                 verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
                 if recover {
                     let verdict_ms = w.membership.clock().now_rafka_ms();
-                    let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
+                    let lost = view.nodes_of_type(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
                     w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
                 }
             }
@@ -721,7 +721,7 @@ pub(crate) struct Found {
 /// then the mesh's other node-admins in path order (mesh-investigation.md step 1). With no record
 /// held, path order. Only exact births are asked: a probe names `(node.id, incarnation)`.
 pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rdm_core::seat::Primary>) -> Vec<Node> {
-    let mut admins: Vec<Node> = view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
+    let mut admins: Vec<Node> = view.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
     admins.sort_by_key(|a| a.name.to_string());
     if let Some(record) = seat.filter(|r| r.mesh == mesh) {
         if let Some(i) = admins.iter().position(|a| a.node_id == record.node_id) {
@@ -958,7 +958,7 @@ mod tests {
     /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a recovery at 30 rounds, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
     #[test]
-    fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_seat() {
+    fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_fabric_primary() {
         use crate::model::*;
         let node = |n: &str| Node::allocated(n.parse().unwrap());
         let t = Topology {
@@ -982,14 +982,14 @@ mod tests {
     /// dispatched for because the ladder has not stepped it yet (mesh_recover at a fabric-primary seat
     /// take ran node.create:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
     #[test]
-    fn the_fence_reads_t_from_the_last_direct_backbone_receipt_before_the_ladder_steps_the_mesh() {
+    fn the_investigation_reads_t_from_the_last_direct_backbone_receipt_before_the_ladder_steps_the_mesh() {
         let mut l = Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500)));
         assert_eq!(
-            l.fence("mesh1", Some(Duration::from_secs(7))),
+            l.peer_mesh_unheard("mesh1", Some(Duration::from_secs(7))),
             Some(PeerMesh { unheard_ms: Some(7000), recovery_decided: false, unreachable_decided: false }),
             "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is fenced"
         );
-        assert_eq!(l.fence("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no fence");
+        assert_eq!(l.peer_mesh_unheard("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no peer_mesh_unheard");
         // The ladder steps the mesh: probe 1, probe 2, both carrier-edge-lost, then the decision.
         for _ in 0..3 {
             for s in l.step("mesh1", Duration::from_secs(7)) {
@@ -999,8 +999,8 @@ mod tests {
             }
         }
         assert!(l.recovery_decided("mesh1"), "two carrier-edge-lost probes decide the recovery");
-        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), recovery_decided: true, unreachable_decided: false }), "the decided recovery is the ladder's");
-        assert_eq!(l.fence("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
+        assert_eq!(l.peer_mesh_unheard("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), recovery_decided: true, unreachable_decided: false }), "the decided recovery is the ladder's");
+        assert_eq!(l.peer_mesh_unheard("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
 
     #[test]
@@ -1128,7 +1128,7 @@ mod tests {
     /// record held, the node-admins are asked in path order. Must NOT happen: the view's `is_primary`
     /// choosing the first target, a probe that asks only one node-admin, or another mesh's admin.
     #[test]
-    fn a_probe_asks_the_seat_records_exact_mesh_primary_first_then_the_other_admins() {
+    fn a_probe_asks_the_recorded_mesh_primary_first_then_the_other_admins() {
         use rdm_core::seat::Primary;
         let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
         let a3 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.3").unwrap().clone();
@@ -1186,7 +1186,7 @@ mod tests {
     /// stopped admin's probe going on to its next call (a ping, a status kick through a peer) after
     /// the stop cut its connections.
     #[tokio::test(start_paused = true)]
-    async fn a_probe_in_flight_when_the_admin_parks_makes_no_step_until_the_gate_opens() {
+    async fn a_probe_in_flight_when_the_admin_stops_makes_no_step_until_the_gate_opens() {
         use std::sync::atomic::{AtomicU32, Ordering};
         let gate = crate::stop_gate::StopGate::new();
         let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), gate.clone());
@@ -1301,7 +1301,7 @@ mod tests {
         let mut l = ladder();
         walk(&mut l, [Unreachable, Unreachable]);
         assert!(l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"));
-        let fenced = l.fence("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is fenced");
+        let fenced = l.peer_mesh_unheard("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is fenced");
         assert_eq!((fenced.recovery_decided, fenced.unreachable_decided), (false, true), "the fence reads the hold: {fenced:?}");
         assert_eq!(l.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((false, true)));
         let mut recovered = ladder();
@@ -1317,7 +1317,7 @@ mod tests {
     /// the next one starts from its own view, so nothing it decided is decided again, and a mesh it
     /// never heard on the backbone is not held back at all.
     #[test]
-    fn a_ladder_dropped_with_the_seat_starts_over_for_the_next_fabric_primary() {
+    fn a_ladder_dropped_with_the_fabric_primary_starts_over_for_the_next_fabric_primary() {
         let mut first = ladder();
         walk(&mut first, [CarrierEdgeLost, CarrierEdgeLost]);
         assert!(first.recovery_decided("mesh2"));
@@ -1352,7 +1352,7 @@ mod tests {
     /// carries (a retired mesh) returns; it never holds the ladder's lock while it takes it again,
     /// which would hold the fabric primary's watch and its drift check (both read the ladder) forever.
     #[test]
-    fn forgetting_a_retired_mesh_does_not_deadlock_on_the_ladder_lock() {
+    fn forgetting_a_deleted_mesh_does_not_deadlock_on_the_ladder_lock() {
         let ladder = Arc::new(Mutex::new(ladder()));
         ladder.lock().unwrap().step("mesh2", Duration::ZERO);
         let (tx, rx) = std::sync::mpsc::channel();

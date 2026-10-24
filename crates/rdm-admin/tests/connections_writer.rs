@@ -102,7 +102,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
 /// as Disconnected(direct-restored); the route cuts back once it lands (the refused-write cell
 /// below proves the Proxy stays effective until then).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts_back() {
+async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back() {
     let dir = data_dir("retire");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap());
@@ -202,7 +202,7 @@ async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEn
 /// cuts back once the retirement lands. What must NOT happen: a Direct row written for the accept,
 /// or the Proxy retired before the source's own dial connected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_retires_the_proxy() {
+async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy() {
     let (dir, me, dest, storage, held, writer, _) = proxied("accept-trigger", now_ms() - 60_000).await;
     let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
@@ -341,7 +341,7 @@ impl ConnectionsStorage for RefusingIndex {
 /// the rows; once the write lands, new calls cut back to Direct. The bounded reconciler lands it
 /// by itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_refused_retirement_write_keeps_the_proxy_effective_until_it_lands() {
+async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands() {
     let dir = data_dir("refused-retirement");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });

@@ -147,7 +147,7 @@ impl ControlPlane {
     }
 
     /// Only the current fabric-primary changes topology or opens attempts.
-    async fn authority(&self, route: &'static str) -> Result<(), Refusal> {
+    async fn require_fabric_primary(&self, route: &'static str) -> Result<(), Refusal> {
         let me = self.held_name().await;
         let primary = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
         if primary.as_ref() != Some(&me) {
@@ -405,7 +405,7 @@ impl ControlPlane {
         // beside the request span, in the caller's span.
         let outer = tracing::Span::current();
         async {
-            self.authority(route).await?;
+            self.require_fabric_primary(route).await?;
             // A roll replaces members and moves primaries: refused `fabric-not-ready` until the initial
             // fabric first reached ready-for-traffic, as every recipe is (proposal roll.md step 1).
             if change.is_roll() {
@@ -582,7 +582,7 @@ impl ControlPlane {
     pub async fn open_recipe_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::RecipeStep>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
-            self.authority(route).await?;
+            self.require_fabric_primary(route).await?;
             let summary = steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(" ");
             self.admit_once_ready(route, format!("recipe ({summary})"), &outer).await?;
             let (_admitted, current) = self.current_settled().await?;
@@ -640,12 +640,12 @@ impl ControlPlane {
     pub async fn open_attempt_in(&self, span: tracing::Span, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
-            self.authority(route).await?;
+            self.require_fabric_primary(route).await?;
             // A caller's node workflow writes a row, and a node.connections.delete of a seat holder moves its seats: both
             // wait for the initial fabric to first reach ready-for-traffic (R-PB1, R-PC1).
             let holds_a_seat = || async {
                 let t = self.topology.read().await;
-                t.node(&path).is_some_and(|n| t.holds_fabric_seat(&n.node_id) || t.holds_mesh_seat(&n.mesh, &n.node_id))
+                t.node(&path).is_some_and(|n| t.is_fabric_primary(&n.node_id) || t.is_mesh_primary(&n.mesh, &n.node_id))
             };
             let workflow = match kind {
                 ActionKind::DeleteConnections if holds_a_seat().await => Some(format!("node.connections.delete {path} (a seat holder)")),
@@ -765,7 +765,7 @@ impl ControlPlane {
     pub async fn open_terminate(&self, span: tracing::Span, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
         let outer = tracing::Span::current();
         async {
-            self.authority(route).await?;
+            self.require_fabric_primary(route).await?;
             if self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
@@ -846,7 +846,7 @@ impl ControlPlane {
             // (node-recovery.md step 2).
             let replaced = self.seats.get().is_some_and(|seats| seats.replaced(rdm_core::Seat::MeshPrimary, &path.mesh, &incarnation));
             let unheard_mesh_primary = fabric_recovery.is_some()
-                || (path.kind == crate::model::NodeKind::NodeAdmin && (replaced || t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live())));
+                || (path.kind == crate::model::NodeKind::NodeAdmin && (replaced || t.node_type_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live())));
             let recoverer = if let Some(fr) = &fabric_recovery {
                 fr.executor.clone()
             } else if unheard_mesh_primary {
@@ -859,7 +859,7 @@ impl ControlPlane {
                 };
                 Some(recoverer)
             } else {
-                t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone())
+                t.node_type_primary(&path.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone())
             };
             // A mesh-primary reports its drift up as build.create { Change(Recover) }: the fabric-primary
             // opens the attempt at `(build_id, mesh, attempt)` and the mesh-primary claims it through
@@ -1049,7 +1049,7 @@ impl ActionKind {
 /// seat it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
 /// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens. A
 /// node of any other type that holds its cohort's seat is refused [`BuildReject::NoSecondary`] when no
-/// other node of its type in its mesh can take the seat (`election::commanded_cohort_successor`, Q7).
+/// other node of its type in its mesh can take the seat (`election::commanded_node_type_successor`, Q7).
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
     let target = t.node(node)?;
     // The holder of any other cohort's seat: its mesh-primary's node.primary.update needs another node
@@ -1057,17 +1057,17 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     // leaves the topology (a removal) or is re-created at the same path.name (node recovery, a roll's
     // replacement, the replace recipe's Delete step): R5, node-primary-update.md "No-successor cases".
     if target.kind != crate::model::NodeKind::NodeAdmin {
-        let holds = t.cohort_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
-        let only_of_cohort = t.cohort(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
+        let holds = t.node_type_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
+        let only_of_cohort = t.nodes_of_type(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
         if !holds || (matches!(action, "retire" | "delete") && only_of_cohort) {
             return None;
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
-        let refusal = crate::election::commanded_cohort_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
+        let refusal = crate::election::commanded_node_type_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
         return Some(BuildReject::NoSecondary { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal });
     }
     let fabric_seat = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
-    let mesh_seat = t.cohort_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
+    let mesh_seat = t.node_type_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
     let moving = match (mesh_seat, fabric_seat) {
         (true, true) => crate::election::Moving::BothSeats,
         (true, false) => crate::election::Moving::MeshSeat,
@@ -1399,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn an_rpc_cohorts_primary_moves_before_its_stop_and_the_sole_node_of_its_type_is_refused_by_name() {
+    fn an_rpc_node_type_primary_moves_before_its_stop_and_the_sole_node_of_its_type_is_refused_by_name() {
         let t = Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
             meshes: vec![

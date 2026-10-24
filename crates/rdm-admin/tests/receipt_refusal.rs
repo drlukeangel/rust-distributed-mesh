@@ -476,7 +476,7 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
 /// sent by the handing admin, the send error), and the hand-over reports the facts it held. Must NOT
 /// happen: the hand-over answered as failed because a broadcast failed.
 #[tokio::test]
-async fn a_seat_hand_over_whose_broadcast_fails_names_each_refused_send() {
+async fn a_primary_hand_over_whose_broadcast_fails_names_each_refused_send() {
     let (capture, _guard) = Capture::new("i143-3051-yield-broadcast-refused");
     let local = std::sync::Arc::new(MemoryBuildStateAdapter::new());
     let (_endpoint, gossip, _router, builds) = fabric_builds("mesh1.admin.1", local).await;

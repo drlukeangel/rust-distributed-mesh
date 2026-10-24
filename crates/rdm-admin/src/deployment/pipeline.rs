@@ -2170,10 +2170,10 @@ impl DeploymentPipeline<'_> {
 
     /// Retire `req.node` through every step (node.delete): the provider's exact terminal receipt of
     /// the birth's runtime, the proof its NodeDeleted was published from.
-    pub async fn retire(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    pub async fn delete_node(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.retire_steps(req, Terminate::Unreached).instrument(span).await
+        self.delete_steps(req, Terminate::Unreached).instrument(span).await
     }
 
     /// Fabric recovery's backbone arm's node.delete of the exact lost birth (fabric-recovery.md step 3,
@@ -2181,10 +2181,10 @@ impl DeploymentPipeline<'_> {
     pub async fn delete_from_backbone(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
-        self.retire_steps(req, Terminate::Backbone).instrument(span).await
+        self.delete_steps(req, Terminate::Backbone).instrument(span).await
     }
 
-    async fn retire_steps(&self, req: &RetireRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
+    async fn delete_steps(&self, req: &RetireRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
         let mut node = req.node.clone();
@@ -2829,7 +2829,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i144-e3-os-stopped-delete");
         let terminal = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            pipeline.retire(&req).await.expect("the delete of an os-stopped birth completes")
+            pipeline.delete_node(&req).await.expect("the delete of an os-stopped birth completes")
         };
         assert_eq!(terminal.exit_code, Some(137), "the terminate's Exited is the proof: {terminal:?}");
         assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the suspended birth: {:?}", observer.sent.lock().unwrap());
@@ -2860,7 +2860,7 @@ mod tests {
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let req = RetireRequest { build_id, attempt: 1, node, handle: process_handle(), unreached: true };
-        let terminal = pipeline.retire(&req).await.expect("the recovery's delete of an exited birth completes");
+        let terminal = pipeline.delete_node(&req).await.expect("the recovery's delete of an exited birth completes");
         assert_eq!((terminal.exit_code, terminal.verdict.as_deref()), (Some(137), Some("exited")), "the receipt is the inspection's exited: {terminal:?}");
         assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the unheard birth: {:?}", observer.sent.lock().unwrap());
         assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 1, "the provider is asked once to terminate the exited runtime, which removes what it left");
@@ -2889,7 +2889,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i144-e3-inspect-handle");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            pipeline.retire(&req).await.expect("the delete of an os-stopped birth completes");
+            pipeline.delete_node(&req).await.expect("the delete of an os-stopped birth completes");
         }
         let inspected = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
         assert!(!inspected.is_empty(), "the delete's inspection is spanned");

@@ -827,7 +827,7 @@ where
 /// item 2, R-MN1 item 2).
 #[allow(clippy::too_many_arguments)]
 pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
-    drop_departed_contacts(rows, executor, key, mesh, proof).await?;
+    drop_mesh_left_contacts(rows, executor, key, mesh, proof).await?;
     ensure_mesh_dead(meshes, caches, declared, executor, key, mesh).await
 }
 
@@ -866,7 +866,7 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, cach
 /// whole from the copy the writer holds ([`crate::node_rows::WrittenRows::update`]); a birth whose record
 /// holds no address for it is left as it is. One `rdm.node_admin.node.remove.via-mesh-left-contact` span
 /// names them, and a refused write ends mesh-left by name.
-async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
     let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to take {mesh}'s births' addresses off", key.operation))?;
     let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, dropped = tracing::field::Empty, error = tracing::field::Empty);
     let mut dropped = Vec::new();

@@ -187,7 +187,7 @@ async fn two_concurrent_topology_submissions_admit_one_build_and_refuse_the_othe
 /// Must NOT happen: the door refusing a Build it accepted (the gate's red on 3355f190, build_op :439,
 /// trace f0e5d40db922f0c6f1015502974a03be: `publish_fabric` after the accept refused `SeatYielded`).
 #[tokio::test]
-async fn a_seat_move_after_the_acceptance_leaves_the_door_answering_the_build_it_accepted() {
+async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build_it_accepted() {
     let (held, cp) = rig().await;
     // No acceptance is held inside its write here.
     held.first.store(true, Ordering::SeqCst);

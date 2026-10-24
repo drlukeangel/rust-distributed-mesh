@@ -34,7 +34,7 @@ impl crate::build_drive::Gate for SeatGate {
     /// fabric-primary commands a mesh-primary); any other type's primary through its mesh-primary, its
     /// commander; the fabric-primary's own primaries it moves itself, having nothing above it, both in
     /// one call when it is both ("Both primaries": the successor becomes both).
-    async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
         use rdm_core::Seat;
@@ -59,11 +59,11 @@ impl crate::build_drive::Gate for SeatGate {
             (false, false) => return Ok(()),
         };
         let update = update_operation(seat, build_id.as_str(), run, operation);
-        door.move_own_seats(moving, build_id.as_str(), attempt, &update, m.successor.as_ref()).await?;
+        door.update_own_primaries(moving, build_id.as_str(), attempt, &update, m.successor.as_ref()).await?;
         Ok(())
     }
 
-    async fn seats_acknowledged(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId, attempt: u32) -> Result<(), String> {
+    async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId, attempt: u32) -> Result<(), String> {
         for u in updates {
             if u.holder.is_none() && u.mesh == self.handover.me.mesh {
                 continue;
@@ -181,7 +181,7 @@ pub(crate) fn lost_birth_name(book: &DigestBook, lost: &rdm_core::handover::Hand
 /// of the mesh `view` holds. `from` is the instant before the claim: the mesh's new primary reports
 /// after it.
 pub async fn give_mesh_node_admin(records: &Records, me: &PathName, view: &RwLock<Topology>, mesh: &str, from: std::time::Instant) -> bool {
-    let lost = view.read().await.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
+    let lost = view.read().await.nodes_of_type(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
     records.open_mesh_recovery(me, PeerRecovery { mesh: mesh.to_string(), verdict_rafka_ms: None, opened_at: from, lost }, "fully-crashed", false)
 }
 
@@ -194,7 +194,7 @@ pub async fn give_mesh_node_admin(records: &Records, me: &PathName, view: &RwLoc
 /// Build already carried across the fence).
 pub(crate) fn unanswered_peer_mesh(me: &PathName, current: &crate::build_state::BuildProjection, unreachable: &(dyn Fn(&str) -> bool + Sync)) -> Option<(String, PathName)> {
     current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)).find_map(|m| {
-        let first = m.cohort(NodeKind::NodeAdmin).min()?;
+        let first = m.nodes_of_type(NodeKind::NodeAdmin).min()?;
         crate::build_drive::first_admin_owed(current, &m.name, first).map(|owed| (m.name.clone(), owed))
     })
 }
@@ -215,7 +215,7 @@ pub(crate) fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepR
     if let Some((label, admin)) = verdict {
         // The node-admins the view holds of the decided mesh, as they are now: a created admin, or one
         // heard again, moves them.
-        let mut admins: Vec<String> = t.cohort(&admin.mesh, NodeKind::NodeAdmin).map(|n| format!("{}:{:?}", birth(n), n.status)).collect();
+        let mut admins: Vec<String> = t.nodes_of_type(&admin.mesh, NodeKind::NodeAdmin).map(|n| format!("{}:{:?}", birth(n), n.status)).collect();
         admins.sort();
         return format!("{label} {} create {admin} admins=[{}] receipts={}", admin.mesh, admins.join(","), complete(&format!("node.create:{admin}")));
     }
@@ -295,7 +295,7 @@ pub async fn reconcile_drift(
     // ladder's decision, not a status, names the mesh. The admin is the one the Build already carried
     // across the fence, else the mesh's first in path order.
     let verdict: Option<(String, PathName)> = current.topology.meshes.values().filter(|m| m.name != me.mesh && decided(&m.name)).find_map(|m| {
-        let first = m.cohort(NodeKind::NodeAdmin).min()?;
+        let first = m.nodes_of_type(NodeKind::NodeAdmin).min()?;
         crate::build_drive::first_admin_owed(&current, &m.name, first).map(|admin| (m.name.clone(), admin))
     });
     // No member answers (mesh-investigation.md step 5): a peer mesh the investigation found unreachable
@@ -331,7 +331,7 @@ pub async fn reconcile_drift(
         // its own map). A node of a mesh that still has a live node-admin is recovered here as ever.
         // An ordinary birth of such a mesh is held as evidence once the ladder tracks the mesh as
         // unheard (`hold`); until then it waits with the admins.
-        if n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) && (n.kind == NodeKind::NodeAdmin || hold(&n.mesh).is_none()) {
+        if n.mesh != me.mesh && defers(&n.mesh) && t.nodes_of_type(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) && (n.kind == NodeKind::NodeAdmin || hold(&n.mesh).is_none()) {
             // The hold is named once per mesh and Build: an unnamed deferral is a recovery nobody is
             // waiting on.
             let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());

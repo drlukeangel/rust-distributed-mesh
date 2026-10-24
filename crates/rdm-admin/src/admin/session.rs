@@ -82,7 +82,7 @@ pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applie
 /// hears but itself): each birth that publishes no runtime fact, or one this
 /// admin's provider cannot adopt in its own control domain. Empty: it is
 /// authority-capable, and may commit Ready.
-pub fn authority_blockers(held: &[MeshDigest], provider: &dyn crate::deployment::provider::DeploymentProvider) -> Vec<String> {
+pub fn take_over_blockers(held: &[MeshDigest], provider: &dyn crate::deployment::provider::DeploymentProvider) -> Vec<String> {
     held.iter()
         .filter_map(|d| match &d.node.runtime {
             None => Some(format!("{}: publishes no runtime fact", d.node.name)),

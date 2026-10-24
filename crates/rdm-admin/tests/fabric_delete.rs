@@ -288,7 +288,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
             let name = n.name.to_string();
-            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+            pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -317,7 +317,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 
     // Execute RetireNode(mesh2.admin.1) as fabric-primary: mesh2.admin.1 stops, its row is written
     // Deleted by FP as acting primary, and MeshLeft + mesh_left_rows write mesh2 Dead.
-    let term_m2_a1 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), unreached: false }).await.unwrap();
+    let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.parked = true;
@@ -369,7 +369,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
             let name = n.name.to_string();
-            pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+            pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -419,7 +419,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(seat_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no seat on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
 
-    let term_m1_a1 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), unreached: false }).await.unwrap();
+    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.parked = true;
@@ -525,7 +525,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id, m2_nodes) = (&pipeline, &handles, &build_id, &m2_nodes);
             async move {
                 let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
 
@@ -621,7 +621,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id, m2_nodes) = (&fp_pipeline, &handles, &build_id, &m2_nodes);
             async move {
                 let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
         let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
@@ -683,14 +683,14 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
         .expect("created admin mesh2.admin.2 completes mesh.delete of mesh2");
 
         record_completion(&builds, &key_m2, "mesh1.admin.1", &manifest).await.unwrap();
-        let term_a2 = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
+        let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
         view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.parked = true;

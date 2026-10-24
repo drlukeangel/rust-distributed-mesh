@@ -104,8 +104,8 @@ impl Capture {
 /// the one place a turn takes the lock (`install_read`, admin.rs), and would end without holding
 /// at the writer.
 #[test]
-fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running() {
-    let cell = "a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running";
+fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_running() {
+    let cell = "a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_running";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }

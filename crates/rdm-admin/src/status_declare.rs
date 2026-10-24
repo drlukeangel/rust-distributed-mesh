@@ -324,9 +324,9 @@ impl Declarer {
             .iter()
             .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
-                    Key::OwnState(..) => view.cohort_primary(&me.mesh, NodeKind::NodeAdmin),
+                    Key::OwnState(..) => view.node_type_primary(&me.mesh, NodeKind::NodeAdmin),
                     Key::Mesh(..) | Key::Round(..) => view.fabric_primary(),
-                    Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
+                    Key::FabricEventAt(mesh, _) => view.node_type_primary(mesh, NodeKind::NodeAdmin),
                 };
                 now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
             })
@@ -365,7 +365,7 @@ impl Declarer {
         for p in pending.values_mut() {
             let target = match &p.to {
                 Authority::FabricPrimary => view.fabric_primary(),
-                Authority::MeshPrimaryOf(mesh) => view.cohort_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
+                Authority::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
             };
             let Some(target) = target else {
                 p.last = Some("no authority in view".into());
@@ -504,7 +504,7 @@ impl Declarer {
     pub(crate) fn withdraw_unowned(&self, me: &PathName, me_id: &NodeId, view: &Topology) {
         let holder = |key: &Key| match key {
             Key::OwnState(..) => None,
-            Key::Mesh(..) | Key::Round(..) => Some(view.cohort_primary(&me.mesh, NodeKind::NodeAdmin)),
+            Key::Mesh(..) | Key::Round(..) => Some(view.node_type_primary(&me.mesh, NodeKind::NodeAdmin)),
             Key::FabricEventAt(..) => Some(view.fabric_primary()),
         };
         let lost: Vec<(Key, String)> = self
@@ -606,8 +606,8 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
             );
         }
     }
-    let i_am_mesh_primary = view.holds_mesh_seat(&me.mesh, me_id);
-    let i_am_fabric_primary = view.holds_fabric_seat(me_id);
+    let i_am_mesh_primary = view.is_mesh_primary(&me.mesh, me_id);
+    let i_am_fabric_primary = view.is_fabric_primary(me_id);
     // My Mesh's status, as its primary, to the fabric-primary: the report that its round is complete,
     // owed only once every planned birth of the accepted Build checked in (`crate::round`), and only
     // while the state this admin holds for its mesh is not past ready-for-traffic: a primary holding
@@ -712,7 +712,7 @@ mod tests {
     /// checklist a new primary opens rebuilds from fresh check-ins), and a former mesh primary
     /// withdraws it whole.
     #[test]
-    fn a_round_completion_is_owed_again_to_a_successor_fabric_primary_and_withdrawn_with_the_mesh_seat() {
+    fn a_round_completion_is_owed_again_to_a_successor_fabric_primary_and_withdrawn_with_the_mesh_primary() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
         let key = Key::Round("state-committed/fabric/bld/1".into());
@@ -770,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn a_withdrawn_key_is_owed_afresh_when_the_seat_returns() {
+    fn a_withdrawn_key_is_owed_afresh_when_the_primary_returns() {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let d = Declarer::new();
         owe_all(&d);
@@ -783,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn a_view_naming_no_holder_withdraws_nothing() {
+    fn a_view_naming_no_primary_withdraws_nothing() {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let d = Declarer::new();
         owe_all(&d);
@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restarted_authority_is_owed_every_declaration_again() {
+    fn a_restarted_primary_is_owed_every_declaration_again() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
         owe_all(&d);
@@ -853,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn a_seat_moved_to_another_node_is_owed_again() {
+    fn a_primary_moved_to_another_node_is_owed_again() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
         owe_all(&d);
@@ -883,7 +883,7 @@ mod tests {
     /// the declaration answered `RejectedNotPrimary` (typed, terminal) is sent again exactly
     /// once, when the authority's down op addresses this admin, and not before.
     #[test]
-    fn a_typed_refusal_is_sent_again_once_when_the_authority_addresses_this_admin() {
+    fn a_typed_refusal_is_sent_again_once_when_the_primary_addresses_this_admin() {
         let me_id = NodeId::mint();
         let v = view("mesh2.admin.1", "mesh1.admin.1");
         let d = Declarer::new();
@@ -1271,7 +1271,7 @@ mod tests {
     /// the seat is another birth's. What must NOT happen: the retired birth's seats read as this
     /// admin's, so it owes the fabric's readiness to every mesh primary as a fabric-primary it is not.
     #[test]
-    fn a_reborn_admin_whose_view_seats_its_retired_birth_owes_nothing_of_the_seat() {
+    fn a_re_born_admin_whose_view_names_its_superseded_birth_primary_owes_nothing_as_primary() {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let mut v = view("mesh1.admin.1", "mesh1.admin.1");
         let retired = v.nodes.iter_mut().find(|n| n.name == me).unwrap();

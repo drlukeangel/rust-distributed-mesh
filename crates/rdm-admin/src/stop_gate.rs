@@ -252,7 +252,7 @@ mod tests {
     /// select that polled its branches in a random order would step past the park about half the
     /// time). Must NOT happen: a parked task making one more step of its own work.
     #[tokio::test]
-    async fn a_task_woken_by_its_own_work_and_the_park_at_once_makes_no_step_past_the_park() {
+    async fn a_task_woken_by_its_own_work_and_the_stop_at_once_makes_no_step_past_the_stop() {
         for trial in 0..64 {
             let gate = StopGate::new();
             let (work, steps) = (Arc::new(tokio::sync::Notify::new()), Arc::new(AtomicU64::new(0)));
@@ -278,7 +278,7 @@ mod tests {
     /// running, or one that starts over. On the paused clock: the tick at 30 ms and the park at 45 ms fire
     /// in deadline order, never as one timer turn whose wakes the scheduler orders.
     #[tokio::test(start_paused = true)]
-    async fn a_parked_task_holds_its_place_and_resumes_from_it() {
+    async fn a_task_held_at_the_gate_holds_its_place_and_resumes_from_it() {
         let gate = StopGate::new();
         let ticks = Arc::new(AtomicU64::new(0));
         let t = ticks.clone();

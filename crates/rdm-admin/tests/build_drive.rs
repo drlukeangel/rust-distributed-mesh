@@ -172,7 +172,7 @@ async fn a_fabric_primary_whose_seat_record_moved_claims_and_dispatches_nothing(
 /// no attempt and calls no executor, and the callers' streams end naming the holder the committed
 /// seat record names (none here), never the view's.
 #[tokio::test]
-async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the_seat_dispatches_nothing() {
+async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_as_fabric_primary_dispatches_nothing() {
     let r = rig().await;
     let other = rdm_core::NodeId::mint();
     {
@@ -331,7 +331,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
 /// (no second call to the lost executor, no second proof), and once mesh2.admin.2 holds the seat
 /// the next attempt is claimed for it.
 #[tokio::test]
-async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_for_its_seat() {
+async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_for_its_election() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
@@ -622,7 +622,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
 /// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose seat the
 /// rest waits for.
 #[tokio::test]
-async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_rest_waits_for_its_seat() {
+async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_rest_waits_for_its_election() {
     let r = held_successor_rig(true).await;
     let drive = Drive::detached(r.build.clone());
     match r.env.run(&drive).await {
@@ -849,7 +849,7 @@ impl Gate for SeatMoves {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, m: &rdm_admin::executor::SeatMove, _: &BuildId, _: u32, _: u32, operation: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, m: &rdm_admin::executor::SeatMove, _: &BuildId, _: u32, _: u32, operation: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
         self.moved.lock().unwrap().push((m.holder.name.to_string(), m.mesh_seat, m.fabric_seat, operation.to_string()));
         for n in self.topology.write().await.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
@@ -870,7 +870,7 @@ impl Gate for SeatMoves {
 /// Must NOT happen: an operation dispatched at the leaving mesh's admin, the retire run there, or the
 /// attempt ending with no verdict or handed to any admin but the new seat.
 #[tokio::test]
-async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_alone_in_its_own_attempt_handed_to_the_new_seat() {
+async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary_alone_in_its_own_attempt_handed_to_the_new_one() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
@@ -951,7 +951,7 @@ impl OperationRunner for MeshBirth {
 /// operations after it, so the fabric-primary's run ends there and the next attempt is claimed for
 /// mesh2's primary, which runs the rest.
 #[tokio::test]
-async fn a_run_that_seats_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it() {
+async fn a_run_that_creates_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)]) };
@@ -1529,7 +1529,7 @@ impl Gate for Acknowledges {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn seats_acknowledged(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
+    async fn primaries_updated(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
         let dispatched = self.dispatch.dispatched.lock().unwrap().len();
         for u in updates.iter().filter(|u| self.rows.contains(u)) {
             self.asked.lock().unwrap().push((u.clone(), dispatched));
@@ -1573,7 +1573,7 @@ async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknow
 /// made, and the operation is dispatched once after it. Must NOT happen: the operation on the old
 /// holder dispatched on the view alone, before the update the row records is acknowledged.
 #[tokio::test]
-async fn a_successor_whose_view_already_holds_the_seats_acknowledges_the_rows_update_before_it_dispatches_on_the_old_holder() {
+async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_update_before_it_dispatches_on_the_old_primary() {
     let (r, env, gate, row) = after_the_row(None).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(env.run(&drive).await, DriveEnd::Terminal);
@@ -1607,13 +1607,13 @@ async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dis
 
 /// The view before the holder's row: the fabric-primary `mesh1.admin.1` holds both seats, and
 /// `mesh1.admin.2` is the ready admin of its mesh that the update names its successor.
-fn view_holder_of_both() -> Topology {
+fn view_primary_of_both() -> Topology {
     let mut t = view();
     t.nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.rpc.1", false, false)];
     t
 }
 
-/// The holder's own node.primary.update, run from its drive (`SeatGate::move_seats` for its own
+/// The holder's own node.primary.update, run from its drive (`SeatGate::update_primaries` for its own
 /// seats): at the row the shared view names the successor the holder of both seats and the holder's
 /// Build log decides nothing more, naming it (`row` resolves: the successor installs and its drive may begin);
 /// then the update waits at steps 6-7 until the cell lets it go, and says "primary updated" (step 7).
@@ -1633,7 +1633,7 @@ impl Gate for HolderUpdate {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, _: &rdm_admin::executor::SeatMove, _: &BuildId, attempt: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, _: &rdm_admin::executor::SeatMove, _: &BuildId, attempt: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
         for n in self.topology.write().await.nodes.iter_mut() {
             let successor = n.name.to_string() == "mesh1.admin.2";
             (n.is_primary, n.is_fabric_primary) = (successor, successor);
@@ -1661,8 +1661,8 @@ impl Gate for HolderUpdate {
 /// Must NOT happen: the successor claiming an attempt, dispatching, or the retire running while the
 /// holder (alive) has not reached step 7.
 #[tokio::test(start_paused = true)]
-async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_not_said_primary_updated() {
-    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has_not_said_primary_updated() {
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
     let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go: let_go.clone(), events: events.clone() });
     let e = &r.env;
@@ -1754,7 +1754,7 @@ impl Gate for RefusedUpdate {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, m: &rdm_admin::executor::SeatMove, build: &BuildId, attempt: u32, run: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, m: &rdm_admin::executor::SeatMove, build: &BuildId, attempt: u32, run: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some((topology, builds, successor, calls)) = &self.gone_then_move {
             let claimed = builds.read_build(build).await.ok().and_then(|p| p.attempt_executors.get(&attempt).cloned());
@@ -1800,8 +1800,8 @@ impl Gate for RefusedUpdate {
 /// Must NOT happen: the attempt handed back to the holder and the drive idle on a refusal (an
 /// incomplete attempt's arm), the update asked again, or the retire dispatched.
 #[tokio::test(start_paused = true)]
-async fn a_holders_own_update_refused_before_the_row_fails_its_attempt_by_name_and_nothing_moves() {
-    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_and_nothing_moves() {
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let gate = Arc::new(RefusedUpdate { inner: r.switch.clone(), calls: Default::default(), gone_then_move: None });
     let e = &r.env;
     let holder = Arc::new(DriveEnv {
@@ -1846,8 +1846,8 @@ async fn a_holders_own_update_refused_before_the_row_fails_its_attempt_by_name_a
 /// Must NOT happen: the successor's claim refused build-in-progress by the holder's ended attempt, its
 /// drive stalled on a mesh no attempt in flight holds.
 #[tokio::test(start_paused = true)]
-async fn a_successor_that_reads_the_holders_attempt_ended_claims_the_next_attempt_on_the_mesh_the_holder_released() {
-    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attempt_on_the_mesh_the_primary_released() {
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(Mutex::new(Vec::new())));
     // The holder says primary updated as soon as its row is written: nothing holds it at steps 6-7.
     let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row, let_go: Arc::new(tokio::sync::Semaphore::new(1)), events: events.clone() });
@@ -1924,7 +1924,7 @@ impl Gate for AfterTheProof {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn seats_acknowledged(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
+    async fn primaries_updated(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
         let proven = self.proofs.recorded.lock().unwrap().contains("mesh1.admin.1");
         let dispatched = self.dispatch.dispatched.lock().unwrap().len();
         for u in updates.iter().filter(|u| self.rows.contains(u)) {
@@ -1951,7 +1951,7 @@ impl Gate for AfterTheProof {
 /// before the departure proof, or the retire dispatched before the acknowledgement.
 #[tokio::test(start_paused = true)]
 async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_acknowledges_the_row_and_dispatches() {
-    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
     let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go, events: events.clone() });
     let e = &r.env;
@@ -2045,7 +2045,7 @@ fn gone_after_row_then_moved(
 /// moved seat. Must NOT happen: the attempt handed back to the holder and the drive idle on it, the
 /// remove dispatched in attempt 1, or attempt 2's update keyed by run 1 (it would replay run 1's row).
 #[tokio::test(start_paused = true)]
-async fn a_holders_own_update_whose_new_holders_process_is_gone_after_the_row_fails_and_the_resubmit_runs_a_new_transfer() {
+async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fails_and_the_resubmit_runs_a_new_transfer() {
     let mut t = view();
     t.nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.admin.3", false, false), node("mesh1.rpc.1", false, false)];
     let r = rig_for(t, TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;

@@ -74,7 +74,7 @@ impl TopologySink for NoView {
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
 }
 
-fn holder() -> Node {
+fn primary() -> Node {
     let mut n = Node::allocated(HOLDER.parse().unwrap());
     n.status = NodeStatus::ReadyForTraffic;
     n.incarnation_id = Some(IncarnationId::mint());
@@ -90,7 +90,7 @@ fn run_with(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipelin
     run_workflow(workflow)
 }
 
-/// Run `workflow` on the holder (a node.connections.delete or a stop): the result, the
+/// Run `workflow` on the primary (a node.connections.delete or a stop): the result, the
 /// commands sent, the step receipts and the trace id.
 fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
     let cap = crate::mesh_delete_resume::capture();
@@ -124,7 +124,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, unreached: false };
+            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: primary(), handle, unreached: false };
             match workflow {
                 NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
                 _ => pipeline.delete_connections(&req).instrument(root).await,

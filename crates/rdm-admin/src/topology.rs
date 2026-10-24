@@ -150,7 +150,7 @@ impl Topology {
     }
 
     /// Every node of one cohort, among the members.
-    pub fn cohort(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
+    pub fn nodes_of_type(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
         let mesh = mesh.to_string();
         self.members().filter(move |n| n.mesh == mesh && n.kind == kind)
     }
@@ -161,7 +161,7 @@ impl Topology {
     /// counting against it. The one rule of every node.create of a node-admin (e4.s11;
     /// mesh-investigation.md "A node-admin joins the live mesh").
     pub fn first_admin_of(&self, node: &PathName) -> bool {
-        node.kind == NodeKind::NodeAdmin && self.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live())
+        node.kind == NodeKind::NodeAdmin && self.nodes_of_type(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live())
     }
 
     /// Why `mesh` is not ready-for-traffic: a mesh is ready when it has a primary node-admin and
@@ -173,7 +173,7 @@ impl Topology {
     pub fn mesh_unready(&self, mesh: &str, planned: Option<&std::collections::BTreeSet<PathName>>) -> Vec<crate::round::Missing> {
         use crate::round::Missing;
         let mut out = Vec::new();
-        if self.cohort_primary(mesh, NodeKind::NodeAdmin).is_none() {
+        if self.node_type_primary(mesh, NodeKind::NodeAdmin).is_none() {
             out.push(Missing { who: mesh.to_string(), why: "no-primary" });
         }
         let paths: Vec<PathName> = match planned {
@@ -195,8 +195,8 @@ impl Topology {
     /// Until the next election over this view, a ConnectionsDeleting, Leaving or silent holder is still
     /// the one named here. A caller that needs an admin it can reach checks the holder's
     /// status itself.
-    pub fn cohort_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {
-        let mut p = self.cohort(mesh, kind).filter(|n| n.is_primary);
+    pub fn node_type_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {
+        let mut p = self.nodes_of_type(mesh, kind).filter(|n| n.is_primary);
         let first = p.next()?;
         p.next().is_none().then_some(first)
     }
@@ -220,18 +220,18 @@ impl Topology {
     }
 
     /// Whether the node born as `node_id` is the fabric primary of this view.
-    pub fn holds_fabric_seat(&self, node_id: &NodeId) -> bool {
+    pub fn is_fabric_primary(&self, node_id: &NodeId) -> bool {
         self.fabric_primary().is_some_and(|n| n.node_id == *node_id)
     }
 
     /// Whether the node born as `node_id` is `mesh`'s primary node-admin in this view.
-    pub fn holds_mesh_seat(&self, mesh: &str, node_id: &NodeId) -> bool {
-        self.cohort_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
+    pub fn is_mesh_primary(&self, mesh: &str, node_id: &NodeId) -> bool {
+        self.node_type_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
     }
 
     /// The control endpoint of `mesh`'s seat holder (its admin primary's).
     pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
-        self.cohort_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()
+        self.node_type_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()
     }
 
     /// The fabric-primary's control endpoint.
@@ -257,10 +257,10 @@ impl Topology {
             return birth.clone();
         }
         if birth.kind == NodeKind::NodeAdmin {
-            if let Some(p) = self.cohort_primary(&birth.mesh, NodeKind::NodeAdmin) {
+            if let Some(p) = self.node_type_primary(&birth.mesh, NodeKind::NodeAdmin) {
                 return p.name.clone();
             }
-            let mut admins = self.cohort(&birth.mesh, NodeKind::NodeAdmin);
+            let mut admins = self.nodes_of_type(&birth.mesh, NodeKind::NodeAdmin);
             if let Some(only) = admins.next().filter(|_| admins.next().is_none()) {
                 return only.name.clone();
             }
@@ -335,7 +335,7 @@ impl Topology {
             id: m.id.clone(),
             name: m.name.clone(),
             status: m.status,
-            primary_admin: self.cohort_primary(&m.name, NodeKind::NodeAdmin).map(|n| n.name.clone()),
+            primary_admin: self.node_type_primary(&m.name, NodeKind::NodeAdmin).map(|n| n.name.clone()),
             admin_api_base: self.mesh_control_endpoint(&m.name).map(str::to_string),
             nodes,
         })
@@ -411,16 +411,16 @@ mod tests {
     }
 
     #[test]
-    fn settled_mn_is_converged_with_one_primary_per_cohort() {
+    fn settled_mn_is_converged_with_one_primary_per_node_type() {
         let t = mn();
         assert_eq!(t.violations(), vec![]);
-        assert_eq!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).unwrap().name.to_string(), "mesh1.admin.1");
-        assert_eq!(t.cohort_primary("mesh1", NodeKind::RpcNode).unwrap().name.to_string(), "mesh1.rpc.1");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().name.to_string(), "mesh1.admin.1");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode).unwrap().name.to_string(), "mesh1.rpc.1");
         assert_eq!(t.fabric_primary().unwrap().name.to_string(), "mesh1.admin.1");
     }
 
     #[test]
-    fn split_and_missing_cohort_primaries_are_named() {
+    fn split_and_missing_node_type_primaries_are_named() {
         let mut t = mn();
         t.nodes[3].is_primary = true; // second rpc primary
         t.nodes[0].is_primary = false; // admin cohort loses its primary
@@ -435,7 +435,7 @@ mod tests {
             "{v:?}"
         );
         assert!(v.contains(&TopologyViolation::FabricPrimaryNotMeshPrimary("mesh1.admin.1".parse().unwrap())), "{v:?}");
-        assert_eq!(t.cohort_primary("mesh1", NodeKind::RpcNode), None, "a split cohort has no single primary");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode), None, "a split cohort has no single primary");
     }
 
     #[test]
@@ -458,13 +458,13 @@ mod tests {
     /// converged, and until the next election it is still the holder the view names and advertises. Must NOT happen: the readers dropping a silent holder,
     /// so the mesh shows no primary while its seat record names one.
     #[test]
-    fn a_silent_holder_is_unconverged_and_still_the_named_holder() {
+    fn a_silent_primary_is_unconverged_and_still_the_named_primary() {
         let mut t = mn();
         t.nodes[0].status = NodeStatus::PendingReconnect;
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoCohortPrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
-        assert_eq!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder is still the one named");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder is still the one named");
         assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }
 

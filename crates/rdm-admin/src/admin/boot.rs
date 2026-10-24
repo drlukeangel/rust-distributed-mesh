@@ -1659,7 +1659,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let turn = park.turn("superseded-rows").await;
                                         births.borrow_and_update();
                                         if let Some(a) = authority.get() {
-                                            a.retire_superseded(&book).await;
+                                            a.drop_superseded(&book).await;
                                         }
                                         drop(turn);
                                         if births.changed().await.is_err() {
@@ -1835,7 +1835,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     .into_iter()
                                                     .filter(|d| d.node.name != me && d.status != MemberStatus::Leaving)
                                                     .collect();
-                                                let mut blocked = authority_blockers(&held, &*provider);
+                                                let mut blocked = take_over_blockers(&held, &*provider);
                                                 if let Some(dir) = &day0 {
                                                     match adoption_missing(dir).await {
                                                         Ok(missing) => blocked.extend(missing.into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}"))),
@@ -1995,7 +1995,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let (declarer, topology, client, authority, me_id, incarnation, wake) = (declarer.clone(), topology.clone(), client.clone(), authority.clone(), me_id.clone(), incarnation.clone(), wake.clone());
                                                 Box::pin(async move {
                                                     let view = topology.read().await.clone();
-                                                    if view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == me_id) {
+                                                    if view.node_type_primary(&me.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == me_id) {
                                                         tracing::info_span!("rdm.node_admin.status.reject.via-own-mesh-primary", node = %me, state = ?state, operation = %operation.as_ref().map(|o| o.operation.as_str()).unwrap_or(""), "otel.kind" = "internal")
                                                             .in_scope(|| tracing::info!("this admin is its own mesh's primary: there is no primary to report its state to, and after its cut it publishes nothing"));
                                                         return;
@@ -2090,7 +2090,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
                                                 // The fabric-primary owes the ready-for-traffic event from the durable fact: the
                                                 // fabric store, read here, latches the handle the derivation reads.
-                                                if view.holds_fabric_seat(&me_id) {
+                                                if view.is_fabric_primary(&me_id) {
                                                     if let Err(e) = declarer.read_first_ready(&*fabric_reads, &view).await {
                                                         tracing::info_span!("rdm.node_admin.fabric.reject.via-ready-row-unreadable", node = %me, fabric_id = %view.fabric.id, status = view.fabric.status.name(), detail = %e)
                                                             .in_scope(|| tracing::info!("the ready-for-traffic fact of the fabric could not be read from the fabric store: this round owes from the latch and the view"));
@@ -2206,7 +2206,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let turn = park.turn("offline-tickle").await;
                                                 heard_changes.borrow_and_update();
                                                 let view = topology.read().await.clone();
-                                                let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
+                                                let holds_seat = view.is_mesh_primary(&mesh, &me_id);
                                                 // Every admin watches the same set, the seat holder or not, so a successor tickles on
                                                 // the window already running; the durable rows are read each tick (one point in time).
                                                 let durable = {
@@ -2579,7 +2579,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     membership.book.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
                                                     records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
                                                 }
-                                                let mesh_primary = t.holds_mesh_seat(&mesh, &seat_node_id);
+                                                let mesh_primary = t.is_mesh_primary(&mesh, &seat_node_id);
                                                 // The mesh's rows on the shared root follow its mesh-primary, and a mesh with no
                                                 // primary's follow the fabric-primary (`MeshRowsWriter`, `crate::node_rows::writes_for`).
                                                 let written: std::collections::BTreeSet<String> = t
@@ -2589,7 +2589,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     .chain(mesh_primary.then(|| mesh.clone()))
                                                     .collect();
                                                 writes_tx.send_if_modified(|held| std::mem::replace(held, written.clone()) != written);
-                                                let fabric_primary = t.holds_fabric_seat(&seat_node_id);
+                                                let fabric_primary = t.is_fabric_primary(&seat_node_id);
                                                 // A role taken or given up this round is held from the anti-entropy until its
                                                 // seat is announced below: a role's first aggregate follows its seat record.
                                                 let announcing = if (mesh_primary, fabric_primary) != (was_mesh_primary, was_fabric_primary) { Some(roles.write().await) } else { None };
@@ -2693,7 +2693,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         _ = records.wake.report_notify.notified() => break,
                                                         _ = records.view_changed.notified() => {
                                                             let now = topology.read().await.clone();
-                                                            let (mp, fp) = (now.holds_mesh_seat(&mesh, &seat_node_id), now.holds_fabric_seat(&seat_node_id));
+                                                            let (mp, fp) = (now.is_mesh_primary(&mesh, &seat_node_id), now.is_fabric_primary(&seat_node_id));
                                                             let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                                                             if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status || announced.mesh_awaiting_round || announced.fabric_awaiting_round || records.peer_recovering() {
                                                                 break;
@@ -2772,7 +2772,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // The R-D1 fence as the Build door and the drive read it: t from this admin's last direct
                                         // backbone receipt of the mesh, whether or not the ladder has stepped the mesh yet.
                                         let (ladder, book) = (ladder.clone(), book.clone());
-                                        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now()))));
+                                        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().peer_mesh_unheard(mesh, book.mesh_unheard(mesh, std::time::Instant::now()))));
                                     }
                                     {
                                         let held = connections.held();
@@ -2834,13 +2834,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // fabric authority first starts a reconciliation Build for
                                                 // proven drift.
                                                 {
-                                                    let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (book.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh)).await;
+                                                    let durable_rows = if now.is_fabric_primary(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (book.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh)).await;
                                                     // The attempt is planned from the view as it is now.
                                                     if opened.is_some() {
                                                         records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
                                                     }
-                                                    if now.holds_fabric_seat(&me_id) {
+                                                    if now.is_fabric_primary(&me_id) {
                                                         crate::build_op::ensure_active(&drives, &drive_env).await;
                                                     }
                                                 }

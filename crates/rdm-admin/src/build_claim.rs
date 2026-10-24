@@ -208,12 +208,12 @@ impl ClaimDoor {
         // claims through BuildClaim, Q118); a mesh-primary that is not the fabric-primary decides only
         // its own lane's claims it opens in process, which no report reaches.
         let claims = match lane {
-            None => t.holds_fabric_seat(&self.node_id),
+            None => t.is_fabric_primary(&self.node_id),
             Some(lane) => {
-                t.holds_fabric_seat(&self.node_id) || t.holds_mesh_seat(lane, &self.node_id)
+                t.is_fabric_primary(&self.node_id) || t.is_mesh_primary(lane, &self.node_id)
             }
         };
-        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.name.to_string()), mesh.and_then(|m| t.cohort_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.name.to_string())))
+        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.name.to_string()), mesh.and_then(|m| t.node_type_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.name.to_string())))
     }
 
     /// Decide the claim of the fabric lane's `attempt` of `build_id` for `executor` (a node-admin's

@@ -142,7 +142,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
         )
         .await;
         let retired = pipeline
-            .retire(&RetireRequest {
+            .delete_node(&RetireRequest {
                 build_id: build,
                 attempt: 1,
                 node: created.node.clone(),
@@ -219,7 +219,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         )
         .await;
         let retired = pipeline
-            .retire(&RetireRequest {
+            .delete_node(&RetireRequest {
                 build_id: build.clone(),
                 attempt: 1,
                 node: b.node.clone(),

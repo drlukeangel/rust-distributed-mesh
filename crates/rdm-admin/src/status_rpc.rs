@@ -278,7 +278,7 @@ impl SeatFold {
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
     /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
     pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rdm_transport::membership::DigestBook>) {
-        let holds = now.holds_mesh_seat(&self.mesh, &self.me);
+        let holds = now.is_mesh_primary(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
             if !holds {
@@ -655,7 +655,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             // The mesh's primary writes its status (node-identity-and-state.md 4.3): an admin whose view
             // names another admin the mesh's primary is not the receiver. One whose view names none
             // yet is the admin the hand-off created, before its own seat shows in its view.
-            if let Some(primary) = view.cohort_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
+            if let Some(primary) = view.node_type_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) }), None);
             }
             // Never a replacement mesh id to satisfy the operation.
@@ -1270,7 +1270,7 @@ impl StatusAuthority {
     /// A birth the book holds at the same incarnation keeps its rows, however long it is silent, and
     /// so does a birth the book does not hold at all whose path no other node holds (nothing is
     /// proven of it).
-    pub async fn retire_superseded(&self, book: &rdm_transport::membership::DigestBook) {
+    pub async fn drop_superseded(&self, book: &rdm_transport::membership::DigestBook) {
         let me_name = book.held_path_name().unwrap_or_else(|| self.me.clone());
         // The births held and their paths, read under the lock and the lock released before any await.
         let held: Vec<((NodeId, IncarnationId), Option<crate::model::PathName>)> = {
@@ -2308,7 +2308,7 @@ mod tests {
     }
 
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
-    fn authority_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::storage::MemoryNodesStorage>) -> StatusAuthority {
+    fn mesh_primary_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::storage::MemoryNodesStorage>) -> StatusAuthority {
         StatusAuthority {
             certs: None,
             app_channels: None,
@@ -2366,7 +2366,7 @@ mod tests {
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), own.clone(), other.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let authority = authority_with_store(&admin, topology, fabric_id, status.clone());
+        let authority = mesh_primary_with_store(&admin, topology, fabric_id, status.clone());
         for n in [&own, &other] {
             assert_eq!(authority.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
         }
@@ -2406,7 +2406,7 @@ mod tests {
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let authority = Arc::new(authority_with_store(&admin, topology, fabric_id.clone(), status.clone()));
+        let authority = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id.clone(), status.clone()));
         // The join door, its accepted report's Pending recorded by this authority as boot wires it.
         let replies: Arc<Mutex<Vec<R>>> = Arc::default();
         let joins = Arc::new(crate::join::Joins::default());
@@ -2683,7 +2683,7 @@ mod tests {
     }
 
     /// The status authority of the admin born as `me`, deciding over `view`.
-    fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
+    fn mesh_primary_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
             certs: None,
             app_channels: None,
@@ -2750,7 +2750,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![m2p.clone()],
         };
-        let auth = authority_of(&m2p, view.clone());
+        let auth = mesh_primary_of(&m2p, view.clone());
         auth.durable.lock().unwrap().push(member.clone());
         let declare = |n: &crate::model::Node| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(&member));
@@ -2782,10 +2782,10 @@ mod tests {
             nodes: vec![fp.clone(), m2p.clone(), m2a.clone()],
         };
         let declare = StatusRequest::DeclareNodeState { node_id: m2a.node_id.clone(), incarnation: m2a.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
-        let (reply, effect) = decide(&authority_of(&m2p, view.clone()), &view, &Declared::default(), &declare);
+        let (reply, effect) = decide(&mesh_primary_of(&m2p, view.clone()), &view, &Declared::default(), &declare);
         assert_eq!(reply, R::Applied, "mesh2's primary applies its own mesh's admin's ReadyForTraffic");
         assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic, None)) if row.node_id == m2a.node_id), "{effect:?}");
-        let (reply, effect) = decide(&authority_of(&fp, view.clone()), &view, &Declared::default(), &declare);
+        let (reply, effect) = decide(&mesh_primary_of(&fp, view.clone()), &view, &Declared::default(), &declare);
         assert_eq!(reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "the fabric-primary of mesh1 is not mesh2.admin.2's authority");
         assert!(effect.is_none());
     }
@@ -2809,7 +2809,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i144-r24-admin-door");
         let (reply, effect) = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            decide(&authority_of(&me, view.clone()), &view, &Declared::default(), &StatusRequest::GetFabric)
+            decide(&mesh_primary_of(&me, view.clone()), &view, &Declared::default(), &StatusRequest::GetFabric)
         };
         assert_eq!(reply, R::RequestNotHandled { request: "fabric.get".into() });
         assert!(effect.is_none(), "{effect:?}");
@@ -2845,19 +2845,19 @@ mod tests {
         let seated = view(vec![fp.clone(), first.clone(), second.clone()]);
         let pending = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending };
 
-        let (reply, effect) = decide(&authority_of(&second, seated.clone()), &seated, &Declared::default(), &pending);
+        let (reply, effect) = decide(&mesh_primary_of(&second, seated.clone()), &seated, &Declared::default(), &pending);
         assert!(
             matches!(&reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
             "an admin whose view names mesh2.admin.1 mesh2's primary applies no Mesh status of mesh2: {reply:?}"
         );
 
-        let (reply, effect) = decide(&authority_of(&first, seated.clone()), &seated, &Declared::default(), &pending);
+        let (reply, effect) = decide(&mesh_primary_of(&first, seated.clone()), &seated, &Declared::default(), &pending);
         assert!(matches!(reply, R::Applied) && effect.is_some(), "the primary its view names applies it: {reply:?}");
 
         let mut unseated_first = first.clone();
         unseated_first.is_primary = false;
         let unseated = view(vec![fp.clone(), unseated_first.clone(), second.clone()]);
-        let (reply, effect) = decide(&authority_of(&unseated_first, unseated.clone()), &unseated, &Declared::default(), &pending);
+        let (reply, effect) = decide(&mesh_primary_of(&unseated_first, unseated.clone()), &unseated, &Declared::default(), &pending);
         assert!(matches!(reply, R::Applied) && effect.is_some(), "an admin of the mesh whose view names no primary of it applies it: {reply:?}");
     }
 
@@ -2872,7 +2872,7 @@ mod tests {
     /// declaration `Applied` on the retired birth's mesh-primary seat, or a node command naming this
     /// admin refused as "not the subject node itself".
     #[tokio::test]
-    async fn an_authority_whose_view_holds_its_retired_birth_at_its_path_answers_as_itself() {
+    async fn a_mesh_primary_whose_view_holds_its_superseded_birth_at_its_path_answers_as_itself() {
         let mut retired = node("mesh1.admin.1");
         retired.kind = NodeKind::NodeAdmin;
         retired.mesh = "mesh1".into();
@@ -2896,8 +2896,8 @@ mod tests {
             nodes: vec![retired.clone(), member.clone(), owner.clone()],
         };
         assert_ne!(retired.node_id, successor.node_id, "a replace mints a new node id");
-        assert_eq!(view.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh1's seat in this view");
-        let auth = authority_of(&successor, view.clone());
+        assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh1's seat in this view");
+        let auth = mesh_primary_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
         let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
@@ -2928,7 +2928,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![me.clone()],
         };
-        let auth = authority_of(&me, view);
+        let auth = mesh_primary_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
         let stop = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.2".into() };
         let reply = auth.apply(None, &stop).await;
@@ -2970,7 +2970,7 @@ mod tests {
             nodes: vec![fp.clone(), m1_member.clone(), m2_primary.clone(), m2_member.clone()],
         };
         view.meshes.push(crate::model::Mesh { id: Some(m2_id.clone()), name: "mesh2".into(), status: crate::model::ScopeStatus::ReadyForTraffic });
-        let auth = authority_of(&fp, view);
+        let auth = mesh_primary_of(&fp, view);
         let ready = StatusRequest::DeclareMeshState { mesh_id: m2_id.clone(), state: MeshState::ReadyForTraffic };
         assert_eq!(auth.apply(Some(m2_primary.clone()), &ready).await, R::Applied);
         assert_eq!(auth.apply(Some(m2_member.clone()), &ready).await, R::Applied, "decided for mesh2, whoever sends it, and answered Applied again (Q144)");
@@ -3105,7 +3105,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3051-superseded-rows");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.retire_superseded(&book).await;
+            authority.drop_superseded(&book).await;
         }
         let by_incarnation = capture.named("rdm.node_admin.status.remove.via-new-incarnation");
         let by_deletion = capture.named("rdm.node_admin.status.remove.via-node-deleted");
@@ -3193,7 +3193,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.retire_superseded(&book).await;
+            authority.drop_superseded(&book).await;
         }
         let by_new_node = capture.named("rdm.node_admin.status.remove.via-new-node");
         for s in &by_new_node {

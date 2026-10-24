@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 /// SIGTERM disposition ending the process before its batch export, leaving the file empty, or the
 /// abandoned boot holding the exit past a Graceful stop's 5 s grace.
 #[test]
-fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain");
+fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_flush() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_flush");
     std::fs::create_dir_all(&dir).unwrap();
     let data_dir = std::env::temp_dir().join(format!("rdm-boot-stop-{}", NodeId::mint()));
     std::fs::create_dir_all(&data_dir).unwrap();

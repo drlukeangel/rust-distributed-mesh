@@ -108,14 +108,14 @@ impl AdminRunner {
         // node.fabric-primary.update step (lifecycles/fabric-delete.md step 1).
         if !build.topology.meshes.is_empty() || mesh != self.me.mesh.as_str() {
             let fabric_update = crate::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, outer);
-            self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: {e}"))?;
+            self.handover.fabric_primary_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: {e}"))?;
         }
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which deletes it
         // before anything is amended (R11). During fabric.delete, an unanswered mesh with no prior
         // AcceptedRoster resolves by deleting its unreached births (R-FS1 revised).
         let mut steps = steps;
-        let primary = match view.cohort_primary(mesh, NodeKind::NodeAdmin).filter(|p| p.status.is_live()).cloned() {
+        let primary = match view.node_type_primary(mesh, NodeKind::NodeAdmin).filter(|p| p.status.is_live()).cloned() {
             Some(p) => p,
             None => {
                 if build.topology.meshes.is_empty() && crate::mesh_delete::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?.is_none() {
@@ -207,7 +207,7 @@ impl AdminRunner {
         let Some(adm) = crate::mesh_delete::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))? else {
             return Err(RunEnd::failed(no_primary));
         };
-        if let Some(live) = view.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
+        if let Some(live) = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
             return Err(RunEnd::Incomplete(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name)));
         }
         let lost = adm.final_primary.clone();
@@ -243,7 +243,7 @@ impl AdminRunner {
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
         let now = self.topology.read().await.clone();
-        now.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it")))
+        now.node_type_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it")))
     }
 
     /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
@@ -314,7 +314,7 @@ impl AdminRunner {
         // lost primary published the mesh's aggregate), it is the surviving admin the election names
         // (mesh-delete.md "Resume after the primary's loss" step 2), and the next attempt hands it the
         // workflow. Nothing is deleted or created for the mesh.
-        let held = self.topology.read().await.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
+        let held = self.topology.read().await.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
         if let Some(n) = held {
             if matches!(crate::seat_revision::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                 return Err(RunEnd::Incomplete(format!("{outer}: {mesh}'s node-admin {} {} answers, so it survives; the next attempt hands the workflow to the admin the election names", b.node, b.incarnation_id)));

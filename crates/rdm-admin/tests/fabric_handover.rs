@@ -308,7 +308,7 @@ fn exact(r: &ResolvedNode) -> Birth {
     Birth { node_id: r.node_id.clone(), incarnation: r.incarnation.clone() }
 }
 
-fn holder_of(a: &Admin, revision: u64) -> Primary {
+fn primary_of(a: &Admin, revision: u64) -> Primary {
     Primary { mesh: a.resolved.name.mesh.clone(), node_id: a.resolved.node_id.clone(), incarnation: a.resolved.incarnation.clone(), revision }
 }
 
@@ -324,7 +324,7 @@ async fn send(from: &Admin, to: &Admin, req: Request) -> Reply {
 }
 
 /// The primary record `holder` holds for `seat` in `a`'s view (the election's input).
-async fn seat_at(a: &Admin, seat: Seat, holder: &Primary) {
+async fn primary_at(a: &Admin, seat: Seat, holder: &Primary) {
     a.door.membership.primaries().take(seat, holder);
 }
 
@@ -483,19 +483,19 @@ enum FabricPrimary {
     X,
 }
 
-async fn seats_fabric(fp: FabricPrimary) -> Seats {
-    seats_fabric_over(fp, true).await
+async fn primaries_fabric(fp: FabricPrimary) -> Seats {
+    primaries_fabric_over(fp, true).await
 }
 
 /// The seats fabric whose N holds no view at the first call it is made (its door `NotReady`) and holds
 /// it from its first answered probe on.
 async fn fabric_n_ready_on_probe(fp: FabricPrimary) -> Seats {
-    let f = seats_fabric_over(fp, false).await;
+    let f = primaries_fabric_over(fp, false).await;
     let _ = f.n.ready_on_ping.set(f.n.door.clone());
     f
 }
 
-async fn seats_fabric_over(fp: FabricPrimary, n_ready: bool) -> Seats {
+async fn primaries_fabric_over(fp: FabricPrimary, n_ready: bool) -> Seats {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, status.clone()).await;
     let n = admin(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", n_ready, status.clone()).await;
@@ -509,17 +509,17 @@ async fn seats_fabric_over(fp: FabricPrimary, n_ready: bool) -> Seats {
     let xn = node_of(&x, NodeStatus::ReadyForTraffic, fp == FabricPrimary::X);
     let nodes = vec![pn, nn, mn, xn];
     let fabric_primary = match fp {
-        FabricPrimary::P => holder_of(&p, 7),
-        FabricPrimary::X => holder_of(&x, 7),
+        FabricPrimary::P => primary_of(&p, 7),
+        FabricPrimary::X => primary_of(&x, 7),
     };
     for a in [&p, &n, &m, &x] {
         *a.door.topology.write().await = view(nodes.clone());
         for b in [&p, &n, &m, &x] {
             a.resolver.insert(b.resolved.clone());
         }
-        seat_at(a, Seat::FabricPrimary, &fabric_primary).await;
-        seat_at(a, Seat::MeshPrimary, &holder_of(&p, 3)).await;
-        seat_at(a, Seat::MeshPrimary, &holder_of(&x, 1)).await;
+        primary_at(a, Seat::FabricPrimary, &fabric_primary).await;
+        primary_at(a, Seat::MeshPrimary, &primary_of(&p, 3)).await;
+        primary_at(a, Seat::MeshPrimary, &primary_of(&x, 1)).await;
     }
     Seats { p, n, m, x }
 }
@@ -586,7 +586,7 @@ fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
     }
 }
 
-fn member_holder(m: &Member, revision: u64) -> Primary {
+fn member_primary(m: &Member, revision: u64) -> Primary {
     Primary { mesh: m.resolved.name.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone(), revision }
 }
 
@@ -631,17 +631,17 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         for r in &resolved {
             a.resolver.insert(r.clone());
         }
-        seat_at(a, Seat::FabricPrimary, &holder_of(&x, 7)).await;
-        seat_at(a, Seat::MeshPrimary, &holder_of(&p, 3)).await;
-        seat_at(a, Seat::MeshPrimary, &holder_of(&x, 1)).await;
-        seat_at(a, Seat::Cohort(RPC), &member_holder(&b1, 2)).await;
+        primary_at(a, Seat::FabricPrimary, &primary_of(&x, 7)).await;
+        primary_at(a, Seat::MeshPrimary, &primary_of(&p, 3)).await;
+        primary_at(a, Seat::MeshPrimary, &primary_of(&x, 1)).await;
+        primary_at(a, Seat::Cohort(RPC), &member_primary(&b1, 2)).await;
     }
     let members: Vec<&Member> = std::iter::once(&b1).chain(b2.iter()).collect();
     for m in &members {
         for r in &resolved {
             m.resolver.insert(r.clone());
         }
-        m.door.membership().primaries().take(Seat::Cohort(RPC), &member_holder(&b1, 2));
+        m.door.membership().primaries().take(Seat::Cohort(RPC), &member_primary(&b1, 2));
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.membership().book.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it ReadyForTraffic.
@@ -675,16 +675,16 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::P).await;
+        let f = primaries_fabric(FabricPrimary::P).await;
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
-        let revisions = f.p.door.move_own_seats(Moving::BothSeats, "b1", 1, &op, None).await.expect("both primaries move");
+        let revisions = f.p.door.update_own_primaries(Moving::BothSeats, "b1", 1, &op, None).await.expect("both primaries move");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
         for a in [&f.p, &f.n] {
-            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{}", a.resolved.name);
-            assert_eq!(a.door.membership.primaries().fabric(), Some(holder_of(&f.n, 8)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().fabric(), Some(primary_of(&f.n, 8)), "{}", a.resolved.name);
         }
         let pv = f.p.door.topology.read().await.clone();
-        assert_eq!(pv.cohort_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"), "P's view names N mesh-primary");
+        assert_eq!(pv.node_type_primary("mesh1", rdm_admin::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"), "P's view names N mesh-primary");
         assert_eq!(fabric_primary_of(&pv).as_deref(), Some("mesh1.admin.2"), "P's view names N fabric-primary");
         let mut d = digest_of(&f.n.resolved, &FabricId::mint());
         f.n.door.book.recorded_primaries(&mut d);
@@ -692,7 +692,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
         let (finished, installed) = (spans.position(WRITES_FINISHED).expect("P finished its writes"), spans.position(UPDATED).expect("N installed"));
         assert!(finished < installed, "P finished its writes before N installed: {:?}", spans.names());
         assert_eq!(f.p.finished(), 1);
-        assert_eq!(f.m.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "M, which nobody called, takes the change from N's digest");
+        assert_eq!(f.m.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "M, which nobody called, takes the change from N's digest");
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
     });
@@ -712,14 +712,14 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::X).await;
+        let f = primaries_fabric(FabricPrimary::X).await;
         let m_name: rdm_admin::model::PathName = "mesh1.admin.3".parse().unwrap();
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.3");
         assert_eq!(f.x.door.row_acknowledged("mesh1", &op, Some(&m_name), "b1", 2).await, Ok(false), "M was never primary: no update to acknowledge");
         let calls = |spans: &Spans| spans.named(CALL).into_iter().filter(|c| c["op"] == "33").count();
         assert_eq!(calls(&spans), 0, "no 0x21 call for a node that was never primary");
         // P's update to N happened: X holds N at 4, P replaced.
-        seat_at(&f.x, Seat::MeshPrimary, &holder_of(&f.n, 4)).await;
+        primary_at(&f.x, Seat::MeshPrimary, &primary_of(&f.n, 4)).await;
         let p_name: rdm_admin::model::PathName = "mesh1.admin.1".parse().unwrap();
         let p_op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
         assert_eq!(f.x.door.row_acknowledged("mesh1", &p_op, Some(&p_name), "b1", 2).await, Ok(true), "P's update to N is acknowledged on N's node.primary.updated");
@@ -742,14 +742,14 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successor
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::X).await;
+        let f = primaries_fabric(FabricPrimary::X).await;
         let p = node_at(&f.x, "mesh1.admin.1").await;
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
         let revisions = f.x.door.command_update_primary(&p, "b1", 1, &op).await.expect("the command answers node.primary.updated");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]);
         for a in [&f.x, &f.p, &f.n] {
-            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)), "{}", a.resolved.name);
-            assert_eq!(a.door.membership.primaries().fabric(), Some(holder_of(&f.x, 7)), "{}: the fabric-primary stays X", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().fabric(), Some(primary_of(&f.x, 7)), "{}: the fabric-primary stays X", a.resolved.name);
         }
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| (c["to"].clone(), c["outcome"].clone())).collect::<Vec<_>>(), vec![("mesh1.admin.1".to_string(), "updated".to_string())], "{commands:?}");
@@ -766,14 +766,14 @@ fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_opera
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::X).await;
+        let f = primaries_fabric(FabricPrimary::X).await;
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
         let call = |revision| Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, revision)], build_id: "b1".into(), run: 1, operation: op.into() };
         let first = send(&f.p, &f.n, call(4)).await;
         assert_eq!(first, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
         assert_eq!(send(&f.p, &f.n, call(4)).await, first, "an identical retry answers the same");
         assert_eq!(send(&f.p, &f.n, call(5)).await, Reply::RejectedConflictingPayload { operation: op.into() });
-        assert_eq!(f.n.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)), "the conflicting payload installs nothing");
+        assert_eq!(f.n.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "the conflicting payload installs nothing");
         assert_eq!(spans.named(UPDATED).len(), 1, "one install");
         let _ = (&f.m, &f.x);
     });
@@ -788,11 +788,11 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::X).await;
+        let f = primaries_fabric(FabricPrimary::X).await;
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
         let r = send(&f.p, &f.m, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), run: 1, operation: op.into() }).await;
         assert_eq!(r, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
-        assert_eq!(f.m.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.n, 4)));
+        assert_eq!(f.m.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)));
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
     });
@@ -810,9 +810,9 @@ async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
         for b in [&p, &x] {
             a.resolver.insert(b.resolved.clone());
         }
-        seat_at(a, Seat::FabricPrimary, &holder_of(&p, 7)).await;
-        seat_at(a, Seat::MeshPrimary, &holder_of(&p, 3)).await;
-        seat_at(a, Seat::MeshPrimary, &holder_of(&x, 1)).await;
+        primary_at(a, Seat::FabricPrimary, &primary_of(&p, 7)).await;
+        primary_at(a, Seat::MeshPrimary, &primary_of(&p, 3)).await;
+        primary_at(a, Seat::MeshPrimary, &primary_of(&x, 1)).await;
     }
     (p, x)
 }
@@ -832,13 +832,13 @@ fn an_update_with_no_successor_fails_by_its_exact_text_and_nothing_moves() {
     cap.run(async {
         let (p, x) = lone_fabric(NodeStatus::Pending).await;
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
-        let mesh = p.door.move_own_seats(Moving::MeshSeat, "b1", 1, &op, None).await;
+        let mesh = p.door.update_own_primaries(Moving::MeshSeat, "b1", 1, &op, None).await;
         assert!(matches!(&mesh, Err(SeatMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason == "cannot transfer: no secondary of type node-admin in mesh mesh1"), "{mesh:?}");
         let op = update_operation(Seat::FabricPrimary, "b1", 1, "node.stop:mesh1.admin.1");
-        let fabric = p.door.move_own_seats(Moving::FabricSeatOutside, "b1", 1, &op, None).await;
+        let fabric = p.door.update_own_primaries(Moving::FabricSeatOutside, "b1", 1, &op, None).await;
         assert!(matches!(&fabric, Err(SeatMoveEnd::Failed { reason, .. }) if reason == "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic"), "{fabric:?}");
         assert_eq!(p.finished(), 0, "no writes finished for a refused update");
-        assert_eq!((p.door.membership.primaries().mesh("mesh1"), p.door.membership.primaries().fabric()), (Some(holder_of(&p, 3)), Some(holder_of(&p, 7))), "P stays both");
+        assert_eq!((p.door.membership.primaries().mesh("mesh1"), p.door.membership.primaries().fabric()), (Some(primary_of(&p, 3)), Some(primary_of(&p, 7))), "P stays both");
         let _ = &x;
     });
 }
@@ -855,14 +855,14 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
     cap.run(async {
         let (p, x) = lone_fabric(NodeStatus::ReadyForTraffic).await;
         let op = update_operation(Seat::FabricPrimary, "b1", 1, "mesh.delete:mesh1");
-        assert!(p.door.fabric_seat_updated("mesh1", &op).await.is_err(), "before the update the fabric-primary is of mesh1");
-        let revisions = p.door.move_own_seats(Moving::FabricSeatOutside, "b1", 1, &op, None).await.expect("the fabric-primary moves to mesh2");
+        assert!(p.door.fabric_primary_updated("mesh1", &op).await.is_err(), "before the update the fabric-primary is of mesh1");
+        let revisions = p.door.update_own_primaries(Moving::FabricSeatOutside, "b1", 1, &op, None).await.expect("the fabric-primary moves to mesh2");
         assert_eq!(revisions, vec![entry("fabric", &p.resolved, &x.resolved, 8)]);
         for a in [&p, &x] {
-            assert_eq!(a.door.membership.primaries().fabric(), Some(holder_of(&x, 8)), "{}", a.resolved.name);
-            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(holder_of(&p, 3)), "{}: P stays mesh1's mesh-primary", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().fabric(), Some(primary_of(&x, 8)), "{}", a.resolved.name);
+            assert_eq!(a.door.membership.primaries().mesh("mesh1"), Some(primary_of(&p, 3)), "{}: P stays mesh1's mesh-primary", a.resolved.name);
         }
-        p.door.fabric_seat_updated("mesh1", &op).await.expect("the fabric-primary is no node-admin of mesh1 any more");
+        p.door.fabric_primary_updated("mesh1", &op).await.expect("the fabric-primary is no node-admin of mesh1 any more");
     });
 }
 
@@ -877,13 +877,13 @@ fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::X).await;
+        let f = primaries_fabric(FabricPrimary::X).await;
         f.n.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
         status_rows_of(&f.n, false).await;
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
         let r = send(&f.p, &f.n, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), run: 1, operation: op.into() }).await;
         assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
-        assert_eq!(f.n.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N installs nothing");
+        assert_eq!(f.n.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "N installs nothing");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "successor" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
         let _ = (&f.m, &f.x);
     });
@@ -902,7 +902,7 @@ fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::X).await;
+        let f = primaries_fabric(FabricPrimary::X).await;
         f.p.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
         let rows = status_rows_of(&f.p, false).await;
         let op = "node.primary.update:b1:1:node.stop:mesh1.admin.1";
@@ -911,7 +911,7 @@ fn the_primary_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_
         assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "primary" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
         assert_eq!(f.p.finished(), 0, "no writes finished for the refused update");
-        assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "P is still mesh-primary");
+        assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "P is still mesh-primary");
         let fabric_id = f.p.door.topology.read().await.fabric.id.clone();
         rows.put_fabric(&FabricRecord { fabric_id, name: "fabric1".into(), events: vec!["ready-for-traffic".into()] }).await.unwrap();
         assert_eq!(send(&f.x, &f.p, command()).await, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] }, "decided on the root's ready row");
@@ -932,7 +932,7 @@ fn a_successor_that_does_not_answer_is_investigated_and_reached_the_call_is_made
     cap.run(async {
         let f = fabric_n_ready_on_probe(FabricPrimary::P).await;
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
-        let revisions = f.p.door.move_own_seats(Moving::BothSeats, "b1", 1, &op, None).await.expect("the call made again is answered");
+        let revisions = f.p.door.update_own_primaries(Moving::BothSeats, "b1", 1, &op, None).await.expect("the call made again is answered");
         assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
         let looked = spans.named(INVESTIGATION);
         assert_eq!(looked.iter().map(|l| (l["verdict"].clone(), l["retry"].clone())).collect::<Vec<_>>(), vec![("reached".to_string(), "primary-updated".to_string())], "{looked:?}");
@@ -952,12 +952,12 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
     cap.run(async {
-        let f = seats_fabric(FabricPrimary::P).await;
+        let f = primaries_fabric(FabricPrimary::P).await;
         let _ = f.n._router.shutdown().await;
         let op = update_operation(Seat::MeshPrimary, "b1", 1, "node.stop:mesh1.admin.1");
-        let r = f.p.door.move_own_seats(Moving::BothSeats, "b1", 1, &op, None).await;
+        let r = f.p.door.update_own_primaries(Moving::BothSeats, "b1", 1, &op, None).await;
         assert!(matches!(&r, Err(SeatMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason.starts_with("the successor is unheard after the update: mesh1.admin.2")), "{r:?}");
-        assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(holder_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
+        assert_eq!(f.p.door.membership.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
         assert_eq!(spans.named(INVESTIGATION).len(), 1);
         let _ = (&f.m, &f.x);
     });
@@ -979,11 +979,11 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
         let f = type_fabric(true).await;
         let b1 = node_at(&f.p, "mesh1.rpc.1").await;
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
-        let revisions = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
+        let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.p.door.membership.primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)));
-        assert_eq!(f.b1.door.membership().primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
-        assert_eq!(f.b2().door.membership().primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B2 installed itself");
+        assert_eq!(f.p.door.membership.primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)));
+        assert_eq!(f.b1.door.membership().primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
+        assert_eq!(f.b2().door.membership().primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");
         let _ = &f.x;
     });
@@ -1002,9 +1002,9 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
         let f = type_fabric_heard(true, false).await;
         let b1 = node_at(&f.p, "mesh1.rpc.1").await;
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
-        let revisions = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
+        let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.b1.door.membership().primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B1 installed B2's answer");
+        assert_eq!(f.b1.door.membership().primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
         let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.2"), successor: None }).await;
         assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == "mesh1.rpc.1 is a rpc-node primary: its mesh-primary's command names no successor"), "{bare:?}");
         let _ = &f.x;
@@ -1026,7 +1026,7 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.x.door.command_update_primary(&b1, "b1", 1, &op).await.expect("the command answers");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.x.door.membership.primaries().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)));
+        assert_eq!(f.x.door.membership.primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| c["to"].clone()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()], "X's command goes to mesh1's mesh-primary: {commands:?}");
     });
@@ -1042,9 +1042,9 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
         let f = type_fabric(false).await;
         let b1 = node_at(&f.p, "mesh1.rpc.1").await;
         let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
-        let r = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await;
+        let r = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type rpc-node in mesh mesh1"), "{r:?}");
-        assert_eq!(f.p.door.membership.primaries().cohort("mesh1", RPC), Some(member_holder(&f.b1, 2)), "B1 stays the rpc-node primary");
+        assert_eq!(f.p.door.membership.primaries().cohort("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the rpc-node primary");
         let _ = &f.x;
     });
 }

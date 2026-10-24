@@ -110,7 +110,7 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said, w
     // mesh-primary the fabric-primary runs it, without the half-floor wait, after the election has named
     // the new mesh-primary").
     let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
-    let holds_fabric = view.holds_fabric_seat(&me_birth.0);
+    let holds_fabric = view.is_fabric_primary(&me_birth.0);
     for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && n.node_id != me_birth.0) {
         let own_holder = &n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
         let incumbent = fabric_mesh.as_ref() == Some(&n.mesh);
@@ -306,7 +306,7 @@ pub async fn run(w: Watch) {
             // to open again.
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
-                (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0) => {
+                (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) => {
                     let (node, topology, me_id) = (node.clone(), w.topology.clone(), me_birth.0.clone());
                     tokio::spawn(async move {
                         let mut backoff = rdm_transport::membership::gossip_interval();
@@ -320,7 +320,7 @@ pub async fn run(w: Watch) {
                             backoff = (backoff * 2).min(ceiling);
                             let t = topology.read().await;
                             let held = t.births().any(|n| n.node_id == node.node_id && n.incarnation_id == node.incarnation_id);
-                            if !held || !t.holds_fabric_seat(&me_id) {
+                            if !held || !t.is_fabric_primary(&me_id) {
                                 break;
                             }
                         }

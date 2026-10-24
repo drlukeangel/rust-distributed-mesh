@@ -458,7 +458,7 @@ impl AdminRunner {
     /// Fence `path` before a new birth (`crate::fence`): this admin answers the fence's questions.
     pub(crate) async fn revise_predecessor(&self, path: &PathName) -> FenceOutcome {
         let prev = self.topology.read().await.node(path).cloned();
-        let out = crate::seat_revision::fence(path, prev, self).await;
+        let out = crate::seat_revision::investigate_path(path, prev, self).await;
         if matches!(out, FenceOutcome::Clear { .. }) {
             self.handles.lock().unwrap().remove(path);
         }
@@ -630,7 +630,7 @@ impl AdminRunner {
         let pipeline = self.pipeline_with(&template, builds);
         // Fabric recovery's backbone arm terminates nothing in the mesh (fabric-recovery.md step 3, Q148;
         // node-delete.md): its delete reads the exact runtime, writes the row deleted and releases the name.
-        let terminal = if backbone_attempt(builds, build_id, attempt, node).await { pipeline.delete_from_backbone(&req).await } else { pipeline.retire(&req).await };
+        let terminal = if backbone_attempt(builds, build_id, attempt, node).await { pipeline.delete_from_backbone(&req).await } else { pipeline.delete_node(&req).await };
         let terminal = terminal.map_err(crate::executor::RunEnd::from)?;
         let held = self.handles.lock().unwrap().get(node).is_some_and(|(n, _)| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         if held {
@@ -1067,7 +1067,7 @@ impl AdminRunner {
     pub(crate) async fn delete_birth(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
         let template = self.template_for(record.kind, &record.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
-        let terminal = self.pipeline(&template).retire(&req).await.map_err(crate::executor::RunEnd::from)?;
+        let terminal = self.pipeline(&template).delete_node(&req).await.map_err(crate::executor::RunEnd::from)?;
         self.after_exit(&record);
         self.handles.lock().unwrap().remove(&record.name);
         Ok(terminal)

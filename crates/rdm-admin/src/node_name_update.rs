@@ -146,7 +146,7 @@ async fn rename(
     }
     // 2. The writer: the mesh-primary of the node's mesh, or the fabric-primary for a mesh with none (R-OW1).
     if !crate::node_rows::writes_for(now, me_id, &held.mesh) {
-        let held_by = now.cohort_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+        let held_by = now.node_type_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", held.mesh, held.name);
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });

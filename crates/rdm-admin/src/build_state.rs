@@ -2713,7 +2713,7 @@ mod tests {
     }
 
     #[test]
-    fn open_retire_and_restart_overlays_are_derived_from_the_build_facts() {
+    fn open_delete_and_restart_overlays_are_derived_from_the_build_facts() {
         let op = |node: &str| rdm_core::LifecycleOp {
             build_id: rdm_core::fixture_crockford60("b1"),
             attempt: 1,

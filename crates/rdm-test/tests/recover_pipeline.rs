@@ -174,7 +174,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let recover_build = publish_build(&rig.builds, add_node()).await;
     // node.delete of the unreached birth.
     pipeline
-        .retire(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
+        .delete_node(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
     // The executor fences the exited birth before the create that takes its key.

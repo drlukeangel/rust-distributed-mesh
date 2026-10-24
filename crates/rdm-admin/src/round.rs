@@ -98,7 +98,7 @@ pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], m
 /// The report that counts for each of `meshes`, read for the primary `view` names it now
 /// ([`crate::status_rpc::Declared::report_of`]).
 pub(crate) fn reports_of<'a>(declared: &crate::status_rpc::Declared, view: &crate::topology::Topology, meshes: impl Iterator<Item = &'a str>) -> BTreeMap<String, MeshReport> {
-    meshes.filter_map(|m| declared.report_of(m, view.cohort_primary(m, NodeKind::NodeAdmin)).map(|r| (m.to_string(), r))).collect()
+    meshes.filter_map(|m| declared.report_of(m, view.node_type_primary(m, NodeKind::NodeAdmin)).map(|r| (m.to_string(), r))).collect()
 }
 
 /// Whether the mesh a fabric-primary decided to recover is back: its current primary is a birth the

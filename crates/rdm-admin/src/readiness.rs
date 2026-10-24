@@ -33,7 +33,7 @@ pub(crate) fn mesh_not_ready(desired: &MeshDesired, observed: &Topology) -> Vec<
         return why;
     }
     for (kind, want) in desired.counts() {
-        let ready = observed.cohort(&desired.name, kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count() as u32;
+        let ready = observed.nodes_of_type(&desired.name, kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count() as u32;
         if ready < want {
             why.push(format!("mesh {}: {ready}/{want} {} ready-for-traffic", desired.name, kind.segment()));
         }

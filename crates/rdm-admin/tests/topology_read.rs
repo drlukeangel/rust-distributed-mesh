@@ -378,7 +378,7 @@ fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_noth
 /// snapshot (never Unchanged), and the serve span counts one snapshot and no unchanged. A `since`
 /// with no mesh named is ignored: every mesh is streamed.
 #[test]
-fn a_since_from_another_publisher_epoch_is_answered_with_the_snapshot_not_unchanged() {
+fn a_since_from_another_publisher_revision_is_answered_with_the_snapshot_not_unchanged() {
     let cap = capture("since-epoch");
     cap.run(async {
         let fabric = FabricId::mint();
@@ -447,7 +447,7 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
 /// node serves the held source's in-flight operation with the member still listed, and the reader
 /// holds the member as deleting (its overlay names the operation) rather than as a plain member.
 #[test]
-fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_overlay() {
+fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overlay() {
     let cap = capture("retiring");
     cap.run(async {
         let fabric = FabricId::mint();
@@ -485,7 +485,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_over
 /// `GetTopology` read of the mesh carries the stop overlay, the reader holds the birth parked from
 /// it, and the reader's view lists the node `Leaving` and parked, never absent.
 #[test]
-fn a_late_reader_lists_a_stopped_node_parked_from_the_stop_overlay_a_read_carries() {
+fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
     let cap = capture("stopped-late");
     cap.run(async {
         let fabric = FabricId::mint();
@@ -586,7 +586,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
 /// and fabric-primary records it holds, which `get_topology` installs into the caller's view; another
 /// node type's primary rides its digest and its mesh-primary's projection, not the read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_holds() {
+async fn a_read_is_served_with_the_adopted_rafka_time_and_the_nodes_primaries() {
     use rdm_core::{NodeKind, Seat, Primary};
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);

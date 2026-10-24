@@ -88,7 +88,7 @@ fn renewed_by(view: &Topology, me: &NodeId) -> Vec<Node> {
     let mut out = Vec::new();
     let fabric_primary = view.fabric_primary().is_some_and(|f| f.node_id == *me);
     for m in &view.meshes {
-        let primary = view.cohort_primary(&m.name, NodeKind::NodeAdmin).map(|p| p.node_id.clone());
+        let primary = view.node_type_primary(&m.name, NodeKind::NodeAdmin).map(|p| p.node_id.clone());
         let holds_mesh = primary.as_ref() == Some(me);
         for n in view.births().filter(|n| n.mesh == m.name) {
             let is_primary = primary.as_ref() == Some(&n.node_id);
@@ -350,7 +350,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
         // The signing cert dates are written by the admin's mesh-primary (node-issuer-update.md step 4):
         // this fabric-primary writes them only for the mesh whose primary it is, never as the stand-in
         // writer of a mesh it sees with none, whose own primary may already be writing its records.
-        let own_mesh = view.holds_mesh_seat(&m.name, &r.node_id);
+        let own_mesh = view.is_mesh_primary(&m.name, &r.node_id);
         let Ok(rows) = signing_of(r, &m.name, own_mesh).await else { continue };
         // The newest key is the one held here while no admin's dates name a newer, else the newest
         // dates'; its renew point passed, the next is minted, and otherwise the held key is carried to
@@ -378,7 +378,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
         if lacking.is_empty() || lacking.iter().all(|(a, i)| row_of_admin(a, i).is_some_and(|row| now >= row.expires_at)) {
             continue;
         }
-        let Some(primary) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned() else { continue };
+        let Some(primary) = view.node_type_primary(&m.name, NodeKind::NodeAdmin).cloned() else { continue };
         let others: Vec<Node> = admins.iter().filter(|(a, _)| a.node_id != primary.node_id).map(|(a, _)| a.clone()).collect();
         let primary_holds = primary.incarnation_id.as_ref().is_some_and(|i| holds(&primary, i));
         let sends: Vec<(Node, Option<NodeId>)> = if primary.node_id == r.node_id {

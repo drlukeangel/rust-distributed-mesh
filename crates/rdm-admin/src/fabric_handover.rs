@@ -279,13 +279,13 @@ impl HandoverDoor {
         } else {
             let view = self.topology.read().await.clone();
             let kind = crate::model::NodeKind::ALL.into_iter().find(|k| k.node_type() == node_type);
-            let primary = kind.and_then(|k| view.cohort_primary(&self.me.mesh, k).cloned());
+            let primary = kind.and_then(|k| view.node_type_primary(&self.me.mesh, k).cloned());
             let Some(primary) = primary.filter(|_| mesh_primary) else {
                 let reason = format!("{me} is not the mesh-primary of {} naming a {node_type} primary", self.me.mesh);
                 refused("commander", "not-primary", &reason, &operation);
                 return rdm_core::reply::handover::bounded_not_primary(&reason);
             };
-            return match self.update_cohort_primary(&primary, None, &build_id, run, &operation).await {
+            return match self.update_node_type_primary(&primary, None, &build_id, run, &operation).await {
                 Ok(revisions) => Reply::PrimaryUpdated { revisions },
                 Err(refusal) => refusal,
             };
@@ -320,7 +320,7 @@ impl HandoverDoor {
 
     /// [`Self::update_primary`] moving this admin's own primaries as a step of its Build (the
     /// fabric-primary has nothing above it), its end told apart as the step needs it.
-    pub async fn move_own_seats(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<Entry>, crate::build_drive::SeatMoveEnd> {
+    pub async fn update_own_primaries(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<Entry>, crate::build_drive::SeatMoveEnd> {
         use crate::build_drive::SeatMoveEnd;
         match self.update_primary(moving, None, build_id, attempt, operation, named).await {
             Ok(revisions) | Err(Reply::AlreadyApplied { revisions }) => Ok(revisions),
@@ -339,7 +339,7 @@ impl HandoverDoor {
         let book = self.membership.primaries();
         // The hand-back repeated once it applied (fabric-recovery.md step 4): the fabric-primary is the
         // birth this admin's view holds at `named` already.
-        if let (true, Some(name)) = (moving.fabric_seat(), named) {
+        if let (true, Some(name)) = (moving.moves_fabric_primary(), named) {
             let to = self.topology.read().await.node(name).and_then(birth_of);
             if let (Some(to), Some(h)) = (to, book.fabric()) {
                 if h.is_birth(&to.node_id, &to.incarnation) {
@@ -349,7 +349,7 @@ impl HandoverDoor {
         }
         // The primaries this admin is, each at the revision its record holds.
         let mut held = Vec::new();
-        if moving.mesh_seat() {
+        if moving.moves_mesh_primary() {
             let Some(h) = book.mesh(&self.me.mesh).filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
                 let reason = format!("{me_name} is not the mesh-primary of {}: its view names {}", self.me.mesh, book.mesh(&self.me.mesh).map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
                 refused("primary", "not-primary", &reason, operation);
@@ -357,7 +357,7 @@ impl HandoverDoor {
             };
             held.push((crate::model::NodeKind::NodeAdmin.node_type().to_string(), h.revision));
         }
-        if moving.fabric_seat() {
+        if moving.moves_fabric_primary() {
             let Some(h) = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
                 let reason = format!("{me_name} is not the fabric-primary: its view names {}", book.fabric().map(|h| h.to_string()).unwrap_or_else(|| "no primary".into()));
                 refused("primary", "not-primary", &reason, operation);
@@ -514,11 +514,11 @@ impl HandoverDoor {
             holder.clone()
         } else {
             let view = self.topology.read().await.clone();
-            let Some(mp) = view.cohort_primary(&holder.mesh, crate::model::NodeKind::NodeAdmin).cloned() else {
+            let Some(mp) = view.node_type_primary(&holder.mesh, crate::model::NodeKind::NodeAdmin).cloned() else {
                 return Err(SeatMoveEnd::Refused(format!("{me}'s view names no mesh-primary of {}: the {} primary {} is commanded through its mesh-primary", holder.mesh, holder.kind.node_type(), holder.name)));
             };
             if mp.node_id == self.node_id {
-                return match self.update_cohort_primary(holder, None, build_id, run, operation).await {
+                return match self.update_node_type_primary(holder, None, build_id, run, operation).await {
                     Ok(revisions) => Ok(revisions),
                     Err(Reply::Failed { step, reason, code }) => Err(SeatMoveEnd::Failed { step, reason, code }),
                     Err(refusal) => Err(SeatMoveEnd::Refused(format!("{me}: node.primary.update of {} was refused: {} ({refusal:?})", holder.name, refusal.name()))),
@@ -616,7 +616,7 @@ impl HandoverDoor {
     /// The gate of a mesh.delete's leave on its owner, the fabric-primary (mesh-delete.md step 1): the
     /// fabric-primary is no node-admin of the departing mesh in this admin's view before anything is
     /// dismantled. A view that names one of the departing mesh fabric-primary still refuses, named.
-    pub async fn fabric_seat_updated(&self, departing: &str, operation: &str) -> Result<(), String> {
+    pub async fn fabric_primary_updated(&self, departing: &str, operation: &str) -> Result<(), String> {
         let me = self.held_name();
         match self.membership.primaries().fabric() {
             Some(h) if h.mesh == departing => Err(format!("{me}: the fabric-primary is {h}, a node-admin of the departing mesh {departing}: node.fabric-primary.update {operation} has not moved it")),
@@ -643,10 +643,10 @@ impl HandoverDoor {
     /// names a ReadyForTraffic successor, none is `Failed` by name; then the command to the primary, which
     /// computes its successor by the same election and calls it, answered with the successor's
     /// node.primary.updated, installed here. The successor's row is recorded from its digest (step 5).
-    pub async fn update_cohort_primary(&self, holder: &crate::model::Node, _expected: Option<u64>, build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, Reply> {
+    pub async fn update_node_type_primary(&self, holder: &crate::model::Node, _expected: Option<u64>, build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
         let span = tracing::info_span!("rdm.node_admin.primary.update.via-command-member", node = %me, primary = %holder.name, node_type = holder.kind.node_type(), build_id, run, operation, outcome = tracing::field::Empty, detail = tracing::field::Empty);
-        let r = self.update_cohort_primary_in(holder, build_id, run, operation).instrument(span.clone()).await;
+        let r = self.update_node_type_primary_in(holder, build_id, run, operation).instrument(span.clone()).await;
         match &r {
             Ok(revisions) => {
                 self.memo.acknowledge(operation, false);
@@ -658,7 +658,7 @@ impl HandoverDoor {
         r
     }
 
-    async fn update_cohort_primary_in(&self, holder: &crate::model::Node, build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, Reply> {
+    async fn update_node_type_primary_in(&self, holder: &crate::model::Node, build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, Reply> {
         let me = self.held_name();
         let mesh = holder.mesh.clone();
         if let Some(refusal) = self.refused_before_first_ready("commander", operation).await {
@@ -674,7 +674,7 @@ impl HandoverDoor {
         // primary calls it and runs no election of its own (Q129).
         let view = self.topology.read().await.clone();
         let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
-        let successor = match crate::election::commanded_cohort_successor(&nodes, &self.incumbency(), holder) {
+        let successor = match crate::election::commanded_node_type_successor(&nodes, &self.incumbency(), holder) {
             Ok(n) => n,
             Err(text) => {
                 refused("commander", "no-successor", &text, operation);

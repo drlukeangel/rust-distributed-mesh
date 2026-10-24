@@ -90,7 +90,7 @@ pub fn reader(book: DigestBook, records: Arc<crate::admin::Records>) -> Reader {
 /// Whether `me` runs fabric recovery of `mesh` in `t` while the mesh has no mesh-primary: the writer of
 /// the mesh and node records the attempt's own operations require (build.md §5.3, Q122).
 pub fn executes_for(read: Option<&Reader>, t: &Topology, me: &PathName, mesh: &str) -> bool {
-    read.and_then(|r| r(t)).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref() == Some(me)) && t.cohort_primary(mesh, NodeKind::NodeAdmin).is_none()
+    read.and_then(|r| r(t)).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref() == Some(me)) && t.node_type_primary(mesh, NodeKind::NodeAdmin).is_none()
 }
 
 /// The workflow's door on one admin.

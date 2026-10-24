@@ -140,7 +140,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
-    let out = pipeline.retire(&req).await;
+    let out = pipeline.delete_node(&req).await;
     // The trace first: a red below still names the steps the delete ran, with their trace id.
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
     let spans = exporter.get_finished_spans().unwrap();

@@ -342,7 +342,7 @@ fn a_birth_no_create_claimed_gets_its_row_seeded_when_the_writers_view_holds_it(
 /// with no row gets one. One `via-node-row` span per member: `row-held-by-node` for the held row,
 /// `row-written` for the new one.
 #[test]
-fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
+fn a_take_over_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
     let cap = capture();
     let (row, written) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -378,7 +378,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
 /// bare name holds the name for a stopped birth, and the node's id index still names `.old`, where
 /// the fabric-primary's view lists it for its delete. One `via-node-row` span, `row-held-by-node`.
 #[test]
-fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_only_one() {
+fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_only_one() {
     let cap = capture();
     let (old_row, bare_row, indexed, renamed) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -425,7 +425,7 @@ fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its
 /// the rebuild's `via-node-row` span for the node says `row-held-by-node`. What must NOT happen: the old
 /// key left held by the node, or a row put back at `mesh1.rpc.1`.
 #[test]
-fn a_seat_taken_rebuild_finishes_a_lost_writers_pending_release() {
+fn a_take_over_rebuild_finishes_a_lost_writers_pending_release() {
     let cap = capture();
     let (old, new) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -524,7 +524,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 /// row, and N holds every one of P's rows. A row never overrides a live digest's status: N's view
 /// holds mesh1.rpc.1 ready-for-traffic while its row says ConnectionsDeleting.
 #[test]
-fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
+fn a_take_over_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
     let cap = crate::mesh_delete_resume::capture();
     let (rows, view_status, succ, fresh, old_pred, deleted_pred, trace_id) = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.node.create.via-shared-root-rebuild");
@@ -661,7 +661,7 @@ mod writer {
     /// under its own node.id. A row a member already holds is left as it is. What must NOT happen: a
     /// mesh-primary that writes every member's row but its own, so its mesh's primary holds no row.
     #[test]
-    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_its_own_included() {
+    fn an_admin_that_takes_over_mesh_primary_writes_every_members_row_its_own_included() {
         let cap = capture();
         let (own, me_id, others, held_before, held_after) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());

@@ -295,7 +295,7 @@ pub enum Claimed {
 /// it writes nothing, stopped, and the fabric-primary writes as acting primary (mesh-delete.md step
 /// 7, the final primary's own row Deleted in its node.delete).
 pub fn writes_for(t: &Topology, me_id: &NodeId, mesh: &str) -> bool {
-    t.holds_mesh_seat(mesh, me_id) || (t.holds_fabric_seat(me_id) && t.cohort_primary(mesh, NodeKind::NodeAdmin).filter(|p| !p.parked).is_none())
+    t.is_mesh_primary(mesh, me_id) || (t.is_fabric_primary(me_id) && t.node_type_primary(mesh, NodeKind::NodeAdmin).filter(|p| !p.parked).is_none())
 }
 
 impl NodeRows {
@@ -366,7 +366,7 @@ impl NodeRows {
             return None;
         }
         let me = self.held_name_in(t);
-        let writer = match (t.cohort_primary(mesh, NodeKind::NodeAdmin), t.fabric_primary()) {
+        let writer = match (t.node_type_primary(mesh, NodeKind::NodeAdmin), t.fabric_primary()) {
             (Some(p), _) => format!("{mesh}'s primary node-admin {} ({}) writes them", p.name, p.node_id),
             (None, Some(fp)) => format!("{mesh} has no primary node-admin, and the fabric-primary {} ({}) writes them for it", fp.name, fp.node_id),
             (None, None) => format!("{mesh} has no primary node-admin and the view holds no fabric-primary to write them for it"),
@@ -426,7 +426,7 @@ impl NodeRows {
             async {
                 let me = if of == ClaimFor::Recovery && name.kind == NodeKind::NodeAdmin {
                     let t = self.view.read().await;
-                    if t.holds_fabric_seat(&self.me_id) {
+                    if t.is_fabric_primary(&self.me_id) {
                         self.held_name_in(&t)
                     } else {
                         drop(t);
@@ -653,7 +653,7 @@ impl NodeRows {
             async {
                 let me = if fabric_recovery {
                     let t = self.view.read().await;
-                    if t.holds_fabric_seat(&self.me_id) {
+                    if t.is_fabric_primary(&self.me_id) {
                         self.held_name_in(&t)
                     } else {
                         drop(t);

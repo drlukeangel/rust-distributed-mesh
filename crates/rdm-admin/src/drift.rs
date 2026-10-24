@@ -60,7 +60,7 @@ pub(crate) fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSe
         for kind in NodeKind::ALL {
             let want = m.count(kind);
             let (mut present, mut gone) = (0u32, Vec::new());
-            for n in t.cohort(&m.name, kind) {
+            for n in t.nodes_of_type(&m.name, kind) {
                 if n.incarnation_id.as_ref().is_some_and(|i| exited.contains(i)) {
                     gone.push(n.name.to_string());
                 } else {
@@ -121,7 +121,7 @@ mod tests {
     /// unheard, and it counts as no birth of its cohort, so the successor at `<path>` is the one
     /// present.
     #[test]
-    fn a_renamed_predecessor_is_neither_unheard_nor_a_birth_of_its_cohort() {
+    fn a_renamed_predecessor_is_neither_unheard_nor_a_birth_of_its_node_type() {
         use NodeStatus::{Dead, ReadyForTraffic as R};
         let mut old = node("mesh1.rpc.1", Dead);
         old.name = old.name.renamed();
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cohort_short_without_a_proven_exit_is_not_drift() {
+    fn a_node_type_short_without_a_proven_exit_is_not_drift() {
         use NodeStatus::ReadyForTraffic as R;
         // A failed grow leaves the cohort short: that is the Build's outcome,
         // not runtime drift, and must not start Build after Build.

@@ -265,7 +265,7 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
 /// subject of another mesh, a node-admin included, is refused naming the seat it needs: its own
 /// mesh's primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
+async fn the_deciding_primary_is_the_one_the_subject_needs_never_the_callers() {
     let (rig, b) = rig().await;
     let (rpc1, rpc2, admin2, m2admin) = (&b["rpc1"], &b["rpc2"], &b["admin2"], &b["m2admin"]);
     // rpc.2 sending rpc.1's state: decided for rpc.1.
@@ -300,7 +300,7 @@ async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
 /// is `ReceiverNotPrimary`, and a birth the view no longer holds is `RejectedStaleIncarnation`.
 /// What must NOT happen: a refusal naming the caller (`SenderNotSubject`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_for_its_subject() {
+async fn a_declaration_from_an_endpoint_the_mesh_primary_never_heard_of_is_decided_for_its_subject() {
     let (rig, b) = rig().await;
     let (rpc1, admin2) = (&b["rpc1"], &b["admin2"]);
     // A fresh endpoint key, in no birth of the view.
@@ -425,7 +425,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
 /// declaration sent by another node is decided for the subject it names (here already applied),
 /// and a subject the view does not hold is refused by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_connections_deleting_authority_accepts_upward_status_and_decides_it_for_the_subject() {
+async fn a_connections_deleting_mesh_primary_accepts_upward_status_and_decides_it_for_the_subject() {
     let (rig, b) = rig().await;
     rig.server.begin_connections_delete();
     for subject in [&b["rpc1"], &b["admin2"]] {
@@ -1044,7 +1044,7 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
 /// the authority took the new connection in, and the same holds for a second re-bind while two old
 /// connections are held. Every call is a reply within the default budget; none ends `NotSent`.
 #[test]
-fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_authority() {
+fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_mesh_primary() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;

@@ -260,8 +260,8 @@ fn reply(out: &RpcOutcome<StatusReply>) -> StatusReply {
 /// Pending from a sender that is not the fabric-primary is decided for the mesh it names
 /// (AlreadyApplied), and a DeclareNodeState sent by another node is decided for the birth it names.
 #[test]
-fn status_authority_retries_pending_by_natural_key_returns_already_applied() {
-    let cell = "status_authority_retries_pending_by_natural_key_returns_already_applied";
+fn mesh_primary_retries_pending_by_natural_key_returns_already_applied() {
+    let cell = "mesh_primary_retries_pending_by_natural_key_returns_already_applied";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let capture = capture(cell);
@@ -337,8 +337,8 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
 /// (the reply lost). The completion wait of an admitted command that never completes is the retire
 /// pipeline's Deadline arm, never a success.
 #[test]
-fn connections_deleting_authority_serves_status_checks_exact_birth() {
-    let cell = "connections_deleting_authority_serves_status_checks_exact_birth";
+fn connections_deleting_mesh_primary_serves_status_checks_exact_birth() {
+    let cell = "connections_deleting_mesh_primary_serves_status_checks_exact_birth";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let capture = capture(cell);
@@ -524,7 +524,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         domain: Some("i143-2805".into()),
     };
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
-    let _ = pipeline.retire(&req).await;
+    let _ = pipeline.delete_node(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the stop
     // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
     // NodeDeleted, because the provider never proves the runtime dead.
@@ -651,8 +651,8 @@ impl FabricStorage for Refusing {
 /// restarted over the same facts folds them and answers the same natural keys AlreadyApplied. What
 /// must NOT happen: an Applied or AlreadyApplied for a fact that is not durable.
 #[test]
-fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
-    let cell = "status_authority_answers_applied_only_after_its_row_is_acknowledged";
+fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
+    let cell = "mesh_primary_answers_applied_only_after_its_row_is_acknowledged";
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
@@ -715,8 +715,8 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
 /// What must NOT happen: a backward move applied, a repeat answered anything but AlreadyApplied, or
 /// a call from a fresh endpoint of a key another live endpoint holds.
 #[test]
-fn status_authority_refuses_every_backward_move_by_name() {
-    let cell = "status_authority_refuses_every_backward_move_by_name";
+fn mesh_primary_refuses_every_backward_move_by_name() {
+    let cell = "mesh_primary_refuses_every_backward_move_by_name";
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
@@ -787,8 +787,8 @@ fn status_authority_refuses_every_backward_move_by_name() {
 /// a stale Fabric id and a stale Mesh id are refused naming the id the receiver holds. What must
 /// NOT happen: any of these applied, or answered as a transport failure.
 #[test]
-fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
-    let cell = "status_declaration_to_a_non_authority_is_refused_naming_the_seat";
+fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
+    let cell = "status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary";
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
@@ -860,8 +860,8 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
 /// receiver restarted over its rows still answers both AlreadyApplied. What must NOT happen: an
 /// applied event applied twice, or a refusal naming the caller.
 #[test]
-fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_it() {
-    let cell = "applied_events_survive_authority_change_and_each_applies_once_whoever_sends_it";
+fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_sends_it() {
+    let cell = "applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_sends_it";
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
@@ -1092,8 +1092,8 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
 /// the authority is filled the wait ends and exactly one Status call applies Pending. What must
 /// NOT happen: a Status call, or an Applied, while the gate is closed.
 #[test]
-fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
-    let cell = "pending_handoff_waits_for_a_filled_authority_before_its_one_call";
+fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
+    let cell = "pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call";
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {

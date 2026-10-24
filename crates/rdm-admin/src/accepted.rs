@@ -82,13 +82,13 @@ impl MeshTopology {
     }
 
     /// The nodes of `kind`.
-    pub fn cohort(&self, kind: NodeKind) -> impl Iterator<Item = &PathName> {
+    pub fn nodes_of_type(&self, kind: NodeKind) -> impl Iterator<Item = &PathName> {
         self.nodes.iter().filter(move |p| p.kind == kind)
     }
 
     /// The number of nodes of `kind`.
     pub fn count(&self, kind: NodeKind) -> u32 {
-        self.cohort(kind).count() as u32
+        self.nodes_of_type(kind).count() as u32
     }
 }
 
@@ -397,14 +397,14 @@ fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
 
 /// The ordinal `observed` holds the cohort's primary at, if any: a shrink never drops it.
 fn primary_ordinal(observed: &Topology, mesh: &str, kind: NodeKind) -> Option<u32> {
-    observed.cohort_primary(mesh, kind).map(|n| n.name.ordinal)
+    observed.node_type_primary(mesh, kind).map(|n| n.name.ordinal)
 }
 
 /// Bring `mesh`'s cohorts to `counts`: grow fills the lowest free ordinals, shrink drops the
 /// highest ordinals that are not the observed primary.
 fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
     for (kind, want) in counts.counts() {
-        let mut have: Vec<u32> = mesh.cohort(kind).map(|p| p.ordinal).collect();
+        let mut have: Vec<u32> = mesh.nodes_of_type(kind).map(|p| p.ordinal).collect();
         have.sort_unstable();
         let keep_ord = primary_ordinal(observed, &mesh.name, kind);
         while (have.len() as u32) < want {
@@ -744,12 +744,12 @@ fn roll_operations(topology: &FabricTopology, observed: &Topology, recorded: &Re
     let Some(set) = &topology.bindings else { return Vec::new() };
     let mut ops = Vec::new();
     for (name, m) in &topology.meshes {
-        let primary = |kind: NodeKind| observed.cohort_primary(name, kind).map(|n| n.name.clone());
+        let primary = |kind: NodeKind| observed.node_type_primary(name, kind).map(|n| n.name.clone());
         let mut order: Vec<&PathName> = Vec::with_capacity(m.nodes.len());
         for kind in NodeKind::ALL {
             let at = primary(kind);
-            order.extend(m.cohort(kind).filter(|p| Some(*p) != at.as_ref()));
-            order.extend(m.cohort(kind).filter(|p| Some(*p) == at.as_ref()));
+            order.extend(m.nodes_of_type(kind).filter(|p| Some(*p) != at.as_ref()));
+            order.extend(m.nodes_of_type(kind).filter(|p| Some(*p) == at.as_ref()));
         }
         for p in order {
             let Some(binding) = set.of(p.kind) else { continue };
@@ -1313,7 +1313,7 @@ mod tests {
     /// happen: a node.delete of a stopped node that converges with nothing planned while its process
     /// lives on.
     #[test]
-    fn a_stopped_node_the_topology_no_longer_names_is_retired() {
+    fn a_stopped_node_the_topology_no_longer_names_is_deleted() {
         let cur = t(&[("mesh1", 2, 3)]);
         let mut o = mn();
         let mut stopped = n("mesh1.rpc.7", NodeStatus::Leaving, false);
@@ -1348,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn an_attempt_action_is_fenced_to_its_birth_and_never_changes_the_topology() {
+    fn an_attempt_action_targets_its_exact_birth_and_never_changes_the_topology() {
         let cur = t(&[("mesh1", 2, 3)]);
         let o = mn();
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
@@ -1587,7 +1587,7 @@ mod tests {
     /// names a `.old` path but its replace's executor's. It never plans a create or repair of the
     /// path's successor.
     #[test]
-    fn a_delete_of_a_parked_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {
+    fn a_delete_of_a_stopped_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.2.old".parse().unwrap();

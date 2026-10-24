@@ -104,8 +104,8 @@ impl NodeConfigs {
         span.record("row_status", format!("{:?}", subject.status).as_str());
         // The writer of the row is the mesh-primary of the node's mesh, and no other admin
         // (fabric-node-lifecycle §4.3); a caller that sent it elsewhere is told whose seat it needs.
-        if !view.holds_mesh_seat(&subject.mesh, me_id) {
-            let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+        if !view.is_mesh_primary(&subject.mesh, me_id) {
+            let held_by = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
             let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
             span.record("detail", needed.as_str());
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });

@@ -58,7 +58,7 @@ struct Taken {
     trace_id: String,
 }
 
-async fn seat_taken_over_one_root(trace_id: String) -> Taken {
+async fn taken_over_one_root(trace_id: String) -> Taken {
     let dir = std::env::temp_dir().join(format!("status-seat-fold-{}", NodeId::mint()));
     let (mesh_id, fabric_id) = (MeshId::mint(), FabricId::mint());
     let mut before_view = view(&mesh_id, &fabric_id);
@@ -117,12 +117,12 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
 /// union of the events. One span, `rdm.node_admin.status.resolve.via-seat-taken`, names the mesh
 /// and the counts folded.
 #[test]
-fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
+fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
     let cap = crate::mesh_delete_resume::capture();
     let t = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.status.resolve.via-seat-taken");
         let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
-        tracing::Instrument::instrument(seat_taken_over_one_root(trace_id), root_span).await
+        tracing::Instrument::instrument(taken_over_one_root(trace_id), root_span).await
     });
     println!("status_seat_fold trace_id={}", t.trace_id);
     assert_eq!(t.before.node(&t.rpc.0, &t.rpc.1), None, "a non-holder folds none of the primary's rows: {:#?}", t.before);
@@ -187,7 +187,7 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 /// member Pending while its record says ReadyForTraffic, so the member's declaration is AlreadyApplied
 /// and the member stays Pending under the new primary for good.
 #[test]
-fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection() {
+fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projection() {
     use rdm_core::MemberStatus;
     use rdm_transport::membership::{Backbone, Membership};
     use rdm_core::status::{StatusReply, StatusRequest};

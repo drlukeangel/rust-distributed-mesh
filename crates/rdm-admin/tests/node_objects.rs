@@ -252,7 +252,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
 /// seat (`mesh1.admin.1` holds it): its claim door carries its own birth's node id.
-async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
+async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let mut t = mn();
     t.nodes.push(node("mesh1.admin.2", false));
     let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
@@ -1281,11 +1281,11 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
 /// call's route, the refusing admin and the fabric-primary it named. No `build.create` or `build.update`
 /// span opens: nothing was admitted.
 #[test]
-fn a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary() {
+fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_reject_span_naming_the_fabric_primary() {
     let cap = capture();
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let served = serve(door_without_the_seat(&rig).await).await;
+        let served = serve(door_not_fabric_primary(&rig).await).await;
         served.carrier.create(rdm_core::build::BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
     });
     match &end {

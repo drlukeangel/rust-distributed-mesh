@@ -677,7 +677,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     let order = restart_order(retire_order);
     let door = run.member_door("mesh1").await;
     let before = run.node_ready(node).await;
-    // When `node` holds its cohort's primary seat, `DriveEnv::seats_first` runs `node.primary.update`
+    // When `node` holds its cohort's primary seat, `DriveEnv::update_primaries_first` runs `node.primary.update`
     // in `opened_attempt` and hands the `node.restart` step off to `opened_attempt + 1`.
     let was_primary = before["is_primary"].as_bool().unwrap_or(false);
     let attempt = opened_attempt + u64::from(was_primary);

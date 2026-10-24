@@ -389,7 +389,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             move |n: Node| async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((attempt, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-delete-resume", build_id = %build_id.log(), operation = %outer);
@@ -539,7 +539,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await;
@@ -630,7 +630,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
@@ -649,7 +649,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let indexed = builds.mesh_deleted_of(&last_record.node_id, last_record.incarnation_id.as_ref().unwrap()).await.unwrap();
         // The final primary's own node.delete, a separate Build: the ordinary workflow, live target.
         let req = rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build.clone(), attempt: 1, node: last_record.clone(), handle: handles[FINAL].clone(), unreached: false };
-        pipeline.retire(&req).await.expect("the final primary's node.delete completes");
+        pipeline.delete_node(&req).await.expect("the final primary's node.delete completes");
         let terminal: TerminalReceipt = builds
             .read_build(&delete_build)
             .await
@@ -850,7 +850,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             move |n: Node| async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((attempt, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-amended", build_id = %build_id.log(), operation = %outer);
@@ -899,7 +899,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             .await
             .unwrap();
         let last = records2.iter().find(|n| n.name.to_string() == OTHER_ADMIN).cloned().unwrap();
-        let terminal = pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build, attempt: 1, node: last, handle: handles[OTHER_ADMIN].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
+        let terminal = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: delete_build, attempt: 1, node: last, handle: handles[OTHER_ADMIN].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         let mesh_left = completion_of(&steps, &outer).expect("a completion is recorded").map_err(|e| e.to_string()).and_then(|c| mesh_left_proof(&c, &terminal));
         (applied, replayed, second_amendment, admitted, verdict, stale, (owner_resume(&steps, &outer), mesh_left), steps, trace_id)
@@ -1003,7 +1003,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((1, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let shutdown_2 = |n: Node| {
@@ -1011,7 +1011,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((2, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-finished-under-lost", build_id = %build_id.log(), operation = %outer);
@@ -1807,7 +1807,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((1, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let shutdown_2 = |n: Node| {
@@ -1815,7 +1815,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((2, name.clone()));
-                pipeline.retire(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-deleted-cut-delete", build_id = %build_id.log(), operation = %outer);
