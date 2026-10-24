@@ -43,8 +43,9 @@ life; a new executable is a new birth at the same `path.name`.**
    its primary, the primary's move first by node.primary.update, the fabric-primary's move ending the
    caller's stream `FabricPrimaryMoved` and the caller resubmitting the same build_id, R5's one-node type
    with no update, and the one-admin mesh (R4, Luke's arm A, kept): a mesh whose only node-admin is to be
-   replaced first gets a second node-admin created on the new executable at `<mesh>.admin.<next free>`,
-   ReadyForTraffic and mesh-primary by node.primary.update before the original is replaced, and the
+   replaced first gets a second node-admin created on the new executable at a new `path.name` of the
+   node-admin type in that mesh (the next free ordinal, `mesh1.admin.2`), ReadyForTraffic and
+   mesh-primary by node.primary.update before the original is replaced, and the
    added admin stays in the topology, since deleting a mesh's only admin would leave its own create with
    no executor. A path whose birth is under node recovery is replaced after that recovery's attempt
    completes, never in the same attempt: one attempt in flight per mesh (R-BI7) and the planner's
@@ -166,7 +167,7 @@ with its guards: a type's non-primary members before its primary, the primary's 
 node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
 "No-successor cases"), and a mesh whose only node-admin is to be replaced first given a second node-admin
-on the new executable, ReadyForTraffic and mesh-primary, which stays. A path under node recovery is
+at a new `path.name` of that type on the new executable, ReadyForTraffic and mesh-primary, which stays. A path under node recovery is
 replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows the path's config: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
