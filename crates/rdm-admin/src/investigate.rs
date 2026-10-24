@@ -620,7 +620,10 @@ impl Investigations {
 /// Probe `n` of `mesh`'s investigation `ticket` ended with `found`: record it, and say what it
 /// found on its span (`span`, opened when it was asked).
 fn land(me: &str, span: &tracing::Span, ladder: &Mutex<Ladder>, mesh: &str, ticket: u64, n: u8, unheard_ms: u64, found: Found) {
-    let stop = ladder.lock().unwrap().probed(mesh, ticket, n, found.outcome, unheard_ms);
+    // The ladder is held until the verdict's span is out: a backbone receipt's cancel, stepped after
+    // this stop, emits its `heard-again` after this verdict, never before it.
+    let mut held = ladder.lock().unwrap();
+    let stop = held.probed(mesh, ticket, n, found.outcome, unheard_ms);
     span.record("seat_record", found.seat_record.as_str());
     span.record("target", found.target.as_str());
     span.record("member", found.members.as_str());
@@ -633,6 +636,7 @@ fn land(me: &str, span: &tracing::Span, ladder: &Mutex<Ladder>, mesh: &str, tick
     if let Some(Step::Stop { unheard_ms }) = stop {
         verdict(me, mesh, found.outcome.as_str(), unheard_ms, "the node-admin answered: the investigation stops");
     }
+    drop(held);
 }
 
 async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>, mesh: String, unheard: Duration) {
