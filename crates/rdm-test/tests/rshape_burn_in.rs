@@ -1275,7 +1275,12 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
         match b {
             Bucket::Reply if call.out["reply"]["result"] == json!({"stored": true}) => {
                 assert!(present || gone, "{}: replied stored but the final state lacks its value: {}", op.key, final_state[&op.key]);
-                assert_eq!(handler_runs, 1, "{}: replied stored with no handler execution in its trace", op.key);
+                // A target the run killed takes the spans it had not yet written with it (the evidence
+                // file is flushed at the process's exit): its reply's provenance, the node that executed
+                // it, is the record of the handler's execution, asserted below.
+                if !gone {
+                    assert_eq!(handler_runs, 1, "{}: replied stored with no handler execution in its trace", op.key);
+                }
                 assert_eq!(call.out["reply"]["executing_node"], op.target_id.as_str(), "{}: the reply names the requested node", op.key);
             }
             // A reply that is a protocol refusal (the node answered `ConnectionsDeleting`): the request reached a
