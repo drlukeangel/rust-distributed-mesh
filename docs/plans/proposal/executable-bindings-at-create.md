@@ -382,7 +382,7 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 - the executor killed halfway through that replacement: the next attempt finishes the remaining gateways
   from the rows and the receipts, no gateway replaced twice, every broker, compute and admin still untouched;
 - a request replacing every node of a two-mesh fabric: Complete only after the ready-for-traffic round
-  (Q154), Blocked naming the climb meanwhile;
+  (Q154), Blocked naming the change meanwhile;
 - a one-broker mesh's broker replaced: one `node.delete` then the create, no refusal at any step;
 - a one-admin mesh whose admin's executable changes: a second admin created first on the new executable,
   ReadyForTraffic and mesh-primary, then the original replaced, the added admin in the topology after;
