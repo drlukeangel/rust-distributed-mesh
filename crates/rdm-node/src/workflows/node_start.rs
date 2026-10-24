@@ -509,6 +509,9 @@ pub type HookStarted<E> = Box<dyn FnOnce(tokio::task::JoinHandle<()>) -> BoxFut<
 pub struct FirstStart<E> {
     /// The immutable app types presented by the first join.
     pub types: Vec<String>,
+    /// The listeners the birth bound from its launch, each with its selected port, presented by the
+    /// first join (Q151); none for a kind that binds none.
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
     /// What the start knows before it begins.
     pub starting: Option<Starting>,
     /// Whom it joins.
@@ -530,6 +533,8 @@ impl<E: From<StartFailed> + Send + 'static> super::node_mesh_join::MeshJoin for 
     type Error = E;
 
     fn join_types(&self) -> Vec<String> { self.types.clone() }
+
+    fn join_listeners(&self) -> Vec<(String, std::net::SocketAddr)> { self.listeners.clone() }
 
     fn join_digest(&self) -> MeshDigest {
         self.digest.clone().expect("a first start that joins presents a digest")

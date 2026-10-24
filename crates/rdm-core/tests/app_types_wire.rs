@@ -31,11 +31,14 @@ fn digest() -> MeshDigest {
 fn a_join_carries_the_births_declared_types_after_its_digest() {
     let types = vec!["rafka.entity.alpha".to_string(), "rafka.entity.zeta".to_string()];
     // JoinNode's existing position is 0. Encoding the tuple writes exactly that position,
-    // its digest, then the appended list, without using the implementation's request shape.
-    let bytes = postcard::to_allocvec(&(0_u8, WireDigest::from(&digest()), &types)).unwrap();
+    // its digest, then the appended list and the listeners the node bound (Q151) after it, without
+    // using the implementation's request shape.
+    let listeners: Vec<(String, std::net::SocketAddr)> = vec![("kafka".into(), "127.0.0.1:9092".parse().unwrap())];
+    let bytes = postcard::to_allocvec(&(0_u8, WireDigest::from(&digest()), &types, &listeners)).unwrap();
     let request = Join::decode_request(&bytes).expect("the declared types are part of JoinNode, not trailing bytes");
     let value = serde_json::to_value(&request).unwrap();
     assert_eq!(value["JoinNode"]["types"], json!(types), "the receiver retains the birth's declaration");
+    assert_eq!(value["JoinNode"]["listeners"], json!(listeners), "and the listeners it bound, after its types");
     assert_eq!(Join::encode_request(&request).unwrap(), bytes, "the type declaration survives receipt and replay");
 }
 

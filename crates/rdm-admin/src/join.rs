@@ -22,6 +22,7 @@ use rdm_transport::ServerBuilder;
 use rdm_core::catalog::OpOwner;
 use rdm_core::join::{Join, JoinReply, JoinRequest};
 use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
 use tracing::Instrument as _;
 use std::future::Future;
 use std::pin::Pin;
@@ -57,6 +58,20 @@ pub struct Deployed {
     /// inferred from the last accepted name, which an admin that joined after the stop lacks
     /// (`MeshMembership::stopped_unheard`).
     pub held: bool,
+    /// The listeners the birth was assigned (Q151): each declared name of its kind on the birth's
+    /// address, port 0. Its report carries exactly these names, each on its assigned address with the
+    /// port the operating system selected, or it is refused whole.
+    pub listeners: Vec<(String, SocketAddr)>,
+}
+
+/// A birth's join report as the deploying admin verified it: its digest and the listeners it bound
+/// (Q151). What `WaitForBind` and `WaitForMeshJoin` complete from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinReport {
+    /// The birth's digest, canonicalized to the name it is admitted under.
+    pub digest: MeshDigest,
+    /// The listeners the birth bound, by name, each with its selected port.
+    pub listeners: Vec<(String, SocketAddr)>,
 }
 
 /// The first field of a digest that disagrees with what was deployed.
@@ -71,8 +86,8 @@ pub struct Mismatch {
 }
 
 impl Deployed {
-    /// `Ok` when `d` is the birth this admin deployed.
-    pub fn verify(&self, d: &MeshDigest) -> Result<(), Mismatch> {
+    /// `Ok` when `d`, reporting `listeners`, is the birth this admin deployed.
+    pub fn verify(&self, d: &MeshDigest, listeners: &[(String, SocketAddr)]) -> Result<(), Mismatch> {
         fn same<T: PartialEq + std::fmt::Debug>(field: &'static str, deployed: &T, reported: &T) -> Result<(), Mismatch> {
             if deployed == reported {
                 Ok(())
@@ -96,13 +111,41 @@ impl Deployed {
         same("endpoint_id", &self.endpoint_id, &d.node.endpoint_id)?;
         same("runtime", &Some(self.runtime.clone()), &d.node.runtime)?;
         same("data_dir", &Some(self.data_dir.clone()), &d.data_dir)?;
+        self.verify_listeners(listeners)
+    }
+
+    /// The reported listeners against the assigned (Q151; node-create.md step 4): exactly the assigned
+    /// names, each once, each on its assigned address with a port that is not 0, as `Bound::of`
+    /// requires of the transport. A listener missing, duplicated, undeclared, on another address, on
+    /// an unspecified address or on port 0 refuses the report whole: nothing is dropped.
+    fn verify_listeners(&self, reported: &[(String, SocketAddr)]) -> Result<(), Mismatch> {
+        let show = |l: &[(String, SocketAddr)]| rdm_core::launch::encode_listeners(l);
+        let refuse = |why: String| Err(Mismatch { field: "listeners", deployed: show(&self.listeners), reported: format!("{} ({why})", show(reported)) });
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, addr) in reported {
+            if !seen.insert(name.as_str()) {
+                return refuse(format!("{name} is reported twice"));
+            }
+            let Some((_, assigned)) = self.listeners.iter().find(|(n, _)| n == name) else {
+                return refuse(format!("{name} was not assigned"));
+            };
+            if addr.ip().is_unspecified() || addr.port() == 0 {
+                return refuse(format!("{name} at {addr} is not an address a peer can dial"));
+            }
+            if addr.ip() != assigned.ip() || (assigned.port() != 0 && addr.port() != assigned.port()) {
+                return refuse(format!("{name} at {addr} is not on its assigned address {assigned}"));
+            }
+        }
+        if let Some((name, _)) = self.listeners.iter().find(|(n, _)| !seen.contains(n.as_str())) {
+            return refuse(format!("{name} is missing"));
+        }
         Ok(())
     }
 }
 
 struct Slot {
     deployed: Deployed,
-    reported: watch::Sender<Option<MeshDigest>>,
+    reported: watch::Sender<Option<JoinReport>>,
 }
 
 /// A deployment whose create ended before its birth reported.
@@ -126,7 +169,7 @@ const ABANDONED_KEPT: usize = 256;
 #[derive(Debug, Clone)]
 struct Admitted {
     deployed: Deployed,
-    report: MeshDigest,
+    report: JoinReport,
 }
 
 /// How many admitted deployments an admin keeps once their creates ended; the oldest is forgotten first.
@@ -202,7 +245,7 @@ impl Joins {
     /// command's own and waits for that command's join: it is handed nothing, not even what an earlier
     /// registration of the same held deployment heard, so the report of the birth's next commanded
     /// join is a join of its own, never a retry of the last one (Q99: one Pending per join).
-    pub fn expect(&self, deployed: Deployed) -> watch::Receiver<Option<MeshDigest>> {
+    pub fn expect(&self, deployed: Deployed) -> watch::Receiver<Option<JoinReport>> {
         let mut slots = self.slots.lock().unwrap();
         if let Some(s) = slots.get(&deployed.node_id) {
             if s.deployed == deployed && !deployed.held {
@@ -242,17 +285,17 @@ impl Joins {
         kept.push_back(Abandoned { build_id: build_id.into(), attempt, deployed: slot.deployed });
     }
 
-    /// How the deploying admin stands toward the birth `d` reports.
-    pub fn standing(&self, d: &MeshDigest) -> Standing {
+    /// How the deploying admin stands toward the birth `d` reports, with the `listeners` it bound.
+    pub fn standing(&self, d: &MeshDigest, listeners: &[(String, SocketAddr)]) -> Standing {
         if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
-            return match s.deployed.verify(d) {
+            return match s.deployed.verify(d, listeners) {
                 Ok(()) => Standing::Deployed { name: s.deployed.name.clone(), held: s.deployed.held },
                 Err(m) => Standing::Mismatch(m),
             };
         }
         match self.abandoned.lock().unwrap().iter().find(|a| a.deployed.node_id == d.node.node_id) {
             None => Standing::Unknown,
-            Some(a) => match a.deployed.verify(d) {
+            Some(a) => match a.deployed.verify(d, listeners) {
                 Ok(()) => Standing::Abandoned(a.clone()),
                 Err(m) => Standing::Mismatch(m),
             },
@@ -263,13 +306,13 @@ impl Joins {
     /// and incarnation): then `d` is a later report of that join, a retry, never a join of its own
     /// (node-mesh-join.md step 10). Read before [`Self::report`] fills the registration.
     pub fn heard(&self, d: &MeshDigest) -> bool {
-        self.slots.lock().unwrap().get(&d.node.node_id).is_some_and(|s| s.reported.borrow().as_ref().is_some_and(|r| r.node.node_id == d.node.node_id && r.node.incarnation == d.node.incarnation))
+        self.slots.lock().unwrap().get(&d.node.node_id).is_some_and(|s| s.reported.borrow().as_ref().is_some_and(|r| r.digest.node.node_id == d.node.node_id && r.digest.node.incarnation == d.node.incarnation))
     }
 
     /// The node's own report, verified: what `WaitForBind` waits for.
-    pub fn report(&self, d: &MeshDigest) {
-        if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
-            let _ = s.reported.send(Some(d.clone()));
+    pub fn report(&self, r: &JoinReport) {
+        if let Some(s) = self.slots.lock().unwrap().get(&r.digest.node.node_id) {
+            let _ = s.reported.send(Some(r.clone()));
         }
     }
 }
@@ -319,7 +362,7 @@ impl JoinDoor {
     /// Answer a `JoinNode` from `peer`: verify the digest against what was deployed, install its
     /// address and answer with the admin's entry answer.
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
-        let JoinRequest::JoinNode { digest, types } = req;
+        let JoinRequest::JoinNode { digest, types, listeners } = req;
         if let Err(kind) = rdm_core::app_types::check(&types) { return rdm_core::reply::join::malformed(kind); }
         let d = MeshDigest::from(digest);
         let span = tracing::info_span!(
@@ -328,6 +371,7 @@ impl JoinDoor {
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.as_str(),
             reported_addr = %d.node.transport_addr,
+            listeners = tracing::field::Empty,
             served_by = %self.me,
             caller = tracing::field::Empty,
             admitted_as = tracing::field::Empty,
@@ -337,15 +381,16 @@ impl JoinDoor {
             attempt = tracing::field::Empty,
             cert_len = tracing::field::Empty,
         );
-        self.decide(peer, d, types.into_iter().collect(), span.clone()).instrument(span).await
+        self.decide(peer, d, types.into_iter().collect(), listeners, span.clone()).instrument(span).await
     }
 
     /// Decide a join on its digest against what was deployed. Nothing checks who is calling
     /// (node-rpc.md §14): the caller's endpoint names the call in its span, and the digest's
     /// endpoint is what the deployment verifies.
-    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, types: std::collections::BTreeSet<String>, span: tracing::Span) -> JoinReply {
+    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, types: std::collections::BTreeSet<String>, listeners: Vec<(String, SocketAddr)>, span: tracing::Span) -> JoinReply {
         span.record("caller", peer.0.as_str());
-        match self.joins.standing(&d) {
+        span.record("listeners", rdm_core::launch::encode_listeners(&listeners).as_str());
+        match self.joins.standing(&d, &listeners) {
             Standing::Mismatch(m) => {
                 span.record("outcome", "mismatch");
                 tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
@@ -412,18 +457,22 @@ impl JoinDoor {
                 };
                 // The join admits the birth holding the cert: its dates, the receipt (Q141), are written
                 // on its node record before the birth is admitted; a node-admin's signing cert dates
-                // beside them when this admin minted the key it was launched with, in the same write. A
-                // write refused leaves nothing installed, and the join is retried.
-                if let (Some((storage, written)), false) = (&self.nodes, issue.bytes.is_empty()) {
-                    let dates = crate::cert_renewal::dates_of(&issue);
-                    let signing = (birth.name.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
+                // beside them when this admin minted the key it was launched with, and the listeners the
+                // validated report carries (Q151), in the same write. A write refused leaves nothing
+                // installed, and the join is retried.
+                if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty() || !listeners.is_empty()) {
+                    let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
+                    let signing = (!issue.bytes.is_empty() && birth.name.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
                     let base = crate::storage::NodeRow::new(birth.name.clone(), birth.node_id.clone(), crate::model::NodeStatus::Pending);
                     let put = written.update(&**storage, &birth.node_id, Some(base), |r| {
                         let b = r.birth_mut(&birth.incarnation, &birth.name);
-                        b.cert = Some(dates);
+                        if let Some(dates) = dates {
+                            b.cert = Some(dates);
+                        }
                         if let Some(s) = signing {
                             b.signing_cert = Some(s);
                         }
+                        b.listeners = listeners.clone();
                     });
                     if let Err(why) = put.await {
                         span.record("outcome", "not-ready");
@@ -448,7 +497,7 @@ impl JoinDoor {
                 // report is a new join, whose Pending is its own (Q99).
                 let new_join = !self.joins.heard(&d);
                 (self.pending)(d.clone(), new_join).await;
-                self.joins.report(&d);
+                self.joins.report(&JoinReport { digest: d.clone(), listeners });
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
                 self.joined(&d.node.name, cert, config).await
@@ -524,6 +573,7 @@ mod tests {
             data_dir: "/d".into(),
             last_accepted_name: None,
             held: false,
+            listeners: Vec::new(),
         }
     }
 
@@ -560,9 +610,9 @@ mod tests {
         let dep = deployed();
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
-        assert_eq!(joins.standing(&d), Standing::Deployed { name: dep.name.clone(), held: false });
-        joins.report(&d);
-        assert_eq!(rx.borrow().as_ref().map(|d| d.node.transport_addr), Some(d.node.transport_addr), "the address the node reported is the one the admin publishes");
+        assert_eq!(joins.standing(&d, &[]), Standing::Deployed { name: dep.name.clone(), held: false });
+        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
+        assert_eq!(rx.borrow().as_ref().map(|r| r.digest.node.transport_addr), Some(d.node.transport_addr), "the address the node reported is the one the admin publishes");
     }
 
     // @feature: node-lifecycle
@@ -573,7 +623,7 @@ mod tests {
         joins.expect(dep.clone());
         let mut d = digest_of(&dep);
         d.node.incarnation = IncarnationId::mint();
-        match joins.standing(&d) {
+        match joins.standing(&d, &[]) {
             Standing::Mismatch(m) => {
                 assert_eq!(m.field, "incarnation");
                 assert!(m.deployed.contains(&dep.incarnation.as_str()) && m.reported.contains(&d.node.incarnation.as_str()));
@@ -590,7 +640,7 @@ mod tests {
         joins.expect(dep.clone());
         let mut d = digest_of(&dep);
         d.node.node_id = NodeId::mint();
-        assert_eq!(joins.standing(&d), Standing::Unknown);
+        assert_eq!(joins.standing(&d, &[]), Standing::Unknown);
     }
 
     /// The deployment of a birth this authority holds, stopped as `mesh1.rpc.1` and renamed in its
@@ -608,17 +658,17 @@ mod tests {
         let dep = renamed_while_stopped();
         let mut held = digest_of(&dep);
         held.node.name = "mesh1.rpc.1".parse().unwrap();
-        assert_eq!(dep.verify(&held), Ok(()), "the name last accepted for this exact birth is admitted");
-        assert_eq!(dep.verify(&digest_of(&dep)), Ok(()), "the row's name is admitted");
+        assert_eq!(dep.verify(&held, &[]), Ok(()), "the name last accepted for this exact birth is admitted");
+        assert_eq!(dep.verify(&digest_of(&dep), &[]), Ok(()), "the row's name is admitted");
         let mut other = digest_of(&dep);
         other.node.name = "mesh1.rpc.7".parse().unwrap();
-        let m = dep.verify(&other).unwrap_err();
+        let m = dep.verify(&other, &[]).unwrap_err();
         assert_eq!(m.field, "name");
         assert!(m.reported.contains("mesh1.rpc.7") && m.deployed.contains("mesh1.rpc.1.old") && m.deployed.contains("last accepted") && m.deployed.contains("\"mesh1.rpc.1\""), "the refusal names all three: {m:?}");
         let first = deployed();
         let mut off_spec = digest_of(&first);
         off_spec.node.name = "mesh1.rpc.1.old".parse().unwrap();
-        assert_eq!(first.verify(&off_spec).unwrap_err().field, "name", "a first start off its create spec is still refused");
+        assert_eq!(first.verify(&off_spec, &[]).unwrap_err().field, "name", "a first start off its create spec is still refused");
     }
 
     // @feature: node-lifecycle
@@ -634,8 +684,8 @@ mod tests {
         let replacement_rx = joins.expect(replacement.clone());
         let mut d = digest_of(&stopped);
         d.node.name = "mesh1.rpc.1".parse().unwrap();
-        assert!(matches!(joins.standing(&d), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
-        joins.report(&d);
+        assert!(matches!(joins.standing(&d, &[]), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
+        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         assert!(replacement_rx.borrow().is_none(), "the replacement's deployment heard nothing of the stopped node's join");
     }
 
@@ -645,13 +695,13 @@ mod tests {
         let dep = deployed();
         let mut other_fact = digest_of(&dep);
         other_fact.node.runtime = Some(RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-2")).unwrap());
-        assert_eq!(dep.verify(&other_fact).unwrap_err().field, "runtime");
+        assert_eq!(dep.verify(&other_fact, &[]).unwrap_err().field, "runtime");
         let mut dir = digest_of(&dep);
         dir.data_dir = Some("/elsewhere".into());
-        assert_eq!(dep.verify(&dir).unwrap_err().field, "data_dir");
+        assert_eq!(dep.verify(&dir, &[]).unwrap_err().field, "data_dir");
         let mut key = digest_of(&dep);
         key.node.endpoint_id = EndpointId("other".into());
-        assert_eq!(dep.verify(&key).unwrap_err().field, "endpoint_id");
+        assert_eq!(dep.verify(&key, &[]).unwrap_err().field, "endpoint_id");
     }
 
     /// CONTRACT (node-create.md step 5: the accepting authority "completes WaitForBind /
@@ -675,7 +725,7 @@ mod tests {
         assert!(!joins.creating(&dep.node_id), "no deployment registered: no create under way");
         let _rx = joins.expect(dep.clone());
         assert!(joins.creating(&dep.node_id), "the create registered its deployment: creating");
-        joins.report(&digest_of(&dep));
+        joins.report(&JoinReport { digest: digest_of(&dep), listeners: Vec::new() });
         assert!(joins.creating(&dep.node_id), "its report heard, the create still runs: creating");
         joins.end(&dep.node_id, "3qcfk1kq47m9", 1);
         assert!(!joins.creating(&dep.node_id), "the create ended: not creating");
@@ -690,17 +740,17 @@ mod tests {
         let dep = deployed();
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
-        joins.report(&d);
+        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         drop(rx);
         joins.end(&dep.node_id, "3qcfk1kq47m9", 1);
-        assert_eq!(joins.standing(&d), Standing::Unknown, "an ended create holds the deployment no more");
+        assert_eq!(joins.standing(&d, &[]), Standing::Unknown, "an ended create holds the deployment no more");
         let again = joins.expect(dep.clone());
-        assert_eq!(again.borrow().as_ref().map(|r| r.node.transport_addr), Some(d.node.transport_addr), "the same deployment's next registration is handed the admitted report");
+        assert_eq!(again.borrow().as_ref().map(|r| r.digest.node.transport_addr), Some(d.node.transport_addr), "the same deployment's next registration is handed the admitted report");
         let restart = Deployed { held: true, last_accepted_name: Some(dep.name.clone()), ..dep.clone() };
         assert!(joins.expect(restart.clone()).borrow().is_none(), "another deployment of the node is handed no report");
         // A held deployment's report ends with its registration: a later registration of the same
         // held deployment (a heard-again of the live birth) waits for its own commanded join.
-        joins.report(&d);
+        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         joins.end(&dep.node_id, "3qcfk1kq47m9", 2);
         assert!(joins.expect(restart).borrow().is_none(), "a held deployment's report is not kept for its next registration");
     }

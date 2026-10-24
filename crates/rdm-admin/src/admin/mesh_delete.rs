@@ -265,7 +265,7 @@ impl AdminRunner {
         let hand_off = self.mesh_state_hook(path, state)?;
         let template = self.with_issuing_material(self.create_template(path, None).await?, &path.mesh).await?;
         let held_runtimes = self.held_runtimes().await;
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: spec_for(NodeKind::NodeAdmin), data_dir: None, held_runtimes };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for(NodeKind::NodeAdmin), data_dir: None, held_runtimes };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(path.clone(), (created.node, created.handle));

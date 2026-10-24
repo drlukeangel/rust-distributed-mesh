@@ -187,6 +187,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             data_dir: joiner_dir.display().to_string(),
             last_accepted_name: None,
             held: false,
+            listeners: Vec::new(),
         });
         let env = launch.to_env();
         let hook = Arc::new(Hook::default());
@@ -305,6 +306,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
             data_dir: member_dir.display().to_string(),
             last_accepted_name: None,
             held: false,
+            listeners: Vec::new(),
         });
         let member = rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[MEMBERS], &[])
             .await

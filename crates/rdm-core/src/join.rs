@@ -4,7 +4,8 @@
 //! A node binds its transport on port 0 and the operating system assigns the port. Its first
 //! call is `JoinNode` to the node-admin that deployed it: the request carries the node's full
 //! membership digest (the same struct its gossip `Frame::Digest` carries) with the transport
-//! address read from the bound endpoint. The admin verifies the digest against what it
+//! address read from the bound endpoint, and the listeners it bound with the ports the operating
+//! system selected. The admin verifies the digest against what it
 //! deployed, installs that address for the node's key and answers what it holds.
 //!
 //! ```text
@@ -42,6 +43,9 @@ pub enum JoinRequest {
         digest: WireDigest,
         /// The birth's immutable app type declaration.
         types: Vec<String>,
+        /// The non-Iroh listeners the node bound, by name, each with the port the operating system
+        /// selected (Q151): exactly the names its launch assigned, each on its assigned address.
+        listeners: Vec<(String, std::net::SocketAddr)>,
     },
 }
 

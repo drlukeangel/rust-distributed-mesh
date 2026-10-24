@@ -469,7 +469,7 @@ impl Rig {
                     load: None,
                     gossip: None, is_primary: None, is_fabric_primary: None
                 };
-                self.joins.report(&digest);
+                self.joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

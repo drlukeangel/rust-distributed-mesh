@@ -768,7 +768,7 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
 pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     let (f_builds, f_provider, f_events) = (faults.clone(), faults.clone(), faults.clone());
     let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
-    Wiring { types: Vec::new(), alpns: Vec::new(), declared: Vec::new(),
+    Wiring { types: Vec::new(), alpns: Vec::new(), declared: Vec::new(), listeners: Vec::new(),
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
         announcement_seam: Some(Arc::new(FaultedAnnouncement(faults.clone()))),
         catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),

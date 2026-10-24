@@ -303,6 +303,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // name, before anything is bootstrapped. Each value is read once: from the launch's custody copy
     // when a pipeline launched this admin, else from its own environment, as the fabric's root is.
     let declared_secrets = crate::deployment::declared::DeclaredSecrets::read(std::mem::take(&mut wiring.declared), cfg.launch.as_ref(), |k| std::env::var(k).ok())?;
+    // The app's listeners (Q151): a duplicate name in a kind or a name RDM owns refuses the start
+    // here, by name, before anything is bootstrapped.
+    let listener_names = crate::deployment::endpoint::ListenerNames::read(&wiring.listeners)?;
     let fabric_hooks = wiring.fabric_hooks.clone();
     // The embedding's own round action, if it binds one: run after this admin publishes its
     // scratchpad at commit-state (bound once the store root is open, below).
@@ -1324,6 +1327,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             });
                             let _ = handover_slot.set(handover.clone());
                             let runner = Arc::new(AdminRunner {
+                                listeners: listener_names.clone(),
                                 connections: Some(connections_storage.clone()),
                                 nodes_storage: nodes_storage.clone(),
                                 mesh_storage: mesh_storage.clone(),
@@ -2886,7 +2890,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             })
         })
     };
-    let mut start = crate::workflows::node_start::FirstStart { types: join_types,
+    let mut start = crate::workflows::node_start::FirstStart { types: join_types, listeners: Vec::new(),
         starting: Some(starting),
         joining: Some(joining),
         resolve: Some(resolve),

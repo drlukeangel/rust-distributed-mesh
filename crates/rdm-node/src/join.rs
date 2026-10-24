@@ -38,14 +38,15 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    call_join_to_types(client, next, digest, attempts, &[]).await
+    call_join_to_types(client, next, digest, attempts, &[], &[]).await
 }
 
-/// Join using this birth's immutable app declaration, retained across all attempts.
-pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, attempts: u32, types: &[String]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+/// Join using this birth's immutable app declaration and the listeners it bound (Q151: each with the
+/// port the operating system selected), retained across all attempts.
+pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, attempts: u32, types: &[String], listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    let req = JoinRequest::JoinNode { types: types.to_vec(), digest: WireDigest::from(digest) };
+    let req = JoinRequest::JoinNode { types: types.to_vec(), digest: WireDigest::from(digest), listeners: listeners.to_vec() };
     let node = digest.node.name.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {

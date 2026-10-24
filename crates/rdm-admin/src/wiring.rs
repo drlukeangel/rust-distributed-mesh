@@ -216,6 +216,12 @@ pub struct Wiring {
     /// is set in the environment of the named kinds' processes only
     /// ([`crate::deployment::declared`]). A name RDM sets or passes through refuses the start by name.
     pub declared: Vec<rdm_core::launch::DeclaredSecret>,
+    /// The app's listeners (Q151), registered at boot like the hooks: each product kind's listeners by
+    /// name. A create assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds
+    /// them and reports the ports at its join, which refuses a report that does not carry exactly them;
+    /// they are published on the node's row. A duplicate name in a kind, a name RDM owns and a
+    /// node-admin's listeners refuse the start by name ([`crate::deployment::endpoint::ListenerNames`]).
+    pub listeners: Vec<rdm_core::launch::DeclaredListeners>,
     /// The cert material: the fabric's root ([`CertChoice::Ca`]) or no certs by name
     /// ([`CertChoice::NoCerts`]). There is no default: a
     /// node-admin started with [`CertChoice::Unchosen`] is refused at start by name.

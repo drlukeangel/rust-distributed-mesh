@@ -70,6 +70,8 @@ mod owed_check_ins;
 mod roll;
 #[path = "fabric/declared_secrets.rs"]
 mod declared_secrets;
+#[path = "fabric/named_listeners.rs"]
+mod named_listeners;
 #[path = "rpc/proof_holder_lifecycle.rs"]
 mod proof_holder_lifecycle;
 #[path = "runtime/manifest_replay.rs"]

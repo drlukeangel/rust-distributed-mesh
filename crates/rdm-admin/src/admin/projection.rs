@@ -363,6 +363,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
             n.data_dir = r.data_dir.clone();
+            n.listeners = r.listeners.clone();
         }
         // One birth per path: the newest digest wins over a superseded one.
         match nodes.get(&name) {
@@ -406,6 +407,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
             n.data_dir = r.data_dir.clone();
+            n.listeners = r.listeners.clone();
         }
         nodes.entry(name).or_insert(n);
     }
@@ -431,6 +433,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
+            n.listeners = r.listeners.clone();
         }
         nodes.entry(name).or_insert(n);
     }
@@ -474,6 +477,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
             n.data_dir = r.data_dir.clone();
+            n.listeners = r.listeners.clone();
         }
         nodes.entry(name).or_insert(n);
     }

@@ -23,7 +23,8 @@ pub const ENV_INCARNATION: &str = "RDM_INCARNATION_ID";
 pub const ENV_SUPERSEDES: &str = "RDM_SUPERSEDES";
 /// The address the process's Iroh endpoint binds, with port 0.
 pub const ENV_TRANSPORT_ADDR: &str = "RDM_TRANSPORT_ADDR";
-/// The non-Iroh listeners the process binds, as `name=addr` entries joined by commas.
+/// The non-Iroh listeners the process binds, as `name=addr` entries joined by commas: each the
+/// address node-admin assigned, with port 0; the node reports the port it bound at its join (Q151).
 pub const ENV_LISTENERS: &str = "RDM_LISTENERS";
 /// The members to join gossip through, as `<public key>@<addr>` entries joined by commas.
 pub const ENV_SEEDS: &str = "RDM_SEEDS";
@@ -114,6 +115,17 @@ pub struct DeclaredSecret {
     pub name: String,
     /// The kinds it is set on.
     pub kinds: Vec<NodeKind>,
+}
+
+/// A node kind's listeners as an application's wiring declares them (Q151): each listener by name.
+/// Node-admin assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds them,
+/// keeps every bind open through its join and reports the ports the operating system selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredListeners {
+    /// The kind whose processes bind them.
+    pub kind: NodeKind,
+    /// The listeners' names, unique within the kind.
+    pub names: Vec<String>,
 }
 
 /// The issuing material a launched node-admin signs its mesh's member certs with (`RDM_ISSUING_KEY`,

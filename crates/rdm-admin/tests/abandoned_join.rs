@@ -203,7 +203,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
                 t
             })),
         };
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { types: Vec::new(), digest: d.into() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { types: Vec::new(), digest: d.into(), listeners: Vec::new() };
 
         let late = door.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(

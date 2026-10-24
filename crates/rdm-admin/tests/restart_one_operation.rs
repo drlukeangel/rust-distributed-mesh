@@ -209,6 +209,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
         data_dir: node.data_dir.clone().unwrap(),
         last_accepted_name: Some(name.clone()),
         held: true,
+        listeners: Vec::new(),
     };
     let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
 
@@ -315,6 +316,7 @@ async fn a_restart_whose_reissued_start_is_already_applied_takes_no_new_join() {
         data_dir: node.data_dir.clone().unwrap(),
         last_accepted_name: Some(name.clone()),
         held: true,
+        listeners: Vec::new(),
     };
     let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
     assert!(out.is_ok(), "the start was already applied: the restart goes on and completes: {out:?}");
@@ -387,6 +389,7 @@ async fn a_restart_takes_its_stops_stopped_reply_as_the_left_reply() {
         data_dir: node.data_dir.clone().unwrap(),
         last_accepted_name: Some(name.clone()),
         held: true,
+        listeners: Vec::new(),
     };
     let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
     assert!(out.is_ok(), "the stop answered Stopped, so it is complete and the start follows: {out:?}");
@@ -461,6 +464,7 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
         data_dir: node.data_dir.clone().unwrap(),
         last_accepted_name: Some(name.clone()),
         held: true,
+        listeners: Vec::new(),
     };
     let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
 
@@ -495,7 +499,7 @@ impl NodeObserver for StartsWhole<'_> {
             NodeCommand::Start => {
                 // This observer models the command-stream owner: NodeJoined is recorded
                 // after the admitted join, before NodeStarted. The pipeline records neither.
-                self.joins.report(&self.digest);
+                self.joins.report(&rdm_admin::join::JoinReport { digest: self.digest.clone(), listeners: Vec::new() });
                 self.events.published.lock().unwrap().push(("joined", ctx.operation.clone()));
                 tokio::task::yield_now().await;
                 self.events.published.lock().unwrap().push(("node.started", ctx.operation.clone()));
@@ -568,6 +572,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         data_dir: node.data_dir.clone().unwrap(),
         last_accepted_name: Some(name.clone()),
         held: true,
+        listeners: Vec::new(),
     };
     let digest = rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: template.fabric_id.clone(),

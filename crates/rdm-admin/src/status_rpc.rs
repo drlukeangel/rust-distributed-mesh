@@ -2454,6 +2454,7 @@ mod tests {
             data_dir: "/data/mesh1.rpc.1".into(),
             last_accepted_name: None,
             held: false,
+            listeners: Vec::new(),
         };
         let report = rdm_core::MeshDigest {
             held_hash: Default::default(),
@@ -2488,7 +2489,7 @@ mod tests {
         let serve = move |what: &'static str| {
             let (report, replies) = (report.clone(), replies.clone());
             async move {
-                let answered = door.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { types: Vec::new(), digest: (&report).into() }).await;
+                let answered = door.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { types: Vec::new(), digest: (&report).into(), listeners: Vec::new() }).await;
                 assert!(matches!(answered, JoinReply::Joined { .. }), "{what}: {answered:?}");
                 replies.lock().unwrap().pop().unwrap_or_else(|| panic!("{what}: the accepted report recorded no Pending"))
             }

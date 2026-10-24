@@ -192,8 +192,8 @@ impl DeploymentProvider for Fleet {
             tokio::spawn(async move {
                 for _ in 0..500 {
                     let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
-                    if !withheld && matches!(joins.standing(&digest), rdm_admin::join::Standing::Deployed { .. }) {
-                        joins.report(&digest);
+                    if !withheld && matches!(joins.standing(&digest, &[]), rdm_admin::join::Standing::Deployed { .. }) {
+                        joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;

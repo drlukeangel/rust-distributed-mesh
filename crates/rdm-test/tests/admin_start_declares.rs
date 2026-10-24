@@ -78,6 +78,7 @@ fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
         data_dir: launch.data_dir.display().to_string(),
         last_accepted_name: held.cloned(),
         held: held.is_some(),
+        listeners: Vec::new(),
     }
 }
 

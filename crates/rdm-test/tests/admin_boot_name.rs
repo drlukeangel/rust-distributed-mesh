@@ -108,6 +108,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
             data_dir: launch.data_dir.display().to_string(),
             last_accepted_name: Some(boot.clone()),
             held: true,
+            listeners: Vec::new(),
         });
         let book = root.membership.book.clone();
         let mut digests = book.digest_changes();

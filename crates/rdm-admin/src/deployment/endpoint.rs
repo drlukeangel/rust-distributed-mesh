@@ -21,25 +21,91 @@ pub enum SlotTransport {
 /// What a node kind binds and serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KindSpec {
-    /// Non-Iroh listeners, each its own TCP address.
-    pub listeners: &'static [&'static str],
+    /// Non-Iroh listeners, each its own TCP address, by name.
+    pub listeners: Vec<String>,
 }
 
-/// An rpc node: the one transport, no listener.
-pub const RPC_NODE: KindSpec = KindSpec { listeners: &[] };
+/// An rpc node, and a product kind whose application declares no listener: the one transport, no
+/// listener.
+pub static RPC_NODE: KindSpec = KindSpec { listeners: Vec::new() };
 
 /// A node-admin: its mesh transport (gossip and Node RPC), no other listener: RDM opens no HTTP
 /// listener (rdm-crate-and-test-layout.md §2).
-pub(crate) const NODE_ADMIN: KindSpec = KindSpec { listeners: &[] };
+pub(crate) static NODE_ADMIN: KindSpec = KindSpec { listeners: Vec::new() };
 
-/// What a node kind binds and serves.
-pub(crate) fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
-    match kind {
-        // A product kind binds the one transport here; its own listeners are the product's to
-        // assign through its node-admin binding.
-        crate::model::NodeKind::RpcNode | crate::model::NodeKind::Broker | crate::model::NodeKind::Gateway | crate::model::NodeKind::Compute => &RPC_NODE,
-        crate::model::NodeKind::NodeAdmin => &NODE_ADMIN,
+/// The listener names RDM owns: an application declares none of them. `transport` names the birth's
+/// Iroh transport beside its listeners wherever RDM lists a birth's sockets
+/// (`DeploymentPipeline::terminate`'s release check).
+pub const RDM_LISTENER_NAMES: [&str; 1] = ["transport"];
+
+/// The listeners each product kind binds, as the application's wiring declares them (Q151),
+/// registered at the admin's start like the hooks: never config, never a row.
+#[derive(Debug, Clone, Default)]
+pub struct ListenerNames {
+    by_kind: BTreeMap<crate::model::NodeKind, &'static KindSpec>,
+}
+
+impl ListenerNames {
+    /// The registry of `declared`, refused by name ([`refuse_listener_names`]).
+    pub fn read(declared: &[rdm_core::launch::DeclaredListeners]) -> Result<Self, String> {
+        refuse_listener_names(declared)?;
+        Ok(Self { by_kind: declared.iter().filter(|d| !d.names.is_empty()).map(|d| (d.kind, interned(&d.names))).collect() })
     }
+
+    /// What a node kind binds and serves: a product kind's declared listeners, each assigned the
+    /// birth's address with port 0 by the create (`DeploymentPipeline`).
+    pub fn spec_for(&self, kind: crate::model::NodeKind) -> &'static KindSpec {
+        match kind {
+            crate::model::NodeKind::NodeAdmin => &NODE_ADMIN,
+            k => self.by_kind.get(&k).copied().unwrap_or(&RPC_NODE),
+        }
+    }
+}
+
+/// The one `KindSpec` of each set of declared names: an admin's registry reads the same declaration
+/// at every start, so a process that starts many admins holds each set once.
+fn interned(names: &[String]) -> &'static KindSpec {
+    static HELD: std::sync::Mutex<Vec<&'static KindSpec>> = std::sync::Mutex::new(Vec::new());
+    let mut held = HELD.lock().unwrap();
+    if let Some(k) = held.iter().find(|k| k.listeners == names) {
+        return k;
+    }
+    let k: &'static KindSpec = Box::leak(Box::new(KindSpec { listeners: names.to_vec() }));
+    held.push(k);
+    k
+}
+
+/// Refuses, by name, a listener declaration the admin cannot start with (Q151): a kind declared
+/// twice, a node-admin's (its process binds no listener a launch names), a name declared twice within
+/// its kind, a name RDM owns ([`RDM_LISTENER_NAMES`]), and a name `RDM_LISTENERS` cannot carry as
+/// `name=addr` (empty, or holding `=`, `,` or whitespace).
+pub fn refuse_listener_names(declared: &[rdm_core::launch::DeclaredListeners]) -> Result<(), String> {
+    let mut kinds = std::collections::BTreeSet::new();
+    for d in declared {
+        let kind = d.kind.name();
+        if !kinds.insert(d.kind) {
+            return Err(format!("refusing to start: the listeners of {kind} are declared twice"));
+        }
+        if d.kind == crate::model::NodeKind::NodeAdmin && !d.names.is_empty() {
+            return Err(format!("refusing to start: listeners are declared on {kind}: a node-admin binds no listener a launch names; a product kind's listeners are declared on that kind"));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for n in &d.names {
+            let why = if n.is_empty() || n.contains(['=', ',']) || n.contains(char::is_whitespace) {
+                Some("`RDM_LISTENERS` cannot carry it as name=addr (empty, or holding `=`, `,` or whitespace)")
+            } else if RDM_LISTENER_NAMES.contains(&n.as_str()) {
+                Some("RDM owns that name")
+            } else if !seen.insert(n.as_str()) {
+                Some("it is declared twice on the kind")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return Err(format!("refusing to start: the listener `{n}` of {kind} is refused: {why}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Is something on this host holding UDP `addr`? A bind that fails with
@@ -210,6 +276,44 @@ pub(crate) fn port_holders_in(tables: &[&Path], proc_root: &Path, addr: SocketAd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn declared(kind: crate::model::NodeKind, names: &[&str]) -> rdm_core::launch::DeclaredListeners {
+        rdm_core::launch::DeclaredListeners { kind, names: names.iter().map(|n| n.to_string()).collect() }
+    }
+
+    /// CONTRACT (Q151): a product kind's declared listeners are what `spec_for` returns for it; a kind
+    /// that declares none, and a node-admin, bind none.
+    #[test]
+    fn spec_for_returns_a_kinds_declared_listeners() {
+        use crate::model::NodeKind;
+        let names = ListenerNames::read(&[declared(NodeKind::Gateway, &["kafka", "rest", "proxy"])]).unwrap();
+        assert_eq!(names.spec_for(NodeKind::Gateway).listeners, ["kafka", "rest", "proxy"]);
+        for k in [NodeKind::Broker, NodeKind::Compute, NodeKind::RpcNode, NodeKind::NodeAdmin] {
+            assert!(names.spec_for(k).listeners.is_empty(), "{k:?} declares none");
+        }
+        assert!(std::ptr::eq(names.spec_for(NodeKind::Gateway), ListenerNames::read(&[declared(NodeKind::Gateway, &["kafka", "rest", "proxy"])]).unwrap().spec_for(NodeKind::Gateway)), "one KindSpec per declaration");
+    }
+
+    /// CONTRACT (Q151): listener names are unique within a kind; a name RDM owns, a name
+    /// `RDM_LISTENERS` cannot carry, a kind declared twice and a node-admin's listeners are each refused
+    /// by name at the admin's start.
+    #[test]
+    fn a_listener_declaration_the_admin_cannot_start_with_is_refused_by_name() {
+        use crate::model::NodeKind;
+        for (decl, says) in [
+            (vec![declared(NodeKind::Gateway, &["kafka", "kafka"])], "`kafka` of gateway is refused: it is declared twice"),
+            (vec![declared(NodeKind::Gateway, &["transport"])], "`transport` of gateway is refused: RDM owns that name"),
+            (vec![declared(NodeKind::Gateway, &["a=b"])], "`a=b` of gateway is refused"),
+            (vec![declared(NodeKind::Gateway, &["a,b"])], "`a,b` of gateway is refused"),
+            (vec![declared(NodeKind::Gateway, &[""])], "`` of gateway is refused"),
+            (vec![declared(NodeKind::Gateway, &["kafka"]), declared(NodeKind::Gateway, &["rest"])], "the listeners of gateway are declared twice"),
+            (vec![declared(NodeKind::NodeAdmin, &["control"])], "listeners are declared on node_admin"),
+        ] {
+            let e = ListenerNames::read(&decl).unwrap_err();
+            assert!(e.starts_with("refusing to start") && e.contains(says), "{says}: {e}");
+        }
+        assert!(ListenerNames::read(&[declared(NodeKind::Gateway, &["kafka", "rest"]), declared(NodeKind::Broker, &["kafka"])]).is_ok(), "a name is unique within its kind, not across kinds");
+    }
 
     /// CONTRACT: a TCP port this process listens on is named as held by this process (listen
     /// state, our pid); a port nobody holds is "no socket".

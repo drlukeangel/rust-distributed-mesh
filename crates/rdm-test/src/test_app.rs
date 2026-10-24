@@ -14,6 +14,9 @@
 //!
 //! It declares one secret (Q150), [`DECLARED_SECRET`], set on the broker and the gateway only: a
 //! scenario sets its value in the bootstrap admin's environment and reads which processes hold it.
+//!
+//! It declares three listeners (Q151), [`LISTENERS`], on the gateway: a gateway binds them from its
+//! launch, reports them at its join and its row publishes them.
 
 use crate::admin_faults::{AdminFaults, CutSpec, Probe};
 use rdm_admin::wiring::{FabricHooks, StateSyncRound, SyncState};
@@ -27,6 +30,18 @@ pub const DECLARED_SECRET: &str = "TESTKIT_DECLARED_SECRET";
 
 /// The kinds [`DECLARED_SECRET`] is set on.
 pub const DECLARED_KINDS: [rdm_core::NodeKind; 2] = [rdm_core::NodeKind::Broker, rdm_core::NodeKind::Gateway];
+
+/// The kind the testkit application declares listeners on (Q151).
+pub const LISTENER_KIND: rdm_core::NodeKind = rdm_core::NodeKind::Gateway;
+
+/// The listeners the testkit application declares on [`LISTENER_KIND`], as Rafka's gateway names its
+/// own.
+pub const LISTENERS: [&str; 3] = ["kafka", "rest", "proxy"];
+
+/// The testkit application's listener declarations, as its wiring registers them.
+pub fn listeners() -> Vec<rdm_core::launch::DeclaredListeners> {
+    vec![rdm_core::launch::DeclaredListeners { kind: LISTENER_KIND, names: LISTENERS.iter().map(|n| n.to_string()).collect() }]
+}
 
 /// The testkit application's declarations, as its wiring registers them.
 pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {

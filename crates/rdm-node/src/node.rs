@@ -78,12 +78,34 @@ pub struct RunningNode {
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     declare_loop: tokio::task::JoinHandle<()>,
     data_connections: rdm_transport::connections::ConnectionsRegistry,
+    /// The listeners this birth bound from its launch (`RDM_LISTENERS`, Q151), held open for its life.
+    listeners: Arc<Vec<(String, std::net::TcpListener)>>,
+}
+
+/// Bind each listener `assigned` names at its assigned address (port 0: the operating system selects
+/// the port), non-blocking, in order. Nothing is probed and released: each bind is the one the
+/// birth keeps. A bind refused is named with its listener and address.
+fn bind_listeners(assigned: &[(String, std::net::SocketAddr)]) -> Result<Vec<(String, std::net::TcpListener)>> {
+    assigned
+        .iter()
+        .map(|(name, addr)| {
+            let l = std::net::TcpListener::bind(addr).with_context(|| format!("the node cannot bind its listener {name} at {addr}"))?;
+            l.set_nonblocking(true).with_context(|| format!("the listener {name} bound at {addr} cannot be made non-blocking"))?;
+            Ok((name.clone(), l))
+        })
+        .collect()
 }
 
 /// Alias for [`RunningNode`] as named in the `i148` surface (`Node::connections`).
 pub type Node = RunningNode;
 
 impl RunningNode {
+    /// The listeners this birth bound from its launch (`RDM_LISTENERS`), by name, held open for its
+    /// life: the application serves on them (`TcpListener::try_clone`).
+    pub fn listeners(&self) -> &[(String, std::net::TcpListener)] {
+        &self.listeners
+    }
+
     /// Take the one [`rdm_transport::connections::Connections`] handle for `alpn` (`i148`).
     ///
     /// Returns [`rdm_transport::connections::ConnectError::UnregisteredAlpn`] when `alpn` was not
@@ -420,7 +442,7 @@ async fn start_booted(
         incarnation: launch.incarnation.to_string(),
     });
     // One endpoint, one socket for the process: Node RPC, gossip and every registered app Alpn share it by ALPN.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty, listeners = tracing::field::Empty);
     let alpn_names: Vec<Vec<u8>> = alpns.iter().map(|a| a.name.clone()).collect();
     let ep0 = rdm_transport::endpoint::bind_with_alpns(key.clone(), launch.bind_addr, &alpn_names)
         .await
@@ -429,6 +451,12 @@ async fn start_booted(
     // endpoint holds, never one anybody chose.
     let bound_addr = ep0.bound_sockets().into_iter().find(|a| a.is_ipv4()).ok_or_else(|| anyhow!("the endpoint bound at {} holds no IPv4 socket", launch.bind_addr))?;
     step.record("bound", tracing::field::display(bound_addr));
+    // The listeners node-admin assigned (`RDM_LISTENERS`, Q151): each bound at its assigned address,
+    // port 0, and held open from here through the join and for the birth's life; the port the
+    // operating system selected is the one the join reports. A bind refused ends the start by name.
+    let bound_listeners: Arc<Vec<(String, std::net::TcpListener)>> = Arc::new(bind_listeners(&launch.listeners)?);
+    let listener_addrs: Vec<(String, std::net::SocketAddr)> = bound_listeners.iter().map(|(n, l)| l.local_addr().map(|a| (n.clone(), a))).collect::<std::io::Result<_>>().context("a bound listener reads back no address")?;
+    step.record("listeners", rdm_core::launch::encode_listeners(&listener_addrs).as_str());
     drop(step);
     // The process's one client, made before the server is built: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
@@ -584,7 +612,7 @@ async fn start_booted(
     let join_digest = digest.clone();
     let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
-        let (launch, boot, out, name, data_connections) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone());
+        let (launch, boot, out, name, data_connections, bound_listeners, listener_addrs) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone(), bound_listeners.clone(), listener_addrs.clone());
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(Membership, crate::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
@@ -697,6 +725,7 @@ async fn start_booted(
                                 publisher: publisher.clone(),
                                 before_ready_cell: before_ready_cell.clone(),
                                 before_ready_task: before_ready_task_cell.clone(),
+                                listeners: listener_addrs.clone(),
                             }));
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), membership.clone(), client.clone())));
                             let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), before_ready: before_ready_cell.clone(), stats: server.stats() }));
@@ -783,7 +812,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, before_ready: before_ready_cell, before_ready_task: before_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, before_ready: before_ready_cell, before_ready_task: before_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
@@ -792,7 +821,7 @@ async fn start_booted(
             })
         })
     };
-    let mut start = crate::workflows::node_start::FirstStart { types: join_types,
+    let mut start = crate::workflows::node_start::FirstStart { types: join_types, listeners: listener_addrs,
         starting: Some(starting),
         joining: Some(joining),
         resolve: Some(resolve),
@@ -854,6 +883,9 @@ struct NodeSession {
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     before_ready_cell: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
     before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// The listeners this birth bound from its launch, each with its selected port: every join of
+    /// the birth reports them (Q151).
+    listeners: Vec<(String, std::net::SocketAddr)>,
 }
 
 #[async_trait::async_trait]
@@ -948,6 +980,10 @@ impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
     type Error = crate::node_self::StartFailed;
 
     fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
+
+    fn join_listeners(&self) -> Vec<(String, std::net::SocketAddr)> {
+        self.session.listeners.clone()
+    }
 
     fn join_digest(&self) -> MeshDigest {
         self.held.clone()

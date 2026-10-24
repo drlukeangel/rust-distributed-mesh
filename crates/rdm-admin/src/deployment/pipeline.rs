@@ -1083,7 +1083,8 @@ impl Default for Timeouts {
     }
 }
 
-/// Where a birth reported it bound: the addresses its own digest names.
+/// Where a birth reported it bound: the transport address its own digest names and the listeners its
+/// join report carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bound {
@@ -1094,13 +1095,15 @@ pub struct Bound {
 }
 
 impl Bound {
-    fn of(d: &rdm_core::MeshDigest) -> Result<Self, String> {
-        let transport = d.node.transport_addr;
+    fn of(r: &crate::join::JoinReport) -> Result<Self, String> {
+        let transport = r.digest.node.transport_addr;
         if transport.ip().is_unspecified() || transport.port() == 0 {
             return Err(format!("it reported the transport address {transport}, which is not an address a peer can dial"));
         }
-        // A node-admin opens no HTTP listener (rdm-crate-and-test-layout.md §2): its `admin_api_base` is config.
-        Ok(Self { transport, listeners: Vec::new() })
+        // The listeners the join verified against the assignment (Q151: exactly the assigned names, each
+        // on its assigned address with a port that is not 0; `Deployed::verify`). A node-admin opens no
+        // listener (rdm-crate-and-test-layout.md §2): its `admin_api_base` is config.
+        Ok(Self { transport, listeners: r.listeners.clone() })
     }
 }
 
@@ -1758,6 +1761,7 @@ impl DeploymentPipeline<'_> {
                 data_dir: data_dir.display().to_string(),
                 last_accepted_name: None,
                 held: false,
+                listeners: bind_listeners.clone(),
             })),
             None => None,
         };
@@ -1870,7 +1874,7 @@ impl DeploymentPipeline<'_> {
             let mut admitted = admitted.ok_or_else(|| format!("{}: the handle names no exact runtime to verify a join against", req.node))?;
             let until = Instant::now() + self.timeouts.join;
             loop {
-                let held = admitted.borrow().clone().filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation).map(|d| Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() });
+                let held = admitted.borrow().clone().map(|r| r.digest).filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation).map(|d| Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() });
                 // Held by no process any more (this admin restarted after the join was admitted): the
                 // admitted birth's runtime row, kept durable at admission (`Joins::keep_admitted`).
                 let reported = match held {
@@ -2943,6 +2947,7 @@ mod tests {
             data_dir: template.data_root.join("mesh1.rpc.1").display().to_string(),
             last_accepted_name: Some(node.name.clone()),
             held: true,
+            listeners: Vec::new(),
         };
         let req = StartRequest { build_id: build_id.clone(), attempt: 2, node, handle, deployed };
         pipeline.restart(&req).await.expect("the resumed restart completes");
@@ -3090,8 +3095,8 @@ mod tests {
             let joins = self.joins.clone();
             tokio::spawn(async move {
                 loop {
-                    if matches!(joins.standing(&digest), crate::join::Standing::Deployed { .. }) {
-                        joins.report(&digest);
+                    if matches!(joins.standing(&digest, &[]), crate::join::Standing::Deployed { .. }) {
+                        joins.report(&crate::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
                         return;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;

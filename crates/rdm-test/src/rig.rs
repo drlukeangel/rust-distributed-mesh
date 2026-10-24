@@ -314,6 +314,7 @@ impl AdminSide {
             data_dir: launch.data_dir.display().to_string(),
             last_accepted_name: last_accepted,
             held,
+            listeners: Vec::new(),
         });
     }
 

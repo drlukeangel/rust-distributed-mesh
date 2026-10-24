@@ -88,6 +88,9 @@ pub struct AdminRunner {
     pub mesh_storage: Arc<dyn crate::storage::MeshStorage>,
     /// This admin's fabric.storage: as fabric-primary, releases the fabric name at fabric.deleted.
     pub fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage>,
+    /// The app's listeners by kind (Q151), registered at this admin's start: what a create assigns and
+    /// a join is verified against.
+    pub listeners: crate::deployment::endpoint::ListenerNames,
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -522,7 +525,7 @@ impl AdminRunner {
             template = self.with_issuing_material(template, &node.mesh).await?;
         }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: None, held_runtimes };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
         let created = match claim_for {
             crate::node_rows::ClaimFor::Recovery => self.pipeline(&template).create_recovery_with(&req, before_ready, None).await,
             crate::node_rows::ClaimFor::Successor => self.pipeline(&template).create_successor_with(&req, before_ready).await,
@@ -728,7 +731,7 @@ impl AdminRunner {
         };
         let exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
         let created = if lost || !exited {
-            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: None, held_runtimes };
+            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
             pipeline.create_recovery_with(&req, before_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
         } else {
             if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
@@ -748,7 +751,7 @@ impl AdminRunner {
                 )
                 .in_scope(|| tracing::info!("inherited data dir is broken; holding recovery until repaired"));
             }
-            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
+            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
             pipeline.create_with(&req, before_ready, Some(Box::pin(self.revise_exited(&fenced)))).await.map_err(crate::executor::RunEnd::from)?
         };
         self.bring_into_traffic(&created.node).await?;
@@ -805,7 +808,7 @@ impl AdminRunner {
         // The key whose old paths are dropped is the one the kept data dir holds: the node created over it loads exactly it.
         predecessor.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
         let created = pipeline.create_with(&req, before_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -950,6 +953,18 @@ impl AdminRunner {
         Ok(birth)
     }
 
+    /// The listeners `record`'s birth was assigned at its create (Q151): each declared name of its
+    /// kind on the birth's address, port 0. A held birth's rejoin reports the same binds, which it
+    /// kept open since; a birth with listeners to assign and no known address is refused by name.
+    pub(crate) fn assigned_listeners(&self, record: &Node) -> Result<Vec<(String, std::net::SocketAddr)>, String> {
+        let names = &self.listeners.spec_for(record.name.kind).listeners;
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ip = record.transport_addr.ok_or_else(|| format!("{} has no known address to verify its listeners against", record.name))?.ip();
+        Ok(names.iter().map(|n| (n.clone(), std::net::SocketAddr::new(ip, 0))).collect())
+    }
+
     /// What this admin holds for the start of the parked `record`: the deployment its `JoinNode` is
     /// verified against, as the birth was admitted.
     pub(crate) fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
@@ -966,6 +981,7 @@ impl AdminRunner {
             // The name this authority last accepted for this exact birth: its held stopped digest's (R-JN1).
             last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
             held: true,
+            listeners: self.assigned_listeners(record)?,
         })
     }
 
@@ -1025,6 +1041,7 @@ impl AdminRunner {
             data_dir: record.data_dir.clone().or_else(|| admitted.as_ref().and_then(|d| d.data_dir.clone())).ok_or_else(|| format!("{} has no known data dir", record.name))?,
             last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
             held: true,
+            listeners: self.assigned_listeners(record)?,
         })
     }
 

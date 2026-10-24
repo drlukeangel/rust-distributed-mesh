@@ -49,6 +49,8 @@ async fn main() {
         wiring.certs = rdm_admin::entry::material_or_exit("faulted-node-admin", cfg);
         // The testkit application's declared secret, registered at boot like its hooks.
         wiring.declared = test_app::declared();
+        // The testkit application's listeners, registered at boot like its hooks.
+        wiring.listeners = test_app::listeners();
         wiring
     })
     .await

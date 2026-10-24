@@ -131,6 +131,7 @@ fn deployed(by: &Running, launch: &Launch) {
         data_dir: launch.data_dir.display().to_string(),
         last_accepted_name: None,
         held: false,
+        listeners: Vec::new(),
     });
 }
 

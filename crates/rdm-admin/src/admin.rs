@@ -18,7 +18,6 @@
 
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
-use crate::deployment::endpoint::spec_for;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
     CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
@@ -2816,6 +2815,7 @@ mod tests {
             data_dir: "/data/mesh1.admin.2".into(),
             last_accepted_name: None,
             held: false,
+            listeners: Vec::new(),
         };
         let joins = Arc::new(Joins::default());
         let _wait = joins.expect(deployed);
@@ -2851,7 +2851,7 @@ mod tests {
         assert!(authority.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
         let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic, operation: None };
         assert_eq!(authority.apply(None, &declare).await, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "before the join the subject is not held");
-        let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&reported).into() }).await;
+        let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&reported).into(), listeners: Vec::new() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
 
         // Acceptance made the birth known; no projection tick ran since.
