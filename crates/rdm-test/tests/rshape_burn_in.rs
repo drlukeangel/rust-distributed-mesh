@@ -5575,7 +5575,8 @@ async fn control_run(cell: &str, shape: Shape) {
     assert!(quiet_sends.is_empty(), "a quiet fabric sends no status frame in {} ms: {}", (quiet1 - quiet0) / 1_000_000, quiet_sends.len());
     events.push(json!({"event": "quiet-baseline", "window_ms": (quiet1 - quiet0) / 1_000_000, "status_sends": 0}));
 
-    // Control loss: the victim hears and is heard by no node. Held for two repair windows plus the re-feed.
+    // Control loss: the victim hears and is heard by no node. Held from the cut for two repair windows less one
+    // backbone interval, below mesh investigation's decision step; its coverage goes stale and is re-fed in the first.
     let others: Vec<String> = everyone.iter().filter(|n| **n != vname).cloned().collect();
     // The observer is a gossip member too: the victim loses it as it loses every node, or gossip relays the
     // victim's words around the cut through it and no coverage ever goes stale.
@@ -5589,21 +5590,41 @@ async fn control_run(cell: &str, shape: Shape) {
         Cut::Process { _partition: Partition::start(&udp_ports(&st.nodes, &[vname.clone()]), &others_ports).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}")) }
     };
     let cut_at = now_ns();
+    let cut_started = Instant::now();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "node": vname, "acknowledged": true}));
-    let stale = wait_for("the victim's coverage is stale and re-fed", window * 4 + Duration::from_secs(40), || async {
+    // The cut's bound, measured from the cut and whatever the restart takes: two repair windows less one
+    // backbone interval. Mesh investigation's decision step opens at two floors of the victim's unheard
+    // (`investigate.rs` rungs: `decide: floor * 2`), counted from its last backbone frame, at most one
+    // backbone interval before the cut, so the cut is dropped below it and the victim never decides on a
+    // fabric that is alive.
+    let backbone = rdm_transport::membership::backbone_gossip_interval();
+    let release_at = cut_started + window * 2 - backbone;
+    // A role node restarts while the victim's coverage is stale (unheard for a floor): its request is made one
+    // backbone interval past the floor, and its attempt runs on past the drop of the cut.
+    let restart_at = cut_started + window + backbone;
+    let released = async move {
+        tokio::time::sleep_until(release_at.into()).await;
+        drop(cut);
+        (now_ns(), now_ms())
+    };
+    let restarting = async {
+        tokio::time::sleep_until(restart_at.into()).await;
+        a.traffic.aim = Some(restart_target.clone());
+        let restart = restart_node(&mut f, &mut a, &st, &restart_target, "C14 restart under stale coverage").await;
+        a.traffic.aim = None;
+        restart
+    };
+    let (restart, (healed_at, healed_ms)) = tokio::join!(restarting, released);
+    f.actions.push(json!({"t_ms": healed_ms, "action": "fault.udp-drop.release"}));
+    // The victim's coverage went stale and was re-fed while the cut held, before the restart's request.
+    let stale = wait_for("the victim's coverage is stale and re-fed while the cut holds", window * 4 + Duration::from_secs(40), || async {
         let spans = f.estate.spans();
-        let att = refeeds(&spans, cut_at);
-        (att.iter().any(|sp| sp["attributes"]["peer_node"] == vname.as_str() || sp["attributes"]["node"] == vname.as_str())).then_some(now_ns())
+        refeeds(&spans, cut_at).into_iter().filter(|sp| start_ns(sp) <= healed_at && (sp["attributes"]["peer_node"] == vname.as_str() || sp["attributes"]["node"] == vname.as_str())).map(start_ns).min()
     })
     .await;
-    // A role node restarts while the victim's coverage is stale: a topology action under the lost control path.
-    a.traffic.aim = Some(restart_target.clone());
-    let restart = restart_node(&mut f, &mut a, &st, &restart_target, "C14 restart under stale coverage").await;
-    a.traffic.aim = None;
+    let requested = restart["request_ns"].as_u64().expect("the restart's request_ns");
+    assert!(stale < requested && requested < healed_at, "C14: the restart is requested under stale coverage while the cut holds: re-fed at {stale}, requested at {requested}, the cut dropped at {healed_at}");
     events.push(json!({"event": "control-lost", "victim": vname, "stale_after_ms": (stale - cut_at) / 1_000_000, "restart": restart}));
-    drop(cut);
-    let healed_at = now_ns();
-    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     st = a.stable(&mut f, "C14: healed", &both(2), &mut inv).await;
     let restarted = st.nodes.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap();
     wait_for("the victim holds every member ready, the restarted broker under the incarnation it kept", Duration::from_secs(60), || async {

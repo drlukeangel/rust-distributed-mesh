@@ -277,8 +277,9 @@ impl FabricRecoveryDoor {
 
     /// One submit of the re-create of `node`: `true` once its attempt completed; else the next is due after
     /// `backoff`, which doubles up to `ceiling`.
-    /// From the backbone (`own_mesh` false) the re-create is a node.create alone (fabric-recovery.md step 3,
-    /// Q142): an executor outside the mesh deletes and terminates nothing in it.
+    /// From the backbone (`own_mesh` false) the re-create terminates nothing in the mesh (fabric-recovery.md
+    /// step 3, Q148): its node.delete of the exact lost birth writes that birth's row deleted with no
+    /// `TerminateRuntime` and releases the name, then node.create at the path.name.
     async fn submit(&self, node: &Node, inspected: &crate::deployment::provider::Inspected, own_mesh: bool, next: &mut std::time::Instant, backoff: &mut std::time::Duration, ceiling: std::time::Duration) -> bool {
         let route = if own_mesh { "fabric-recovery" } else { "fabric-recovery-backbone" };
         match self.recovery.submit_route(node, inspected, route).await {
