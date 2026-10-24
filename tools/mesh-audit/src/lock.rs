@@ -556,7 +556,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_tokens(root, &files_in(root, ACTIVE_TRANSPORT_SOURCES), TRANSPORT_TAG_TOKENS, ratchet, &mut out);
         }
         Ratchet::RetireAttemptsRpcStopFirst => {
-            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::StopNode"], ratchet, &mut out);
+            require(root, RETIRE_CELLS, &["fn node_delete_runs_every_step_in_order", "RetireStep::StopNode"], ratchet, &mut out);
             if let Some(text) = read(root, PIPELINE) {
                 match (text.find("Self::StopNode,"), text.find("Self::TerminateRuntime,")) {
                     (Some(a), Some(b)) if a < b => {}

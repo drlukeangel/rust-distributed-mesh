@@ -30,10 +30,10 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
 }
 
 #[test]
-fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
-    let cap = crate::common::capture("a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth");
+fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth() {
+    let cap = crate::common::capture("a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth");
     cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), "a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth") {
+        if crate::own_process::delegated(module_path!(), "a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth") {
             return;
         }
         let fabric = FabricId::mint();

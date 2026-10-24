@@ -451,7 +451,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
     let spans = wait_for("the recovery's last operation, the exited birth's fence and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
-        (create_span(&in_trace(&spans, &recovery), &birth_build, &attempt, node_path).is_some() && !exit_fences(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
+        (create_span(&in_trace(&spans, &recovery), &birth_build, &attempt, node_path).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // The recovery's own run, one trace from the mesh-primary's submit: the report, the fabric-primary's
@@ -480,7 +480,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == node_path)
         .expect("the recovery's create operation span");
-    let fences = exit_fences(&spans, &before);
+    let fences = exited_birth_spans(&spans, &before);
     assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
     assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
     assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
@@ -547,7 +547,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     let spans = wait_for("the recovery's last operation, its reconcile span, the exited birth's fence and the successor's boot span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         let run = in_trace(&spans, &recovery);
-        (create_span(&run, &birth_build, &attempt, NODE).is_some() && lane_reconcile_span(&run, &birth_build, "mesh1", &attempt).is_some() && !exit_fences(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
+        (create_span(&run, &birth_build, &attempt, NODE).is_some() && lane_reconcile_span(&run, &birth_build, "mesh1", &attempt).is_some() && !exited_birth_spans(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // The recovery's own run: the attempt number is mesh1's lane's, which the fabric lane's numbering
@@ -591,7 +591,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE)
         .expect("the recovery's create operation span");
-    let fences = exit_fences(&spans, &before);
+    let fences = exited_birth_spans(&spans, &before);
     assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
     assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
     assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
@@ -700,8 +700,8 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
 /// endpoint key. Must NOT happen: the path left empty after the seat moved, a second node.delete of
 /// the exited birth, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat() {
-    let (estate, birth_build) = fabric_of("a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_over_mesh_primary() {
+    let (estate, birth_build) = fabric_of("a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_over_mesh_primary", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
@@ -859,7 +859,7 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
 
 /// The fence spans of the exited birth `old` (node-recovery.md "Delete fences the old instance
 /// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
-fn exit_fences<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
+fn exited_birth_spans<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
     named(spans, "rdm.node_admin.node.update.via-exit-paths-retired").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"] && sp["attributes"]["kind"] == "recovery").collect()
 }
 
@@ -1233,7 +1233,7 @@ async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted
     let (estate, birth_build) = estate("deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
     let nodes = objects(&estate).await;
     let parked = leave_rename_and_stop(&estate, &nodes, "mesh1.rpc.1").await;
-    delete_parked_and_assert(&estate, &birth_build, &parked).await;
+    delete_stopped_and_assert(&estate, &birth_build, &parked).await;
     estate.shutdown().await;
 }
 
@@ -1243,13 +1243,13 @@ async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted
 /// row's name by its node id (R12), fenced to that exact birth; mesh2's primary executes the delete
 /// and writes the Deleted row at `<path>.old`; the fabric-primary writes no row of mesh2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_primary_held_record() {
-    let (estate, birth_build) = two_mesh_estate("deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_primary_held_record").await;
+async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record() {
+    let (estate, birth_build) = two_mesh_estate("deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record").await;
     let nodes = objects(&estate).await;
     let parked = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
     assert!(parked.renamed_by.starts_with("mesh2.admin."), "mesh2's primary renamed it: {}", parked.renamed_by);
     assert!(parked.fabric_primary.starts_with("mesh1.admin."), "the fabric-primary is in mesh1: {}", parked.fabric_primary);
-    let executor = delete_parked_and_assert(&estate, &birth_build, &parked).await;
+    let executor = delete_stopped_and_assert(&estate, &birth_build, &parked).await;
     assert_eq!(executor, parked.renamed_by, "mesh2's primary, the writer of its rows, executes the delete");
     estate.shutdown().await;
 }
@@ -1262,8 +1262,8 @@ async fn deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_pri
 /// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
 /// `<path>.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
-    let (estate, birth_build) = fabric_of("deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth", &[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
+    let (estate, birth_build) = fabric_of("deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth", &[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = objects(&estate).await;
     let parked = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
     let first_primary = parked.renamed_by.clone();
@@ -1276,7 +1276,7 @@ async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_execute
         nodes.get(&NodeSelector::Mesh("mesh2".into())).await.ok()?.into_iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary && n.name.to_string() != first_primary).map(|n| n.name.to_string())
     })
     .await;
-    let executor = delete_parked_and_assert(&estate, &birth_build, &parked).await;
+    let executor = delete_stopped_and_assert(&estate, &birth_build, &parked).await;
     assert_eq!(executor, new_primary, "mesh2's new primary, which did not rename the birth, executes the delete");
     estate.shutdown().await;
 }
@@ -1325,7 +1325,7 @@ async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> Pa
 
 /// `build.create` of a RemoveNode change at `<path>.old` of `parked`, and everything node.delete owes (node-delete.md).
 /// Returns the admin that executed the delete.
-async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &Parked) -> String {
+async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, parked: &Parked) -> String {
     let Parked { node, before, pid, old_dir, .. } = parked;
     let old_name = format!("{node}.old");
     let delete = estate.submit_change(Change::RemoveNode { node: Estate::path(&old_name) }).await;

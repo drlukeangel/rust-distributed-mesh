@@ -1362,7 +1362,7 @@ mod spawn_tests {
     /// CONTRACT: a test that births a second estate in the same process gets its own root, and
     /// dropping the first estate's scope leaves the second estate's root in place.
     #[test]
-    fn a_reborn_estate_never_shares_or_loses_its_root_to_the_estate_it_replaces() {
+    fn a_re_born_estate_never_shares_or_loses_its_root_to_the_estate_it_replaces() {
         let (a, b) = (super::estate_root("reroll"), super::estate_root("reroll"));
         assert_ne!(a, b, "two estates of one test in one process share no root");
         std::fs::create_dir_all(&a).unwrap();

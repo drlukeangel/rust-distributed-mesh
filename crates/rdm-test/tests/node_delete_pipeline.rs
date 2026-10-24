@@ -23,13 +23,13 @@ use rdm_admin::model::NodeStatus;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 
 #[test]
-fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
+fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "retire_runs_every_step_in_order_and_the_ports_it_held_are_released") {
+    if crate::own_process::delegated(module_path!(), "node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released") {
         return;
     }
-    let cap = crate::common::capture("retire_runs_every_step_in_order_and_the_ports_it_held_are_released");
+    let cap = crate::common::capture("node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
 

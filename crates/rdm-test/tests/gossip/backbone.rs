@@ -103,7 +103,7 @@ fn now_ns() -> u64 {
 /// Who holds `role` for `scope` now, by the last start/stop per node. A killed process never
 /// says stop, so a path in `dead` drops its events from before its kill; drift recovery may
 /// rebirth the same path under a new NodeId, and that birth's events count.
-fn holders(events: &[(u64, String, String, String)], scope: &str, dead: &BTreeMap<String, u64>) -> BTreeSet<String> {
+fn role_nodes(events: &[(u64, String, String, String)], scope: &str, dead: &BTreeMap<String, u64>) -> BTreeSet<String> {
     let mut last: BTreeMap<&str, &str> = BTreeMap::new();
     for (at, node, _, role) in events.iter().filter(|e| e.2 == scope) {
         if dead.get(node.as_str()).is_some_and(|killed| at <= killed) {
@@ -165,7 +165,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
             let (p, none) = (p.clone(), none.clone());
             async move {
                 let ev = roles(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher", "mesh");
-                (holders(&ev, m, &none) == [p].into_iter().collect()).then_some(())
+                (role_nodes(&ev, m, &none) == [p].into_iter().collect()).then_some(())
             }
         })
         .await;
@@ -210,7 +210,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
             let publ = roles(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher", "mesh");
             let fwd = roles(&spans, "rdm.mesh.backbone.update.via-forwarder", "mesh");
             let one: BTreeSet<String> = [successor].into_iter().collect();
-            (holders(&publ, "mesh2", &dead) == one && holders(&fwd, "mesh2", &dead) == one).then_some(())
+            (role_nodes(&publ, "mesh2", &dead) == one && role_nodes(&fwd, "mesh2", &dead) == one).then_some(())
         }
     })
     .await;
@@ -240,7 +240,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         .until_view("the fabric primary alone publishes the fabric's status before it is lost", Duration::from_secs(40), |views| {
             let fp = Estate::values(views).into_iter().find(|n| n["is_fabric_primary"] == true)?;
             let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
-            (holders(&ev, &fabric_id, &dead) == [s(&fp["name"])].into_iter().collect()).then_some(fp)
+            (role_nodes(&ev, &fabric_id, &dead) == [s(&fp["name"])].into_iter().collect()).then_some(fp)
         })
         .await;
     let (fp_name, fp_id) = (s(&fp["name"]), s(&fp["node_id"]));
@@ -280,7 +280,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
             let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["name"]))?;
             // Status publication is keyed by the Fabric's id, the backbone's key.
             let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
-            (holders(&ev, &fabric_id, &dead) == [next.clone()].into_iter().collect()).then_some(next)
+            (role_nodes(&ev, &fabric_id, &dead) == [next.clone()].into_iter().collect()).then_some(next)
         })
         .await;
     // The seat moves with the lowest NodeId as meshes grow and lose primaries, and a rebirth of

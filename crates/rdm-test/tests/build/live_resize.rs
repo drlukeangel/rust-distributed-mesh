@@ -18,7 +18,7 @@
 //! `rdm.node_admin.node.delete.via-build` span that descends from the
 //! request that accepted its Build, with a retire pipeline under it.
 
-use rdm_test::elections::{seats_as_expected, seats_kept};
+use rdm_test::elections::{primaries_as_expected, primaries_kept};
 use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,7 +47,7 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     // Exactly the desired nodes, all ready.
     let nodes = Estate::values(&estate.settles_to(meshes, Duration::from_secs(15)).await);
     // Every seat is a held one, and a holder that survived the step still holds it.
-    if let Err(e) = seats_as_expected(&nodes).and_then(|()| seats_kept(before, &nodes)) {
+    if let Err(e) = primaries_as_expected(&nodes).and_then(|()| primaries_kept(before, &nodes)) {
         panic!("{label}: {e}: {nodes:#?}");
     }
     // No port collision: every advertised transport address is unique.
@@ -71,7 +71,7 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
 }
 
 /// Every retired node's removal descends from the request that accepted its Build.
-fn retirements_are_causal(estate: &Estate, steps: &[Step]) {
+fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
     let spans = estate.spans();
     for step in steps {
         let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
@@ -113,7 +113,7 @@ async fn mn_resizes_live_and_back_to_floor_without_flap_or_collision() {
     }
     estate.artifact("nodes.json", &json!(nodes));
     estate.stop().await;
-    retirements_are_causal(&estate, &steps);
+    deletes_are_causal(&estate, &steps);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -138,5 +138,5 @@ async fn mm_meshes_grow_and_shrink_independently() {
         }
     }
     estate.stop().await;
-    retirements_are_causal(&estate, &steps);
+    deletes_are_causal(&estate, &steps);
 }

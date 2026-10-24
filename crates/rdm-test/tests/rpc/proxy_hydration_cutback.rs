@@ -262,8 +262,8 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
 /// route. What must NOT happen: a Direct entry observed on the accept, a dial before the backoff
 /// ends, or a Direct route chosen before the retirement landed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback() {
-    let cell = "source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback";
+async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback() {
+    let cell = "source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = born(cell).await;

@@ -51,7 +51,7 @@ fn births(nodes: &[Value]) -> BTreeMap<String, String> {
 /// (node-primary-update.md step 1). The move ends the caller's stream with the new seat, and the
 /// Build is followed there to its end: the former holder is down only once the stop completes, and
 /// the successor's view names it the fabric-primary. Returns the successor.
-async fn hand_fabric_seat_over(estate: &mut Estate, former: &str) -> String {
+async fn hand_fabric_primary_over(estate: &mut Estate, former: &str) -> String {
     let mesh = former.split('.').next().unwrap();
     let successor = format!("{mesh}.admin.{}", if former.ends_with(".1") { 2 } else { 1 });
     estate.enter(&Estate::path(&successor)).await;
@@ -79,8 +79,8 @@ async fn hand_fabric_seat_over(estate: &mut Estate, former: &str) -> String {
 /// happen: a new MeshId or Build id, a Pending handed to the joining node-admin, a surviving member
 /// re-created, a member that answered recovered, the fabric primary creating the second admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
-    let cell = "recovery_admin_restores_lost_cohort_preserves_mesh_and_build";
+async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
+    let cell = "recovery_admin_restores_lost_node_admins_preserves_mesh_and_build";
     let dir = acceptance_dir("chaos-process", cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -290,7 +290,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     // fabric-primary writes at the state commit, so the fabric is ready-for-traffic first.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
-    let holder = hand_fabric_seat_over(&mut estate, &former).await;
+    let holder = hand_fabric_primary_over(&mut estate, &former).await;
     let holder_mesh = holder.split('.').next().unwrap().to_string();
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
     let mesh_ids: BTreeMap<String, String> = {
@@ -415,15 +415,15 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
 /// read's budget. The births the fabric then recreates adopt rafka-time from it.
 /// What must NOT happen: a refusal to start, a node that adopts from anyone but the holder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
-    let cell = "fabric_recovery_with_no_running_node_adopts_the_holders_own_clock";
+async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clock() {
+    let cell = "fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clock";
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
-    let holder = hand_fabric_seat_over(&mut estate, &former).await;
+    let holder = hand_fabric_primary_over(&mut estate, &former).await;
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
 
     // The fault: every runtime of the fabric, at once.

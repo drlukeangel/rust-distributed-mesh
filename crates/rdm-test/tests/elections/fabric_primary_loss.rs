@@ -33,7 +33,7 @@ fn signal(pid: u32, sig: &str) {
     assert!(ok, "kill {sig} {pid}");
 }
 /// The fabric-primary's name and whether it also holds its mesh's seat, from a view.
-fn seats(nodes: &[Value]) -> Option<(String, bool)> {
+fn primaries(nodes: &[Value]) -> Option<(String, bool)> {
     nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| (s(&n["name"]), n["is_primary"] == true))
 }
 
@@ -59,7 +59,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     let standby = "mesh1.admin.2";
     let before = estate.node_view(fp).await;
     let nodes0 = estate.node_values().await;
-    assert_eq!(seats(&nodes0), Some((fp.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
+    assert_eq!(primaries(&nodes0), Some((fp.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
     // Control is read through the standby from here: a held admin answers nothing.
     estate.enter(&Estate::path(standby)).await;
     let pid = estate.bootstrap_pid().unwrap_or_else(|| panic!("{fp} is the bootstrap admin and the estate holds its pid"));

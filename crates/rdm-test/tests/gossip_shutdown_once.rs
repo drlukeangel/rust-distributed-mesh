@@ -121,7 +121,7 @@ async fn a_stopped_node_shuts_its_gossip_down_once_through_its_router() {
 /// CONTRACT: `RunningNode::stop_commanded` (a parked process shutting down) shuts the node's gossip
 /// down once, through its router.
 #[tokio::test]
-async fn a_parked_node_shutting_down_shuts_its_gossip_down_once_through_its_router() {
+async fn a_stopped_node_shutting_down_shuts_its_gossip_down_once_through_its_router() {
     let events = GossipEvents::default();
     let _sub = events.install();
     let (dir, _admin, launch) = admitted("gossip-once-parked").await;

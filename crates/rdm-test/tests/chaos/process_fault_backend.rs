@@ -7,7 +7,7 @@
 //!   (`rdm_test::process_faults`) on a real estate.
 //! The cell does not touch the fabric-primary node-admin, and no mesh loses every node-admin.
 
-use rdm_test::elections::{advertised_fabric_primaries, seats_as_expected};
+use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_client::NodeStatus;
 use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
 use rdm_test::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault, Refusal as FaultRefusal};
@@ -103,8 +103,8 @@ async fn published(estate: &Estate, node: &str) -> ExactRuntime {
     ExactRuntime::published(std::path::Path::new(&dir)).unwrap_or_else(|r| panic!("{node}: no exact runtime published in {dir}: {r:?}"))
 }
 
-fn seats(nodes: &[Value]) -> (bool, String) {
-    match seats_as_expected(nodes) {
+fn primaries(nodes: &[Value]) -> (bool, String) {
+    match primaries_as_expected(nodes) {
         Ok(()) => (true, String::new()),
         Err(e) => (false, e),
     }
@@ -181,7 +181,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- Hold: SIGSTOP of the exact runtime, judged by the semantic detector.
     let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:stop-{hold}"));
-    let (seats_before, detail_before) = seats(&nodes0);
+    let (seats_before, detail_before) = primaries(&nodes0);
     let fp_before = fabric_primary(&nodes0);
     let stopped = hold_rt.apply(Fault::Stop).expect("the exact runtime is held");
     assert_eq!(stopped.state_after, Some('T'));
@@ -203,7 +203,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
     let nodes_during = estate.node_values().await;
-    let (seats_during, detail_during) = seats(&nodes_during);
+    let (seats_during, detail_during) = primaries(&nodes_during);
     let during = nodes_during.iter().find(|n| n["name"] == hold.as_str()).cloned();
     let attempt_during = attempt_of(&estate, &build_id).await;
     let alive = hold_rt.check().is_ok();
@@ -219,7 +219,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let kept = estate.probe(&["get", "--target", &hold_exact, "--key", "83"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "outcome": kept["outcome"]}).to_string() });
     let nodes_after = estate.node_values().await;
-    let (seats_after, detail_after) = seats(&nodes_after);
+    let (seats_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
@@ -292,7 +292,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
     let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"])].contains(id)).collect();
     assert!(untouched.iter().all(|id| survivors_after.contains(*id)), "no other node was replaced: before {survivors_before:?} after {survivors_after:?}");
-    let seats_end = seats(&nodes_end);
+    let seats_end = primaries(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
     let build_end = estate.accepted_build_id().await;
     assert_eq!(build_end, build_id, "the current build_id is the Build it was");

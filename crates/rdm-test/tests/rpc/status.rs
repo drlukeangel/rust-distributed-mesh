@@ -38,8 +38,8 @@ fn declared(out: &Value) -> (String, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() {
-    let mut estate = Estate::bootstrap(owner("a_node_declares_its_state_to_its_authority_and_the_authority_decides"), "fabric1", "mesh1").await;
+async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_decides() {
+    let mut estate = Estate::bootstrap(owner("a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_decides"), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     let nodes = estate.node_values().await;
@@ -180,8 +180,8 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
 /// mesh1" } }`, its own seat decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
 /// addressed to the admin holding no seat, or `RequestNotHandled` from a node-admin for a declaration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_its_own_seat_decision() {
-    let test = "a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_its_own_seat_decision";
+async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision() {
+    let test = "a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;

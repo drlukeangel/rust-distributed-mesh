@@ -69,8 +69,8 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// before it answers it, and takes the start's `NodeJoined` as already applied (node-mesh-join.md
 /// step 10). No runtime exits, no node is created, nothing is repaired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stop_parks_the_process_and_a_start_rejoins_it_as_the_same_birth() {
-    stop_then_start("a_stop_parks_the_process_and_a_start_rejoins_it_as_the_same_birth", NODE).await;
+async fn a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth() {
+    stop_then_start("a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth", NODE).await;
 }
 
 /// CONTRACT: the same holds for a node-admin: a mesh's non-primary admin is parked by its mesh primary
@@ -78,8 +78,8 @@ async fn a_stop_parks_the_process_and_a_start_rejoins_it_as_the_same_birth() {
 /// and a start makes the same process rejoin: the same node id, incarnation, endpoint key and port,
 /// `ready-for-traffic` again, and every other node reports it held again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stopped_node_admin_parks_and_a_start_rejoins_it_as_the_same_birth() {
-    stop_then_start("a_stopped_node_admin_parks_and_a_start_rejoins_it_as_the_same_birth", "mesh1.admin.2").await;
+async fn a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_same_birth() {
+    stop_then_start("a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_same_birth", "mesh1.admin.2").await;
 }
 
 async fn stop_then_start(test: &str, node: &str) {
@@ -688,8 +688,8 @@ async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeVie
 /// Must NOT happen: a refusal of node.primary.update, a 0x21 call to P the fabric-primary did not make
 /// or one to NA2 P did not make, a stop step before NA2 answered, or a view still naming P.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_it_stops() {
-    let test = "a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_it_stops";
+async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_stops() {
+    let test = "a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_stops";
     let (mut estate, before) = two_meshes(test, 2).await;
     let fp = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
     let p = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2's primary");
@@ -853,8 +853,8 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
 /// as the same birth. Must NOT happen: NodeStopped for the stopped birth twice (once per holder), or
 /// the old holder's stop declared as a state it measured.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat() {
-    let test = "a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat";
+async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_primary() {
+    let test = "a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_primary";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
@@ -943,8 +943,8 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
 /// the seat; a second declaration call to the old holder (a declaration loop of the node's own, which
 /// Q52 deleted); a drift attempt before the release, or a second one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder() {
-    let test = "a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder";
+async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary() {
+    let test = "a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;

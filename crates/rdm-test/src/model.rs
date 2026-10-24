@@ -49,7 +49,7 @@ impl NodeClass {
         }
     }
     /// A node of this class can hold a seat and execute Builds.
-    pub fn holds_seats(self) -> bool {
+    pub fn can_be_primary(self) -> bool {
         self == NodeClass::NodeAdmin
     }
     /// A node of this class serves the proof store (0x70): every class but the node-admin.
@@ -217,7 +217,7 @@ impl Model {
 
     /// Never every node-admin of a mesh down: a seat-holding class keeps one admin up.
     fn keeps_an_admin(&self, step: usize, action: &Action, mesh: &str, class: NodeClass) -> Result<(), Illegal> {
-        if class.holds_seats() && self.count(mesh, class) < 2 {
+        if class.can_be_primary() && self.count(mesh, class) < 2 {
             return Err(illegal(step, action, "another-admin-stays-up", format!("{mesh} has {} node-admin; taking it down leaves the mesh without one", self.count(mesh, class))));
         }
         Ok(())

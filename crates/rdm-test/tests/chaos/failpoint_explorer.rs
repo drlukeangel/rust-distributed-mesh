@@ -292,7 +292,7 @@ impl Run {
     }
 
     /// After a released removal: complete once, each retire step once, the node gone, no runtime left.
-    async fn after_retire(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
+    async fn after_delete(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
         assert_eq!(b["attempt"], 1, "no other attempt was opened: {b}");
@@ -333,7 +333,7 @@ async fn create_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 }
 
 /// A removal step stalled at its receipt, on the node the matching create left.
-async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
+async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let step = &order[i];
     let id = format!("retire:{step}");
     let spec = json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": node});
@@ -349,7 +349,7 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let h = run.hold(&door, &id, ack, &build_id, &op, Some(order[..i].to_vec()), runtimes).await;
     let rel = door.release(&id).await;
     run.complete(&mut stream).await;
-    let after = run.after_retire(&door, &build_id, node, order).await;
+    let after = run.after_delete(&door, &build_id, node, order).await;
     run.note_build(&build_id, 1);
     run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": 1, "steps": order, "held_step": step}));
     run.push(row(h, "retire-step", &id, &spec, rel, after));
@@ -405,7 +405,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     for i in 0..create_order.len() {
         create_step_cut(&run, &create_order, i, node).await;
         if i < retire_order.len() {
-            retire_step_cut(&run, &retire_order, i, node).await;
+            delete_step_cut(&run, &retire_order, i, node).await;
         } else {
             run.plain_delete(node).await;
         }
@@ -652,7 +652,7 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["status"], "routable": v["routable"]})).unwrap_or(Value::Null);
     let rel = door.release(&id).await;
     run.complete(&mut stream).await;
-    let after = run.after_retire(&door, &build_id, node, retire_order).await;
+    let after = run.after_delete(&door, &build_id, node, retire_order).await;
     run.note_build(&build_id, 1);
     run.span_check(json!({"kind": "event", "cut": id, "span": event_span(event), "build_id": build_id, "attempt": 1}));
     run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": 1, "steps": retire_order, "held_step": retire_order[receipts - 1]}));

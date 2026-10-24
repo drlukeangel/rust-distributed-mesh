@@ -98,8 +98,8 @@ async fn exited(provider: &ProcessDeploymentProvider, h: &DeploymentHandle) -> b
 }
 
 #[test]
-fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() {
-    let cap = crate::common::capture("a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost");
+fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() {
+    let cap = crate::common::capture("a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;

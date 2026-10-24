@@ -45,13 +45,13 @@ async fn until_ready(running: &rdm_admin::admin::Running) {
 /// running hook as a blocker until then. What must NOT happen: the root's hook pulling from an
 /// authority that does not exist, or the root Ready before its hook returned.
 #[test]
-fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state() {
+fn the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local_state() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state") {
+    if crate::own_process::delegated(module_path!(), "the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local_state") {
         return;
     }
-    let cap = crate::common::capture("the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state");
+    let cap = crate::common::capture("the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local_state");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let dir = std::env::temp_dir().join(format!("before-ready-day0-{}", rdm_core::NodeId::mint()));

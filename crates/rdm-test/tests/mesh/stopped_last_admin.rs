@@ -76,7 +76,7 @@ struct Retired {
 }
 
 /// mesh1 deleted, then its last admin's own node.delete, run to their end and read back.
-async fn retire_mesh1(test: &str) -> Retired {
+async fn delete_mesh1(test: &str) -> Retired {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let both = [mesh("mesh1"), mesh("mesh2")];
     estate.reconcile_shape("fabric1", &both).await;
@@ -144,7 +144,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let cell = "a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let Retired { last, builds, resolution, spans, pids } = retire_mesh1(cell).await;
+    let Retired { last, builds, resolution, spans, pids } = delete_mesh1(cell).await;
     let of_builds = |sp: &Value| builds.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
     // The executor's exit proof: the TerminateRuntime of the last admin's node.delete, complete inside

@@ -86,8 +86,8 @@ const DEFAULT_CALL_BUDGET: Duration = Duration::from_secs(10);
 /// happen: the call ending before the primary was killed, the completion sent to an admin the seat
 /// never named, the fabric held in state-commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holder() {
-    let test = "a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holder";
+async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_primary() {
+    let test = "a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_primary";
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
@@ -153,7 +153,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
 /// the 10 s a call had (mesh2's check-in owed upward, node-rpc.md §43) and the held birth continued. The
 /// restored fabric-primary re-sends the current round, the members already done check in again, and the
 /// fabric reaches ready-for-traffic under the resize. Every round action runs once per round key.
-async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
+async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
@@ -261,7 +261,7 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
 /// round action run twice for one key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_round() {
-    fabric_primary_cut_off("a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_round", (2, 1), "commit-state").await;
+    fabric_primary_held("a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_round", (2, 1), "commit-state").await;
 }
 
 /// CONTRACT (Q122): the same for open-traffic: a fabric-primary held past the floor during the
@@ -269,7 +269,7 @@ async fn a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recov
 /// re-sends the round, and the fabric reaches ready-for-traffic; no round action runs twice for one key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_round() {
-    fabric_primary_cut_off("a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_round", (2, 1), "open-traffic").await;
+    fabric_primary_held("a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_round", (2, 1), "open-traffic").await;
 }
 
 /// CONTRACT (Q122, fabric-recovery.md "Outside its mesh"; node-rpc.md §43; fabric-state-commit.md step 3,
@@ -281,5 +281,5 @@ async fn a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recov
 /// check-in ending unanswered, the fabric held in state-commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_round() {
-    fabric_primary_cut_off("a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_round", (1, 0), "commit-state").await;
+    fabric_primary_held("a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_round", (1, 0), "commit-state").await;
 }

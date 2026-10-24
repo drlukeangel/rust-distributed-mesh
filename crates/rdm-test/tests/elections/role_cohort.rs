@@ -10,7 +10,7 @@
 //!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
-use rdm_test::elections::{advertised_primaries, seats_as_expected, Cohort};
+use rdm_test::elections::{advertised_primaries, primaries_as_expected, Cohort};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -22,7 +22,7 @@ fn owner() -> Owner {
         subfeature: "role-cohort".into(),
         rung: "SN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "the_broker_cohort_elects_the_next_lowest_ready_node_id".into(),
+        test: "the_brokers_elect_the_next_lowest_ready_node_id".into(),
     }
 }
 
@@ -38,13 +38,13 @@ async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
     estate
         .until_view(&format!("{label}: the view settles on the computed seats"), Duration::from_secs(30), |views| {
             let nodes = live(&Estate::values(views));
-            (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(&nodes).is_ok()).then_some(nodes)
+            (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
         .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
+async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
     let brokers: Cohort = ("mesh1".into(), "broker".into());

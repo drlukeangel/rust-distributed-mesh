@@ -139,8 +139,8 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
 /// each admin the same birth, ready for traffic. Must NOT happen: the second restart's stop not
 /// admitted, or the role not back on the first admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows() {
-    let test = "a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows";
+async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_rows() {
+    let test = "a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_rows";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;

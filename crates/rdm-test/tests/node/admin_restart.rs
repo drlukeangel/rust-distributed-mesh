@@ -208,13 +208,13 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
 /// When that successor's process is then gone, the election names the restarted admin again, and the
 /// successor's recovery completes under it: a new node stands ready at the successor's path.name.
 ///
-/// What must NOT happen (the twelve soaks at 768dfaee, `mock_soak_authority_preserves_continuous_invariants`
+/// What must NOT happen (the twelve soaks at 768dfaee, `mock_soak_primaries_preserve_continuous_invariants`
 /// round 17, mesh2.admin.2-n88v5zcrvdkd): the restarted primary's mesh-row writes refused, and no
 /// re-birth in 150 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_its_mesh_rows() {
+async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_its_mesh_rows() {
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner_of("a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_its_mesh_rows"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
+    let mut estate = Estate::bootstrap_external(owner_of("a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_its_mesh_rows"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
         .await
         .expect("the faulted-admin binding set is accepted");
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;

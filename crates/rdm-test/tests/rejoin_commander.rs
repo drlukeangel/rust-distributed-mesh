@@ -345,8 +345,8 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
 /// the resolver's included, was read. Must NOT happen: the start refused at `node.join` naming the
 /// resolver's record (`commander-refused`, `Departed`).
 #[test]
-fn a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call() {
-    let cell = "a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call";
+fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
+    let cell = "a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call";
     let cap = crate::common::capture(cell);
     cap.run(crate::common::Threads::Workers(4), async move {
         if crate::own_process::delegated(module_path!(), cell) {

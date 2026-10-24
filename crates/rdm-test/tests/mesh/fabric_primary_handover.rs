@@ -43,7 +43,7 @@ fn owner() -> Owner {
         subfeature: "fabric-primary-handover".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it".into(),
+        test: "deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_then_deletes_it".into(),
     }
 }
 
@@ -93,7 +93,7 @@ fn alive(pid: u64) -> bool {
 /// reaches every surviving mesh from the fabric-primary, which executed the delete and publishes it as
 /// the author.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it() {
+async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_then_deletes_it() {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;

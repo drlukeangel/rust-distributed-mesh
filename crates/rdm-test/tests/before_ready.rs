@@ -171,13 +171,13 @@ fn probe(d: &MeshDigest) -> StatusRequest {
 /// closes naming the event that cleared it (`primary-ready`) and only then does the node publish
 /// ReadyForTraffic (`via-ready`). What must NOT happen: the node Ready before its hook passed.
 #[test]
-fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
+fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is") {
+    if crate::own_process::delegated(module_path!(), "a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is") {
         return;
     }
-    let cap = crate::common::capture("a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is");
+    let cap = crate::common::capture("a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
@@ -220,13 +220,13 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
 /// then runs the rest of its start to ReadyForTraffic. What must NOT happen: the node waits for an
 /// event that already went by.
 #[test]
-fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
+fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "a_retry_armed_after_the_authority_was_already_ready_still_completes") {
+    if crate::own_process::delegated(module_path!(), "a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes") {
         return;
     }
-    let cap = crate::common::capture("a_retry_armed_after_the_authority_was_already_ready_still_completes");
+    let cap = crate::common::capture("a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
@@ -301,13 +301,13 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
 /// records an outcome, and the node never publishes ReadyForTraffic. What must NOT happen: the
 /// pull answering into a node that was retired, or the node going Ready afterwards.
 #[test]
-fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
+fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "a_retire_during_the_pull_cancels_it_and_orphans_no_call") {
+    if crate::own_process::delegated(module_path!(), "a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call") {
         return;
     }
-    let cap = crate::common::capture("a_retire_during_the_pull_cancels_it_and_orphans_no_call");
+    let cap = crate::common::capture("a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
@@ -450,8 +450,8 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
 /// about the context is the app's to guess. What must NOT happen: an authority-less context for a
 /// node a launcher admitted.
 #[test]
-fn the_hook_is_handed_the_accepting_authority_of_its_exact_birth() {
-    let cap = crate::common::capture("the_hook_is_handed_the_accepting_authority_of_its_exact_birth");
+fn the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth() {
+    let cap = crate::common::capture("the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth");
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
         let before_ready = TestBeforeReady::new(Mode::Local);

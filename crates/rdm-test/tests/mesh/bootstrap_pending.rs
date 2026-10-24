@@ -211,7 +211,7 @@ async fn pending_contract(cell: &str) {
 
 
 /// The bootstrap admin (the one handed Pending) of mesh2 or mesh3 that does not hold the fabric seat.
-fn bootstrap_admin_off_the_seat(settled: &[NodeView]) -> String {
+fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> String {
     ["mesh2.admin.1", "mesh3.admin.1"]
         .into_iter()
         .find(|a| settled.iter().any(|n| n.name.to_string() == *a && !n.is_fabric_primary))
@@ -243,7 +243,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let settled = estate.settled_views(&shape).await;
     // The bootstrap admin restarted is one that does not hold the fabric seat (the seat goes to the
     // lowest node id fabric-wide, and the fabric primary is never restarted by this cell).
-    let target = bootstrap_admin_off_the_seat(&settled);
+    let target = bootstrap_admin_not_fabric_primary(&settled);
     let before = estate.node_view(&target).await;
 
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
@@ -307,7 +307,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
     // The lost mesh is a sole-admin mesh that does not hold the fabric seat.
-    let lost_admin = bootstrap_admin_off_the_seat(&before);
+    let lost_admin = bootstrap_admin_not_fabric_primary(&before);
     let lost = lost_admin.split('.').next().unwrap().to_string();
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();

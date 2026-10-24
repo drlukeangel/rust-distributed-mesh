@@ -44,35 +44,35 @@
     "C1": {
       "owner_issue": 2945,
       "tests": [
-        "mock_authority_handoffs_preserve_one_effective_writer",
+        "mock_primary_handoffs_preserve_one_effective_writer",
         "mock_recovery_retains_build_and_advances_attempt"
       ]
     },
     "C2": {
       "owner_issue": 2945,
       "tests": [
-        "mock_authority_handoffs_preserve_one_effective_writer",
+        "mock_primary_handoffs_preserve_one_effective_writer",
         "mock_recovery_retains_build_and_advances_attempt"
       ]
     },
     "C3": {
       "owner_issue": 2945,
       "tests": [
-        "mock_authority_handoffs_preserve_one_effective_writer",
+        "mock_primary_handoffs_preserve_one_effective_writer",
         "mock_recovery_retains_build_and_advances_attempt"
       ]
     },
     "C4": {
       "owner_issue": 2945,
       "tests": [
-        "mock_authority_handoffs_preserve_one_effective_writer",
+        "mock_primary_handoffs_preserve_one_effective_writer",
         "mock_recovery_retains_build_and_advances_attempt"
       ]
     },
     "C19": {
       "owner_issue": 2945,
       "tests": [
-        "mock_authority_handoffs_preserve_one_effective_writer",
+        "mock_primary_handoffs_preserve_one_effective_writer",
         "mock_recovery_retains_build_and_advances_attempt"
       ]
     },
@@ -80,7 +80,7 @@
       "owner_issue": 2946,
       "tests": [
         "mock_connection_churn_releases_superseded_resources",
-        "mock_proxy_cutback_requires_durable_retirement",
+        "mock_proxy_cutback_requires_a_durable_disconnected_write",
         "mock_routes_survive_connection_and_birth_supersession"
       ]
     },
@@ -88,7 +88,7 @@
       "owner_issue": 2946,
       "tests": [
         "mock_connection_churn_releases_superseded_resources",
-        "mock_proxy_cutback_requires_durable_retirement",
+        "mock_proxy_cutback_requires_a_durable_disconnected_write",
         "mock_routes_survive_connection_and_birth_supersession"
       ]
     },
@@ -96,7 +96,7 @@
       "owner_issue": 2946,
       "tests": [
         "mock_connection_churn_releases_superseded_resources",
-        "mock_proxy_cutback_requires_durable_retirement",
+        "mock_proxy_cutback_requires_a_durable_disconnected_write",
         "mock_routes_survive_connection_and_birth_supersession"
       ]
     },
@@ -104,7 +104,7 @@
       "owner_issue": 2946,
       "tests": [
         "mock_connection_churn_releases_superseded_resources",
-        "mock_proxy_cutback_requires_durable_retirement",
+        "mock_proxy_cutback_requires_a_durable_disconnected_write",
         "mock_routes_survive_connection_and_birth_supersession"
       ]
     },
@@ -188,7 +188,7 @@
     "C20": {
       "owner_issue": 2949,
       "tests": [
-        "mock_soak_authority_preserves_continuous_invariants",
+        "mock_soak_primaries_preserve_continuous_invariants",
         "mock_soak_lifecycle_preserves_continuous_invariants",
         "mock_soak_partition_preserves_continuous_invariants",
         "mock_soak_randomized_preserves_continuous_invariants",
@@ -207,7 +207,7 @@
     "S2": {
       "owner_issue": 2949,
       "seconds": 1800,
-      "test": "mock_soak_authority_preserves_continuous_invariants",
+      "test": "mock_soak_primaries_preserve_continuous_invariants",
       "replay_test": "mock_soak_replay_reproduces_qualified_invariants"
     },
     "S3": {
@@ -337,13 +337,13 @@
       "source": "tools/mesh-audit/tests/rshape_definition.rs"
     },
     {
-      "test": "mock_authority_handoffs_preserve_one_effective_writer",
+      "test": "mock_primary_handoffs_preserve_one_effective_writer",
       "issue": 2945,
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-authority-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_authority_handoffs_preserve_one_effective_writer -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_primary_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_primary_handoffs_preserve_one_effective_writer -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_primary_handoffs_preserve_one_effective_writer",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -357,13 +357,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_authority_handoffs_preserve_one_effective_writer",
+      "test": "mock_primary_handoffs_preserve_one_effective_writer",
       "issue": 2945,
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-authority-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_authority_handoffs_preserve_one_effective_writer -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_primary_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_primary_handoffs_preserve_one_effective_writer -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_primary_handoffs_preserve_one_effective_writer",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -387,13 +387,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_proxy_cutback_requires_durable_retirement",
+      "test": "mock_proxy_cutback_requires_a_durable_disconnected_write",
       "issue": 2946,
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_durable_retirement -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_a_durable_disconnected_write/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_a_durable_disconnected_write -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_a_durable_disconnected_write",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -417,13 +417,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_proxy_cutback_requires_durable_retirement",
+      "test": "mock_proxy_cutback_requires_a_durable_disconnected_write",
       "issue": 2946,
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_durable_retirement -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_a_durable_disconnected_write/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_a_durable_disconnected_write -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_a_durable_disconnected_write",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -547,13 +547,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_soak_authority_preserves_continuous_invariants",
+      "test": "mock_soak_primaries_preserve_continuous_invariants",
       "issue": 2949,
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-soak-authority-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_primaries_preserve_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_primaries_preserve_continuous_invariants -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_primaries_preserve_continuous_invariants",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -607,13 +607,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_soak_authority_preserves_continuous_invariants",
+      "test": "mock_soak_primaries_preserve_continuous_invariants",
       "issue": 2949,
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-soak-authority-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_primaries_preserve_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_primaries_preserve_continuous_invariants -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_primaries_preserve_continuous_invariants",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -787,7 +787,7 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once",
+      "test": "mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
@@ -797,12 +797,12 @@
         "C13"
       ],
       "canon": "connections.md section 8 (a carrier incarnation change invalidates a Proxy that names the old carrier) and section 9 H, I, K",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget",
+      "test": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
@@ -811,8 +811,8 @@
         "C12"
       ],
       "canon": "connections.md section 8 (the carrier refuses carrier-edge-lost; that refusal is how the source learns the edge is gone) and section 9 J",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     }
   ]

@@ -14,7 +14,7 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 /// CONTRACT (Q23, gossip.md §3.1): position 10 is reserved on every channel. Its only effect is
 /// a named refusal; it installs neither a projection nor a fact, carries nothing and decides nothing.
 #[test]
-fn receiver_refuses_position_ten_and_changes_no_status_or_seat() {
+fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");
     std::fs::create_dir_all(&dir).unwrap();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-concern-reserved").unwrap();

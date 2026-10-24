@@ -129,7 +129,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sn_mn_and_mm_converge_through_build_with_one_primary_per_cohort() {
+async fn sn_mn_and_mm_converge_through_build_with_one_primary_per_node_type() {
     converge("sn", &[("mesh1", 1, 1)]).await;
     converge("mn", &[("mesh1", 2, 3)]).await;
     converge("mm", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;

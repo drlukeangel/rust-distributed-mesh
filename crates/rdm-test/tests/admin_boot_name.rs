@@ -76,11 +76,11 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
 }
 
 #[test]
-fn a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name() {
-    if crate::own_process::delegated(module_path!(), "a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name") {
+fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name() {
+    if crate::own_process::delegated(module_path!(), "a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name") {
         return;
     }
-    let cap = crate::common::capture("a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name");
+    let cap = crate::common::capture("a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let base = std::env::temp_dir().join(format!("admin-boot-name-{}", NodeId::mint()));

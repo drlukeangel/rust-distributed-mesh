@@ -30,10 +30,10 @@
           "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
         },
         {
-          "name": "source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback",
+          "name": "source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback",
           "source": "crates/rdm-test/tests/rpc/proxy_hydration_cutback.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback/estate cargo test -p rdm-test --test main proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback -- --exact",
-          "dir": "target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback/estate cargo test -p rdm-test --test main proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback -- --exact",
+          "dir": "target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback"
         }
       ]
     },
@@ -466,10 +466,10 @@
           "dir": "target/i143-acceptance/2784/chaos-container/container_peer_mesh_lost_recovers_under_same_mesh_id"
         },
         {
-          "name": "container_primary_mesh_retired_hands_off_authority_before_its_containers_end",
+          "name": "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end",
           "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end/estate cargo test -p rdm-test --test main container_fault_backend::container_primary_mesh_retired_hands_off_authority_before_its_containers_end -- --exact",
-          "dir": "target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end/estate cargo test -p rdm-test --test main container_fault_backend::container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end -- --exact",
+          "dir": "target/i143-acceptance/2784/chaos-container/container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end"
         },
         {
           "name": "container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth",
@@ -647,10 +647,10 @@
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "recovery_admin_restores_lost_cohort_preserves_mesh_and_build",
+          "name": "recovery_admin_restores_lost_node_admins_preserves_mesh_and_build",
           "source": "crates/rdm-test/tests/mesh/cohort_recovery.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build/estate cargo test -p rdm-test --test main cohort_recovery::recovery_admin_restores_lost_cohort_preserves_mesh_and_build -- --exact",
-          "dir": "target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_node_admins_preserves_mesh_and_build/estate cargo test -p rdm-test --test main cohort_recovery::recovery_admin_restores_lost_node_admins_preserves_mesh_and_build -- --exact",
+          "dir": "target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_node_admins_preserves_mesh_and_build"
         },
         {
           "name": "fabric_recovery_restarts_one_admin_and_restores_every_missing_admin",
@@ -896,10 +896,10 @@
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "mock_authority_handoffs_preserve_one_effective_writer",
+          "name": "mock_primary_handoffs_preserve_one_effective_writer",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_authority_handoffs_preserve_one_effective_writer -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_primary_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_primary_handoffs_preserve_one_effective_writer -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_primary_handoffs_preserve_one_effective_writer"
         },
         {
           "name": "mock_recovery_retains_build_and_advances_attempt",
@@ -914,10 +914,10 @@
       "layer": "chaos-container",
       "cells": [
         {
-          "name": "mock_authority_handoffs_preserve_one_effective_writer",
+          "name": "mock_primary_handoffs_preserve_one_effective_writer",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_authority_handoffs_preserve_one_effective_writer -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_primary_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_primary_handoffs_preserve_one_effective_writer -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_primary_handoffs_preserve_one_effective_writer"
         },
         {
           "name": "mock_recovery_retains_build_and_advances_attempt",
@@ -986,10 +986,10 @@
           "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_routes_survive_connection_and_birth_supersession"
         },
         {
-          "name": "mock_proxy_cutback_requires_durable_retirement",
+          "name": "mock_proxy_cutback_requires_a_durable_disconnected_write",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_durable_retirement -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_a_durable_disconnected_write/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_a_durable_disconnected_write -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_a_durable_disconnected_write"
         },
         {
           "name": "mock_connection_churn_releases_superseded_resources",
@@ -1010,10 +1010,10 @@
           "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_routes_survive_connection_and_birth_supersession"
         },
         {
-          "name": "mock_proxy_cutback_requires_durable_retirement",
+          "name": "mock_proxy_cutback_requires_a_durable_disconnected_write",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_durable_retirement -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_a_durable_disconnected_write/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_a_durable_disconnected_write -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_a_durable_disconnected_write"
         },
         {
           "name": "mock_connection_churn_releases_superseded_resources",
@@ -1136,10 +1136,10 @@
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once",
+          "name": "mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once"
         }
       ]
     },
@@ -1148,10 +1148,10 @@
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget",
+          "name": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget"
         }
       ]
     },
@@ -1172,10 +1172,10 @@
       "layer": "soak-process",
       "cells": [
         {
-          "name": "mock_soak_authority_preserves_continuous_invariants",
+          "name": "mock_soak_primaries_preserve_continuous_invariants",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_primaries_preserve_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_primaries_preserve_continuous_invariants -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_primaries_preserve_continuous_invariants"
         }
       ]
     },
@@ -1244,10 +1244,10 @@
       "layer": "soak-container",
       "cells": [
         {
-          "name": "mock_soak_authority_preserves_continuous_invariants",
+          "name": "mock_soak_primaries_preserve_continuous_invariants",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_primaries_preserve_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_primaries_preserve_continuous_invariants -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_primaries_preserve_continuous_invariants"
         }
       ]
     },

@@ -34,7 +34,7 @@
 //! the topology and the story of the involved nodes; it is not re-executed against a live estate.
 
 use crate::container_faults;
-use crate::elections::seats_as_expected;
+use crate::elections::primaries_as_expected;
 use crate::estate::{wait_for, Estate, ProbeHandle};
 use crate::ledger::{Bucket, Ledger, MutationIntent, OperationId};
 use crate::model::{generate_among, replay, shrink, Action, Capabilities, ClassBounds, Failure, Model, NodeClass, Rng};
@@ -762,8 +762,8 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], paths: &[String], t
     Err(format!("not marked unheard within {}s: {last}; every admin's view: {views:?}", within.as_secs()))
 }
 
-fn seats(nodes: &[Value]) -> (bool, String) {
-    match seats_as_expected(nodes) {
+fn primaries(nodes: &[Value]) -> (bool, String) {
+    match primaries_as_expected(nodes) {
         Ok(()) => (true, String::new()),
         Err(e) => (false, e),
     }
@@ -1655,7 +1655,7 @@ impl Driver {
             }
         }
         let nodes0 = self.estate.node_values().await;
-        let (seats_before, detail_before) = seats(&nodes0);
+        let (seats_before, detail_before) = primaries(&nodes0);
         let fp_before = fabric_primaries(&nodes0);
         // Where the fabric-primary belongs as the hold begins: the one advertised.
         let home = fp_before.clone();
@@ -1753,7 +1753,7 @@ impl Driver {
         }
         let held_at_last_read = hold_rt.as_ref().map(|r| proc_state(r.pid) == Some('T')).unwrap_or(true);
         let nodes_during = self.estate.node_values().await;
-        let (seats_during, detail_during) = seats(&nodes_during);
+        let (seats_during, detail_during) = primaries(&nodes_during);
         let during = nodes_during.iter().find(|x| x["name"] == path.as_str()).cloned();
         let build_during = (self.read)(&self.estate, &self.build_id).await;
         let attempt_during = num(&build_during["attempt"]);
@@ -1807,7 +1807,7 @@ impl Driver {
                 None => self.estate.node_values().await,
             }
         };
-        let (seats_after, detail_after) = seats(&nodes_after);
+        let (seats_after, detail_after) = primaries(&nodes_after);
         ev.control = Some(Control {
             seats_as_expected: [seats_before, seats_during, seats_after],
             seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
@@ -1964,7 +1964,7 @@ impl Driver {
         if writers.len() != 1 {
             return Err(broken("one-fabric-primary", format!("round {round}: fabric primaries named across live admins: {writers:?}")));
         }
-        let (ok, why) = seats(&nodes);
+        let (ok, why) = primaries(&nodes);
         if !ok {
             return Err(broken("seats-equal-the-public-candidates", format!("round {round}: {why}")));
         }

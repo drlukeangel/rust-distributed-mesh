@@ -302,7 +302,7 @@ use rdm_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDe
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
 use rdm_admin::lifecycle::HookPhase;
-use rdm_test::elections::{advertised_fabric_primaries, seats_as_expected};
+use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use std::sync::Mutex;
@@ -344,8 +344,8 @@ fn step_counts(build: &Value, operation: &str, attempt: u64) -> BTreeMap<String,
 }
 
 /// `Ok` when the advertised seats equal the ones the public candidates compute.
-fn seats(nodes: &[Value]) -> (bool, String) {
-    match seats_as_expected(nodes) {
+fn primaries(nodes: &[Value]) -> (bool, String) {
+    match primaries_as_expected(nodes) {
         Ok(()) => (true, String::new()),
         Err(e) => (false, e),
     }
@@ -568,7 +568,7 @@ async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (S
 async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door, trigger: Trigger, shape: Shape, watch: Watch, expect_routable: bool) {
     let mut ev = Evidence::new(family, id);
     let nodes_before = run.estate.node_values().await;
-    let (seats_before, seats_detail_before) = seats(&nodes_before);
+    let (seats_before, seats_detail_before) = primaries(&nodes_before);
     let admin_view = |nodes: &[Value]| nodes.iter().find(|n| n["name"] == door.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
     let current_before = run.fabric_build_id().await;
@@ -634,7 +634,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (routable, shown) = run.routable(&watch).await;
     ev.routing = Some(Routing { expected_routable: expect_routable, observed_routable: routable, observed: shown });
     let nodes_during = run.estate.node_values().await;
-    let (seats_during, seats_detail_during) = seats(&nodes_during);
+    let (seats_during, seats_detail_during) = primaries(&nodes_during);
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
     let held_pid = run.admin_pid(&door.name);
     let alive = held_pid.and_then(proc_state).is_some_and(|c| c != 'Z');
@@ -662,7 +662,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (after_marker, complete_after, _) = read(run, door, &build_id, &op).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
     let nodes_after = run.estate.node_values().await;
-    let (seats_after, seats_detail_after) = seats(&nodes_after);
+    let (seats_after, seats_detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [seats_detail_before, seats_detail_during, seats_detail_after].join(" | "),
@@ -692,7 +692,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
             rec.check("no runtime of the node is left", run.runtimes(node) == 0, format!("{}", run.runtimes(node)));
         }
     }
-    rec.check("the advertised seats equal the public candidates' after the release", seats_after, seats_detail_after_str(&nodes_after));
+    rec.check("the advertised seats equal the public candidates' after the release", seats_after, primaries_detail_after_str(&nodes_after));
     ev.reconciliation = Some(rec);
 
     run.holds.lock().unwrap().push(id.to_string());
@@ -726,7 +726,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
     let nodes_before = run.estate.node_values().await;
-    let (seats_before, detail_before) = seats(&nodes_before);
+    let (seats_before, detail_before) = primaries(&nodes_before);
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
     let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
@@ -762,7 +762,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let (routable, shown) = run.routable(&Watch::Node(admin.into())).await;
     ev.routing = Some(Routing { expected_routable: false, observed_routable: routable, observed: shown });
     let nodes_during = run.estate.node_values().await;
-    let (seats_during, detail_during) = seats(&nodes_during);
+    let (seats_during, detail_during) = primaries(&nodes_during);
     let alive = run.admin_pid(admin).and_then(proc_state).is_some_and(|c| c != 'Z');
     let inc_during = nodes_during.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let fp_during = fabric_primary(&nodes_during);
@@ -774,7 +774,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let (after_marker, complete_after, _) = read(run, &exec, &build_id, &Some(op.clone())).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
     let nodes_after = run.estate.node_values().await;
-    let (seats_after, detail_after) = seats(&nodes_after);
+    let (seats_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
@@ -799,8 +799,8 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     run.evidence.lock().unwrap().push(ev);
 }
 
-fn seats_detail_after_str(nodes: &[Value]) -> String {
-    seats(nodes).1
+fn primaries_detail_after_str(nodes: &[Value]) -> String {
+    primaries(nodes).1
 }
 
 /// A runtime frozen in place (SIGSTOP) is alive and silent: it is judged by the typed outcome of
@@ -824,7 +824,7 @@ async fn silent_case(run: &Run) {
     let put = run.estate.probe(&["put", "--target", &exact, "--key", "77", "--value", "before-freeze"]);
     assert_eq!(put["outcome"], "Reply", "the put reaches the live node: {put}");
     assert_eq!(put["reply"]["incarnation_id"], incarnation.as_str(), "{put}");
-    let (seats_before, detail_before) = seats(&nodes);
+    let (seats_before, detail_before) = primaries(&nodes);
     let (fp_before, inc_before) = (fabric_primary(&nodes), incarnation.clone());
 
     // The fault: SIGSTOP, acknowledged by the OS process state. The kernel is the only source of this
@@ -854,7 +854,7 @@ async fn silent_case(run: &Run) {
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
     let nodes_during = run.estate.node_values().await;
-    let (seats_during, detail_during) = seats(&nodes_during);
+    let (seats_during, detail_during) = primaries(&nodes_during);
     let during_node = nodes_during.iter().find(|n| n["name"] == name.as_str()).cloned();
     let attempt_during = attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
@@ -875,7 +875,7 @@ async fn silent_case(run: &Run) {
     let kept = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"proc_state": proc_state(pid).map(String::from), "outcome": kept["outcome"]}).to_string() });
     let nodes_after = run.estate.node_values().await;
-    let (seats_after, detail_after) = seats(&nodes_after);
+    let (seats_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),

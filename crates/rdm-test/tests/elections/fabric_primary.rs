@@ -34,7 +34,7 @@
 //! of that mesh's first node-admin in process, and nothing else of that mesh.
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, PathName};
-use rdm_test::elections::{advertised_fabric_primaries, seats_as_expected};
+use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -158,7 +158,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
 /// holder); every mesh primary's own view advertises that same holder. Losing every node-admin of
 /// the holder's mesh moves the seat to the lowest NodeId among the remaining mesh primaries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remaining_when_its_mesh_is_lost() {
+async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_remaining_when_its_mesh_is_lost() {
     let mut estate = Estate::bootstrap(
         Owner { subfeature: "fabric-primary".into(), rung: "MMM".into(), test: "three_mesh_primaries_keep_the_day0_holder".into(), ..owner() },
         "fabric1",
@@ -171,7 +171,7 @@ async fn three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remainin
     let nodes = estate
         .until_view("three meshes settle on the computed seats", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
-            (all_ready(&nodes) && seats_as_expected(&nodes).is_ok()).then_some(nodes)
+            (all_ready(&nodes) && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
         .await;
     let winner = "mesh1.admin.1".to_string();
@@ -184,7 +184,7 @@ async fn three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remainin
         let view = estate
             .until_view_at(&Estate::path(&s(&mp["name"])), &format!("{} agrees", mp["name"]), Duration::from_secs(30), |views| {
                 let v = Estate::values(views);
-                (all_ready(&v) && seats_as_expected(&v).is_ok()).then_some(v)
+                (all_ready(&v) && primaries_as_expected(&v).is_ok()).then_some(v)
             })
             .await;
         assert_eq!(advertised_fabric_primaries(&view), vec![winner.clone()], "{} resolves the same fabric primary", mp["name"]);

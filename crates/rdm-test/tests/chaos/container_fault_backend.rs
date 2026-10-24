@@ -8,7 +8,7 @@
 //! `rdm_test::wedge` (family `PartitionHeal`).
 
 use rdm_test::container_faults::{self, Inspected, Silenced};
-use rdm_test::elections::seats_as_expected;
+use rdm_test::elections::primaries_as_expected;
 use rdm_client::{FabricView, NodeView, PathName, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::typed::fabric_view_of;
@@ -412,7 +412,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let fabric_build = s(&fabric_before["build_id"]);
     assert_eq!(fabric_build, build_id, "the current build_id names the creation Build: {fabric_before}");
     let attempt_before = estate.attempt_of_build(&fabric_build).await;
-    let (seats_before, seats_detail_before) = match seats_as_expected(&nodes) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
+    let (seats_before, seats_detail_before) = match primaries_as_expected(&nodes) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
 
     // The healthy control, run first in the same capture: the same three legs to the same node
     // reach it and are served by it; its value is stored for the heal to find.
@@ -570,7 +570,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         observed_routable: reached,
         observed: silence.iter().map(|r| format!("direct {} via-peer {} none {}", r["legs"]["direct"]["outcome"], r["legs"]["via_peer"]["outcome"], r["legs"]["no_active_route"]["outcome"])).collect::<Vec<_>>().join("; "),
     });
-    let (seats_during, seats_detail_during) = match seats_as_expected(&nodes_during) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
+    let (seats_during, seats_detail_during) = match primaries_as_expected(&nodes_during) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
     let provider_alive_during = last.values().all(|i| i.running && i.status == "running");
     let fp_of = |nodes: &[Value]| nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
     let inc_during = node_in(&nodes_during, &target_name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
@@ -608,7 +608,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         Some(ns) => ns,
         None => estate.node_values().await,
     };
-    let (seats_after, seats_detail_after) = match seats_as_expected(&nodes_after) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
+    let (seats_after, seats_detail_after) = match primaries_as_expected(&nodes_after) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
     let attempt_after = estate.attempt_of_build(&fabric_build).await;
     let fabric_after = fabric_json(&estate).await;
     ev.recovery = Some(Recovery { work_complete: replied(&healed["direct"]) && replied(&healed["via_peer"]), marker_after: json!({"containers": after_heal.iter().map(|(n, i)| (n.clone(), json!({"status": i.status, "networks": i.networks}))).collect::<BTreeMap<_, _>>(), "direct": leg_shape(&healed["direct"]), "via_peer": leg_shape(&healed["via_peer"]), "ready": births(&nodes_after).len()}).to_string() });
@@ -980,7 +980,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-const RETIRE_CELL: &str = "container_primary_mesh_retired_hands_off_authority_before_its_containers_end";
+const RETIRE_CELL: &str = "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end";
 
 /// CONTRACT (#2784, fabric loss): on a real Docker estate of two meshes (two node-admins and three
 /// rpc nodes each) the mesh that holds the fabric seat is lost the way an operator loses it: one
@@ -995,8 +995,8 @@ const RETIRE_CELL: &str = "container_primary_mesh_retired_hands_off_authority_be
 /// holder's containers ended before the hand-off, a survivor's container replaced, an advertised
 /// endpoint that belongs to no birth of the run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn container_primary_mesh_retired_hands_off_authority_before_its_containers_end() {
-    if crate::own_process::delegated(module_path!(), "container_primary_mesh_retired_hands_off_authority_before_its_containers_end") {
+async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end() {
+    if crate::own_process::delegated(module_path!(), "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end") {
         return;
     }
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
@@ -1213,8 +1213,8 @@ impl Capture {
 
 
 
-fn seats(nodes: &[Value]) -> (bool, String) {
-    match seats_as_expected(nodes) {
+fn primaries(nodes: &[Value]) -> (bool, String) {
+    match primaries_as_expected(nodes) {
         Ok(()) => (true, String::new()),
         Err(e) => (false, e),
     }
@@ -1295,7 +1295,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     // at its path with a new NodeId under the current Build (node-recovery.md step 3, Q111).
     let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:pause-{hold}"));
     let nodes_pre = estate.node_values().await;
-    let (seats_before, detail_before) = seats(&nodes_pre);
+    let (seats_before, detail_before) = primaries(&nodes_pre);
     let fp_before = fabric_primary_of(&nodes_pre);
     let paused = hold_c.apply(Fault::Pause).expect("the exact container is paused");
     assert_eq!(paused.status_after, "paused");
@@ -1318,7 +1318,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("calls {}", outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
     let nodes_during = estate.node_values().await;
-    let (seats_during, detail_during) = seats(&nodes_during);
+    let (seats_during, detail_during) = primaries(&nodes_during);
     let attempt_during = estate.attempt_of_build(&build_id).await;
     let alive = hold_c.check().is_ok();
     let released = hold_c.apply(Fault::Unpause).expect("the pause is released");
@@ -1329,7 +1329,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let kept = estate.probe(&["get", "--target", &new_exact, "--key", "84"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"put": put["outcome"], "outcome": kept["outcome"]}).to_string() });
     let nodes_after = estate.node_values().await;
-    let (seats_after, detail_after) = seats(&nodes_after);
+    let (seats_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
@@ -1393,7 +1393,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     // The paused node was re-created at its path too (the hold's segment above).
     let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"]), s(&hold_n["node_id"])].contains(id)).collect();
     assert!(untouched.iter().all(|id| survivors_after.contains(*id)), "no other node was replaced: before {survivors_before:?} after {survivors_after:?}");
-    let seats_end = seats(&nodes_end);
+    let seats_end = primaries(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
     assert_eq!(estate.accepted_build_id().await, build_id, "the current build_id is the Build it was");
     estate.stop().await;

@@ -40,7 +40,7 @@
 //! failure.
 
 use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus, PathName, WorkflowStream};
-use rdm_test::elections::{advertised_primaries, expected_primaries, seats_as_expected, seats_kept, Cohort};
+use rdm_test::elections::{advertised_primaries, expected_primaries, primaries_as_expected, primaries_kept, Cohort};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -57,7 +57,7 @@ fn owner(test: &str, rung: &str) -> Owner {
     }
 }
 
-fn cohort(mesh: &str, kind: &str) -> Cohort {
+fn node_type_of(mesh: &str, kind: &str) -> Cohort {
     (mesh.into(), kind.into())
 }
 
@@ -100,7 +100,7 @@ fn live(nodes: &[Value]) -> Vec<Value> {
 /// Every live node is ready and every seat is the computed one.
 fn settled(nodes: &[Value]) -> bool {
     let nodes = live(nodes);
-    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(&nodes).is_ok()
+    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && primaries_as_expected(&nodes).is_ok()
 }
 
 /// Wait until the view of the node-admin `admin` is settled; return its live rows. A timeout names the last view.
@@ -123,13 +123,13 @@ async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) 
     while Instant::now() < until {
         let nodes = live(&estate.node_values_at(&admin.to_string()).await);
         if nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
-            if let Err(e) = seats_as_expected(&nodes) {
+            if let Err(e) = primaries_as_expected(&nodes) {
                 panic!("{label}: {e}: {nodes:#?}");
             }
             match &first {
                 None => first = Some(nodes),
                 Some(before) => {
-                    if let Err(e) = seats_kept(before, &nodes) {
+                    if let Err(e) = primaries_kept(before, &nodes) {
                         panic!("{label}: {e}: before {before:#?} after {nodes:#?}");
                     }
                 }
@@ -211,10 +211,10 @@ fn announced(spans: &[Value], c: &Cohort, winner: &str, previous: &str) -> bool 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
-    let mut estate = Estate::bootstrap(owner("every_mn_cohort_elects_the_lowest_ready_node_id", "MN"), "fabric1", "mesh1").await;
+async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix() {
+    let mut estate = Estate::bootstrap(owner("every_mn_node_type_elects_the_lowest_ready_node_id", "MN"), "fabric1", "mesh1").await;
     let admin1 = estate.entry().await;
-    let (rpc, admin) = (cohort("mesh1", "rpc_node"), cohort("mesh1", "node_admin"));
+    let (rpc, admin) = (node_type_of("mesh1", "rpc_node"), node_type_of("mesh1", "node_admin"));
     let hold = Duration::from_secs(4);
 
     // day 0: one admin, every seat its own.
@@ -342,7 +342,7 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
             let converged = |views: &[rdm_client::NodeView]| {
                 let view = live(&Estate::values(views));
                 let one_each = everyone.iter().all(|name| view.iter().filter(|n| n["name"] == name.as_str()).count() == 1 && view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"));
-                (one_each && seats_as_expected(&view).is_ok()).then_some(view)
+                (one_each && primaries_as_expected(&view).is_ok()).then_some(view)
             };
             // Both pre-cut admin paths are asked on every pass: an answer teaches the estate the births the
             // other path holds now (a re-created admin is dialled where a view names it).
@@ -354,7 +354,7 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
                     match estate.node_views_at(at).await {
                         Some(v) => {
                             let ns = live(&Estate::values(&v));
-                            last.push(format!("{at}: {:?} seats={:?}", ns.iter().map(|n| format!("{}={}/{} p={} f={}", s(&n["name"]), s(&n["status"]), s(&n["node_id"]), n["is_primary"], n["is_fabric_primary"])).collect::<Vec<_>>(), seats_as_expected(&ns)));
+                            last.push(format!("{at}: {:?} seats={:?}", ns.iter().map(|n| format!("{}={}/{} p={} f={}", s(&n["name"]), s(&n["status"]), s(&n["node_id"]), n["is_primary"], n["is_fabric_primary"])).collect::<Vec<_>>(), primaries_as_expected(&ns)));
                             views.push(converged(&v));
                         }
                         None => {
@@ -422,10 +422,10 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
-    let mut estate = Estate::bootstrap(owner("a_second_meshs_admin_cohort_elects", "MM"), "fabric1", "mesh1").await;
+async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
+    let mut estate = Estate::bootstrap(owner("a_second_meshs_node_admins_elect", "MM"), "fabric1", "mesh1").await;
     let admin1 = estate.entry().await;
-    let admin2 = cohort("mesh2", "node_admin");
+    let admin2 = node_type_of("mesh2", "node_admin");
     let hold = Duration::from_secs(4);
 
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;

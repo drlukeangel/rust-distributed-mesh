@@ -363,7 +363,7 @@ pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status:
 /// [`admin_side_serving`] as the node-admin `name` of `mesh1` (`mesh1.admin.<n>`): a second admin
 /// side of the same fabric and mesh, for a cell where a seat moves between two node-admins.
 pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name: &str, status: rdm_core::digest::MemberStatus, serve: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> AdminSide {
-    admin_side_taking_joins_seated(ip, fabric, name, true, None, serve, status, no_certs(), SideSeat::Primary).await
+    admin_side_taking_joins_elected(ip, fabric, name, true, None, serve, status, no_certs(), SideSeat::Primary).await
 }
 
 /// The node-admin `name` of `primary`'s mesh, taking joins and serving the topology it holds, that
@@ -373,7 +373,7 @@ pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name
 pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
     let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
-    admin_side_taking_joins_seated(ip, &primary.fabric, name, true, None, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
+    admin_side_taking_joins_elected(ip, &primary.fabric, name, true, None, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
 }
 
 /// [`admin_side_silent_as`] whose `JoinNode` door is never opened: a node that joins it is answered
@@ -381,7 +381,7 @@ pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, nam
 pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
     let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
-    admin_side_taking_joins_seated(ip, &primary.fabric, name, false, None, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
+    admin_side_taking_joins_elected(ip, &primary.fabric, name, false, None, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
@@ -401,11 +401,11 @@ pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, referen
 }
 
 async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice) -> AdminSide {
-    admin_side_taking_joins_seated(ip, fabric, name, takes_joins, reference_ms, serve_app, status, certs, SideSeat::Primary).await
+    admin_side_taking_joins_elected(ip, fabric, name, takes_joins, reference_ms, serve_app, status, certs, SideSeat::Primary).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, seat: SideSeat) -> AdminSide {
+async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, seat: SideSeat) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()

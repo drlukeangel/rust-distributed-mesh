@@ -56,7 +56,7 @@ pub fn advertised_fabric_primaries(nodes: &[Value]) -> Vec<String> {
 /// advertises exactly one primary, a member of the cohort (its holder, whichever it is: a view alone
 /// cannot name it, elections §5), no cohort advertises two, and exactly one fabric primary is
 /// advertised, a node-admin that is also its mesh's primary.
-pub fn seats_as_expected(nodes: &[Value]) -> Result<(), String> {
+pub fn primaries_as_expected(nodes: &[Value]) -> Result<(), String> {
     for (c, p) in &advertised_primaries(nodes) {
         let ready = nodes.iter().any(|n| s(&n["mesh"]) == c.0 && s(&n["kind"]) == c.1 && n["status"] == "ready-for-traffic");
         if (ready && p.len() != 1) || p.len() > 1 {
@@ -74,7 +74,7 @@ pub fn seats_as_expected(nodes: &[Value]) -> Result<(), String> {
 /// Whether every seat `before` advertised for a birth that `after` still shows live is still held
 /// by that birth, for every cohort and the fabric seat: a holder that lives keeps its seat, and a
 /// lower NodeId, a newcomer or a restarted node never displaces it (elections §5).
-pub fn seats_kept(before: &[Value], after: &[Value]) -> Result<(), String> {
+pub fn primaries_kept(before: &[Value], after: &[Value]) -> Result<(), String> {
     for b in before.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true) {
         let Some(a) = after.iter().find(|n| n["name"] == b["name"] && n["incarnation_id"] == b["incarnation_id"]) else { continue };
         if a["status"] == "ready-for-traffic" || a["status"] == "pending-reconnect" {

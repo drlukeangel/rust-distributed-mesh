@@ -10,7 +10,7 @@
 //! from the `rdm.mesh.connection.update.via-refeed` spans (`reason = stale-held-member`) and from
 //! the views of every admin.
 
-use rdm_test::elections::{advertised_fabric_primaries, advertised_primaries, seats_as_expected};
+use rdm_test::elections::{advertised_fabric_primaries, advertised_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -281,7 +281,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         wait_for(&format!("{name} holds every pre-cut member ready after the cut is dropped"), Duration::from_secs(60), || async { holds_all(&estate.node_values_at(base).await, &everyone).then_some(()) }).await;
         let view = wait_for(&format!("{name} settles on the computed seats"), Duration::from_secs(30), || async {
             let v = live(&estate.node_values_at(base).await);
-            (holds_all(&v, &everyone) && seats_as_expected(&v).is_ok()).then_some(v)
+            (holds_all(&v, &everyone) && primaries_as_expected(&v).is_ok()).then_some(v)
         })
         .await;
         views.push((name.clone(), view));

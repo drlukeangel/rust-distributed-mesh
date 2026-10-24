@@ -52,13 +52,13 @@ fn birth_dir(what: &str) -> std::path::PathBuf {
 /// verifying to its issuer and the issuer to the root. The bytes on the running handle are the bytes
 /// the authority issued.
 #[test]
-fn a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_birth() {
+fn a_node_admitted_by_its_mesh_issuer_holds_a_member_cert_for_exactly_its_birth() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_birth") {
+    if crate::own_process::delegated(module_path!(), "a_node_admitted_by_its_mesh_issuer_holds_a_member_cert_for_exactly_its_birth") {
         return;
     }
-    let cap = crate::common::capture("a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_birth");
+    let cap = crate::common::capture("a_node_admitted_by_its_mesh_issuer_holds_a_member_cert_for_exactly_its_birth");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let dir = birth_dir("member-cert-birth");
@@ -156,13 +156,13 @@ fn the_member_cert_is_in_the_before_ready_context_and_equals_the_handles() {
 /// CONTRACT: an authority explicitly configured with no certs admits a birth with an empty member
 /// cert and a span that names the choice; the empty bytes are the answer, not an absence.
 #[test]
-fn an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so() {
+fn a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so") {
+    if crate::own_process::delegated(module_path!(), "a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so") {
         return;
     }
-    let cap = crate::common::capture("an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so");
+    let cap = crate::common::capture("a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let dir = birth_dir("member-cert-none");

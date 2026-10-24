@@ -741,8 +741,8 @@
       "job": "rdm-admin:lib"
     },
     {
-      "cell": "crates/rdm-test/tests/elections/cohort_election.rs::every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix",
-      "test": "rdm-test/main: cohort_election::every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix",
+      "cell": "crates/rdm-test/tests/elections/cohort_election.rs::every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix",
+      "test": "rdm-test/main: cohort_election::every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix",
       "log": "gates-e4s8-abc1ec15release.log",
       "job": "cohort_election"
     },
@@ -777,8 +777,8 @@
       "job": "sticky_seat"
     },
     {
-      "cell": "crates/rdm-test/tests/elections/fabric_primary.rs::three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remaining_when_its_mesh_is_lost",
-      "test": "rdm-test/main: fabric_primary::three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remaining_when_its_mesh_is_lost",
+      "cell": "crates/rdm-test/tests/elections/fabric_primary.rs::three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_remaining_when_its_mesh_is_lost",
+      "test": "rdm-test/main: fabric_primary::three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_remaining_when_its_mesh_is_lost",
       "log": "gates-e4s8-abc1ec15.log",
       "job": "fabric_primary"
     },

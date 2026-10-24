@@ -186,7 +186,7 @@ pub struct Routing {
 #[derive(Debug, Clone, Serialize)]
 pub struct Control {
     /// The seats the public view advertises equal the ones the public candidates compute
-    /// (`elections::seats_as_expected`), before, during and after.
+    /// (`elections::primaries_as_expected`), before, during and after.
     pub seats_as_expected: [bool; 3],
     /// The seats' detail when one diverges.
     pub seats_detail: String,

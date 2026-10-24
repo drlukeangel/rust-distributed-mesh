@@ -267,7 +267,7 @@ impl rdm_admin::fabric_rounds::RoundActions for HeldActions {
 impl Birth {
     /// `admin` records itself `mesh1`'s mesh-primary at `revision`, which its next digest carries;
     /// resolves once this birth holds that record.
-    async fn seat(&self, admin: &crate::common::AdminSide, revision: u64) {
+    async fn record_mesh_primary(&self, admin: &crate::common::AdminSide, revision: u64) {
         let holder = rdm_core::seat::Primary { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
         admin.observer.membership.primaries().take(rdm_core::seat::Seat::MeshPrimary, &holder);
         let seats = self.running.membership.primaries();
@@ -349,8 +349,8 @@ async fn checked_in(admin: &crate::common::AdminSide, spans: &crate::common::Spa
 /// once (serve_round's contract: that is how a new primary's checklist rebuilds itself). What must
 /// NOT happen: `Applied` to the new holder and a second run of the round's action.
 #[test]
-fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_runs_once() {
-    let cell = "a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_runs_once";
+fn a_round_sent_again_by_the_new_primary_is_the_same_round_and_its_action_runs_once() {
+    let cell = "a_round_sent_again_by_the_new_primary_is_the_same_round_and_its_action_runs_once";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -379,11 +379,11 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
         .expect("the birth hears admin2's digest");
 
         // commit-state: admin1 commands it and the action runs, held.
-        birth.seat(&birth.admin, 1).await;
+        birth.record_mesh_primary(&birth.admin, 1).await;
         assert_eq!(birth.round_from(&birth.admin, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted");
         actions.entered.notified().await;
         // The seat moves; the new holder sends the same round while the action runs.
-        birth.seat(&admin2, 2).await;
+        birth.record_mesh_primary(&admin2, 2).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::AlreadyApplied, "the same round from the new seat holder is the round already taken");
         actions.gate.send_replace(true);
         checked_in(&birth.admin, &spans, "state-committed", 1).await;
@@ -391,10 +391,10 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
         assert_eq!(actions.runs(), 1, "the commit-state action runs once for the round, whoever commands it");
 
         // open-traffic: the action is stored before the seat moves; the new holder is checked in at once.
-        birth.seat(&birth.admin, 3).await;
+        birth.record_mesh_primary(&birth.admin, 3).await;
         assert_eq!(birth.round_from(&birth.admin, RoundKind::OpenTraffic, 1).await, StatusReply::Applied);
         checked_in(&birth.admin, &spans, "traffic-opened", 1).await;
-        birth.seat(&admin2, 4).await;
+        birth.record_mesh_primary(&admin2, 4).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "a stored round from the new seat holder is the round already taken");
         checked_in(&admin2, &spans, "traffic-opened", 1).await;
         assert_eq!(actions.runs(), 2, "one action per round: commit-state once and open-traffic once");
@@ -418,8 +418,8 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
 /// checklist never completes (gate red, tree b24a4303, mesh_elections__sticky_seat trace
 /// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-primary).
 #[test]
-fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_checked_in_to_that_commander() {
-    let cell = "a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_checked_in_to_that_commander";
+fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander() {
+    let cell = "a_round_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -460,7 +460,7 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
         .expect("the birth's member projection names admin2 at its endpoint");
 
         // The birth's seat book names admin1; admin2, which took the seat, commands the round.
-        birth.seat(&birth.admin, 1).await;
+        birth.record_mesh_primary(&birth.admin, 1).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted, whoever sends it");
         checked_in(&admin2, &spans, "state-committed", 1).await;
         let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
@@ -530,8 +530,8 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
 /// the birth live (its commander holding a stopped birth that is ready for traffic, and the
 /// mesh-primary's NodeStopped for it published after the start's node.joined).
 #[test]
-fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parked_cycles_receipt() {
-    let cell = "a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parked_cycles_receipt";
+fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopped_cycles_receipt() {
+    let cell = "a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopped_cycles_receipt";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -625,8 +625,8 @@ fn the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both
 /// call to admin2 (a check-in loop of the birth's own), the check-in sent to admin3 before the seat
 /// names it, the action run twice.
 #[test]
-fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder() {
-    let cell = "a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder";
+fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_primary() {
+    let cell = "a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_primary";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -640,7 +640,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
         let next_id = admin3.launcher.node_id.to_string();
 
         // admin1 holds the seat at revision 1 from its boot.
-        birth.seat(&admin2, 2).await;
+        birth.record_mesh_primary(&admin2, 2).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's command is admitted");
         actions.entered.notified().await;
         // admin2 goes away; the check-in is owed to it and resent. Dropping admin2 does not wait for it to
@@ -687,7 +687,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
         assert!(ended[0].get("answer").is_some_and(|a| a.ends_with(": UNAVAILABLE")), "ended receiver-gone, UNAVAILABLE: {ended:?}");
         assert!(admin3.observer.check_ins.borrow().is_empty(), "nothing is sent to admin3 before the seat names it");
         // The seat names admin3: the check-in is owed to it and made there.
-        birth.seat(&admin3, 3).await;
+        birth.record_mesh_primary(&admin3, 3).await;
         checked_in(&admin3, &spans, "state-committed", 1).await;
         let retargeted = spans_named(&spans, "rdm.node_admin.status.update.via-completion-retargeted");
         assert!(
