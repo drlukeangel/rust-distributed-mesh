@@ -29,16 +29,21 @@ life; a new executable is a new birth at the same `path.name`.**
    request, as counts are never re-read (build.md §1). The accepted topology is the one durable answer
    to "what should this node run", beside the shape.
 3. **Recorded on the row at the claim.** The create's name claim records the executable on the node's
-   row (R6, landed `11faeb419`), the bootstrap admin's own included (its running executable, hashed,
-   held to its configured `node_admin` sha). The row is the record of what this birth runs.
+   row (R6, landed `11faeb419`), the bootstrap admin's own included: it hashes the executable it is
+   running and records that; there is no configured sha to hold it to (§2). The row is the record of
+   what this birth runs.
 4. **Re-hashed at the launch.** The launching admin hashes the file and launches only on a match; a
    missing file or a differing hash is refused by name and nothing else is launched in its place.
 5. **Replaced only by re-birth.** A request that names a different executable on an existing path is a
    planned replacement, not a refusal: RDM realizes it as node.delete then node.create at the path, a
    new node.id and incarnation, in RDM's order with RDM's guards (admins before the primary, the
    fabric-primary's move and the caller's resubmit on `FabricPrimaryMoved`, R5's one-node type, the
-   no-successor refusal). `node.restart` keeps the executable (node-restart.md "Kept"). Rafka submits
-   the shape; it composes no steps.
+   no-successor refusal). The successor's storage follows the path's config: `Persistent` inherits the
+   predecessor's data dir and its endpoint key (`RDM_INHERITED_DATA_DIR=1`), `Ephemeral` allocates a
+   fresh one; its config and tags are inherited from the Deleted row (node-replace.md "Inherited"). A
+   request that changes the path's storage or placement with its executable is one re-birth with the
+   new config, since the entry is explicit; nothing is inferred. `node.restart` keeps the executable
+   (node-restart.md "Kept"). Rafka submits the shape; it composes no steps.
 6. **Recovered from the row.** Node recovery is a create that names no executable on its step, so it
    takes the row's (node-recovery.md "Retained"), never the recovering admin's and never the topology's
    next entry: a heal never silently upgrades; a pending replacement follows as its own step.
@@ -63,10 +68,13 @@ Every Build that puts the fabric to pending completes only after its own ready-f
 - **Corrected on Architect 1's review:** a containerized admin loses the launch set that told it which
   directories to mount, so executable directories become the admin's launch configuration: read-only
   mounts at stable host paths, given at the admin's launch, and an executable outside them is refused
-  by name at acceptance, before anything destructive (A1 gap 1). Rows written before R6 decode with no
-  executable: their nodes recover on the executable the current entry names for the path, once, and the
-  recovered row records it; a replacement request for such a node is refused by name until it has
-  recovered or restarted onto a recorded executable (A1's pre-R6 gap). A topology edit that changes an
+  by name at acceptance, before anything destructive (A1 gap 1). Compatibility, explicit (A1): the
+  durable-format move's decoder fills each path's executable in an accepted Build written before the
+  field from that Build's old per-kind set, by the path's kind, once, so the source is converted before
+  it is removed; a row written before R6 decodes with none and its node recovers on its path's entry,
+  the recovered row recording it; a path whose entry and row both name none (older than both) has its
+  recovery refused by name, and the repair is a request naming that path's executable, which is the
+  ordinary replacement, never an inference from the recovering admin. A topology edit that changes an
   existing node's executable is the replacement of rule 5, not a refusal (A1 gap 3, inverted on Luke's
   ruling).
 
@@ -131,7 +139,10 @@ realizes it as node.delete then node.create at the path, a new node.id and incar
 with its guards: a type's non-primary members before its primary, the primary's move first by
 node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
-"No-successor cases"). The row then records the new executable. node.restart keeps the executable
+"No-successor cases"). The successor's storage follows the path's config: `Persistent` inherits the
+predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
+the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
+same re-birth with the new config. The row then records the new executable. node.restart keeps the executable
 (node-restart.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
 back to pending completes only after its own ready-for-traffic round (states.md).
 
@@ -140,8 +151,10 @@ back to pending completes only after its own ready-for-traffic round (states.md)
 Node recovery is a create that names no executable on its step, so it takes the row's
 (node-recovery.md "Retained"), never the recovering admin's and never the topology's next entry. A
 heal never upgrades; a pending replacement follows as its own step. A row written before the field
-existed decodes with none: its node recovers once on the executable the current entry names for the
-path, and the recovered row records it.
+existed decodes with none: its node recovers on the executable its path's entry names, which the
+format move filled from the Build's older per-kind set, and the recovered row records it. A path whose
+entry and row both name none has its recovery refused by name; the repair is a request naming that
+path's executable.
 
 ## 5. Reads
 
@@ -282,8 +295,11 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
   differing hash refused by name at the launch;
 - a container fabric: an executable outside the admin's configured directories refused by name at
   acceptance; one inside, from a directory absent from day 0's input, launched;
-- a row written before R6: recovered once on the current entry, the row then recording it; a replacement
-  request for it refused by name until then;
+- an executable-only replacement of a `Persistent` broker: the successor opens the predecessor's data dir
+  with its endpoint key, config and tags inherited; of an `Ephemeral` gateway: a fresh data dir;
+- an accepted Build and a row both in the old format, read together: the entry filled from the old
+  per-kind set, the recovery running it and the row recording it; a path with neither: recovery refused
+  by name, then repaired by a request naming its executable;
 - `node.get` and `fabric.nodes.get` return each node's executable beside its status; `node.topology.get`
   and the digest carry none;
 - a `Roll` change refused as unknown; the Build wire's reserved slots decode as before.
