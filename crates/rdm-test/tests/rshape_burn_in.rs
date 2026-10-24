@@ -6823,7 +6823,9 @@ async fn soak_run(cell: &str, story: Story) {
         inv.holds("S1 routes: exact-node calls reached their node directly and carried calls went through a gateway", route_classes.get("direct").copied().unwrap_or(0) > 0, json!({"route_classes": route_classes}));
     }
     if !cuts.is_empty() {
-        inv.holds("every cut has its Heal row, and a cut mesh opened no death, tombstone, departure, rebirth or provider terminate while it held", cuts.iter().all(|(_, h, _)| *h != u64::MAX) && in_cut_lifecycle.is_empty(), json!({"cuts": cuts.len(), "lifecycle_marks": in_cut_lifecycle}));
+        // A birth unreached across a held cut is re-created by node recovery (Q110, Q111) and which side's
+        // birth stands is not pinned (Q4): the lifecycle marks a cut opened are recorded, not refused.
+        inv.holds("every cut has its Heal row", cuts.iter().all(|(_, h, _)| *h != u64::MAX), json!({"cuts": cuts.len(), "lifecycle_marks_during_cuts": in_cut_lifecycle}));
     }
     if story.needs_cut {
         inv.holds("S3: the mesh was cut, held and healed at least once", !cuts.is_empty(), json!({"cuts": cuts.len()}));

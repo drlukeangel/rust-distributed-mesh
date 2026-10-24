@@ -1388,24 +1388,28 @@ impl Driver {
                 sil.lift().map_err(|e| broken("silence-lifts", e))?;
                 let held_ms = self.cut_at.remove(mesh).map(|at| at.elapsed().as_millis() as u64);
                 entry["healed"] = json!({"mesh": mesh, "healed_at_ns": healed_at_ns, "held_ms": held_ms});
-                // A cut held past the floors (S6): every birth that was ready at the cut is ready again
-                // as itself (node-recovery.md: silence is not death), on both sides.
+                // A cut held past the floors (S6): every path that was ready at the cut is ready again with
+                // one live birth. Which side's birth stands is not pinned (Q4): a birth unreached across the
+                // cut may have been re-created (Q110, Q111), and the one it superseded is refused and ended.
                 if let (Some(_), Some(births)) = (self.cfg.hold, self.cut_births.remove(mesh)) {
                     let floor = self.cfg.floor;
                     let est = &self.estate;
-                    let same = wait_for_opt(&format!("{mesh} healed: the same births back on both sides"), floor * 4 + Duration::from_secs(90), || async {
+                    let one_each = wait_for_opt(&format!("{mesh} healed: one live birth ready at every path ready at the cut"), floor * 4 + Duration::from_secs(90), || async {
                         let nodes = est.node_values().await;
                         let missing: Vec<String> = births
-                            .iter()
-                            .filter(|(name, (id, inc))| !nodes.iter().any(|n| n["name"] == name.as_str() && n["node_id"] == id.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic"))
-                            .map(|(name, _)| name.clone())
+                            .keys()
+                            .filter(|name| nodes.iter().filter(|n| n["name"] == name.as_str()).count() != 1 || !nodes.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"))
+                            .cloned()
                             .collect();
-                        missing.is_empty().then_some(nodes.len())
+                        missing.is_empty().then(|| {
+                            let same = births.iter().filter(|(name, (id, _))| nodes.iter().any(|n| n["name"] == name.as_str() && n["node_id"] == id.as_str())).count();
+                            (nodes.len(), same)
+                        })
                     })
                     .await;
-                    match same {
-                        Some(n) => entry["healed"]["same_births"] = json!({"births": births.len(), "nodes": n}),
-                        None => return Err(broken("silence-is-not-death", format!("{mesh} healed after {held_ms:?} ms: not every birth ready at the cut is ready again as itself"))),
+                    match one_each {
+                        Some((n, same)) => entry["healed"]["births"] = json!({"paths": births.len(), "same_birth": same, "recreated": births.len() - same, "nodes": n}),
+                        None => return Err(broken("silence-is-not-death", format!("{mesh} healed after {held_ms:?} ms: not every path ready at the cut holds one ready birth again"))),
                     }
                 }
             }
@@ -1521,8 +1525,9 @@ impl Driver {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         entry["converged_ms"] = json!(entry["wall_ms"].as_u64().unwrap_or(0));
-        // A silenced birth whose runtime ran is held, never replaced: the same birth is back.
-        if let Some((path, inc)) = &held {
+        // A silenced birth that node recovery did not re-create is the same birth back; one it re-created
+        // (a verdict other than `reached`, Q110, Q111) was checked replaced with its runtime ended.
+        if let Some((path, inc)) = held.as_ref().filter(|_| entry["recreated"] != true) {
             let now_nodes = self.estate.node_values().await;
             if !now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic") {
                 return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime")));
@@ -1717,16 +1722,17 @@ impl Driver {
                 reads.push(json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "cpu_ticks": hold_rt.as_ref().map(|r| cpu_ticks(r.pid))}).to_string());
             }
         }
-        // The floors story (S6): the runtime stays held past the staleness and hung-hold floors. The
-        // provider reads it `OsStopped` (deployment-provider.md §2.5), which opens no R-FM1 hold: the
-        // view keeps the same birth unheard, nothing terminates it and nothing is born at its path.
+        // The floors story (S6): the runtime stays held past the staleness floor. The provider reads it
+        // `OsStopped` (deployment-provider.md §2.5), a verdict other than `reached`, so node recovery
+        // re-creates the node at its path (node-recovery.md, Q110, Q111): the path holds one birth, the
+        // held one or its replacement, and nothing terminates the held runtime while it reads
+        // `OsStopped` (node-recovery.md step 3: recovery leaves it as it is).
         if let (Some(hold), Ok(_)) = (self.cfg.hold, &marked) {
             let mut checks = Vec::new();
             while held_from.elapsed() < hold {
                 tokio::time::sleep(floor.min(hold.saturating_sub(held_from.elapsed())).max(Duration::from_millis(200))).await;
                 let now_nodes = self.estate.node_values().await;
                 let at_path: Vec<&Value> = now_nodes.iter().filter(|x| x["name"] == path.as_str()).collect();
-                let same = at_path.iter().all(|x| x["node_id"] == n["node_id"]);
                 let fenced: Vec<Value> = terminates.poll().iter().filter(|sp| sp["attributes"]["node"] == path.as_str()).cloned().collect();
                 checks.push(json!({
                     "held_ms": held_from.elapsed().as_millis() as u64,
@@ -1734,9 +1740,9 @@ impl Driver {
                     "view_status": at_path.first().map(|x| x["status"].clone()),
                     "births_at_path": at_path.len(),
                 }));
-                if !same || at_path.len() != 1 {
+                if at_path.len() != 1 {
                     entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
-                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: the path holds {} birth(s), {}", held_from.elapsed().as_millis(), at_path.len(), if same { "the same" } else { "another" })));
+                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: the path holds {} births", held_from.elapsed().as_millis(), at_path.len())));
                 }
                 if !fenced.is_empty() {
                     entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
@@ -1767,15 +1773,24 @@ impl Driver {
         ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", during.as_ref().map(|x| s(&x["status"])).unwrap_or_default(), outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
         ev.release = Some(Release { acked: true, hold_ended: hold_rt.as_ref().map(|r| proc_state(r.pid) != Some('T')).unwrap_or(true) });
         let inc = s(&n["incarnation_id"]);
+        // After the release the path is ready again: as the held birth, or, when node recovery re-created
+        // it during the hold, as its replacement, the held runtime refused at admission and terminated
+        // (Q110: "if it comes back it's denied ... then you kill it").
         let back = {
             let est = &self.estate;
-            let back = wait_for_opt(&format!("{path} back as its own birth"), floor * 2 + Duration::from_secs(60), || async {
-                est.node_value_opt(&path).await.filter(|x| x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic")
+            let held_rt = hold_rt.clone();
+            let back = wait_for_opt(&format!("{path} ready as its own birth, or as its replacement with the held runtime ended"), floor * 2 + Duration::from_secs(60), || async {
+                est.node_value_opt(&path).await.filter(|x| {
+                    x["status"] == "ready-for-traffic" && (x["incarnation_id"] == inc.as_str() || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
+                })
             })
             .await;
-            back.ok_or_else(|| broken("silence-is-not-death", format!("{path} did not come back as {inc} after the release")))?
+            back.ok_or_else(|| broken("silence-is-not-death", format!("{path} is neither back as {inc} nor replaced with the held runtime ended after the release")))?
         };
-        let kept = if is_rpc { run(vec!["get".into(), "--target".into(), exact.clone(), "--key".into(), key.clone()]).await } else { Value::Null };
+        let recreated = back["node_id"] != n["node_id"];
+        entry["recreated"] = json!(recreated);
+        let target_now = if recreated { format!("exact:{}", s(&back["node_id"])) } else { exact.clone() };
+        let kept = if is_rpc { run(vec!["get".into(), "--target".into(), target_now, "--key".into(), key.clone()]).await } else { Value::Null };
         ev.recovery = Some(Recovery { work_complete: if is_rpc { kept["outcome"] == "Reply" } else { true }, marker_after: json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "outcome": kept["outcome"]}).to_string() });
         // The seats go home one floor after the node at the lost path.name is Ready (Q89): the "after"
         // read waits for that, bounded, before it judges the seat at its home.
@@ -1803,21 +1818,31 @@ impl Driver {
             // The held birth's attempts: none before the hold, and the gained ones that acted on it.
             attempts: [0, acted_during.len() as u64],
             exact_runtime_alive: alive,
-            replaced_during: replaced,
-            held_past_floor: false,
+            replaced_during: replaced || recreated,
+            held_past_floor: recreated,
         });
         let mut rec = Reconciliation::default();
-        if is_rpc {
-            rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-hold"}), kept.to_string());
-            rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == n["incarnation_id"] && kept["reply"]["executing_node"] == n["node_id"], kept.to_string());
-        }
         let build_after = (self.read)(&self.estate, &self.build_id).await;
         let acted_after = acted_rows(&acted_on(before, &build_after, &path));
-        rec.check(
-            "no Build attempt gained since the hold began terminated, deleted, created or restarted the held birth",
-            acted_after.is_empty(),
-            format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])),
-        );
+        if recreated {
+            // The re-created node is a new node over a newly allocated data dir (Q111: the data dir
+            // follows the verdict; `os-stopped` is not `exited`): it serves at the path, and only the
+            // recovery's attempts acted on the held birth.
+            if is_rpc {
+                rec.check("the re-created node serves at the path", kept["outcome"] == "Reply" && kept["reply"]["executing_node"] == back["node_id"], kept.to_string());
+            }
+            rec.check("only node recovery acted on the held birth", !acted_after.is_empty(), format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])));
+        } else {
+            if is_rpc {
+                rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-hold"}), kept.to_string());
+                rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == n["incarnation_id"] && kept["reply"]["executing_node"] == n["node_id"], kept.to_string());
+            }
+            rec.check(
+                "no Build attempt gained since the hold began terminated, deleted, created or restarted the held birth",
+                acted_after.is_empty(),
+                format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])),
+            );
+        }
         rec.check("the seats equal the public candidates' after the release", seats_after, detail_after);
         ev.reconciliation = Some(rec);
         entry["wedge"] = json!({"released": released, "view_while_held": during.as_ref().map(|x| x["status"].clone())});
@@ -1873,11 +1898,15 @@ impl Driver {
         let mut refeeds = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member");
         let cut_at_ns = now_ns();
         self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
-        let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
+        let at_cut: Vec<(String, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]), s(&n["node_id"]))).collect();
         let window = self.cfg.floor;
         let until = Instant::now() + window * 6 + Duration::from_secs(40);
         let held_at = loop {
             let att: Vec<&Value> = refeeds.poll().iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_at_ns).collect();
+            // A node-admin node recovery re-created during the cut (Q110, Q111) is a new birth on new ports,
+            // outside the cut: only the admins still on their birth of the cut re-feed and are re-fed.
+            let now_nodes = self.estate.node_values().await;
+            let admins: Vec<(&String, &String)> = at_cut.iter().filter(|(name, _, id)| now_nodes.iter().any(|n| n["name"] == name.as_str() && n["node_id"] == id.as_str())).map(|(name, mesh, _)| (name, mesh)).collect();
             let all = admins.iter().all(|(obs, om)| admins.iter().filter(|(_, pm)| pm != om).all(|(peer, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
             if all {
                 break now_ns();
@@ -1887,7 +1916,7 @@ impl Driver {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        for (name, node_mesh) in &admins {
+        for (name, node_mesh, _) in &at_cut {
             let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["name"].as_str()).collect();
             let Some(theirs) = views_at(&self.estate, &Admin { name: name.clone() }).await else {
                 return Err(broken("cut-leaves-own-mesh-ready", format!("{name} does not answer node.get during the cut")));

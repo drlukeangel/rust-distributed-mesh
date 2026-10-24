@@ -157,7 +157,7 @@ impl Estate {
     /// node-admin the estate knows first. A wait on the view does this when a read ends, because the admin
     /// the estate asks may hold a new birth at its name (a restarted node-admin takes its seat back with a
     /// new birth), which a view of a live admin lists.
-    async fn rehandover(&self) {
+    pub async fn rehandover(&self) {
         if let Some(w) = self.wire.lock().await.as_mut() {
             w.stale = true;
         }

@@ -125,5 +125,24 @@ pub async fn lane_attempt_complete(carrier: &BuildCarrier, id: &str, mesh: &str,
 /// [`build_value`] as the soak driver reads a Build (`rdm_test::soak::BuildRead`): the Build as the
 /// Build log of the admin the estate asks holds it, as the JSON the projection serializes to.
 pub fn build_read<'a>(estate: &'a rdm_test::estate::Estate, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + 'a>> {
-    Box::pin(async move { build_value(&estate.carrier().await, id).await })
+    // A read that ends forgets the handover, so the next try reads the views again: a fabric-primary
+    // being re-created (Q110) refuses the read, and its new birth, or the admin that holds the seat
+    // next, answers it.
+    Box::pin(async move {
+        let until = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let carrier = estate.carrier().await;
+            match log_read(&carrier, id).await {
+                Ok(facts) => {
+                    let build = projection(&facts, id).unwrap_or_else(|| panic!("the Build log of {} holds {} facts of Build {id} and no acceptance of it", carrier.fabric_primary(), facts.len()));
+                    return serde_json::to_value(build).expect("a Build view serializes");
+                }
+                Err(end) if std::time::Instant::now() >= until => panic!("the Build log of {} does not hold Build {id} within 60 s: {end}", carrier.fabric_primary()),
+                Err(_) => {
+                    estate.rehandover().await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    })
 }
