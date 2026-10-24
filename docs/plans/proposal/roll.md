@@ -8,9 +8,9 @@ unchanged, the RDM/Rafka split is written down, and step 5 adds the fabric-prima
 which the first text left out. Revised again the same day on Architect 1's review of `578a6044d`: the
 set lives on the accepted topology, so every later Build carries it (step 2), and step 5 separates a
 node-admin primary from a primary of another type. R4 is ruled (Luke 2026-10-24, arm A). Revised a
-third time on Architect 1's review of `4de516d30`: a type with one node in its mesh meets the
-primary-update page's no-successor refusal, so it is R5, a page line for Luke's yes. Nothing below is
-built.
+third time on Architect 1's review of `4de516d30`: a type with one node in its mesh met the
+primary-update page's no-successor refusal; R5 is ruled (Luke 2026-10-24, arm (a)), its page sentence
+landing with the roll's code. Nothing below is built.
 
 ### What the pages already say
 
@@ -134,10 +134,11 @@ behaviour that depends on the product is Rafka's):
      makes the call and writes nothing. Then it is replaced as an ordinary member. A type with one
      node in the mesh has no successor: node-primary-update.md "No-successor cases" refuses the update
      by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, and fails the
-     commanding workflow with it, with one written exception, the delete of a mesh's only node. The
-     roll's delete of a mesh's only broker would fail at that guard as the page stands. R5, below, is
-     the choice; until it is ruled the roll of such a mesh is refused at acceptance, `no-secondary`
-     naming the type and mesh, before anything destructive.
+     commanding workflow with it, with one written exception, the delete of a mesh's only node. R5
+     (Luke 2026-10-24, arm (a)) widens that sentence to the delete of a type's only node, removal,
+     recovery and roll alike: the only node of a type is replaced as an ordinary member with no
+     update, the type has no primary until the election names the new birth ReadyForTraffic, and the
+     guard treats the replace recipe's `Delete` step of a type's only node as it treats `RetireNode`.
    The fabric's pending from the roll is not `fabric-not-ready`: that refusal is the initial fabric's,
    before its first ready-for-traffic.
 6. **A mesh with one node-admin** (R4, Luke 2026-10-24, arm A). Its only admin is its primary and
@@ -184,7 +185,7 @@ behaviour that depends on the product is Rafka's):
   (c) a temporary admin deleted after the roll, two more primary moves and a cleanup for the same
   result.
 
-### For Luke's yes, R5: a type with one node in its mesh. Recommendation: the page's exception names it.
+### Decided, R5 (Luke 2026-10-24, arm (a)): a type with one node in its mesh
 
 The lane restage's default shape is single-node (`shape_for_deployment`, `SN`: one of each type), so
 a one-broker mesh is the common case. The code already skips the update for the delete of a type's
@@ -194,7 +195,7 @@ broker at its path.name with no update and the election names the new birth. The
 covers only the mesh's only node: a page-vs-code difference that exists before the roll, reported
 here, hidden nowhere.
 
-- **(a) Recommended: the page's exception covers the delete of a type's only node, and the roll's
+- **(a) Ruled: the page's exception covers the delete of a type's only node, and the roll's
   replacement rides it.** node-primary-update.md "No-successor cases", the one sentence, old text:
   "The one exception: the delete of a mesh's only node skips the update." New text: "The exceptions
   that skip the update: the delete of a mesh's only node, and the delete of a type's only node in its
@@ -203,12 +204,11 @@ here, hidden nowhere.
   birth ReadyForTraffic." The sentence after it, on a sole broker's stop and restart, stands. Code: the
   guard treats the replace recipe's `Delete` step of a type's only node as it treats `RetireNode`. A
   mesh's only broker is unserved while it is re-created, as it is under node recovery today; the roll
-  adds no case the fabric does not already live through.
-- **(b) Refuse by name at acceptance**, `no-secondary` for every type with one node in a mesh the roll
-  must replace. No page change; the default single-node estate cannot be rolled until it is resized to
-  two of each type, which changes Rafka's shape and the deploy wall the ruling measures.
-- **(c) Add a second node of the type first, as R4 does for admins.** Not proposed: a broker holds
-  data, so a second broker is Rafka's placement decision, not a roll's side effect.
+  adds no case the fabric does not already live through. The page sentence lands with the roll's code
+  (CLAUDE.md: a page's statement and its code land together).
+- Not taken: (b) refusing such a mesh by name at acceptance, which leaves the default single-node
+  estate unrollable until resized to two of each type; (c) adding a second node of the type first, as
+  R4 does for admins, since a broker holds data and a second broker is Rafka's placement decision.
 
 ### Wire and storage
 
@@ -234,9 +234,8 @@ receipts are the Build's. Removed: `AdminConfig.bindings` as a lifetime value an
   the original is replaced; it is in the accepted topology after the roll;
 - a non-admin primary (a broker-primary with another broker in its mesh): the primary moves to the
   other broker by `node.primary.update` with the mesh-primary as writer, then the old primary is
-  replaced; a type with one node under R5's arm (a): replaced with no update, the new birth its
-  primary once ReadyForTraffic; under (b): refused `no-secondary` at acceptance, nothing destructive
-  run;
+  replaced; a type with one node (R5): replaced with no update, the new birth its primary once
+  ReadyForTraffic, and the mesh's only broker re-created at its path.name;
 - roll, then a resize, then an admin restart, then an ordinary `node.create`: every launch runs the
   roll's set, which the resize's Build carried forward;
 - the executor killed after a predecessor's `node.deleted` and before its create: the next attempt
