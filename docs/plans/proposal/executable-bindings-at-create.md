@@ -85,33 +85,189 @@ paths, a row in CLAUDE.md's env table; an executable outside them is refused by 
 launch source: the built-in mode that launched a kind's binary from `bin_dir` with no sha goes with the
 file, since every create now names its executable.
 
-### 3. Pages that change, each with exact old and new text for Luke's yes before it lands
+### 3. Pages that change: exact old and new text for Luke's yes, landing with the code
 
-- **New: `docs/architecture/build-deployment.md`**, the owning page for what a Build deploys: the
-  executable's path from the request's per-path entry through acceptance, the row, the launch's hash,
-  replacement by re-birth, recovery from the row, and the reads; its relation to build.md (the engine)
-  and deployment-provider.md (the provider); the container's executable directories; R6; the refusals by
-  name. Linked from fabric-mesh-node-lifecycles.md.
-- **build.md** §1: a path's config carries its executable; executables compile per path at acceptance
-  and are never re-read; a changed executable on an existing path is a planned replacement; a created
-  path without one is refused by name. §4.1: the topology map's per-path entry names the executable.
-  §12: a case "replace a node's executable". A link to build-deployment.md.
-- **deployment-provider.md**: the binding paragraph (line 264) points at build-deployment.md; §2.2 the
-  container provider's executable directories as launch configuration; Q150's §2.3 sentence as ruled.
-- **node-create.md**: the Spec row names the executable as the create's input from the path's config,
-  recorded on the row at the claim, re-hashed at the launch, never changed for the birth.
-- **node-replace.md**: the successor's `Create` names its executable; "Immutable exe" stands.
-- **node-recovery.md** "Retained": unchanged in rule; gains the pre-R6 sentence.
-- **states.md** "Resize and roll": the heading and the paragraph rewritten without the banned word, as
-  "Resize and executable replacement", with Q154's sentence; the rule that a member still on its old
-  executable does not satisfy its planned replacement stays.
-- **node-rpc-envelope.md**: the Build change wire (path config gains `executable`; the two reserved
-  slots); `fabric.nodes.get`'s mapping; `NodeView.executable`; the "Build recipe" text.
-- **CLAUDE.md**: the env table rows for `RDM_EXECUTABLE_BINDINGS` and `RDM_EXECUTABLE_CANDIDATE`
-  removed; a row for `RDM_EXECUTABLE_DIRS`; `RDM_BIN_DIR`'s row narrowed to where `rdm-node-admin` is
-  found; the banned word added to the vocabulary (done, `e76fb7374`).
-- **Records:** the PRD's R-D1 row; the rulings index (Q157); rafka-v2's i141 B3 packet and the manifest
-  rollout (`needs-ownership-under-rdm.md` §2.4), which rode the removed operation, for the lead to update.
+**3.1 New page, `docs/architecture/build-deployment.md`** (whole text):
+
+```
+# Build deployment: the executable a node runs
+
+[Lifecycle index](fabric-mesh-node-lifecycles.md) · [Build](build.md) · [Deployment provider](deployment-provider.md)
+
+build.md owns the engine: the accepted topology, attempts, claims and receipts. deployment-provider.md
+owns the provider: how one runtime is launched, inspected and terminated. This page owns what a Build
+deploys: the executable each node runs, from the request to the row and back out through the reads.
+
+## 1. The rule
+
+A node's executable is an input of node.create and of nothing else. The birth runs it for its whole
+life. A new executable is a new birth at the same `path.name` (Q157).
+
+## 2. From the request to the row
+
+1. **Named per node.** A Build request that creates nodes names each path's config, and the config
+   carries the executable: its path, its sha256 and, under the container provider, the image. There
+   is no per-type default in RDM and no stored default anywhere. A created path whose config names
+   no executable is refused by name at acceptance and nothing runs. A product's door may expand a
+   per-type input into per-path entries before the typed call; RDM never sees a type-level default.
+2. **Compiled at acceptance.** The fabric-primary compiles the request against the current topology.
+   Every created path's entry in the accepted topology holds its executable, and the request is never
+   re-read, as counts are never re-read (build.md §1). The accepted topology is the one durable answer
+   to "what should this node run", beside the shape.
+3. **Recorded at the claim.** The create's name claim records the executable on the node's row, the
+   bootstrap admin's own included: it hashes the executable it is running. The row is the record of
+   what this birth runs.
+4. **Re-hashed at the launch.** The launching admin hashes the file before `DeployRuntime` and
+   launches only on a match (deployment-provider.md). A missing file or a differing hash is refused by
+   name; nothing is launched in its place.
+5. **Reachable by the launcher.** A containerized admin mounts the executable directories its launch
+   named (`RDM_EXECUTABLE_DIRS`), read-only at their host paths; an executable outside them is refused
+   by name at acceptance, before anything destructive.
+
+## 3. Changing a node's executable
+
+A request that names a different executable for an existing path is a planned replacement. RDM
+realizes it as node.delete then node.create at the path, a new node.id and incarnation, in its order
+with its guards: a type's non-primary members before its primary, the primary's move first by
+node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
+caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
+"No-successor cases"). The row then records the new executable. node.restart keeps the executable
+(node-restart.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
+back to pending completes only after its own ready-for-traffic round (states.md).
+
+## 4. Recovery
+
+Node recovery is a create that names no executable on its step, so it takes the row's
+(node-recovery.md "Retained"), never the recovering admin's and never the topology's next entry. A
+heal never upgrades; a pending replacement follows as its own step. A row written before the field
+existed decodes with none: its node recovers once on the executable the current entry names for the
+path, and the recovered row records it.
+
+## 5. Reads
+
+The node's row is the source. `node.get` returns each node's executable beside its status, config and
+tags (`NodeView.executable`); `fabric.nodes.get` is the mesh selector's answer over every mesh, from
+the rows. The digest, the `Members` projection and `node.topology.get` carry no executable.
+
+## 6. Refusals, by name
+
+A created path with no executable; an executable outside the launcher's directories; a missing file;
+a differing hash; a replacement request for a node whose row records no executable, until it has
+recovered or restarted onto a recorded one.
+```
+
+**3.2 build.md §1**, after "Counts may remain product-facing resize input, but the compiler resolves a
+count change to exact paths before the Build is persisted." add:
+
+```
+Each path's config carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request that creates a path names it, the compiler holds it on the path's entry before the Build is persisted, and a created path with none is refused by name. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
+```
+
+**3.3 build.md §4.1**, in the block, old `complete explicit topology map` new `complete explicit topology map, each path's config and executable`.
+
+**3.4 build.md §12**, after §12.4, a new case:
+
+```
+### 12.5 Replace a node's executable
+
+~~~text
+fabric-primary accepts Build B22:
+    mesh2.rpc.north: executable A -> executable B
+    B22 is the current Build
+~~~
+
+The topology names the same paths. mesh2.rpc.north's entry names executable B while its row records A,
+so the reconciler replaces it: [node.delete](lifecycles/node-delete.md) then [node.create](lifecycles/node-create.md)
+at the path, a new node.id, under mesh2's primary and the guards of [build-deployment.md §3](build-deployment.md).
+A primary of any type moves first. Nothing else in the fabric changes.
+```
+
+**3.5 deployment-provider.md**, after "A launch that runs a bound executable re-hashes it before
+`DeployRuntime` and launches it only when the hash matches its binding; ..." add:
+
+```
+Which executable a node runs, and how it is named, recorded, replaced and read, is [build-deployment.md](build-deployment.md)'s.
+```
+
+and in §2.7, a new bullet after **Network.**:
+
+```
+- **Executables.** A containerized node-admin mounts the executable directories its launch named (`RDM_EXECUTABLE_DIRS`), read-only at their host paths; an executable outside them is refused by name at acceptance ([build-deployment.md §2](build-deployment.md)).
+```
+
+**3.6 node-create.md**, the Spec row. Old:
+
+```
+| Spec | Executable/budgets, placement and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism |
+```
+New:
+```
+| Spec | The path's config: its executable (path, sha256, image), placement, storage and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
+```
+
+**3.7 node-replace.md**, the Successor row. Old:
+
+```
+| Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir |
+```
+New:
+```
+| Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../build-deployment.md)) |
+```
+
+**3.8 node-recovery.md**, the Retained row, append after "never the recovering admin's)":
+
+```
+ ; a row written before the executable field decodes with none and the node recovers once on the executable the current entry names for its path, the recovered row recording it
+```
+
+**3.9 states.md**, the section at line 174. Old heading and first sentences:
+
+```
+## Resize and roll
+
+A resize or roll puts the fabric back to pending; meshes already serving stay ready-for-traffic. During a bin roll, a member still on its
+old binary/identity does not satisfy its planned replacement. A new binary requires
+a replacement node with a new NodeId and incarnation; node.restart retains the same
+process and binary. The mesh cannot report
+ready-for-traffic, and the fabric cannot climb, until the roll's last planned birth checks
+in.
+```
+New:
+```
+## Resize and executable replacement
+
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own climb, as fabric.create's is: while the fabric climbs, the Build reports Blocked naming the climb, never Complete; a round or hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot climb, until the replacement's last planned birth checks in.
+```
+(The rest of the paragraph, on Rafka's state-sync answer, stands. This folds Q154's states.md sentence
+in, so Q154's own sentence is not added twice.)
+
+**3.10 node-rpc-envelope.md.** (a) In the `BuildChange` block, after the `Recipe` comment, a comment:
+
+```
+    // Every create names its path's config, PathConfig { storage, placement, executable }: the
+    // executable (path, sha256, image) the node runs, compiled onto the accepted topology's entry and
+    // recorded on the row at the claim (build-deployment.md). A request naming a different executable
+    // for an existing path is that node's replacement. Two slots after Restart are reserved (the
+    // removed change variants; positional, no format move).
+```
+(b) The fabric reads row (line 328): old `fabric.nodes.get answers the fabric topology` new
+`fabric.nodes.get answers every node of the fabric from the rows, the mesh selector's answer over every mesh, each with its status, config, tags and executable`.
+(c) The `Nodes` reply note: `NodeView` gains `executable: Option<Binding>` from the row, on the
+generated wire page with its fields.
+
+**3.11 fabric-mesh-node-lifecycles.md**, after the Build row:
+
+```
+| [Build deployment](build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, replaced only by re-birth, recovered from the row, read from the rows |
+```
+
+**3.12 CLAUDE.md env table**: remove nothing (the two `RDM_EXECUTABLE_*` variables have no row); add
+`| RDM_EXECUTABLE_DIRS | _(unset)_ | rdm-node-admin under the container provider: comma-separated host directories mounted read-only at their host paths into a launched admin's container; an executable a Build names outside them is refused by name at acceptance. |`;
+`RDM_BIN_DIR`'s row becomes `rdm-node-admin: where rdm-node-admin itself is found; never a launch source: every created node's executable is the Build's.`
+
+**3.13 Records**: the PRD's R-D1 row (done, `e76fb7374`); the rulings index Q157 (done); rafka-v2's
+i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 
 ### 4. Cells, RED first
 
