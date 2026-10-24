@@ -185,8 +185,8 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_book_h
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: an ordinary member answers with the topology it holds: its own mesh from its book at
-/// the version its primary last published, and every source mesh it holds at that source's
+/// CONTRACT: an ordinary member answers with the topology it holds: its own mesh as its primary
+/// last published it, at that version, and every source mesh it holds at that source's
 /// publisher and version. The caller installs each mesh, and a read of a source version the
 /// caller already holds is Unchanged, a mesh the node does not hold is UnknownMesh.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -195,7 +195,7 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let (own_pub, remote_pub) = (publisher("mesh1.admin.1"), publisher("mesh2.admin.1"));
-    hold(&server.membership, &snap("mesh1", &own_pub, 4, vec![]));
+    hold(&server.membership, &snap("mesh1", &own_pub, 4, vec![own_digest(&server, &fabric)]));
     let mesh2: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
     hold(&server.membership, &snap("mesh2", &remote_pub, 7, mesh2.clone()));
     let t = target_of(&caller, &server);
@@ -208,7 +208,7 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
         v
     };
     assert_eq!(names("mesh2"), vec!["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"]);
-    assert_eq!(names("mesh1"), vec!["mesh1.rpc.1"], "its own mesh: the node itself, from its own digest");
+    assert_eq!(names("mesh1"), vec!["mesh1.rpc.1"], "its own mesh: version 4 as its primary published it");
     assert_eq!(caller.membership.held_source_version("mesh2"), Some((remote_pub.clone(), 7)), "installed at the source's publisher and version");
     assert_eq!(caller.membership.held_source_version("mesh1"), Some((own_pub.clone(), 4)));
 

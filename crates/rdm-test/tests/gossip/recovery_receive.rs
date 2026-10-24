@@ -60,7 +60,9 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let (sender,_rx)=topic.split();
         let (restarted,started,deleted,holder)=(birth(&fabric,&mesh,"mesh1.rpc.1",1),birth(&fabric,&mesh,"mesh1.rpc.2",2),birth(&fabric,&mesh,"mesh1.rpc.3",3),birth(&fabric,&mesh,"mesh1.rpc.4",4));
         let (restart,stop,delete)=(operation(&restarted,"restart"),operation(&started,"stop"),operation(&deleted,"delete"));
-        let full=vec![own.clone(),restarted.clone(),started.clone(),holder.clone()];
+        // The version the read serves carries the rpc node-type primary record its publisher put in it:
+        // a read serves a version's content as published, never records taken since (gossip.md §3.1).
+        let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..holder.clone()}];
         assert!(matches!(server_membership.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],departed:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
         let seat_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
         for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_membership.primaries().take(seat,&seat_of(d,10));}

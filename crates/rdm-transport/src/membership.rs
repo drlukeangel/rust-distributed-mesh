@@ -3047,41 +3047,36 @@ impl Membership {
         }
     }
 
-    /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it). A
-    /// remote mesh is the source this node holds, with the publisher and version it holds it at.
-    /// This node's own mesh is its members as its book hears them, `own` among them, at the
-    /// publisher and version its primary last put into the mesh. A mesh this node holds no
-    /// published snapshot of is absent: no version is invented for it.
+    /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it), each at
+    /// the publisher and version it holds it at and with the content that version was published
+    /// with: this node's own mesh too, as its primary last put it into the mesh (gossip.md §3.1: a
+    /// version names one content; "A frame equal in revision to the held one but different in
+    /// content is an inconsistency, refused by name"). A member the book heard since that
+    /// publication is served at the version the next round bumps to, never under this one. A mesh
+    /// this node holds no published snapshot of is absent, but for its own mesh at its primary
+    /// before the first round.
     pub fn held_topology(&self, own: &MeshDigest) -> Vec<SourceSnapshot> {
         // A held source is topology, served as published: whether its members are alive is the
         // reader's to learn (a read installs them as topology and refreshes no liveness).
         let mut held = self.held_sources();
-        let current = self.book.current(self.book.staleness_floor());
         let mesh = &self.view.mesh;
         // A mesh's primary that has not published yet still holds its members in its book: it serves
         // them as its own source at version 0 (the version before any publication, the one its
         // publisher reports), never as nothing. Its first publication supersedes it.
         if self.view.primary.load(Ordering::Relaxed) && held.iter().all(|s| &s.mesh != mesh) {
-            held.push(SourceSnapshot {
-                mesh: mesh.clone(),
-                publisher: PublisherId::from(&own.node),
-                topology_version: 0,
-                digests: Vec::new(),
-                in_flight: Vec::new(),
-                departed: Vec::new(),
-            });
-        }
-        if let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) {
-            at.digests = current
+            let mut digests: Vec<MeshDigest> = self
+                .book
+                .current(self.book.staleness_floor())
                 .into_iter()
                 .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
                 .collect();
             // Its own digest as every read hands it out: with the primary records the book holds for it.
             let mut own = own.clone();
             self.book.recorded_primaries(&mut own);
-            at.digests.push(own);
-            at.digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
-            (at.in_flight, at.departed) = self.book.overlays_of(mesh);
+            digests.push(own.clone());
+            digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
+            let (in_flight, departed) = self.book.overlays_of(mesh);
+            held.push(SourceSnapshot { mesh: mesh.clone(), publisher: PublisherId::from(&own.node), topology_version: 0, digests, in_flight, departed });
         }
         held
     }

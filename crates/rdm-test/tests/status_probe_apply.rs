@@ -19,7 +19,7 @@ use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 /// with the node's state and changes nothing; `DeleteConnections { All }` answers `ConnectionsDeleted`
 /// with an `Established` receipt; the reserved `Reserved6` is refused by name and starts nothing;
 /// `ApplyNodeConfig` answers `Applied` and the node's own topology answer carries the config on its
-/// digest, while one naming another incarnation is `RejectedStaleIncarnation`;
+/// digest from the version its mesh-primary publishes it at, while one naming another incarnation is `RejectedStaleIncarnation`;
 /// `ApplyNodeState(ConnectionsDeleting)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
 /// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
 /// `DeclareNodeState` sent downward is refused by direction; a `NodeLeft` is refused by name
@@ -110,14 +110,23 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ConnectionsDeleting };
         assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
         assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
-        // apply-node-config (ops-naming "Node data"): the birth holds the whole config and carries it in its
-        // digest. Its own topology answer, read after the Applied reply, carries the config on its own digest.
+        // apply-node-config (ops-naming "Node data"; node-config-update.md step 3: "it applies the map and
+        // carries it in its next digest"): the birth holds the whole config and carries it in its digest. Its
+        // own topology answer serves its mesh as published (gossip.md §3.1: a version names one content), so
+        // it carries the config on its own digest from the version the mesh-primary's round publishes it at.
         let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();
         let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
         assert_eq!(call(told).await, StatusReply::Applied);
-        let held = rdm_client::NodeRpc::new(&observer.client).held_view(&target, "mesh1", &CallOptions::default()).await.expect("the node's own topology answer");
-        let own = held.members.iter().find(|d| d.node.node_id == node.node_id).expect("the node answers its own digest");
-        assert_eq!(own.config, config, "the birth's own digest carries the config it was told");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let held = rdm_client::NodeRpc::new(&observer.client).held_view(&target, "mesh1", &CallOptions::default()).await.expect("the node's own topology answer");
+            let own = held.members.iter().find(|d| d.node.node_id == node.node_id).map(|d| d.config.clone());
+            if own.as_ref() == Some(&config) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the birth's own digest carries the config it was told, from the version that publishes it: {own:?}");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
         assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
         // The reserved Reserved6 is refused by name; node.connections.delete { All } is answered with its receipt.
