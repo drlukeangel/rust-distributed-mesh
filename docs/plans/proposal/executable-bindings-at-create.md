@@ -19,8 +19,14 @@ An **executable binding** is an executable path, its sha256 and, under the conta
 life; a new executable is a new birth at the same `path.name`.**
 
 1. **Named per node, in the request.** The accepted topology carries a typed config per path,
-   `PathConfig { storage, placement }`; it gains `executable`. A Build request that creates nodes names
-   each path with its config, executable included. There is no per-type section in RDM and no stored
+   `PathConfig { storage, placement }`; it gains `executable`. A Build request creates a node by naming
+   it: its `path.name` and its config, executable included (Luke, 2026-10-24: today no request names a
+   node, every change is by counts and the compiler mints the paths, `accepted.rs:459-464`, so a caller
+   cannot attach an executable to a path it never named). Counts leave RDM's wire and stay at Rafka's
+   door as its vocabulary (build.md §1, "product-facing input"), where the door expands a count into
+   named paths with configs, reading the current topology for the ordinals. RDM mints a `path.name`
+   only for a create it originates itself: recovery reuses the path, and the one-admin mesh's second
+   admin (rule 5) takes the next free ordinal, as the compiler does today. There is no per-type section in RDM and no stored
    default anywhere: a created path whose config names no executable is refused by name at acceptance,
    nothing runs. The refusal is acceptance's, for new requests only: a Build decoded from the journal
    whose paths name none, every Build accepted before `614d01653` among them, is valid history with its
@@ -201,7 +207,7 @@ request naming it).
 count change to exact paths before the Build is persisted." add:
 
 ```
-Each path's config carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request that creates a path names it, the compiler holds it on the path's entry before the Build is persisted, and a created path with none is refused by name. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
+Each path's config carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path.name` and its config, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
 ```
 
 **3.3 build.md §4.1**, in the block, old `complete explicit topology map` new `complete explicit topology map, each path's config and executable`.
@@ -283,7 +289,11 @@ A resize or an executable replacement puts the fabric back to pending; meshes al
 (The rest of the paragraph, on Rafka's state-sync answer, stands. This folds Q154's states.md sentence
 in, so Q154's own sentence is not added twice.)
 
-**3.10 node-rpc-envelope.md.** (a) In the `BuildChange` block, after the `Recipe` comment, a comment:
+**3.10 node-rpc-envelope.md.** (a) The `BuildChange` block: `AddNode { mesh, node_kind }` becomes
+`AddNode { node: PathName, config: PathConfig }`; `CreateMesh { mesh: MeshCounts }` becomes
+`CreateMesh { mesh: String, nodes: Vec<(PathName, PathConfig)> }`; `ReconcileFabric` and `ReconcileMesh`
+carry named nodes with configs the same way, their count forms reserved (positional, no format move);
+`RemoveNode { node }` is already by name. After the `Recipe` comment, a comment:
 
 ```
     // Every create names its path's config, PathConfig { storage, placement, executable }: the
@@ -328,6 +338,9 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 - a recovery runs the executable the lost birth's row records, with a newer entry pending on the path;
 - a created path naming no executable refused by name at acceptance, nothing run; a missing file or a
   differing hash refused by name at the launch;
+- a request that creates a node without naming its `path.name`, a count form, refused as unknown; a
+  request naming `mesh1.rpc.3` with its config creates exactly that path; the harness's and the demo's
+  shape helpers expand counts into named paths with configs before the typed call;
 - a container fabric: an executable outside the admin's configured directories refused by name at
   acceptance; one inside, from a directory absent from day 0's input, launched;
 - an executable-only replacement of a `Persistent` broker: the successor opens the predecessor's data dir
