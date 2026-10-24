@@ -27,15 +27,20 @@ life; a new executable is a new birth at the same `path.name`.**
    named paths with configs, reading the current topology for the ordinals. RDM mints a `path.name`
    only for a create it originates itself: recovery reuses the path, and the one-admin mesh's second
    admin (rule 5) takes the next free name, as the compiler does today. **The request shape (Luke,
-   2026-10-24):** the complete topology, an array of nodes, each with `path` (`mesh1.admin`, the mesh and
-   kind it lives in), `name` (`1`, or a label such as `north`), `tags`, `storage`, `placement` and
-   `executable`; a node takes its `path.name` from the request's path and name joined. RDM compiles the
-   diff against the current Build: a node left out is removed, one added is created, one whose
-   executable differs from its row is replaced. The partial count forms go. **Preserved as is, for the
-   name sweep, no code now:** RDM's `PathName` keeps `ordinal` and `label` as the third segment's two
-   forms; the sweep renames them to one `name` with a `path()` accessor, and `on_retire` becomes
-   `on_delete`; until then the door and the harness join path and name into the one string RDM parses.
-   There is no per-type section in RDM and no stored
+   2026-10-24):** the complete topology, an array of nodes, each identified by its `path.name` as one
+   string, as the code has it today (`mesh1.admin.1`; the split into path and name is the name sweep's,
+   §3.12a, nothing joins anything meanwhile), with `tags`, `storage`, `placement` and `executable`, and
+   one field for the whole request, `based_on`: the build_id of the current Build the caller read. RDM
+   refuses the request by name when that Build is no longer current, nothing accepted, and the caller
+   re-reads (optimistic concurrency, the dev: a list built from a stale read must never remove a node
+   another caller just added). A complete request is built from the current topology read, and every
+   node RDM originates, the one-admin mesh's second admin (rule 5), a recovered node, appears in that
+   read, so the next request lists it and nothing RDM created is deleted on the next request. From the
+   accepted result: a node left out is removed; one added is created; one whose executable differs from
+   its row is replaced. A mesh named for the first time comes into being with the create of its first
+   node-admin (node-create.md, the mesh-absent arm); a mesh absent from the request is mesh.delete, the
+   leaf-inward lifecycle with its row going Dead; a mesh with no nodes cannot be expressed, since a mesh
+   is alive while it holds a node. The partial count forms go. There is no per-type section in RDM and no stored
    default anywhere: a created path whose config names no executable is refused by name at acceptance,
    nothing runs. The refusal is acceptance's, for new requests only: a Build decoded from the journal
    whose paths name none, every Build accepted before `614d01653` among them, is valid history with its
@@ -324,8 +329,10 @@ A resize or an executable replacement puts the fabric back to pending; meshes al
 in, so Q154's own sentence is not added twice.)
 
 **3.10 node-rpc-envelope.md.** (a) The `BuildChange` block: the topology change is the complete
-topology, `Reconcile { nodes: Vec<(PathName, PathConfig)> }`, each node by its `path.name` with its
-config and executable; the count forms `ReconcileFabric`, `ReconcileMesh`, `AddNode` and `CreateMesh`
+topology, `Reconcile { based_on: BuildId, nodes: Vec<(PathName, PathConfig)> }`, each node by its
+`path.name` with its config and executable, `based_on` the current Build the caller read, refused by name
+when it is no longer current; a mesh named for the first time is created with its first node-admin, a
+mesh absent is mesh.delete; the count forms `ReconcileFabric`, `ReconcileMesh`, `AddNode` and `CreateMesh`
 are reserved (positional, no format move); `RemoveNode { node }` and the node workflows stay. After the
 `Recipe` comment, a comment:
 
@@ -389,6 +396,14 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
 - a request that creates a node without naming its `path.name`, a count form, refused as unknown; a
   request naming `mesh1.rpc.3` with its config creates exactly that path; the harness's and the demo's
   shape helpers expand counts into named paths with configs before the typed call;
+- two callers: A reads the topology, B's Build adds `mesh2.rpc.3` and completes, A submits its list with
+  `based_on` B's predecessor: refused by name, nothing accepted, `mesh2.rpc.3` untouched; A re-reads and
+  resubmits with `based_on` current: accepted;
+- after the one-admin mesh's second admin is created by RDM, `fabric.nodes.get` lists it; the caller's
+  next complete request, built from that read, keeps it; a request built without it, under a stale
+  `based_on`, is refused;
+- a request naming a node in a mesh that does not exist: the mesh created with its first node-admin; a
+  request leaving a whole mesh out: that mesh's mesh.delete, its row Dead, its name released;
 - a container fabric: an executable outside the admin's configured directories refused by name at
   acceptance; one inside, from a directory absent from day 0's input, launched;
 - an executable-only replacement of a `Persistent` broker: the successor opens the predecessor's data dir
