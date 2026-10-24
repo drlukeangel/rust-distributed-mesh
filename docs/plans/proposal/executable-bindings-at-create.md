@@ -74,9 +74,16 @@ Every Build that puts the fabric to pending completes only after its own ready-f
 
 The bootstrap admin's day-0 shape is itself alone (`FabricTopology::root`), and R6 records its own
 running executable. Every other node is created by a request that names its executable per path. So
-`RDM_EXECUTABLE_BINDINGS` and `RDM_EXECUTABLE_CANDIDATE` stop carrying anything RDM needs beyond the
-bootstrap admin's own check: they become day 0's input for that one sha, or go; the harness validates
-the entries of its requests instead. The decision is in §4's CLAUDE.md row.
+`RDM_EXECUTABLE_BINDINGS` and `RDM_EXECUTABLE_CANDIDATE` carry nothing RDM needs: **both go**
+(the architect, 2026-10-24, delegated by Luke: "bring the decision"). The bootstrap admin records the
+executable it is running (R6); a configured sha to hold it to would be a claim about the same file. The
+harness validates the entries of its own requests; the fabric-primary refuses a missing file or a wrong
+sha by name at acceptance. A containerized admin's executable directories become its launch
+configuration, `RDM_EXECUTABLE_DIRS`, comma-separated host directories mounted read-only at their host
+paths, a row in CLAUDE.md's env table; an executable outside them is refused by name at acceptance.
+`RDM_BIN_DIR` stays only as where the harness and the bootstrap find `rdm-node-admin` itself, never a
+launch source: the built-in mode that launched a kind's binary from `bin_dir` with no sha goes with the
+file, since every create now names its executable.
 
 ### 3. Pages that change, each with exact old and new text for Luke's yes before it lands
 
@@ -100,8 +107,9 @@ the entries of its requests instead. The decision is in §4's CLAUDE.md row.
   executable does not satisfy its planned replacement stays.
 - **node-rpc-envelope.md**: the Build change wire (path config gains `executable`; the two reserved
   slots); `fabric.nodes.get`'s mapping; `NodeView.executable`; the "Build recipe" text.
-- **CLAUDE.md**: the env table rows for `RDM_EXECUTABLE_BINDINGS` and `RDM_EXECUTABLE_CANDIDATE` (day
-  0's input for the bootstrap admin's own sha, or removed); the banned word added to the vocabulary.
+- **CLAUDE.md**: the env table rows for `RDM_EXECUTABLE_BINDINGS` and `RDM_EXECUTABLE_CANDIDATE`
+  removed; a row for `RDM_EXECUTABLE_DIRS`; `RDM_BIN_DIR`'s row narrowed to where `rdm-node-admin` is
+  found; the banned word added to the vocabulary (done, `e76fb7374`).
 - **Records:** the PRD's R-D1 row; the rulings index (Q157); rafka-v2's i141 B3 packet and the manifest
   rollout (`needs-ownership-under-rdm.md` §2.4), which rode the removed operation, for the lead to update.
 
