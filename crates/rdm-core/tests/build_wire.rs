@@ -2,7 +2,6 @@
 //! fields independently of codec round trips; enums are append-only.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rdm_core::NodeKind;
 use rdm_core::build::{Build, BuildChange, RecipeStep, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rdm_core::context::CallContext;
 use rdm_core::outcome::{MalformedKind, ReplyKind};
@@ -17,7 +16,8 @@ fn bytes(hex: &str) -> Vec<u8> {
 #[test]
 fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::AddNode { mesh: "m".into(), node_kind: NodeKind::RpcNode }) }, "00 00 02 01 6d 01"),
+        // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`
+        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: "m.rpc.1".parse().unwrap() }) }, "00 00 03 07 6d2e7270632e31"),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }) }, "00 00 06 0b 6d657368312e7270632e31"),
         (
             BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
@@ -356,4 +356,28 @@ fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
     assert_eq!(Build::decode_request(&bytes("00 00 0e")), Err(DecodeFailure::UnknownVariant), "the bare position too");
     let reconcile = bytes("00 00 0f 0c 303132333435363738396162 00");
     assert!(matches!(Build::decode_request(&reconcile), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
+}
+
+/// CONTRACT (proposal executable-bindings-at-create.md §3.10(a): "the count forms `ReconcileFabric`,
+/// `ReconcileMesh`, `AddNode` and `CreateMesh` are reserved (positional, no format move)"): a request a
+/// caller of a count form sends (change positions 0, 1, 2 and 4, with the counts after them, or the bare
+/// position) decodes as `UnknownVariant`, never a change; every change between and after them keeps its
+/// position (`RemoveNode` = 03, `RemoveMesh` = 05, `Reconcile` = 0f).
+#[test]
+fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
+    for (what, sent) in [
+        ("ReconcileFabric { fabric: f, meshes: [m 1 admin 1 rpc] }", "00 00 00 01 66 01 01 6d 01 01 00 00 00"),
+        ("ReconcileMesh { m 1 admin 1 rpc }", "00 00 01 01 6d 01 01 00 00 00"),
+        ("AddNode { m, RpcNode }", "00 00 02 01 6d 01"),
+        ("CreateMesh { m 1 admin 1 rpc }", "00 00 04 01 6d 01 01 00 00 00"),
+        ("the bare position 0", "00 00 00"),
+        ("the bare position 1", "00 00 01"),
+        ("the bare position 2", "00 00 02"),
+        ("the bare position 4", "00 00 04"),
+    ] {
+        assert_eq!(Build::decode_request(&bytes(sent)), Err(DecodeFailure::UnknownVariant), "{what}");
+    }
+    assert!(matches!(Build::decode_request(&bytes("00 00 03 07 6d2e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { .. }) })), "RemoveNode keeps position 3");
+    assert!(matches!(Build::decode_request(&bytes("00 00 05 01 6d")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveMesh { .. }) })), "RemoveMesh keeps position 5");
+    assert!(matches!(Build::decode_request(&bytes("00 00 0f 0c 303132333435363738396162 00")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }

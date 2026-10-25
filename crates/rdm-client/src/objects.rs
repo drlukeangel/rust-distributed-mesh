@@ -8,18 +8,14 @@
 //! refuses ends `Rejected`, naming the refusal. Calls whose request is valid but that no op carries
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
 
-use crate::build_stream::{BuildCarrier, BuildReceipts, BuildStream};
+use crate::build_stream::{BuildCarrier, BuildReceipts};
 use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
-use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricDesired, FabricView, MeshDesired, MeshView, NodeView};
-use rdm_core::{NodeId, NodeKind, PathName};
+use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricView, MeshView, NodeView};
+use rdm_core::{NodeId, PathName};
 use rdm_transport::{CallOptions, NodeTarget};
-use rdm_core::build::{BuildChange, MeshCounts};
+use rdm_core::build::BuildChange;
 use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
-
-fn counts(m: &MeshDesired) -> MeshCounts {
-    MeshCounts { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
-}
 
 /// A read on op `0x1B` to `target`: the reply the node answered, or how the call ended.
 async fn read(carrier: &BuildCarrier, target: &NodeTarget, req: &StatusRequest) -> Result<StatusReply, CallEnd> {
@@ -79,15 +75,6 @@ where
     }
 }
 
-/// What `node.create` is given: the mesh to add a node to and the node's kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeSpec {
-    /// The mesh the node joins.
-    pub mesh: String,
-    /// The node's kind.
-    pub kind: NodeKind,
-}
-
 pub use rdm_core::status::TagFilter;
 
 /// What `node.get` selects.
@@ -120,39 +107,6 @@ impl std::fmt::Display for NameHeld {
 }
 
 impl std::error::Error for NameHeld {}
-
-/// What `build.create` is given.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BuildSpec {
-    /// Reconcile the whole fabric to these meshes.
-    Fabric(FabricDesired),
-    /// A named, fixed set of meshes for the fabric named `fabric`.
-    Preset {
-        /// The preset.
-        preset: BuildPreset,
-        /// The fabric it reconciles.
-        fabric: String,
-    },
-    /// A new mesh with these counts, beside the meshes the fabric holds.
-    CreateMesh(MeshDesired),
-}
-
-/// A preset `build.create` expands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildPreset {
-    /// The demo set: `mesh1` with 2 node-admins and 3 rpc nodes (the shape the demo's bootstrap
-    /// reconciles to today).
-    Demo,
-}
-
-impl BuildPreset {
-    /// The meshes the preset reconciles a fabric named `fabric` to.
-    pub fn desired(self, fabric: &str) -> FabricDesired {
-        match self {
-            Self::Demo => FabricDesired { fabric: fabric.to_string(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])] },
-        }
-    }
-}
 
 /// A tags call's labels refused before anything is sent: its span says so, and the reply is the
 /// `RejectedTags` the mesh-primary would answer.
@@ -300,12 +254,6 @@ impl Nodes {
     /// open); [`Self::get`] answers the whole node, its config included.
     pub fn config_get(&self) -> CallEnd {
         CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "node.config.get has no request of its own; node.get answers the node's config" }
-    }
-
-    /// `node.create(spec)`: add a node to a mesh. The stream is `Started`, then the step events
-    /// of the create, ending `Complete` or `Failed { step, reason }`.
-    pub async fn create(&self, spec: &NodeSpec) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Create, BuildChange::AddNode { mesh: spec.mesh.clone(), node_kind: spec.kind }).await
     }
 
     /// `node.create` of the paths `nodes` adds to the topology Build `based_on` accepted, each named by
@@ -487,17 +435,6 @@ impl Builds {
         });
         span.in_scope(|| tracing::info!(op = op.name(), "a build call ended"));
         r
-    }
-
-    /// `build.create`: accept a Build that reconciles the fabric to `spec` and follow it. A preset
-    /// is expanded against the fabric it names.
-    pub async fn create(&self, spec: &BuildSpec) -> Result<BuildStream, CallEnd> {
-        let desired = match spec {
-            BuildSpec::Fabric(d) => d.clone(),
-            BuildSpec::Preset { preset, fabric } => preset.desired(fabric),
-            BuildSpec::CreateMesh(mesh) => return self.call(BuildOp::Create, self.carrier.create(BuildChange::CreateMesh { mesh: counts(mesh) })).await,
-        };
-        self.call(BuildOp::Create, self.carrier.create(BuildChange::ReconcileFabric { fabric: desired.fabric.clone(), meshes: desired.meshes.iter().map(counts).collect() })).await
     }
 
     /// `build.get`: the Build with its attempts and step receipts, for reattachment after a cut.

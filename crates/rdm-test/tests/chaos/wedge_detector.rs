@@ -298,7 +298,8 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 // ---------------------------------------------------------------------------------------------
 
 use crate::build_log;
-use rdm_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
 use rdm_admin::lifecycle::HookPhase;

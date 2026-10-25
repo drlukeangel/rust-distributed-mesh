@@ -8,7 +8,8 @@
 //! wrote.
 
 use crate::build_log;
-use rdm_client::{BuildFrame, BuildSpec, BuildStream, CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
+use rdm_client::{BuildFrame, BuildStream, CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
+use rdm_test::typed::BuildSpec;
 use rdm_core::status::StatusReply;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};

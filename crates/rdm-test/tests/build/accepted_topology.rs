@@ -23,7 +23,8 @@
 //! 8. A restart changes no topology: it is an attempt of the accepted Build, under the same id.
 
 use crate::build_log;
-use rdm_client::{BuildId, BuildSpec, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{BuildId, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

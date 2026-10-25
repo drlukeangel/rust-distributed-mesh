@@ -13,7 +13,7 @@
 //! before it plans.
 
 use crate::accepted::TopologyChange;
-use crate::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
+use crate::build::{BuildId, BuildOperation};
 use crate::executor::RunPlan;
 use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Read, VerdictSink};
 use crate::build_run::{bounded_reason, Attached, RunDoor, RunReader};
@@ -25,7 +25,7 @@ use rdm_core::IncarnationId;
 use rdm_transport::membership::SeatBook;
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
 use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
-use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, MeshCounts, StepReceipt, StepResult};
+use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rdm_core::catalog::OpOwner;
 use rdm_core::context::CallContext;
 use rdm_core::outcome::RpcOutcome;
@@ -56,10 +56,6 @@ pub struct BuildDoor {
 
 /// The door a running admin fills once it holds a view.
 pub type BuildSlot = Arc<OnceLock<Arc<BuildDoor>>>;
-
-fn counts(m: &MeshCounts) -> MeshDesired {
-    MeshDesired { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
-}
 
 /// The refusal reply a control-plane refusal is, with every non-leaking detail it carries.
 pub fn refusal_reply(r: Refusal) -> BuildReply {
@@ -112,9 +108,6 @@ impl BuildDoor {
             cp.submit_in(span, "build.create", c).await
         };
         let r = match change {
-            BuildChange::ReconcileFabric { fabric, meshes } => topology(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: fabric.clone(), meshes: meshes.iter().map(counts).collect() } }).await,
-            BuildChange::ReconcileMesh { mesh } => topology(TopologyChange::ReconcileMesh { desired: counts(mesh) }).await,
-            BuildChange::AddNode { mesh, node_kind } => topology(TopologyChange::AddNode { mesh: mesh.clone(), node_kind: *node_kind }).await,
             // The parked predecessor a replacement left at `<path>.old`, and the last admin of a mesh
             // deleted at mesh.deleted (mesh-delete.md step 7: a separate node.delete after
             // mesh.deleted), are deleted by the next attempt of the accepted Build, fenced to the exact
@@ -126,16 +119,16 @@ impl BuildDoor {
                     topology(TopologyChange::RemoveNode { node: node.clone() }).await
                 }
             }
-            BuildChange::CreateMesh { mesh } => topology(TopologyChange::CreateMesh { desired: counts(mesh) }).await,
             BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,
             BuildChange::DeleteFabric => match cp.fabric_delete_in_force().await {
                 Ok(Some((o, failed))) => return Ok(Admitted::Resumed(o, if failed { Disposition::NextAttempt } else { Disposition::Attached })),
                 Ok(None) => topology(TopologyChange::DeleteFabric).await,
                 Err(r) => Err(r),
             },
-            // The reserved position decodes as an unknown variant (`Build::decode_request`); a caller that
-            // builds the value in process is refused by name, nothing accepted.
-            BuildChange::Reserved14 => Err(Refusal::Reject(crate::build::BuildReject::UnknownChange { change: "reserved-14".into() })),
+            // A reserved position (the removed count forms and executable-set change) decodes as an unknown
+            // variant (`Build::decode_request`); a caller that builds the value in process is answered the
+            // same, `Malformed(UnknownVariant)` (node-rpc.md §26), nothing accepted.
+            BuildChange::Reserved0 | BuildChange::Reserved1 | BuildChange::Reserved2 | BuildChange::Reserved4 | BuildChange::Reserved14 => return Err(BuildReply::Malformed { kind: rdm_core::outcome::MalformedKind::UnknownVariant }),
             // The complete topology (proposal executable-bindings-at-create.md rule 1): a topology Build,
             // its `based_on` checked against the current Build at the door.
             BuildChange::Reconcile { based_on, nodes } => topology(TopologyChange::Reconcile { based_on: based_on.clone(), nodes: nodes.clone() }).await,

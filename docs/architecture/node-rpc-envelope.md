@@ -1413,8 +1413,9 @@ pub enum BuildChange {
     // Every create names its path's config, PathConfig { storage, placement, executable }: the
     // executable (path, sha256, image) the node runs, compiled onto the accepted topology's entry and
     // recorded on the row at the claim (build-deployment.md). A request naming a different executable
-    // for an existing path is that node's replacement. Two slots after Restart are reserved (the
-    // removed change variants; positional, no format move).
+    // for an existing path is that node's replacement. Positions 0, 1, 2 and 4 (the count forms) and
+    // 14 (the removed change of the old per-kind set) are reserved: never sent, and a request at one is an unknown
+    // variant (positional, no format move).
     ConnectionsDelete { node: PathName },
     Stop { node: PathName },
     Start { node: PathName },

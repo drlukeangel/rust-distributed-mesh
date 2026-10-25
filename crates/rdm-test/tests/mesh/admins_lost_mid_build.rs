@@ -18,7 +18,8 @@
 //! B by a mesh1 admin names mesh2's admin primary as the previous executor.
 
 use crate::build_log;
-use rdm_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
+use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_test::estate::{claim_decider, named, Estate, Owner};
 use serde_json::{json, Value};

@@ -456,13 +456,6 @@ pub enum BuildReject {
         /// The fabric's status as this admin holds it.
         status: String,
     },
-    /// A change of a kind this build does not run: a stored change of the removed per-kind
-    /// executable-set operation (proposal executable-bindings-at-create.md §1, Q157) is history, never
-    /// compiled; nothing is accepted.
-    UnknownChange {
-        /// The change's kind, as it was stored.
-        change: String,
-    },
     /// A complete-topology request (`Reconcile`) built from a read of a Build that is no longer the
     /// current one (proposal executable-bindings-at-create.md rule 1, optimistic concurrency): nothing
     /// is accepted, and the caller re-reads.
@@ -532,7 +525,6 @@ impl BuildReject {
             Self::RecipeStepRepeated { .. } => "recipe-step-repeated",
             Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
             Self::FabricNotReady { .. } => "fabric-not-ready",
-            Self::UnknownChange { .. } => "unknown-change",
             Self::BasedOnNotCurrent { .. } => "based-on-not-current",
             Self::NoNodeListed => "no-node-listed",
             Self::NodeNamedTwice { .. } => "node-named-twice",
@@ -576,7 +568,6 @@ impl fmt::Display for BuildReject {
                 "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
             ),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
-            Self::UnknownChange { change } => write!(f, "a change of kind `{change}` is not one this build runs (removed with Q157: a node's executable is replaced by a complete-topology request naming it); nothing is accepted"),
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
             Self::NodeNamedTwice { node } => write!(f, "the request names `{node}` twice: each node is listed once"),

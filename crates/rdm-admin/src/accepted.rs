@@ -248,8 +248,8 @@ pub enum TopologyChange {
     DeleteFabric,
     /// A stored change of the removed per-kind executable-set operation (proposal
     /// executable-bindings-at-create.md §1, Q157), read from the journal or the Build topic as history
-    /// only: it owes no replacement (the repair is a [`Self::Reconcile`] naming the executables) and is
-    /// never compiled (`unknown-change`). Its set is not kept: the topology it was accepted with had
+    /// only: it owes no replacement (the repair is a [`Self::Reconcile`] naming the executables) and
+    /// nothing submits it to [`compile`]. Its set is not kept: the topology it was accepted with had
     /// its entries filled from that set when it was read ([`FabricTopology`]).
     #[serde(rename = "roll")]
     Reserved {},
@@ -557,8 +557,11 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
             next.meshes.clear();
             return Ok(next);
         }
-        // A stored change of the removed operation is history, never a request.
-        TopologyChange::Reserved {} => return Err(BuildReject::UnknownChange { change: "roll".into() }),
+        // A stored change of the removed operation is history only, decoded from the journal or the Build
+        // topic and read by `plans_replacements`; nothing compiles it. The one door that builds a change
+        // to compile (build_op.rs `admit_change`) builds it from a decoded `BuildChange`, whose reserved
+        // positions are refused `UnknownVariant` before it, and never builds this variant.
+        TopologyChange::Reserved {} => unreachable!("a stored change of the removed executable-set operation is history: nothing submits it to compile"),
         TopologyChange::Reconcile { nodes, .. } => next.meshes = reconciled(current, nodes, recorded)?,
     }
     next.validate()?;

@@ -1303,8 +1303,7 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "referenced-by-open-build",
         "empty-recipe",
         "recipe-step-repeated",
-        "recipe-node-unknown",
-        "unknown-change"
+        "recipe-node-unknown"
     );
 }
 

@@ -19,7 +19,8 @@
 //! no NodeDeleted.
 
 use crate::build_log;
-use rdm_client::{BuildSpec, CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, MeshSelector, PathName};
+use rdm_client::{CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, MeshSelector, PathName};
+use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};

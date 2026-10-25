@@ -143,8 +143,9 @@ async fn fabric_at_its_primary(estate: &Estate) -> (String, ScopeStatus, Option<
 /// accepted and `mesh1.rpc.2` untouched. A re-reads: a request listing no node is refused `no-node-listed`
 /// naming fabric.delete, one creating `mesh1.rpc.3` with no executable `executable-missing`, one creating it
 /// on an executable whose bytes do not hash to the sha it names `executable-refused` (build-deployment.md
-/// §2.4, "a differing hash is refused by name"), and the count form creating a node names none
-/// (`AddNode`): `executable-missing`, nothing accepted; the re-read request itself is accepted and
+/// §2.4, "a differing hash is refused by name"), and a request at the reserved position of the count
+/// form that created a node (`AddNode`'s, proposal §3.10(a)) is an unknown variant
+/// (`Malformed(UnknownVariant)`, node-rpc.md §26), nothing accepted; the re-read request itself is accepted and
 /// completes, changing nothing. The bootstrap admin's row records the hash of the executable it runs
 /// (build-deployment.md §2.3: "the bootstrap admin's own included: it hashes the executable it is
 /// running").
@@ -196,8 +197,8 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), "mesh1.rpc.3", Some(&differing)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
     assert!(detail.contains("mesh1.rpc.3"), "{detail}");
-    let (reason, detail) = rejected("a count form creating a node", carrier.create(Change::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await);
-    assert_eq!(reason, "executable-missing", "a count form names no executable for the path it creates: {detail}");
+    let (reason, detail) = rejected("a request at a count form's reserved position", carrier.create(Change::Reserved2).await);
+    assert_eq!((reason.as_str(), detail.as_str()), ("malformed", "UnknownVariant"), "the count forms are reserved positions: a request at one is an unknown variant");
     assert_eq!(estate.accepted_build_id().await, b, "nothing is accepted");
     assert!(estate.node_value_opt("mesh1.rpc.3").await.is_none(), "nothing runs at mesh1.rpc.3");
 

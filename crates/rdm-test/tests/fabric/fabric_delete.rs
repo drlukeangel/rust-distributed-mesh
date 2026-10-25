@@ -15,7 +15,7 @@
 //! fabric in state-sync when a cell needs a fabric that never reaches ready-for-traffic.
 
 use crate::build_log;
-use rdm_client::{BuildFrame, BuildId, BuildStream, CallEnd, Change, LaunchKind as NodeKind, MeshCounts, PathName, ScopeStatus};
+use rdm_client::{BuildFrame, BuildId, BuildStream, CallEnd, Change, LaunchKind as NodeKind, MeshDesired, PathName, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
@@ -249,7 +249,8 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after", Some("never")).await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create:mesh1.rpc.1"})).await;
-    let mut grow = estate.submit_change(Change::ReconcileMesh { mesh: MeshCounts { name: "mesh1".into(), node_admin: 1, rpc_node: 2, broker: 0, gateway: 0, compute: 0 } }).await;
+    let grown = [MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2)])];
+    let mut grow = estate.submit_named("mesh1 grown to two rpc nodes", |current, executables| current.resized(&grown, false, executables)).await;
     let grow_id = grow.build_id().to_string();
     let held = door.wait_held("launch").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.rpc.1's launch: {held}");
@@ -295,7 +296,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let mut estate = ready_fabric("the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor", &shape).await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create:mesh1.rpc.2"})).await;
-    let grow = estate.submit_change(Change::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await;
+    let grow = estate.submit_named("one more rpc node in mesh1", |current, executables| current.with_one_more("mesh1", NodeKind::RpcNode, executables)).await;
     let grow_id = grow.build_id().to_string();
     let held = door.wait_held("launch").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.rpc.2's launch: {held}");

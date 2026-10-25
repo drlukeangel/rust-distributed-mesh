@@ -3,7 +3,8 @@
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 use rdm_core::NodeKind;
-use rdm_client::{BuildSpec, FabricDesired, MeshDesired, NodeStatus};
+use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
+use rdm_test::typed::BuildSpec;
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};

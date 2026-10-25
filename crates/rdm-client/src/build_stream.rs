@@ -24,7 +24,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use rdm_core::build::{BuildChange as Change, Disposition as StartDisposition, MeshCounts};
+pub use rdm_core::build::{BuildChange as Change, Disposition as StartDisposition};
 
 /// The bound on connecting to the fabric-primary and writing the request. The stream after it has
 /// no deadline: the transport's own liveness ends a dead one.

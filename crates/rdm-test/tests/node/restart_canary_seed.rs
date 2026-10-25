@@ -10,7 +10,8 @@
 
 use rdm_test::canary::restart_canary;
 use rdm_core::NodeKind;
-use rdm_client::{BuildSpec, BuildStream, CallEnd, FabricDesired, MeshDesired};
+use rdm_client::{BuildStream, CallEnd, FabricDesired, MeshDesired};
+use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{artifacts_root, Estate, Owner};
 use rdm_test::{runner, scenario::Scenario};
 use serde_json::{json, Value};

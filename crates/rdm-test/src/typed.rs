@@ -11,7 +11,7 @@
 use crate::estate::Estate;
 use rdm_client::{LaunchKind as NodeKind, PathName};
 use rdm_client::{
-    birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
@@ -21,6 +21,18 @@ pub(crate) struct Wire {
     peers: Arc<Peers>,
     entry: PathName,
     stale: bool,
+}
+
+/// A fabric shape of counts a cell asks for: [`Estate::submit`] expands it against the current topology
+/// into the complete-topology request (`Change::Reconcile`), every created path on the estate's
+/// executable for its kind. The Build wire carries no count form (proposal
+/// executable-bindings-at-create.md §3.10(a)): this is the harness's shorthand, never a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildSpec {
+    /// The whole fabric reconciled to these meshes: a mesh left out is removed.
+    Fabric(FabricDesired),
+    /// A new mesh with these counts, beside the meshes the fabric holds.
+    CreateMesh(MeshDesired),
 }
 
 /// A Build that ran to its `Complete` frame.
@@ -558,7 +570,7 @@ impl Estate {
     }
 
     /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The harness names every
-    /// path ([`crate::executables`]): a shape of counts (`Fabric`, `Preset`, `CreateMesh`) is expanded
+    /// path ([`crate::executables`]): a shape of counts (`Fabric`, `CreateMesh`) is expanded
     /// against the current topology into the complete topology, each created path on its executable,
     /// and submitted as `Change::Reconcile`. A cell that
     /// does not test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to
@@ -568,36 +580,20 @@ impl Estate {
     pub async fn submit(&self, spec: &BuildSpec) -> BuildStream {
         let (meshes, whole) = match spec {
             BuildSpec::Fabric(d) => (d.meshes.clone(), true),
-            BuildSpec::Preset { preset, fabric } => (preset.desired(fabric).meshes, true),
             BuildSpec::CreateMesh(m) => (vec![m.clone()], false),
         };
         self.submit_named(&format!("{spec:?}"), |current, executables| current.resized(&meshes, whole, executables)).await
     }
 
     /// `build.create` of `change` (a change of the accepted Build the carrier carries without a
-    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A count
-    /// change (`ReconcileFabric`, `ReconcileMesh`, `AddNode`, `CreateMesh`) is expanded into the complete
-    /// topology with every created path named, as [`Self::submit`] expands a shape. A cell that does not
-    /// test a refusal never has a submit refused: the Build it started itself is followed to its terminal
-    /// frame (`Estate::follow`) before the next change is submitted, so a refusal here, a Build in
-    /// progress included, is a defect of the cell and panics naming the change and the refusal.
+    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A cell
+    /// that does not test a refusal never has a submit refused: the Build it started itself is followed to
+    /// its terminal frame (`Estate::follow`) before the next change is submitted, so a refusal here, a
+    /// Build in progress included, is a defect of the cell and panics naming the change and the refusal.
     pub async fn submit_change(&self, change: Change) -> BuildStream {
-        let what = format!("{change:?}");
-        let mesh = |m: &rdm_client::MeshCounts| MeshDesired { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute };
-        match change {
-            Change::ReconcileFabric { meshes, .. } => {
-                let meshes: Vec<MeshDesired> = meshes.iter().map(mesh).collect();
-                self.submit_named(&what, |current, executables| current.resized(&meshes, true, executables)).await
-            }
-            Change::ReconcileMesh { mesh: m } | Change::CreateMesh { mesh: m } => {
-                let meshes = vec![mesh(&m)];
-                self.submit_named(&what, |current, executables| current.resized(&meshes, false, executables)).await
-            }
-            Change::AddNode { mesh, node_kind } => self.submit_named(&what, |current, executables| current.with_one_more(&mesh, node_kind, executables)).await,
-            change => match self.carrier().await.create(change.clone()).await {
-                Ok(stream) => stream,
-                Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
-            },
+        match self.carrier().await.create(change.clone()).await {
+            Ok(stream) => stream,
+            Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
         }
     }
 

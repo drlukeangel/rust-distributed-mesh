@@ -102,7 +102,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
 
     let door = Door::at(&estate, &member_s).await;
     door.arm("round-action", json!({"kind": "round-action", "node": member_s, "round": "commit-state"})).await;
-    let resize = estate.submit(&rdm_client::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 2)])] })).await;
+    let resize = estate.submit(&rdm_test::typed::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 2)])] })).await;
     let resize_id = resize.build_id().to_string();
     door.wait_held("round-action").await;
 
@@ -173,7 +173,7 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
 
     let door = Door::at(&estate, &primary_s).await;
     door.arm("round-action", json!({"kind": "round-action", "node": primary_s, "round": round})).await;
-    let resize = estate.submit(&rdm_client::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, mesh1.0), (NodeKind::RpcNode, mesh1.1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] })).await;
+    let resize = estate.submit(&rdm_test::typed::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, mesh1.0), (NodeKind::RpcNode, mesh1.1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] })).await;
     let resize_id = resize.build_id().to_string();
     door.wait_held("round-action").await;
 

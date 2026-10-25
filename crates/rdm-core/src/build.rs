@@ -33,63 +33,32 @@ use crate::context::CallContext;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::{DecodeFailure, NodeProtocol};
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::{IncarnationId, NodeId, NodeKind, PathName};
+use crate::{IncarnationId, NodeId, PathName};
 use serde::{Deserialize, Serialize};
 
 /// The Build protocol: Builds are created, driven, read and deleted through the fabric-primary.
 pub struct Build;
-
-/// One mesh's counts by kind, as a submitted change names them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeshCounts {
-    /// The mesh's name.
-    pub name: String,
-    /// The number of node-admins.
-    pub node_admin: u32,
-    /// The number of rpc nodes.
-    pub rpc_node: u32,
-    /// The number of brokers.
-    pub broker: u32,
-    /// The number of gateways.
-    pub gateway: u32,
-    /// The number of compute nodes.
-    pub compute: u32,
-}
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 /// topology change opens a new Build) or opens the next attempt of the accepted Build (a restart,
 /// connections delete, stop, start, recovery or recipe, targeted at the births it acts on).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
-    /// The whole fabric's meshes and counts.
-    ReconcileFabric {
-        /// The fabric's name.
-        fabric: String,
-        /// The desired meshes.
-        meshes: Vec<MeshCounts>,
-    },
-    /// One mesh's counts (grow or shrink).
-    ReconcileMesh {
-        /// The mesh's desired counts.
-        mesh: MeshCounts,
-    },
-    /// One more node of `node_kind` in `mesh`.
-    AddNode {
-        /// The mesh to add the node to.
-        mesh: String,
-        /// The kind of node to add.
-        node_kind: NodeKind,
-    },
+    /// Reserved position: the removed count form `ReconcileFabric` (proposal
+    /// executable-bindings-at-create.md §3.10(a)). Never sent; a request at this position decodes as
+    /// `UnknownVariant` ([`Build::decode_request`]). Kept so every later change keeps its position.
+    Reserved0,
+    /// Reserved position: the removed count form `ReconcileMesh` (§3.10(a)), as [`Self::Reserved0`].
+    Reserved1,
+    /// Reserved position: the removed count form `AddNode` (§3.10(a)), as [`Self::Reserved0`].
+    Reserved2,
     /// Remove one node.
     RemoveNode {
         /// The node to remove.
         node: PathName,
     },
-    /// A new mesh with its counts.
-    CreateMesh {
-        /// The mesh's desired counts.
-        mesh: MeshCounts,
-    },
+    /// Reserved position: the removed count form `CreateMesh` (§3.10(a)), as [`Self::Reserved0`].
+    Reserved4,
     /// Remove a mesh.
     RemoveMesh {
         /// The mesh to remove.
@@ -172,6 +141,14 @@ pub enum BuildChange {
         /// Every node of the fabric, by `path.name`, with its config.
         nodes: Vec<(PathName, crate::meta::PathConfig)>,
     },
+}
+
+impl BuildChange {
+    /// Whether this is a reserved position (positions 0, 1, 2, 4 and 14: the removed count forms and the
+    /// removed executable-set change): never sent, and a request at one is an unknown variant.
+    pub fn is_reserved(&self) -> bool {
+        matches!(self, Self::Reserved0 | Self::Reserved1 | Self::Reserved2 | Self::Reserved4 | Self::Reserved14)
+    }
 }
 
 /// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names
@@ -674,11 +651,11 @@ impl NodeProtocol for Build {
     type Request = BuildRequest;
     type Reply = BuildReply;
 
-    /// A change at a reserved position (the removed change, [`BuildChange::Reserved14`]) is a variant
+    /// A change at a reserved position (a removed change, [`BuildChange::is_reserved`]) is a variant
     /// this build does not know: refused as `UnknownVariant`, never a change.
     fn decode_request(bytes: &[u8]) -> Result<Self::Request, DecodeFailure> {
         match crate::protocol::decode_enum(bytes, Self::REQUEST_VARIANTS)? {
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reserved14) } => Err(DecodeFailure::UnknownVariant),
+            BuildRequest::Create { submit: BuildSubmit::Change(change) } if change.is_reserved() => Err(DecodeFailure::UnknownVariant),
             request => Ok(request),
         }
     }

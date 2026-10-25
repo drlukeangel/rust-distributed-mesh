@@ -13,7 +13,8 @@
 //! `FetchBuildFacts` (`build_log`).
 
 use crate::build_log;
-use rdm_client::{BuildSpec, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
 use rdm_admin::lifecycle::HookPhase;
