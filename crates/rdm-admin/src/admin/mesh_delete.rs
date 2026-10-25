@@ -654,6 +654,15 @@ impl AdminRunner {
             }
         };
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build, attempt: *attempt, operation: operation.clone() };
+        // A delete-mesh of an attempt the Build has moved past, as this admin's fold of the Build holds it,
+        // is a superseded writer's call (fabric-recovery.md step 4, Q160: a returning fabric-primary's Build
+        // calls are refused): it is refused by name against the attempt held, as an earlier attempt of a
+        // round held is, and nothing is admitted. A fold that has not reached the carried attempt refuses nothing.
+        if let Ok(p) = self.builds.read_build(&key.build_id).await {
+            if p.attempt > key.attempt {
+                return crate::mesh_delete::refuse_round("delete-mesh", &MeshDeleteKey { attempt: p.attempt, ..key.clone() }, &key);
+            }
+        }
         let me_str = me_name.to_string();
         let call = match peer {
             Some(key) => crate::workflows::node_start::reached_back(&me_str, &self.node_rpc.client, &key).await.ok().map(|target| crate::mesh_delete::MeshDeleteOwner { target, name: sender.map(|n| n.name.to_string()).unwrap_or_else(|| format!("the admin at endpoint {}", key.fmt_short())) }),
