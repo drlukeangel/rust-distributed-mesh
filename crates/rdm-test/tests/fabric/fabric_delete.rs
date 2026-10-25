@@ -645,8 +645,8 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
 /// is durable, nothing recovers it for being absent"): on a two-mesh fabric whose mesh1 holds one
 /// node-admin, the fabric-primary, and mesh2 two, fabric.delete's executor is held by its fault door at
 /// mesh2's mesh.delete and killed. From the backbone, mesh2.admin.1 takes both roles and deletes mesh1 in
-/// process; it is held by its own fault door once mesh1's members are deleted, before mesh1's MeshDeleted,
-/// and killed. mesh2.admin.2, the one node-admin left, claims the delete's next attempt, records its own
+/// process; it is held by its own fault door once mesh1's last member is deleted (its NodeDeleted durable,
+/// its delete's Complete not), before mesh1's row is written Dead or its MeshDeleted, and killed. mesh2.admin.2, the one node-admin left, claims the delete's next attempt, records its own
 /// transition and finishes the teardown: mesh1 deleted once, then its own mesh2 last, fabric.deleted
 /// reported, the one runtime left for the outside caller's node.delete. What must NOT happen: the teardown
 /// left unfinished, a mesh deleted twice, a node created after the acceptance, or a member's runtime left
@@ -660,7 +660,7 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     let door = Door::at(&estate, "mesh1.admin.1").await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh2_id}")})).await;
     let executor = Door::at(&estate, "mesh2.admin.1").await;
-    executor.arm("midway", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": format!("mesh.delete:{mesh1_id}")})).await;
+    executor.arm("midway", json!({"kind": "receipt", "step": "Complete", "node": "mesh1.rpc.1"})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
@@ -669,7 +669,7 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     estate.kill_bootstrap();
 
     let midway = executor.wait_held("midway").await;
-    assert_eq!(midway["hit"]["build_id"].as_str(), Some(id.as_str()), "the backbone executor is held midway, at mesh1's MeshDeleted: {midway}");
+    assert_eq!(midway["hit"]["build_id"].as_str(), Some(id.as_str()), "the backbone executor is held midway, at the Complete of mesh1's last member's delete: {midway}");
     let first = receipts_at(&estate, "mesh2.admin.1", &id).await;
     assert_eq!(count(&first, |_| true, "PrimariesTaken"), 1, "the backbone executor recorded its transition: {:?}", listed(&first));
     estate.kill_pid(runtime_pid(&estate, "mesh2.admin.1"));
@@ -677,6 +677,7 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     let fp = delete_followed(&estate, delete, "mesh2.admin.2").await;
     assert_eq!(fp, "mesh2.admin.2", "the next executor is the fabric-primary that finishes the delete");
     let receipts = receipts_at(&estate, &fp, &id).await;
+    assert_eq!(count(&receipts, |o| o == "node.delete:mesh1.rpc.1", "Complete"), 1, "mesh1.rpc.1's delete is finished once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o == format!("mesh.delete:{mesh1_id}"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o == format!("mesh.delete:{mesh2_id}"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh2 is deleted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
