@@ -28,7 +28,7 @@ pub fn data_dir_gone_hold_ms() -> u64 {
 
 /// RDM's fixed pass-through list: each, when set on a node-admin, is passed on to every runtime it
 /// launches ([`AdminConfig::passthrough`]). A declared secret is never one of them (Q150).
-pub const PASSTHROUGH: [&str; 9] = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_DATA_DIR_GONE_FLOORS];
+pub const PASSTHROUGH: [&str; 10] = ["RDM_EVIDENCE_DIR", "RUST_LOG", "RUST_BACKTRACE", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_DATA_DIR_GONE_FLOORS];
 
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
