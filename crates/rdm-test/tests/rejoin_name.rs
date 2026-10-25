@@ -5,7 +5,7 @@
 //! never renamed: its mesh-primary refuses it (the rename precondition's cells in rdm-admin's
 //! status_declarations and node_stop's process cell).
 //!
-//! Its own process: the cell holds process-wide state (the parking flag).
+//! Its own process: the cell holds process-wide state (the stop flag).
 
 use crate::common::admin_side_serving;
 use rdm_core::launch::Launch;

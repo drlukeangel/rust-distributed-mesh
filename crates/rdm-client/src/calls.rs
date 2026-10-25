@@ -307,7 +307,7 @@ impl<'a> NodeRpc<'a> {
         }
     }
 
-    /// `node.start`: tell the parked exact birth to rejoin as itself. The call is held until the
+    /// `node.start`: tell the stopped exact birth to rejoin as itself. The call is held until the
     /// birth reports NodeJoined after joining, then NodeStarted after every gate, or Failed with
     /// its step, reason and code. This is only the exact-node hop, never the caller's Build carrier.
     pub async fn start(&self, birth: &ExactBirth, ctx: &StartContext, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {

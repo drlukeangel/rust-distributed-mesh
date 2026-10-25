@@ -141,7 +141,7 @@ pub enum BuildOperation {
         /// The birth stopped.
         from_incarnation: IncarnationId,
     },
-    /// Start the parked exact birth `from_incarnation` of `node` (node-start.md): `start-node`,
+    /// Start the stopped exact birth `from_incarnation` of `node` (node-start.md): `start-node`,
     /// whose reply is `Started` once the same process rejoined as itself, then the wait for ready.
     StartNode {
         /// The node to start.
@@ -153,7 +153,7 @@ pub enum BuildOperation {
     /// steps are done; `NodeDeleting`, the provider's exact Exited proof, `NodeDeleted`, and `Complete`
     /// naming the birth. Storage is kept. Its key is node.delete's one key, `node.delete:<path>`.
     DeleteNode {
-        /// The parked node's `.old` path.
+        /// The stopped node's `.old` path.
         node: PathName,
         /// The birth deleted.
         from_incarnation: IncarnationId,

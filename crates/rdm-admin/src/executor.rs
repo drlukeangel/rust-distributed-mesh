@@ -516,7 +516,7 @@ impl BuildExecutor {
         // More of the plan follows the run. The planner named the next executor from its own view,
         // taken before this run's operations, and they can move a seat or stop the planner itself
         // (the fabric primary's replace: its same-mesh successor runs the stop that moves its seats
-        // and parks it). So the run hands back to the fabric primary of the view it ends with, the
+        // and stops it). So the run hands back to the fabric primary of the view it ends with, the
         // one driver of the Build, whose next claim names the executor of what is left in its own
         // view (`build_drive` claim_next).
         if plan.hand_off_to.is_some() {

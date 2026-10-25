@@ -13,7 +13,7 @@ pub(crate) struct SeatGate {
     /// The 0x21 door node.primary.update is commanded and run through, which holds what each update
     /// was answered and said (`HandoverDoor::memo`).
     pub(crate) handover: Arc<crate::fabric_handover::HandoverDoor>,
-    /// Projects the digest view into the view now, so a completed stop-node lists the stopped birth parked
+    /// Projects the digest view into the view now, so a completed stop-node lists the stopped birth stopped
     /// before `BuildReply::Complete` goes out on the caller's stream.
     pub(crate) project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
     /// The deployment provider and the durable runtime rows: a completed stop's exact birth is

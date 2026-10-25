@@ -57,7 +57,7 @@ pub enum AttemptReason {
     DeleteConnections,
     /// A standalone stop of an exact birth was requested (`node.stop:<path>`).
     Stop,
-    /// A standalone start of a parked birth was requested (`node.start:<path>`).
+    /// A standalone start of a stopped birth was requested (`node.start:<path>`).
     Start,
     /// A mesh-primary proved a member's exact birth exited and submitted its recovery
     /// (`node.delete:<path>`, then `node.create:<path>`, node-recovery.md "Steps").

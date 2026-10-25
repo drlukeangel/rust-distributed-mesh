@@ -72,7 +72,7 @@ impl LifecycleOp {
         self.operation.starts_with("node.restart:")
     }
 
-    /// A stop operation (`node.stop:<path>`): the birth is parked and rejoins as itself; its
+    /// A stop operation (`node.stop:<path>`): the birth is stopped and rejoins as itself; its
     /// departure is `NodeStopped`, never `NodeDeleted`.
     pub fn is_stop(&self) -> bool {
         self.operation.starts_with("node.stop:")

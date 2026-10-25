@@ -11,7 +11,7 @@
 //! The stop and start spans name the commander by the node id the node's
 //! member projection gives its endpoint, when one does.
 //!
-//! Each cell runs in its own process: the cells hold process-wide state (the parking flag).
+//! Each cell runs in its own process: the cells hold process-wide state (the stop flag).
 
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;

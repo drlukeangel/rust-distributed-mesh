@@ -1,14 +1,14 @@
-//! A stopped node parks and a started node rejoins as itself (node-stop.md, node-start.md).
+//! A stopped node stops and a started node rejoins as itself (node-stop.md, node-start.md).
 //!
 //! CONTRACT: `stop-node` is answered `Stopped` on its own call, after the node drained, cut its mesh
 //! connections and entered Leaving; the node gossips nothing for it, its process stays alive with its
-//! endpoint bound, and a probe answers `CurrentParked`. `start-node` is answered `Started` once the
+//! endpoint bound, and a probe answers `CurrentStopped`. `start-node` is answered `Started` once the
 //! same birth (same node id, incarnation, endpoint key and port) rejoined through the admin that
 //! commanded it, and a probe answers `Current` again. What must NOT happen: a stop answered before the
-//! node parked, a digest of a parked node reaching the admin, a start that makes a new birth, or a start
-//! of a node that is not parked.
+//! node stopped, a digest of a stopped node reaching the admin, a start that makes a new birth, or a start
+//! of a node that is not stopped.
 //!
-//! Its own process: the cell holds process-wide state (the parking flag).
+//! Its own process: the cell holds process-wide state (the stop flag).
 
 use crate::common::admin_side_serving;
 use rdm_core::launch::Launch;
@@ -38,7 +38,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         }
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
-        let dir = std::env::temp_dir().join(format!("park-start-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("stop-start-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
@@ -83,21 +83,21 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: "node.start:mesh1.rpc.1".into() };
 
-        // A live node refuses a start: only a parked one starts.
+        // A live node refuses a start: only a stopped one starts.
         assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "a start of a live node is refused naming its state");
 
         // The stop is answered Stopped on its own call, with the drain's receipt.
         let left = call(&admin, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
-        assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
+        assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentStopped { .. }), "a stopped node answers CurrentStopped");
         assert_eq!(running.topology_view.neighbours(), 0, "the node left its gossip topic");
-        // Stopping a parked node is done: the same receipt again.
+        // Stopping a stopped node is done: the same receipt again.
         assert_eq!(call(&admin, &target, &stop).await, left);
 
-        // The node gossips nothing while parked: the admin hears no digest of it after the stop.
+        // The node gossips nothing while stopped: the admin hears no digest of it after the stop.
         let seq_at_stop = digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
-        assert_eq!(digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a parked node reaches the admin");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a stopped node reaches the admin");
         assert!(running.own.is_stopped(), "the birth is stopped, its process live");
 
         // The start: the same birth rejoins through the admin that commands it.

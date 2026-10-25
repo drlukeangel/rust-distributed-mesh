@@ -78,7 +78,7 @@ pub enum WorkflowKind {
     Create,
     /// `node.stop` of this node: `node.stop:<path.name>`.
     Stop(PathName),
-    /// `node.start` of this parked node: `node.start:<path.name>`.
+    /// `node.start` of this stopped node: `node.start:<path.name>`.
     Start(PathName),
     /// `node.restart` of this node: `node.restart:<path.name>`, one operation.
     Restart(PathName),
@@ -145,7 +145,7 @@ macro_rules! create_rows {
     };
 }
 
-/// The start leg of a parked process under the operation prefix `op`: `start-node` answered
+/// The start leg of a stopped process under the operation prefix `op`: `start-node` answered
 /// `Started` means the same process rejoined (`node.joined`), then the wait for it
 /// to report its hook passed (`node.started`); `last` is what the operation's `Complete` announces.
 macro_rules! start_rows {
@@ -275,7 +275,7 @@ impl WorkflowKind {
             Self::Create => create_rows!("node.create", &[NodeEvent::Created]).into(),
             Self::Stop(_) => stop_rows(),
             Self::Start(_) => start_rows!("node.start", &[], NodeStep::Start).into(),
-            // A restart is one operation: the birth is held, drains and stops (it parks), then the
+            // A restart is one operation: the birth is held, drains and stops (it stops), then the
             // same process starts, and its one `Complete` ends it.
             Self::Restart(_) => {
                 let mut rows = vec![row("node.restart", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];

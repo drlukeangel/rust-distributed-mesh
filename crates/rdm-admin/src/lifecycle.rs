@@ -409,7 +409,7 @@ impl LifecycleTransitionPipeline {
             to = ?t.key.to,
         );
         // The span is entered by the future, on each poll, never by a guard held across an await: a
-        // guard stays entered on the worker thread while the task is parked, and the next span any
+        // guard stays entered on the worker thread while the task is held, and the next span any
         // task creates there takes the closed span as its parent.
         async move {
             if let Err((hook_id, reason)) = self.run_phase(&t, HookPhase::BeforeEligibility).await {

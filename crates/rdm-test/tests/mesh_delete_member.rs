@@ -54,7 +54,7 @@ impl LifecycleEvents for Recorder {
 /// `NodeStopped` once, from its matching `stopped` reply after that reply's admission set it stopping, naming the
 /// member's exact birth under its own `node.stop:<path>` operation of the mesh delete's Build and
 /// attempt, and `NodeDeleted` last, from the provider's exact exit proof, under node.delete's own
-/// `node.delete:<path>`. Without NodeStopped no peer mesh hears the member parked; without
+/// `node.delete:<path>`. Without NodeStopped no peer mesh hears the member stopped; without
 /// NodeDeleted no peer holds it departed, and its own mesh-primary takes its exit for a member to
 /// recover.
 #[test]

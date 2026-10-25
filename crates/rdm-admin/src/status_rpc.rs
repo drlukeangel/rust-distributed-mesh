@@ -1799,11 +1799,11 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             // blocked on its word, whether or not a record names it, and every declaration owed to it
             // is sent again, whatever its last outcome.
             wake.addressed_by(sender.map(|n| &n.node_id), peer);
-            // A parked admin presents nothing: it says it is parked.
+            // A stopped admin presents nothing: it says it is stopped.
             if crate::node_self::process_stop().is_stopped() {
-                tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "parked", "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("probed by a node-admin: parked, nothing re-published"));
-                return Some(StatusReply::CurrentParked { node_id: me.node_id.clone(), incarnation: held.clone() });
+                tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "stopped", "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("probed by a node-admin: stopped, nothing re-published"));
+                return Some(StatusReply::CurrentStopped { node_id: me.node_id.clone(), incarnation: held.clone() });
             }
             // node-start.md step 3: while its hook is Blocked, the probe served this exact birth and
             // found an active readiness blocker; it answers Blocked with the hook's own reason and

@@ -89,7 +89,7 @@ impl TopologySink for Discard {
 /// CONTRACT (lifecycles/node-delete.md 1-2: "For a crashed process those stop steps are already done; do
 /// not fabricate node replies or receipts. Stop and inspect the exact runtime through provider
 /// control"; node-stop.md 6: "Delete proceeds to external exact runtime exit proof instead"): the
-/// delete of a stopped birth (Leaving, parked) records `NodeDeleting`, then `TerminateRuntime` (the
+/// delete of a stopped birth (Leaving, stopped) records `NodeDeleting`, then `TerminateRuntime` (the
 /// provider's stop and its `Exited` inspection of the exact runtime), then `NodeDeleted`, and
 /// `Complete`. Must NOT happen: a stop sent again to the stopped birth, or any of its receipts
 /// (`StopNode`, `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
@@ -112,7 +112,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
     node.status = NodeStatus::Leaving;
-    node.parked = true;
+    node.stopped = true;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/stopped-delete".into(),

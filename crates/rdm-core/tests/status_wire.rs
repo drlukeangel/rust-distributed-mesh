@@ -118,7 +118,7 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
         (Stopped { receipt: ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }, "11000000"),
         (Started, "12"),
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
-        (CurrentParked { node_id: node(), incarnation: birth() }, "140c3031323334353637383961620c397763707266677776746879"),
+        (CurrentStopped { node_id: node(), incarnation: birth() }, "140c3031323334353637383961620c397763707266677776746879"),
         (ConfigUpdated { node_id: node(), incarnation: birth() }, "150c3031323334353637383961620c397763707266677776746879"),
         (RejectedConfig { over: rdm_core::ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, "16210a208010"),
         (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),

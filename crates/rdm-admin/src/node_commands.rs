@@ -236,7 +236,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         }
     };
     // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
-    // other one, so its start reaches the parked node on a fresh dial.
+    // other one, so its start reaches the stopped node on a fresh dial.
     if matches!(admission, CommandAdmission::Stopped { .. }) {
         if let Some(peer) = node.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok()) {
             client.close_pooled_to(&peer, "node.stopped");

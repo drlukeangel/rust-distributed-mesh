@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Whether this node's `before_ready` returned `Ok`. Closed at birth; RDM opens it when the
-/// hook passes, and closes it when the birth is parked (a stop), so a parked node answers no app op
+/// hook passes, and closes it when the birth is stopped (a stop), so a stopped node answers no app op
 /// until its start's hook has passed again. Cloned into every handler that must not answer before
 /// then.
 #[derive(Clone, Debug, Default)]
@@ -33,7 +33,7 @@ impl BeforeReadyGate {
         self.passed.store(true, Ordering::SeqCst);
     }
 
-    /// The birth is parked: app ops are refused until the hook passes again.
+    /// The birth is stopped: app ops are refused until the hook passes again.
     pub fn close(&self) {
         self.passed.store(false, Ordering::SeqCst);
     }
@@ -114,7 +114,7 @@ impl ServerBuilder {
     }
 }
 
-/// A birth's retirement across its parked cycles: the token the current cycle's hook and pulls end
+/// A birth's retirement across its stopped cycles: the token the current cycle's hook and pulls end
 /// with. A stop (or drain) cancels it; a start renews it for the next cycle.
 #[derive(Clone, Debug, Default)]
 pub struct Retirement {

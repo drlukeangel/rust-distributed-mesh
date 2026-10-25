@@ -482,8 +482,8 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
 
 // @feature: node-lifecycle
 /// CONTRACT: an admin that joins after a node was stopped never heard the node's digest; a
-/// `GetTopology` read of the mesh carries the stop overlay, the reader holds the birth parked from
-/// it, and the reader's view lists the node `Leaving` and parked, never absent.
+/// `GetTopology` read of the mesh carries the stop overlay, the reader holds the birth stopped from
+/// it, and the reader's view lists the node `Leaving` and stopped, never absent.
 #[test]
 fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
     let cap = capture("stopped-late");
@@ -502,7 +502,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
             name: stopped.node.name.clone(),
             event_at_rafka_ms: 1,
         };
-        // The mesh primary's snapshot after the stop: the parked birth's digest is dropped, its overlay stays.
+        // The mesh primary's snapshot after the stop: the stopped birth's digest is dropped, its overlay stays.
         let kept: Vec<MeshDigest> = members.iter().filter(|d| d.node.node_id != stopped.node.node_id).cloned().collect();
         let mut s = snap("mesh3", &publisher("mesh3.admin.1"), 4, kept);
         s.in_flight = vec![op.clone()];
@@ -512,8 +512,8 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
         assert!(caller.topology_view.digest_view.get(stopped.node.node_id.as_str()).is_none(), "the reader never held the stopped node's digest");
         assert_eq!(caller.topology_view.digest_view.stopped_unheard(), vec![op]);
         let view = rdm_admin::admin::project("fabric1", &fabric, rdm_admin::model::ProviderKind::Process, &caller.topology_view.digest_view, &rdm_admin::admin::Records::default());
-        let n = view.node(&stopped.node.name).expect("the parked node is listed");
-        assert_eq!((n.status, n.parked, n.routable), (rdm_admin::model::NodeStatus::Leaving, true, false));
+        let n = view.node(&stopped.node.name).expect("the stopped node is listed");
+        assert_eq!((n.status, n.stopped, n.routable), (rdm_admin::model::NodeStatus::Leaving, true, false));
         server.ep.close().await;
         caller.ep.close().await;
     });

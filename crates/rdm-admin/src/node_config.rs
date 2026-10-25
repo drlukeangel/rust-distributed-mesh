@@ -151,7 +151,7 @@ impl NodeConfigs {
         // A stopped node is told nothing: its config is a field of its row, and it gets it back in its
         // join answer at its next start (node-rpc-envelope.md "Node properties"), as node.name.update
         // completes a stopped node on the row.
-        if subject.parked {
+        if subject.stopped {
             span.record("apply", "stopped");
             return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
         }

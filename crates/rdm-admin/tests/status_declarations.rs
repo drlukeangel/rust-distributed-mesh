@@ -1232,10 +1232,10 @@ fn update_name(b: &Birth, name: &str) -> StatusRequest {
 /// The span of a mesh-primary's `node.name.update`.
 const NAME_SPAN: &str = "rdm.node_admin.node.name.update.via-writer";
 
-/// `b` stopped in the mesh-primary's view (parked, `Leaving`), its row at its name carrying `tags`.
+/// `b` stopped in the mesh-primary's view (`Leaving`), its row at its name carrying `tags`.
 async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
-        (n.parked, n.status) = (true, NodeStatus::Leaving);
+        (n.stopped, n.status) = (true, NodeStatus::Leaving);
     }
     let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
     rig.nodes.write_record(&row).await.unwrap();
@@ -1246,7 +1246,7 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
 /// then its `node.mesh.left`.
 async fn hold_left(rig: &Rig, b: &Birth) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
-        (n.status, n.declared, n.parked) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()), false);
+        (n.status, n.declared, n.stopped) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()), false);
     }
     let birth = (b.node.node_id.clone(), b.node.incarnation_id.clone().unwrap());
     let mut declared = rig.authority.declared.lock().unwrap();
@@ -1492,7 +1492,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
 /// precondition holds, else `RejectedAdmittingConnections { status, held_connections }`"; Failure and
 /// receipts: "Refused before the claim ...: nothing written, nothing changed"; node-replace.md: "A node
 /// is renamed only while it is live ... it is stopped after"): `node.name.update` renaming the stopped
-/// `mesh1.rpc.2` (parked in the mesh-primary's view, its row at `mesh1.rpc.2`) to `2.old` is refused
+/// `mesh1.rpc.2` (stopped in the mesh-primary's view, its row at `mesh1.rpc.2`) to `2.old` is refused
 /// `RejectedAdmittingConnections { status: Leaving, held_connections: [] }`, `Leaving` being the status
 /// a stopped birth is held at. Nothing is claimed at `mesh1.rpc.2.old`, the row stays at `mesh1.rpc.2`
 /// as it was, the view lists the node at `mesh1.rpc.2`, and the birth is told nothing. The same rename

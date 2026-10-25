@@ -8,7 +8,7 @@
 //! returning the completion. The open start sends no separate readiness declaration.
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
-//! commands its stop and start. Its own process: the cell holds process-wide state (the parking flag).
+//! commands its stop and start. Its own process: the cell holds process-wide state (the stop flag).
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;

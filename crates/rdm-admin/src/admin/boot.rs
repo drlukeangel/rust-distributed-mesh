@@ -39,7 +39,7 @@ pub struct Running {
     pub(crate) tasks: Vec<tokio::task::JoinHandle<()>>,
     /// The tasks node.start's steps after the hook started (the own-mesh sweep of a launched admin).
     pub(crate) start_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
-    /// The gate a stop parks (`node_self`'s `Session::cut`) and a start opens.
+    /// The gate a stop stops (`node_self`'s `Session::cut`) and a start opens.
     pub(crate) gate: crate::stop_gate::StopGate,
     /// This admin as the subject of the drain, stop and start its mesh-admin commands.
     pub(crate) node_self: Arc<crate::node_self::NodeSelf>,
@@ -84,8 +84,8 @@ impl Running {
         println!("RDM_NODE_ADMIN_API_BASE={}", self.api_base);
     }
 
-    /// The gate a stop parks and a start opens: every task this admin runs is held at its own wait
-    /// while it is parked.
+    /// The gate a stop stops and a start opens: every task this admin runs is held at its own wait
+    /// while it is stopped.
     pub fn gate(&self) -> &crate::stop_gate::StopGate {
         &self.gate
     }
@@ -150,16 +150,16 @@ impl Running {
         }
     }
 
-    /// End a parked birth (a `stop-node` completed): it says nothing and closes. Its stop already
+    /// End a stopped birth (a `stop-node` completed): it says nothing and closes. Its stop already
     /// cut its gossip neighbours and left its topics, and a stopped node gossips nothing
-    /// (node-stop.md step 4): every node holds it Leaving and parked from the `NodeStopped` its
+    /// (node-stop.md step 4): every node holds it Leaving and stopped from the `NodeStopped` its
     /// stopped reply produced.
     pub async fn leave_after_stop(self) {
         self.before_ready_cancel.cancel();
         self.leave_with(true).await
     }
 
-    pub(crate) async fn leave_with(self, _parked: bool) {
+    pub(crate) async fn leave_with(self, _stopped: bool) {
         let _ = &self.leave_seam;
         self.executor.abort();
         self.hierarchy.abort();
@@ -294,8 +294,8 @@ pub async fn start_on(cfg: AdminConfig, wiring: crate::wiring::Wiring, storage: 
 }
 
 pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, storage: Arc<dyn crate::storage_backend::StorageBackend>, boot: tracing::Span) -> Result<Running, String> {
-    // Every task this admin runs is spawned behind this gate: a stop parks it, and a start opens it again.
-    let park_gate = crate::stop_gate::StopGate::new();
+    // Every task this admin runs is spawned behind this gate: a stop holds it, and a start opens it again.
+    let stop_gate = crate::stop_gate::StopGate::new();
     // The `sync_state` choice is made on purpose: an embedding with no application work says so
     // (`SyncState::NoAppWork`); one that registered nothing would skip its day 0 and seed unnoticed.
     if wiring.fabric_hooks.sync_state.is_none() {
@@ -1026,12 +1026,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
                 // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
                 // rafka-time once from the new fabric-primary.
-                tasks_early.push(park_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), topology_view.clone())));
+                tasks_early.push(stop_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), topology_view.clone())));
                 // A delta that does not follow what this admin holds desynchronizes that source of its mesh
                 // channel; it tops up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each
-                // such mesh, as every node does. Held behind the gate: a parked admin tops up nothing, and a
-                // gap signalled while it was parked is topped up once it runs again.
-                tasks_early.push(park_gate.spawn(topology_view.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
+                // such mesh, as every node does. Held behind the gate: a stopped admin tops up nothing, and a
+                // gap signalled while it was stopped is topped up once it runs again.
+                tasks_early.push(stop_gate.spawn(topology_view.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
                 // The primaries recorded on the node rows of the fabric's store root: an election input this admin
                 // enters with (elections §3), its own included. A record older than one held changes nothing.
                 crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, topology_view.primaries()).await.map_err(storage_err)?;
@@ -1059,11 +1059,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     let seats = topology_view.primaries().clone();
                     let mut writer = FabricRowsWriter::new((node_id.clone(), incarnation.clone()), fabric_identity.clone(), fabric_storage.clone());
                     let mut changed = seats.subscribe();
-                    let park = park_gate.clone();
+                    let stop = stop_gate.clone();
                     tasks_early.push(tokio::spawn(async move {
                         loop {
-                            // Held here while the admin is parked: its own wait, outside every lock.
-                            let turn = park.turn("seat-rows").await;
+                            // Held here while the admin is stopped: its own wait, outside every lock.
+                            let turn = stop.turn("seat-rows").await;
                             writer.sweep(&seats).await;
                             drop(turn);
                             if changed.changed().await.is_err() {
@@ -1558,7 +1558,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     exec,
                                     runs: runs.clone(),
                                     local: journal.clone(),
-                                    gate: park_gate.clone(),
+                                    gate: stop_gate.clone(),
                                 });
                                 let refresh_view = view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone());
                                 let env = Arc::new(crate::build_drive::DriveEnv {
@@ -1574,7 +1574,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         refresh: refresh_view,
                                         digest_view: digest_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
                                     verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
-                                    turns: park_gate.clone(),
+                                    turns: stop_gate.clone(),
                                 });
                                 let _ = control.departure.set(env.departure.clone());
                                 let _ = control.node_rows.set(nodes_storage.clone());
@@ -1682,8 +1682,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let contacts_task = {
                                 let (digest_view, fabric_id) = (topology_view.digest_view.clone(), cfg.fabric_id.clone());
                                 let writer = MeshRowsWriter::new(&name.to_string(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone());
-                                let park = park_gate.clone();
-                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, digest_view, fabric_id, writes, park))
+                                let stop = stop_gate.clone();
+                                tokio::spawn(super::rows_writer::keep_mesh_rows(writer, digest_view, fabric_id, writes, stop))
                             };
                             if let Some(a) = adoption {
                                 let digest = digest.clone();
@@ -1809,15 +1809,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // a blind put (a successor fabric primary proves an exit from it).
                             let runtime_rows_task = {
                                 let (digest_view, nodes_storage, me, fabric_id) = (topology_view.digest_view.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
-                                let park = park_gate.clone();
+                                let stop = stop_gate.clone();
                                 tokio::spawn(async move {
-                                    let turn = park.turn("runtime-rows").await;
+                                    let turn = stop.turn("runtime-rows").await;
                                     let mut written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
                                     drop(turn);
                                     let mut births = digest_view.birth_changes();
                                     loop {
-                                        // Held here while the admin is parked: its own wait, outside every lock.
-                                        let turn = park.turn("runtime-rows").await;
+                                        // Held here while the admin is stopped: its own wait, outside every lock.
+                                        let turn = stop.turn("runtime-rows").await;
                                         births.borrow_and_update();
                                         for d in digest_view.all().into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me) {
                                             let key = (d.node.node_id.clone(), d.node.incarnation.clone());
@@ -1844,12 +1844,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // departed): the declared-state rows this admin put for it as an authority are tombstoned.
                             let superseded_rows_task = {
                                 let (digest_view, authority) = (topology_view.digest_view.clone(), authority.clone());
-                                let park = park_gate.clone();
+                                let stop = stop_gate.clone();
                                 tokio::spawn(async move {
                                     let mut births = digest_view.birth_changes();
                                     loop {
-                                        // Held here while the admin is parked: its own wait, outside every lock.
-                                        let turn = park.turn("superseded-rows").await;
+                                        // Held here while the admin is stopped: its own wait, outside every lock.
+                                        let turn = stop.turn("superseded-rows").await;
                                         births.borrow_and_update();
                                         if let Some(a) = authority.get() {
                                             a.drop_superseded(&digest_view).await;
@@ -1863,12 +1863,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             };
                             let app_channels_task = {
                                 let (topology_view, client, rows, me) = (topology_view.clone(), node_rpc.client.clone(), nodes_storage.clone(), node_id.clone());
-                                let park = park_gate.clone();
+                                let stop = stop_gate.clone();
                                 tokio::spawn(async move {
                                     let mut changes = topology_view.digest_view.digest_changes();
                                     let mut learned = std::collections::HashMap::new();
                                     loop {
-                                        let turn = park.turn("app-channels").await;
+                                        let turn = stop.turn("app-channels").await;
                                         changes.borrow_and_update();
                                         let work = topology_view.digest_view.all().into_iter().filter(|d| d.node.node_id != me).filter(|d| learned.get(&(d.node.node_id.clone(), d.node.incarnation.clone())) != Some(&d.held_hash));
                                         let results = futures_util::future::join_all(work.map(|d| {
@@ -1918,7 +1918,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
                             let entry_ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), topology_view: topology_view.clone(), time: rafka_time.clone() };
                             if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
-                                tasks.push(spawn_entry_sweep(&park_gate, entry_ctx.clone(), source, map, sweep_slot.clone(), records.clone(), policy.provider));
+                                tasks.push(spawn_entry_sweep(&stop_gate, entry_ctx.clone(), source, map, sweep_slot.clone(), records.clone(), policy.provider));
                             }
                             // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
                             // becomes eligible for every seat) only once it can manage every birth it
@@ -1973,7 +1973,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 backbone: backbone.clone(),
                                 records: records.clone(),
                                 provider: policy.provider,
-                                gate: park_gate.clone(),
+                                gate: stop_gate.clone(),
                                 entry: entry_ctx,
                                 entering: entering.clone(),
                                 sweep: sweep_slot.clone(),
@@ -1996,8 +1996,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 state: before_ready_cell.clone(),
                                 runs: crate::workflows::node_start::HookRuns::Spawned {
                                     spawn: {
-                                        let park = park_gate.clone();
-                                        Box::new(move |hook: crate::workflows::node_start::BoxFut<()>| park.spawn(hook))
+                                        let stop = stop_gate.clone();
+                                        Box::new(move |hook: crate::workflows::node_start::BoxFut<()>| stop.spawn(hook))
                                     },
                                 },
                                 after: Box::new(after),
@@ -2018,12 +2018,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let boot = boot.clone();
                                          let (records, authority, mesh_name, fabric_name, view_provider, backbone_ready) =
                                             (records.clone(), authority.clone(), cfg.mesh.clone(), cfg.fabric.clone(), policy.provider, backbone.clone());
-                                        let park = park_gate.clone();
+                                        let stop = stop_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             let mut reported = None;
                                             loop {
-                                                // Held here while the admin is parked: its own wait, outside every lock.
-                                                let turn = park.turn("ready").await;
+                                                // Held here while the admin is stopped: its own wait, outside every lock.
+                                                let turn = stop.turn("ready").await;
                                                 let me = digest.lock().unwrap().node.name.clone();
                                                 let held: Vec<MeshDigest> = digest_view
                                                     .current(digest_view.staleness_floor())
@@ -2214,7 +2214,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         own.set_session(Arc::new(AdminSession {
                                             data_connections: data_connections.clone(),
                                             drives: drives.clone(),
-                                            gate: park_gate.clone(),
+                                            gate: stop_gate.clone(),
                                             node_id: node_id.clone(),
                                             incarnation: incarnation.clone(),
                                             fabric_id: cfg.fabric_id.clone(),
@@ -2274,11 +2274,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (digest, topology, records, me_id, incarnation, client, resolver, digest_view, authority, fabric_reads) =
                                             (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), digest_view.clone(), authority.clone(), fabric_storage.clone());
                                         let fabric_states = states_slot.clone();
-                                        let park = park_gate.clone();
+                                        let stop = stop_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             loop {
-                                                // Held here while the admin is parked: its own wait, outside every lock.
-                                                let turn = park.turn("declarer").await;
+                                                // Held here while the admin is stopped: its own wait, outside every lock.
+                                                let turn = stop.turn("declarer").await;
                                                 let addressed = records.wake.take_addressed();
                                                 let view = topology.read().await.clone();
                                                 // Named by the name it holds now: a start installs the name its join
@@ -2385,7 +2385,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         recovery.clone(),
                                                     );
                                                     let silence_records = records.caches.nodes.clone();
-                                                    let park = park_gate.clone();
+                                                    let stop = stop_gate.clone();
                                                     let mut cadence =
                                                         crate::offline::Cadence::every(
                                                             gossip_interval(),
@@ -2400,13 +2400,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             // The births whose inspection or submitted recovery is in flight. The tick never waits
                                             // on it.
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
-                                            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
+                                            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), stop.clone());
                                             let floor = rdm_transport::topology::staleness_floor();
                                             let mut written: WrittenSilence = HashMap::new();
                                             let mut heard_changes = recovery.digest_view.heard_changes();
                                             loop {
-                                                // Held here while the admin is parked: its own wait, outside every lock.
-                                                let turn = park.turn("offline-tickle").await;
+                                                // Held here while the admin is stopped: its own wait, outside every lock.
+                                                let turn = stop.turn("offline-tickle").await;
                                                 heard_changes.borrow_and_update();
                                                 let view = topology.read().await.clone();
                                                 let holds_seat = view.is_mesh_primary(&mesh, &me_id);
@@ -2583,7 +2583,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             continue;
                                                         }
                                                         let (recovery, n) = (recovery.clone(), n.clone());
-                                                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
+                                                        crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
                                                             recovery.recover(&n).await;
                                                         });
                                                     }
@@ -2598,7 +2598,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             continue;
                                                         }
                                                         let recovery = recovery.clone();
-                                                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
+                                                        crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
                                                             if let Err(e) = recovery.submit_owed(&owed).await {
                                                                 tracing::info!(node = %owed.path, error = %e, "the submit of an owed recovery ended without the recovery");
                                                             }
@@ -2655,7 +2655,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                             }),
                                         );
-                                        let (topology, gate) = (control.topology.clone(), park_gate.clone());
+                                        let (topology, gate) = (control.topology.clone(), stop_gate.clone());
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
                                         tasks.push(tokio::spawn(async move {
                                             loop {
@@ -2674,7 +2674,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // no gossip frame commands the investigation.
                                     {
                                         let watch = crate::seat_watch::Watch {
-                                            gate: park_gate.clone(),
+                                            gate: stop_gate.clone(),
                                             me: name.clone(),
                                             me_id: node_id.clone(),
                                             incarnation: incarnation.clone(),
@@ -2726,14 +2726,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let adapter = runner.builds.clone();
                                         let records = records.clone();
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
-                                        let park = park_gate.clone();
+                                        let stop = stop_gate.clone();
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
                                             let mut unreadable_named: Option<String> = None;
                                             loop {
-                                                // Held here while the admin is parked: its own wait, outside every lock.
-                                                let turn = park.turn("hierarchy").await;
+                                                // Held here while the admin is stopped: its own wait, outside every lock.
+                                                let turn = stop.turn("hierarchy").await;
                                                 let me = view_digest_view.held_path_name().unwrap_or_else(|| me.clone());
                                                 // The current Build, read once per turn. A builds store that cannot be read is
                                                 // named once per distinct error and decides nothing this turn: no planned births,
@@ -2920,12 +2920,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // its mesh's members on the backbone (and puts the same source into its own mesh);
                                     // no admin publishes a live mesh on its behalf (R-RX4). While it is the fabric
                                     // primary it publishes each deleted mesh whose last admin it stopped or deleted
-                                    // (mesh-delete.md step 7). Held at its own wait while the admin is parked.
+                                    // (mesh-delete.md step 7). Held at its own wait while the admin is stopped.
                                     {
-                                        let (backbone, topology_view, park) = (backbone.clone(), topology_view.clone(), park_gate.clone());
+                                        let (backbone, topology_view, stop) = (backbone.clone(), topology_view.clone(), stop_gate.clone());
                                         anti_entropy = tokio::spawn(async move {
                                             loop {
-                                                let turn = park.turn("anti-entropy").await;
+                                                let turn = stop.turn("anti-entropy").await;
                                                 {
                                                     let _announced = roles.read().await;
                                                     backbone.publish(&topology_view, backbone.own_members(&topology_view)).await;
@@ -2944,9 +2944,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let elections = ElectionLog::new(name.clone());
                                         let me = name.clone();
                                         // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
-                                        // parked admin reads (its start among them). It is held at its own wait instead
+                                        // stopped admin reads (its start among them). It is held at its own wait instead
                                         // (`view_rebuild_due`), where it holds nothing.
-                                        let rebuild_gate = park_gate.clone();
+                                        let rebuild_gate = stop_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             let mut held: BTreeSet<PathName> = BTreeSet::new();
                                             let mut facts = digest_view.routing_watch();
@@ -2983,7 +2983,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let held = connections.held();
                                         let watch = crate::investigate::Watch {
-                                            gate: park_gate.clone(),
+                                            gate: stop_gate.clone(),
                                             me: name.clone(),
                                             me_id: node_id.clone(),
                                             interval: rdm_transport::topology::backbone_gossip_interval(),
@@ -3014,7 +3014,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let drift_time = rafka_time.clone();
                                         let drift_nodes = nodes_storage.clone();
                                         let ladder = ladder.clone();
-                                        let park = park_gate.clone();
+                                        let stop = stop_gate.clone();
                                         let drift_seam = wiring.drift_seam.take();
                                         executor = tokio::spawn(async move {
                                             let mut started = HashSet::new();
@@ -3031,8 +3031,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     .instrument(span)
                                                     .await;
                                                 }
-                                                // Held here while the admin is parked: its own wait, outside every lock.
-                                                let turn = park.turn("executor").await;
+                                                // Held here while the admin is stopped: its own wait, outside every lock.
+                                                let turn = stop.turn("executor").await;
                                                 // Decide on, and plan from, the view as it is now: a cached view
                                                 // can predate the members that make another admin primary.
                                                 let now = records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
@@ -3063,19 +3063,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // A blank ttl runs no sweep. The sweep submits one ordinary node.delete Build and deletes nothing.
                                     if let Some(ttl) = cfg.stopped_node_ttl {
                                         let control = control.clone();
-                                        let park = park_gate.clone();
+                                        let stop = stop_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             loop {
                                                 tokio::time::sleep(ttl).await;
-                                                // Held here while the admin is parked: its own wait, outside every lock.
-                                                let turn = park.turn("stopped-sweep").await;
+                                                // Held here while the admin is stopped: its own wait, outside every lock.
+                                                let turn = stop.turn("stopped-sweep").await;
                                                 let swept = control.sweep_stopped(Some(ttl)).await;
                                                 tracing::debug!(?swept, "stopped-node sweep");
                                                 drop(turn);
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), before_ready_cancel, before_ready: before_ready_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), before_ready_cancel, before_ready: before_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });

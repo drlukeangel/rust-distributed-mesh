@@ -1,7 +1,7 @@
 //! product=mesh, feature=node-lifecycle, subfeature=node-stop, rung=MN, provider=process.
 //!
-//! Stop parks and start rejoins (node-stop.md, node-start.md), driven through the `node` objects:
-//! `node.stop` drains the exact birth, cuts its mesh connections and parks the live process; the
+//! Stop leaves the process stopped and start rejoins (node-stop.md, node-start.md), driven through the `node` objects:
+//! `node.stop` drains the exact birth, cuts its mesh connections and stops the live process; the
 //! node's `left` is the reply of the stop call, never a gossip frame; the mesh primary publishes
 //! `NodeStopped` from it. `node.start` makes that same process rejoin as itself.
 
@@ -65,10 +65,10 @@ async fn view_of(meshes: &Meshes, node: &PathName) -> NodeView {
 }
 
 /// CONTRACT: `node.stop` of a live node answers, on its reply stream, the drain, the hard cut of its
-/// mesh connections and `left`, and ends `Complete`: the process is parked, alive, with the same node
-/// id, incarnation, endpoint key and port; `node.get` shows it `leaving` and `parked`. The node
+/// mesh connections and `left`, and ends `Complete`: the process is stopped, alive, with the same node
+/// id, incarnation, endpoint key and port; `node.get` shows it `leaving` and `stopped`. The node
 /// gossips nothing for the stop: the mesh primary publishes `NodeStopped`, and every other node of the
-/// mesh reports, through its own held view, that it dropped the parked birth and holds the stop
+/// mesh reports, through its own held view, that it dropped the stopped birth and holds the stop
 /// overlay. `node.start` makes the same process rejoin through the mesh primary: the stream carries
 /// `node.joined`, `node.started` and ends `Complete`, `node.get` shows the same birth
 /// `ready-for-traffic`, and every other node reports it holds that birth again with the overlay gone.
@@ -80,7 +80,7 @@ async fn a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth() {
     stop_then_start("a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth", NODE).await;
 }
 
-/// CONTRACT: the same holds for a node-admin: a mesh's non-primary admin is parked by its mesh primary
+/// CONTRACT: the same holds for a node-admin: a mesh's non-primary admin is stopped by its mesh primary
 /// (its tasks held, its gossip topics left, its connections cut), stays alive with its endpoint bound,
 /// and a start makes the same process rejoin: the same node id, incarnation, endpoint key and port,
 /// `ready-for-traffic` again, and every other node reports it held again.
@@ -111,16 +111,16 @@ async fn stop_then_start(test: &str, node: &str) {
     assert!(matches!(stopped.first(), Some(Frame::Started { .. })), "{stopped:?}");
     assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    // Every other node reports that it dropped the parked birth and holds the stop overlay.
+    // Every other node reports that it dropped the stopped birth and holds the stop overlay.
     for peer in &others {
-        peers.fact(peer, "mesh1", "NodeStopped: the parked birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop:").is_some()).await;
+        peers.fact(peer, "mesh1", "NodeStopped: the stopped birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop:").is_some()).await;
     }
-    // node.get shows it parked: the same birth, the same process, alive.
-    let parked = view_of(&estate.meshes_obj().await, &path).await;
-    assert!(parked.stopped, "node.get lists {node} parked: {parked:?}");
-    assert_eq!(parked.status, NodeStatus::Leaving, "{parked:?}");
-    assert_eq!((&parked.node_id, &parked.incarnation_id, &parked.endpoint_id, &parked.transport_addr), (&before.node_id, &before.incarnation_id, &before.endpoint_id, &before.transport_addr), "a stop keeps the node id, incarnation, endpoint key and port");
-    assert!(alive(pid), "the stopped process {pid} is alive and parked");
+    // node.get shows it stopped: the same birth, the same process, alive.
+    let stopped = view_of(&estate.meshes_obj().await, &path).await;
+    assert!(stopped.stopped, "node.get lists {node} stopped: {stopped:?}");
+    assert_eq!(stopped.status, NodeStatus::Leaving, "{stopped:?}");
+    assert_eq!((&stopped.node_id, &stopped.incarnation_id, &stopped.endpoint_id, &stopped.transport_addr), (&before.node_id, &before.incarnation_id, &before.endpoint_id, &before.transport_addr), "a stop keeps the node id, incarnation, endpoint key and port");
+    assert!(alive(pid), "the stopped process {pid} is alive and stopped");
     assert_eq!(estate.pid_of(node).await, pid);
 
     // The start: the same process rejoins.
@@ -192,7 +192,7 @@ async fn stop_then_start(test: &str, node: &str) {
     // §43) may dial the same live birth between the two (i146 e1, the read of this cell's reds).
     if attr(call, "reused") != "false" {
         // A connection between the two births dialled after the cut, by either end: the caller's own
-        // dial (within the call's attempts too), or the parked birth's dial to its mesh-primary for the
+        // dial (within the call's attempts too), or the stopped birth's dial to its mesh-primary for the
         // declaration naming its stop (node-stop.md step 4, i146 Q36).
         let cut = start_ns(of_stop("rdm.node_admin.node.update.via-stop-transport-cut")[0]);
         let identity = attr(call, "delivery_id");
@@ -206,7 +206,7 @@ async fn stop_then_start(test: &str, node: &str) {
         });
         assert!(dialled, "the start rode a connection between {caller} and {node}'s birth dialled after the stop's transport cut: {call}");
     }
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a parked node is not drift");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a stopped node is not drift");
     // node-mesh-join.md steps 5 and 7 (Q87): every join is issued a fresh member cert and the node
     // installs the one its join answered, the start's join after a stop as much as its first.
     let issued: Vec<&Value> = named(&spans, "rdm.node_admin.cert.create.via-join").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "outcome") == "issued").collect();
@@ -255,11 +255,11 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
 
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let parked = view_of(&estate.meshes_obj().await, &path).await;
-    assert!(parked.stopped && parked.status == NodeStatus::Leaving, "{parked:?}");
+    let stopped = view_of(&estate.meshes_obj().await, &path).await;
+    assert!(stopped.stopped && stopped.status == NodeStatus::Leaving, "{stopped:?}");
 
     // The rename of a stopped node: one call to its mesh-primary, refused before anything is claimed.
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(stopped.node_id.clone()), node_id: stopped.node_id.clone(), incarnation: stopped.incarnation_id.clone().expect("the stopped node's birth") };
     let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
     assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: NodeStatus::Leaving, held_connections: vec![] }, "a stopped node is never renamed");
     let listed = view_of(&estate.meshes_obj().await, &path).await;
@@ -370,7 +370,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
 /// CONTRACT (R-JN1; node-replace.md steps 1-2 and Rollback step 2; node-start.md step 2; R12/R13;
 /// CLAUDE.md read rule): in a mesh of three node-admins, the non-primary `mesh1.admin.3` has its
 /// connections deleted, leaves its mesh and the backbone, is renamed `mesh1.admin.3.old` live and is
-/// stopped there, as the predecessor's half of a replace recipe. Every admin lists the parked birth at
+/// stopped there, as the predecessor's half of a replace recipe. Every admin lists the stopped birth at
 /// the row's name, `mesh1.admin.2`, which performed no rename, included: its view reads the name from
 /// the row on the shared store root. `node.start` of `mesh1.admin.3.old` makes the same process
 /// rejoin: its join presents `mesh1.admin.3.old`, the name it took off its mesh, and is admitted under
@@ -378,7 +378,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
 /// (`via-join-admitted` `installed`, then `via-ready` under that name). The stream carries
 /// `node.joined`, `node.started` and ends `Complete`; every admin lists the same birth
 /// `ready-for-traffic` at `mesh1.admin.3.old`, and the rpc node holds it publishing that name. What must
-/// NOT happen: an admin listing the parked birth at `mesh1.admin.3`, the start refused (`UnknownNode`,
+/// NOT happen: an admin listing the stopped birth at `mesh1.admin.3`, the start refused (`UnknownNode`,
 /// `JoinMismatch("name")`), or a span of the started node after its join naming `mesh1.admin.3`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_holds_on_every_admin() {
@@ -413,10 +413,10 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     ];
     let half = frames(nodes.recipe(steps).await.expect("the recipe was accepted")).await;
     assert_eq!(half.last(), Some(&Frame::Complete), "{half:?}");
-    // Every admin's view names the parked birth by its row, the one that performed no rename included.
+    // Every admin's view names the stopped birth by its row, the one that performed no rename included.
     for admin in &admins {
         let listed = estate
-            .until_view_at(&admin.name, &format!("{} lists the parked birth at {renamed}", admin.name), Duration::from_secs(10), |view| {
+            .until_view_at(&admin.name, &format!("{} lists the stopped birth at {renamed}", admin.name), Duration::from_secs(10), |view| {
                 let at = |p: &PathName| view.iter().find(|n| &n.name == p).cloned();
                 at(&renamed).filter(|n| n.node_id == before.node_id && at(&path).is_none())
             })
@@ -452,7 +452,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     assert_eq!(ready.len(), 1, "the started node reports ready under the row's name: {ready:?}");
     assert!(ready[0]["start_unix_nano"].as_u64() >= admitted["end_unix_nano"].as_u64(), "the name is installed before the node says anything: {admitted:#?} {ready:#?}");
     assert!(named(&spans, "rdm.node_admin.node.reject.via-join-mismatch").is_empty(), "no join was refused");
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a renamed parked node is not drift");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a renamed stopped node is not drift");
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -482,7 +482,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the live birth: {opened}");
     Estate::complete(&mut stop).await;
     build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
-    assert!(alive(pid), "the stopped process {pid} is parked, alive");
+    assert!(alive(pid), "the stopped process {pid} is stopped, alive");
     // No repair attempt follows the stop: the Build's attempt is the stop's after the reconciler's checklists have passed.
     tokio::time::sleep(Duration::from_secs(15)).await;
     let b = build_log::build_value(&estate.carrier().await, &birth_build).await;
@@ -519,11 +519,11 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (i146 Q29, Q36; node-stop.md step 5): `node.stop` of `mesh1.rpc.1` runs and the birth parks;
+/// CONTRACT (i146 Q29, Q36; node-stop.md step 5): `node.stop` of `mesh1.rpc.1` runs and the birth stops;
 /// the stop stream's `stopped` reaches the mesh-primary and is held there before it is recorded (the
-/// faulted admin's `stopped` event cut). The parked birth's declaration of Stopped, naming the stop's
+/// faulted admin's `stopped` event cut). The stopped birth's declaration of Stopped, naming the stop's
 /// operation, reaches the mesh-primary meanwhile: it is applied, and the mesh-primary publishes
-/// NodeStopped from it with the stop's identity, so `node.get` lists the birth parked while the stream's
+/// NodeStopped from it with the stop's identity, so `node.get` lists the birth stopped while the stream's
 /// `stopped` is still held. Released, the stream's `stopped` finds the birth's row held (already
 /// applied) and the stop completes. Must NOT happen: NodeStopped twice, NodeStopped from the held
 /// stream, a node-leaving frame sent or heard by anyone.
@@ -548,18 +548,18 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
         async move { frames(nodes.stop(&path).await.expect("the stop was accepted")).await }
     });
     door.wait_held("stopped-held").await;
-    // The stream's stopped is held at the mesh-primary: the birth is listed parked from its own
+    // The stream's stopped is held at the mesh-primary: the birth is listed stopped from its own
     // declaration alone.
     let until = std::time::Instant::now() + Duration::from_secs(30);
-    let parked = loop {
+    let stopped = loop {
         let v = view_of(&estate.meshes_obj().await, &path).await;
         if v.stopped {
             break v;
         }
-        assert!(std::time::Instant::now() < until, "the parked birth's declaration lists it parked within 30 s while the stream's stopped is held: {v:?}");
+        assert!(std::time::Instant::now() < until, "the stopped birth's declaration lists it stopped within 30 s while the stream's stopped is held: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
-    assert_eq!((parked.status, &parked.node_id, &parked.incarnation_id), (NodeStatus::Leaving, &before.node_id, &before.incarnation_id), "the same birth, parked");
+    assert_eq!((stopped.status, &stopped.node_id, &stopped.incarnation_id), (NodeStatus::Leaving, &before.node_id, &before.incarnation_id), "the same birth, stopped");
     assert_eq!(door.cut("stopped-held").await["held"], true, "the stream's stopped is still held: {}", door.cut("stopped-held").await);
     door.release("stopped-held").await;
     let stopped = stop.await.expect("the stop's call");
@@ -569,7 +569,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     estate.stop().await;
     let spans = estate.spans();
     let operation = format!("node.stop:{NODE}");
-    let declared = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Stopped" && attr(sp, "operation") == operation && attr(sp, "outcome") == "applied").expect("the parked birth's declaration of Stopped naming its stop was applied");
+    let declared = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Stopped" && attr(sp, "operation") == operation && attr(sp, "outcome") == "applied").expect("the stopped birth's declaration of Stopped naming its stop was applied");
     let node_stopped: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).collect();
     assert_eq!(node_stopped.len(), 1, "NodeStopped is published once for the birth: {node_stopped:#?}");
     assert_eq!(attr(node_stopped[0], "operation"), operation, "NodeStopped names the stop: {}", node_stopped[0]);
@@ -593,7 +593,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
 /// `RDM_STOPPED_NODE_TTL` is 3 s, `mesh1.rpc.1` is stopped and left alone. The fabric-primary's sweep
 /// ages it from its stop receipt and submits one ordinary node.delete Build
 /// (`rdm.node_admin.node.delete.via-stopped-ttl` with the node, the receipt's time, the ttl and the
-/// Build); the delete runs as a delete does: the provider's exit proof of the parked process
+/// Build); the delete runs as a delete does: the provider's exit proof of the stopped process
 /// (TerminateRuntime complete), NodeDeleted, and `node.get` lists no `mesh1.rpc.1`. The other stopped
 /// period never started: nothing else is deleted. Must NOT happen: a delete before one ttl, a second
 /// delete Build, a collection the sweep made itself without a Build, or a seat transfer, drain or stop
@@ -615,7 +615,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let stopped_at = std::time::Instant::now();
-    // The sweep collects it: the delete's exit proof ends the parked process and node.get lists it no more.
+    // The sweep collects it: the delete's exit proof ends the stopped process and node.get lists it no more.
     estate.until_node(NODE, "the stopped node is deleted and its process exited", Duration::from_secs(60), |n| (n.is_none() && !alive(pid)).then_some(())).await;
     assert!(stopped_at.elapsed() >= Duration::from_secs(3), "collected after one ttl, never before: {:?}", stopped_at.elapsed());
 
@@ -629,7 +629,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let exit = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .find(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == NODE && sp["attributes"]["outcome"] == "complete" && s(&sp["attributes"]["build_id"]) == build);
-    assert!(exit.is_some(), "the delete Build proved the parked process exited");
+    assert!(exit.is_some(), "the delete Build proved the stopped process exited");
     // The stopped birth's stop already ran: its delete sends no seat transfer, node.connections.delete or stop again
     // (lifecycles/node-delete.md 1, node-stop.md 6).
     let again: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
@@ -1193,10 +1193,10 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
 /// as it was, through node.stop's own steps, each naming the start's operation: the whole
 /// `node.connections.delete { All }` (`via-stop`), its tasks held, `node.mesh.leave` (`via-leaving`,
 /// `via-stop-transport-cut`), and `Stopped` owed to its mesh-primary (`via-owed-on-stop`); the start is
-/// answered `StartFailed` at `node.before-ready`, and the birth is parked. Must NOT happen: the birth
+/// answered `StartFailed` at `node.before-ready`, and the birth is stopped. Must NOT happen: the birth
 /// left with its connections deleted and its mesh left but no `Stopped` owed, a stop step naming no
 /// operation, or the start answered Started. In its own process: the cell holds process-wide state
-/// (the parking flag).
+/// (the stop flag).
 #[test]
 fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps() {
     let cell = "a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps";
@@ -1222,9 +1222,9 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         before_ready.set_mode(Mode::Fixed(HookOutcome::Failed { reason: "the rows of orders cannot be read".into() }));
         let reply = call(&commander, &target, &start).await;
         assert!(matches!(&reply, StatusReply::StartFailed { step, .. } if step == "node.before-ready"), "the start is answered Failed at its hook: {reply:?}");
-        // The failed start left the birth parked, as it was.
+        // The failed start left the birth stopped, as it was.
         let probed = call(&commander, &target, &probe).await;
-        assert!(matches!(probed, StatusReply::CurrentParked { .. }), "the birth is parked again: {probed:?}");
+        assert!(matches!(probed, StatusReply::CurrentStopped { .. }), "the birth is stopped again: {probed:?}");
 
         // The flame: the stop's steps, each naming the start's operation.
         let of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans_of(&spans, name, NODE).into_iter().filter(|f| f.get("operation").map(String::as_str) == Some(NODE_START)).collect() };

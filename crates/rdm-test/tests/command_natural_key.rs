@@ -12,7 +12,7 @@
 //! from whichever node-admin holds the mesh's primary seat: its cell moves the seat between two
 //! admin sides.
 //!
-//! A cell that stops the birth runs in its own process (the process-wide parking flag).
+//! A cell that stops the birth runs in its own process (the process-wide stop flag).
 
 use crate::common::{admin_side_serving, admin_side_serving_as};
 use rdm_core::launch::Launch;
@@ -183,7 +183,7 @@ fn spans_named(spans: &crate::common::Spans, name: &str) -> Vec<std::collections
     spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect()
 }
 
-/// CONTRACT: a `StartNode` that reaches a parked birth while another attempt's start of it is under
+/// CONTRACT: a `StartNode` that reaches a stopped birth while another attempt's start of it is under
 /// way (its hook still running) is the same natural key: it runs no rejoin of its own and answers
 /// that start's outcome, `Started`, once it ends; the birth is ready afterwards. What must NOT
 /// happen: a second rejoin of one birth, or the second start's own failure path (Leaving, the
@@ -522,12 +522,12 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
     })
 }
 
-/// CONTRACT: a `StopNode` that reaches a parked birth while its start is under way is refused
+/// CONTRACT: a `StopNode` that reaches a stopped birth while its start is under way is refused
 /// `NotReady` naming the start under way, as a `StartNode` that reaches a birth whose stop is under
 /// way is refused naming the stop: the start ends the birth's stopped cycle, so the receipt of the
-/// stop that parked it answers for a birth that is leaving Leaving. Once the start ends, the stop
+/// stop that stopped it answers for a birth that is leaving Leaving. Once the start ends, the stop
 /// is decided on the cycle it ended in: the started birth is stopped afresh, its connections deleted again.
-/// What must NOT happen: `Stopped` with the parked cycle's receipt while the start goes on to make
+/// What must NOT happen: `Stopped` with the stopped cycle's receipt while the start goes on to make
 /// the birth live (its commander holding a stopped birth that is ready for traffic, and the
 /// mesh-primary's NodeStopped for it published after the start's node.joined).
 #[test]
@@ -558,7 +558,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         let during = birth.call(&birth.stop(3)).await;
         assert!(
             matches!(&during, StatusReply::NotReady { reason } if reason.contains("start is under way")),
-            "a StopNode while the start is under way is refused naming the start, never answered with the parked cycle's receipt: {during:?}"
+            "a StopNode while the start is under way is refused naming the start, never answered with the stopped cycle's receipt: {during:?}"
         );
 
         before_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
@@ -569,7 +569,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         // The started birth's stop is a stop of its own cycle.
         let after = birth.call(&birth.stop(4)).await;
         assert!(matches!(after, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
-        assert!(birth.running.own.is_stopped(), "the stop that answered Stopped left the birth parked");
+        assert!(birth.running.own.is_stopped(), "the stop that answered Stopped left the birth stopped");
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })

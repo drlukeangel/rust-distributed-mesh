@@ -7,7 +7,7 @@
 //! ready-for-traffic only once its hook has passed (node-mesh-join.md step 10). One function, run by
 //! the mesh-primary's offline ladder for its members and by the fabric-primary's seat watch for a
 //! held seat holder; nothing re-publishes a presence by hand. `AdminRunner` registers the birth's
-//! join (as it does a parked birth's) so the join door admits the report.
+//! join (as it does a stopped birth's) so the join door admits the report.
 
 use crate::model::{IncarnationId, Node};
 use crate::status_rpc::AuthoritySlot;
@@ -152,7 +152,7 @@ async fn command_mesh_join(
         }
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
-        // stop registers a parked one, from its runtime handle and its admitted digest.
+        // stop registers a stopped one, from its runtime handle and its admitted digest.
         // Its report, when the door accepts it, is where the birth's next cycle begins and it is
         // published Pending, before the join is answered (node-mesh-join.md step 10), as every
         // accepted join report is: nothing is written before the command reached it (node-start.md

@@ -10,7 +10,7 @@
 //! view lists, so every call to the admin is refused typed `NotReady` for the life of the process.
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin. Its own
-//! process: the cell holds process-wide state (the parking flag).
+//! process: the cell holds process-wide state (the stop flag).
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;

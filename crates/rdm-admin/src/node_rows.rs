@@ -295,7 +295,7 @@ pub enum Claimed {
 /// it writes nothing, stopped, and the fabric-primary writes as acting primary (mesh-delete.md step
 /// 7, the final primary's own row Deleted in its node.delete).
 pub fn writes_for(t: &Topology, me_id: &NodeId, mesh: &str) -> bool {
-    t.is_mesh_primary(mesh, me_id) || (t.is_fabric_primary(me_id) && t.node_type_primary(mesh, NodeKind::NodeAdmin).filter(|p| !p.parked).is_none())
+    t.is_mesh_primary(mesh, me_id) || (t.is_fabric_primary(me_id) && t.node_type_primary(mesh, NodeKind::NodeAdmin).filter(|p| !p.stopped).is_none())
 }
 
 impl NodeRows {
@@ -592,7 +592,7 @@ impl NodeRows {
     }
 
     /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `path.name` (its `.old`
-    /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
+    /// path for a stopped predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
         self.deleted_as(record, operation, false).await

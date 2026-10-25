@@ -21,7 +21,7 @@ pub enum Finding {
     /// `reached`: the exact birth answered the tickle (node-tickle.md "Result"), direct or through a
     /// peer, and said what it is.
     Reached {
-        /// The birth's own answer (`Current`, `CurrentParked` or `Blocked`).
+        /// The birth's own answer (`Current`, `CurrentStopped` or `Blocked`).
         answer: rdm_core::status::StatusReply,
         /// The peer that carried the kick, by path.name; `None`: it answered the direct probe.
         carrier: Option<String>,

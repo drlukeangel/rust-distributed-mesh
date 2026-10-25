@@ -33,13 +33,13 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
 }
 
 /// One mesh: two node-admins (`fabric` holds the fabric seat) and three rpc nodes; `mesh1.rpc.1`
-/// and `mesh1.rpc.2` are stopped (Leaving, parked, the process alive).
+/// and `mesh1.rpc.2` are stopped (Leaving, the process alive).
 fn view(fabric: &str) -> Topology {
     let mut nodes = vec![node("mesh1.admin.1", fabric == "mesh1.admin.1", fabric == "mesh1.admin.1"), node("mesh1.admin.2", fabric == "mesh1.admin.2", fabric == "mesh1.admin.2"), node("mesh1.rpc.3", true, false)];
     for p in [STOPPED, YOUNG] {
         let mut n = node(p, false, false);
         n.status = NodeStatus::Leaving;
-        n.parked = true;
+        n.stopped = true;
         nodes.push(n);
     }
     Topology {
@@ -86,7 +86,7 @@ async fn plane(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &str) -> A
 fn desired(t: &Topology) -> FabricTopology {
     let mut live = t.clone();
     for n in live.nodes.iter_mut() {
-        n.parked = false;
+        n.stopped = false;
         n.status = NodeStatus::ReadyForTraffic;
     }
     FabricTopology::of_observed(&live)
@@ -227,7 +227,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     // After the scan: mesh1.rpc.1 is started.
     period(&cp, &builds, &old, false, now(&cp)).await;
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == old.0).for_each(|n| {
-        n.parked = false;
+        n.stopped = false;
         n.status = NodeStatus::ReadyForTraffic;
     });
     let refused = cp.collect_stopped(&candidates[0], TTL).await;
@@ -284,7 +284,7 @@ async fn a_stopped_birth_an_open_replace_recipe_references_is_skipped() {
 
 /// CONTRACT (§6.9 Age: "never an earlier stop before a later start"): `mesh1.rpc.1` was stopped ten
 /// ttl ago, started, and stopped again just now: its age is the latest stop, and it is young.
-/// `mesh1.rpc.2` was stopped ten ttl ago and started, and is parked with no stop receipt of its own
+/// `mesh1.rpc.2` was stopped ten ttl ago and started, and is stopped with no stop receipt of its own
 /// since: no receipt opens its current stopped period, so it is skipped by name, never expired.
 #[tokio::test]
 async fn an_earlier_stop_before_a_later_start_does_not_count() {

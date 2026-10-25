@@ -236,7 +236,7 @@ pub async fn run(w: Watch) {
             _ = seats_changed.changed() => {}
             _ = tokio::time::sleep(rdm_transport::topology::gossip_interval()) => {}
         }
-        // Held here while the admin is parked: its own wait, outside every lock.
+        // Held here while the admin is stopped: its own wait, outside every lock.
         turn = Some(w.gate.turn("seat-watch").await);
         // The instant this pass reads its view: a digest of a birth heard after it ends the silence the
         // pass's verdicts are read in.

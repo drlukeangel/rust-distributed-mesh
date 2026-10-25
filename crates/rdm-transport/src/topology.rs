@@ -521,7 +521,7 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the
-    /// stop call's own reply: the birth is parked (its process alive, its endpoint bound) and
+    /// stop call's own reply: the birth is stopped (its process alive, its endpoint bound) and
     /// gossips nothing. Every node drops it from its view until the birth itself rejoins. Same
     /// channel as `NodeDeleting`; carried in `Members.in_flight` while open.
     NodeStopped {
@@ -1317,11 +1317,11 @@ struct Channel {
     /// The channel's label (`mesh:<name>`, `backbone`) and topic, for the dial spans.
     label: String,
     topic: TopicId,
-    /// The topic's sender; `None` while the channel is parked (the topic is left).
+    /// The topic's sender; `None` while the channel is stopped (the topic is left).
     sender: Arc<tokio::sync::RwLock<Option<GossipSender>>>,
-    /// `true` while the channel is parked: the topic is left and nothing is sent or heard on it.
-    parked: Arc<tokio::sync::watch::Sender<bool>>,
-    /// Counts the times the receive task has finished leaving the topic for a park.
+    /// `true` while the channel is stopped: the topic is left and nothing is sent or heard on it.
+    stopped: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Counts the times the receive task has finished leaving the topic for a stop.
     left: Arc<tokio::sync::watch::Sender<u64>>,
     /// Every peer this channel was seeded with or asked to join.
     peers: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
@@ -1420,23 +1420,23 @@ impl Channel {
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { label: channel.to_string(), topic, sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, location_view, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default(), author, clock };
+        let me = Self { label: channel.to_string(), topic, sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), stopped: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, location_view, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default(), author, clock };
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
         let held_members = targets.clone();
         me.refeed(channel.to_string(), neighbors.clone(), targets);
         let (shared, known, gossip, fabric, channel, location_view) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), me.location_view.clone());
-        let (parked, left) = (me.parked.clone(), me.left.clone());
+        let (stopped, left) = (me.stopped.clone(), me.left.clone());
         let _ = node;
         tokio::spawn(async move {
             let mut receiver = Some(receiver);
             loop {
-                let mut parked_rx = parked.subscribe();
+                let mut stopped_rx = stopped.subscribe();
                 let reason = loop {
                     let ev = tokio::select! {
                         ev = receiver.as_mut().expect("the receiver is held while the channel is open").next() => ev,
-                        _ = parked_rx.wait_for(|p| *p) => break "parked".to_string(),
+                        _ = stopped_rx.wait_for(|p| *p) => break "stopped".to_string(),
                     };
                     let node = location_view.observer_name();
                     match &ev {
@@ -1543,15 +1543,15 @@ impl Channel {
                     }
                 };
                 neighbors.lock().unwrap().clear();
-                if reason == "parked" {
+                if reason == "stopped" {
                     // The topic is left: the sender and the receiver are both dropped, so this node
-                    // is no neighbour of anyone on it. It joins again only when the channel is unparked.
+                    // is no neighbour of anyone on it. It joins again only when the channel is started.
                     *shared.write().await = None;
                     drop(receiver.take());
                     left.send_modify(|n| *n += 1);
                     tracing::info_span!("rdm.mesh.connection.delete.via-channel-stopped", node = %location_view.observer_name(), channel = %channel)
-                        .in_scope(|| tracing::info!("the topic is left: the channel is parked"));
-                    let _ = parked_rx.wait_for(|p| !*p).await;
+                        .in_scope(|| tracing::info!("the topic is left: the channel is stopped"));
+                    let _ = stopped_rx.wait_for(|p| !*p).await;
                 }
                 // Back on its topic, a node dials the members of its mesh it holds (gossip.md §6's
                 // held members, their addresses known), with the peers it was seeded or repaired
@@ -1592,7 +1592,7 @@ impl Channel {
     }
 
     async fn broadcast(&self, f: &Frame) -> Result<()> {
-        let sender = self.sender.read().await.clone().ok_or_else(|| anyhow::anyhow!("the channel is parked: its topic is left, nothing is sent"))?;
+        let sender = self.sender.read().await.clone().ok_or_else(|| anyhow::anyhow!("the channel is stopped: its topic is left, nothing is sent"))?;
         let f = self.authored(f)?;
         let bytes = f.encode();
         anyhow::ensure!(bytes.len() <= MAX_FRAME, "complete gossip message {} exceeds MAX_FRAME {}", bytes.len(), MAX_FRAME);
@@ -1603,21 +1603,21 @@ impl Channel {
 
     /// Leave the topic: the sender and the receiver are dropped, so this node is a neighbour of no
     /// one on it, and nothing is sent or heard until [`Self::start`]. Resolves once the topic is
-    /// left. Parking a parked channel is a no-op.
+    /// left. Stopping a stopped channel is a no-op.
     async fn stop(&self) {
-        if *self.parked.borrow() {
+        if *self.stopped.borrow() {
             return;
         }
         let mut left = self.left.subscribe();
         left.borrow_and_update();
-        self.parked.send_replace(true);
+        self.stopped.send_replace(true);
         let _ = left.changed().await;
     }
 
     /// Join the topic again through the peers this channel knows.
     async fn start(&self) {
         let mut ready = self.sender.read().await.is_some();
-        self.parked.send_replace(false);
+        self.stopped.send_replace(false);
         while !ready {
             tokio::time::sleep(Duration::from_millis(5)).await;
             ready = self.sender.read().await.is_some();
@@ -2552,8 +2552,8 @@ impl View {
         .in_scope(|| tracing::info!("a peer mesh's member state held from what this node installed: routing follows it"));
     }
 
-    /// A peer mesh's member this node now holds parked, from its mesh primary's `NodeStopped` overlay
-    /// (gossip.md, node-stopped lifecycle overlay): Leaving and parked, not routable. `channel` is
+    /// A peer mesh's member this node now holds stopped, from its mesh primary's `NodeStopped` overlay
+    /// (gossip.md, node-stopped lifecycle overlay): Leaving and stopped, not routable. `channel` is
     /// where the overlay arrived: the frame itself, or the aggregate's `in_flight`.
     fn note_member_stopped(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::MemberStatus>, channel: &str) {
         if op.name.mesh == self.mesh {
@@ -2569,11 +2569,11 @@ impl View {
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             channel,
             routable = self.digest_view.routable(op.node_id.as_str()),
-            parked = true,
+            stopped = true,
             operation = %op.operation,
             build_id = %op.build_id,
         )
-        .in_scope(|| tracing::info!("a peer mesh's member is parked by its mesh primary's NodeStopped: Leaving, not routable"));
+        .in_scope(|| tracing::info!("a peer mesh's member is stopped by its mesh primary's NodeStopped: Leaving, not routable"));
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
@@ -3137,7 +3137,7 @@ impl TopologyView {
     }
 
     /// The top-up of [`Self::spawn_top_up`] as a task for the caller to run: a node-admin runs it
-    /// behind its park gate, so a parked admin tops up nothing and a gap signalled while it was parked
+    /// behind its stop gate, so a stopped admin tops up nothing and a gap signalled while it was stopped
     /// is topped up once it runs again.
     pub fn top_ups(&self, fetch: TopUpFetch) -> impl std::future::Future<Output = ()> + Send + 'static {
         let me = self.clone();
@@ -3217,7 +3217,7 @@ impl TopologyView {
         tokio::spawn(async move {
             let mut last_heartbeat: Option<Instant> = None;
             loop {
-                if !*me.mesh.parked.borrow() {
+                if !*me.mesh.stopped.borrow() {
                     let d = digest();
                     let _ = me.publish(&d).await;
                     if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
@@ -5519,7 +5519,7 @@ impl DigestView {
     }
 
     /// The silence clock of every member held, restarted at `now`: a node back on its topic after a
-    /// park heard nothing while it was off it, so no member's silence is measured from before.
+    /// stop heard nothing while it was off it, so no member's silence is measured from before.
     pub fn restart_silence(&self) {
         let now = Instant::now();
         for (_, at, _) in self.inner.lock().unwrap().values_mut() {
@@ -5649,7 +5649,7 @@ impl DigestView {
     }
 
     /// Depart every remaining birth of `mesh` this digest view still holds (in the view, projected or
-    /// parked by its stop), so a deleted mesh's final aggregate or `MeshLeft` leaves no crashed
+    /// stopped by its stop), so a deleted mesh's final aggregate or `MeshLeft` leaves no crashed
     /// predecessor birth of the mesh in the active topology and holds it departed for the retention.
     pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, attempt: u32, at_rafka_ms: u64) {
         let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName)> = BTreeMap::new();
@@ -6743,7 +6743,7 @@ mod tests {
     }
 
     /// CONTRACT: a stop is an open overlay of its mesh's aggregate (`Members.in_flight`), recognised
-    /// by its operation, so a node that never heard the frame reads the node as parked from the aggregate.
+    /// by its operation, so a node that never heard the frame reads the node as stopped from the aggregate.
     #[test]
     fn a_stop_overlay_rides_the_aggregate_and_is_told_from_a_restart_by_its_operation() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -7126,7 +7126,7 @@ mod tests {
     }
 
     /// CONTRACT (i143 R-J1 follow-up, ops-naming): a member whose restart is open is held through
-    /// it, but it is a parked birth that answers nobody and gossips nothing: the repair refeed
+    /// it, but it is a stopped birth that answers nobody and gossips nothing: the repair refeed
     /// never hands its address to the channel again, however long the member has been silent. Its
     /// heartbeat closes nothing; node.started of the same birth closes the restart and the member is a
     /// target again at its address.

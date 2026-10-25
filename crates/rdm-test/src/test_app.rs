@@ -66,7 +66,7 @@ pub enum Mode {
     Fail(String),
 }
 
-/// The fault cut a `hold` application parks its answers at.
+/// The fault cut a `hold` application holds its answers at.
 pub const STATE_SYNC_CUT: &str = "state-sync";
 
 impl Mode {

@@ -44,7 +44,7 @@ fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<
 
 #[test]
 fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends() {
-    // The stop parks the process (its parking flag is process-wide): the cell runs in a process of its own.
+    // The stop leaves the process stopped (its stop flag is process-wide): the cell runs in a process of its own.
     if crate::own_process::delegated(module_path!(), "a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends") {
         return;
     }
@@ -277,7 +277,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
 /// `mesh1.rpc.1`, the name the node gave up, or an entry written by the join itself.
 #[test]
 fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds() {
-    // The stop parks the process (its parking flag is process-wide): the cell runs in a process of its own.
+    // The stop leaves the process stopped (its stop flag is process-wide): the cell runs in a process of its own.
     if crate::own_process::delegated(module_path!(), "a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds") {
         return;
     }

@@ -51,7 +51,7 @@ pub struct Deployed {
     /// first start, whose name is the create spec's.
     pub last_accepted_name: Option<PathName>,
     /// The authority holds this birth: the deployment is a later start of a node it admitted
-    /// before (a parked or restarted birth), whose join is reconciled to its row and handed its
+    /// before (a stopped or restarted birth), whose join is reconciled to its row and handed its
     /// row's config; `false` at a first start, admitted under its create spec's name whatever row
     /// stands at that path.name (R-JN1 item 6), and handed its row's config when that row is its own
     /// create's claim. Set by the one that registers the deployment, never

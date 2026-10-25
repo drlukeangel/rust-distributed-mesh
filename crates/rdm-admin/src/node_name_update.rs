@@ -86,7 +86,7 @@ struct Admission {
 /// held, then its `node.mesh.left` (`left`). A stopped node is never renamed: it is renamed live, after
 /// its connections and its mesh, and stopped after (node-replace.md).
 fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool) -> Admission {
-    if held.parked {
+    if held.stopped {
         return Admission {
             labels: ("Stopped".into(), "stopped", "stopped"),
             quiet: Err((held.status, vec![], "is stopped, and a stopped node is never renamed: a node is renamed live, after its node.connections.delete { All } and its node.mesh.leave, and stopped after".into())),

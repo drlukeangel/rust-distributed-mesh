@@ -337,4 +337,4 @@ Every `pub const` string in RDM's non-test source whose value is a serde name or
 | const | value | file | doc |
 |---|---|---|---|
 | `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/topology.rs` | The mesh status a `Frame::MeshStatus` carries for a ready-for-traffic mesh (states.md: a mesh is |
-| `STATE_SYNC_CUT` | `state-sync` | `crates/rdm-test/src/test_app.rs` | The fault cut a `hold` application parks its answers at. |
+| `STATE_SYNC_CUT` | `state-sync` | `crates/rdm-test/src/test_app.rs` | The fault cut a `hold` application holds its answers at. |

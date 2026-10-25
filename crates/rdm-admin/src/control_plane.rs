@@ -429,7 +429,7 @@ impl ControlPlane {
     /// the admission before anything is compiled or written (node-identity-and-state.md §6.9 Recheck).
     pub(crate) async fn submit_checked(&self, span: tracing::Span, route: &'static str, change: TopologyChange, collect: Option<&crate::stopped_gc::Candidate>) -> Result<Opened, Refusal> {
         // The span is entered by the future on each poll, never by a guard held across an await
-        // (a guard stays entered on the worker while the task is parked). A refusal is reported
+        // (a guard stays entered on the worker while the task is held). A refusal is reported
         // beside the request span, in the caller's span.
         let outer = tracing::Span::current();
         async {
@@ -485,7 +485,7 @@ impl ControlPlane {
             // An unheard birth is its mesh-primary's to recover on node investigation's verdict
             // (node-recovery.md step 3): it is refused `node-not-live` by name.
             if let TopologyChange::RemoveNode { node } = &change {
-                if let Some(n) = observed.node(node).filter(|n| !n.status.is_live() && !n.parked) {
+                if let Some(n) = observed.node(node).filter(|n| !n.status.is_live() && !n.stopped) {
                     return Err(not_live(&outer, route, node, n.status, "a delete needs a live node or a stopped one"));
                 }
             }
@@ -757,11 +757,11 @@ impl ControlPlane {
             // predecessor renamed `<name>.old` live and stopped there): a stopped `.old` node is started by
             // its row's name (rollback step 2), and its birth is fenced below in the view, which lists it at
             // its row's name.
-            let parked_old = kind == ActionKind::Delete && path.old;
+            let stopped_old = kind == ActionKind::Delete && path.old;
             // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
             // the mesh, and only a delete acts on it (mesh-delete.md step 7).
             let deleted_mesh = kind == ActionKind::Delete && !path.old && !current.topology.meshes.contains_key(&path.mesh) && self.of_deleted_mesh(&path).await;
-            if (kind == ActionKind::Delete && !(path.old || deleted_mesh)) || (!parked_old && !deleted_mesh && !current.topology.contains(&path.base())) {
+            if (kind == ActionKind::Delete && !(path.old || deleted_mesh)) || (!stopped_old && !deleted_mesh && !current.topology.contains(&path.base())) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -776,7 +776,7 @@ impl ControlPlane {
                 let held = t.node(&path).cloned();
                 let Some(n) = held else {
                     let me = self.held_name().await;
-                    let why = if parked_old {
+                    let why = if stopped_old {
                         format!("{me}: this fabric-primary's view holds no stopped birth at {path} (no node.name.update renamed one to it, or its Deleted row is written)")
                     } else {
                         self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string())
@@ -789,19 +789,19 @@ impl ControlPlane {
                     });
                     return Err(Refusal::Reject(reject));
                 };
-                // A start is the transition out of Leaving, and only for a parked process; every other action needs a live node.
-                let startable = kind == ActionKind::Start && n.parked;
-                // A delete acts on the parked predecessor, or on one whose exit is already proven, or on
+                // A start is the transition out of Leaving, and only for a stopped process; every other action needs a live node.
+                let startable = kind == ActionKind::Start && n.stopped;
+                // A delete acts on the stopped predecessor, or on one whose exit is already proven, or on
                 // the last admin of a deleted mesh, live or stopped: its node.delete stops it first.
-                let deletable = kind == ActionKind::Delete && (n.parked || n.status == crate::model::NodeStatus::Dead || deleted_mesh);
+                let deletable = kind == ActionKind::Delete && (n.stopped || n.status == crate::model::NodeStatus::Dead || deleted_mesh);
                 let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
                 if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !n.status.is_live()) {
                     let reason = match kind {
                         ActionKind::Restart => restart_refusal(&current, &path, &n),
                         ActionKind::DeleteConnections => "node.connections.delete needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
-                        ActionKind::Start => "a start needs a parked node",
-                        ActionKind::Delete => "a delete of a .old path needs the parked predecessor or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
+                        ActionKind::Start => "a start needs a stopped node",
+                        ActionKind::Delete => "a delete of a .old path needs the stopped predecessor or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
                     };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
@@ -1228,12 +1228,12 @@ fn created_without_executable(current: &crate::accepted::FabricTopology, next: &
 /// Why a fresh `node.restart` of the birth `n` at `path`, which is not live, is refused `node-not-live`
 /// (R-PV1, the fresh-request versus resumption rule): a birth whose own restart is open in `current`
 /// is resumed by the caller's resubmit of that Build (build.create with its existing build_id), which
-/// continues from its receipts; a stopped (parked) birth is started by node.start; a birth in any
+/// continues from its receipts; a stopped birth is started by node.start; a birth in any
 /// other status needs to be live again.
 fn restart_refusal(current: &crate::build_state::BuildProjection, path: &PathName, n: &crate::model::Node) -> &'static str {
     if n.incarnation_id.as_ref().is_some_and(|inc| open_restart(current, path, inc).is_some()) {
         "a restart of this birth is open: the caller resubmits its Build, which resumes it from its receipts"
-    } else if n.parked {
+    } else if n.stopped {
         "a fresh restart of a stopped node is refused: node.start starts it"
     } else {
         "a restart needs a live node"
@@ -1476,9 +1476,9 @@ mod tests {
     /// CONTRACT (R-PV1, the fresh-request versus resumption rule; node-rpc-envelope.md build.create:
     /// "existing build_id for resubmission"): attempt 2 of a Build carried the restart of mesh1.rpc.2's
     /// birth and failed after its stop completed (StopNode and AwaitNodeLeft Complete, StartNode
-    /// Failed). That restart is open: a fresh node.restart of the parked birth is refused naming the
+    /// Failed). That restart is open: a fresh node.restart of the stopped birth is refused naming the
     /// resubmit. The resubmit's attempt 3 carries the same restart; once it receipts `Complete` of
-    /// `node.restart:mesh1.rpc.2` nothing is open, and a fresh restart of the birth parked again (by a
+    /// `node.restart:mesh1.rpc.2` nothing is open, and a fresh restart of the birth stopped again (by a
     /// node.stop) is refused naming node.start. Must NOT happen: a restart of another birth at the
     /// path read as open, or an open restart read after a later action on the path.
     #[test]
@@ -1500,13 +1500,13 @@ mod tests {
         }
         facts.push(ended(2, AttemptOutcome::Failed { reason: "StartNode".into() , code: rdm_core::outcome::Code::FailedPrecondition }));
         let current = |facts: &[BuildFact]| fold(facts).remove(&build_id).expect("the Build folds");
-        let mut parked = Node::allocated(path.clone());
-        parked.incarnation_id = Some(inc.clone());
-        parked.status = NodeStatus::Leaving;
-        parked.parked = true;
+        let mut stopped = Node::allocated(path.clone());
+        stopped.incarnation_id = Some(inc.clone());
+        stopped.status = NodeStatus::Leaving;
+        stopped.stopped = true;
         assert_eq!(open_restart(&current(&facts), &path, &inc), Some(2), "the failed restart is open");
         assert_eq!(open_restart(&current(&facts), &path, &crate::model::IncarnationId::mint()), None, "a restart of another birth at the path is not this one's");
-        assert_eq!(restart_refusal(&current(&facts), &path, &parked), "a restart of this birth is open: the caller resubmits its Build, which resumes it from its receipts");
+        assert_eq!(restart_refusal(&current(&facts), &path, &stopped), "a restart of this birth is open: the caller resubmits its Build, which resumes it from its receipts");
         // The resubmit claims attempt 3, which carries the restart, and completes it.
         facts.push(claim(3));
         assert_eq!(open_restart(&current(&facts), &path, &inc), Some(3), "the resubmit's attempt carries the open restart");
@@ -1519,9 +1519,9 @@ mod tests {
         facts.push(opened(4, AttemptAction::Stop { path: path.clone(), from_incarnation: inc.clone() }));
         facts.push(claim(4));
         assert_eq!(open_restart(&current(&facts), &path, &inc), None, "a later action on the path closes nothing open");
-        assert_eq!(restart_refusal(&current(&facts), &path, &parked), "a fresh restart of a stopped node is refused: node.start starts it");
-        let mut silent = parked.clone();
-        silent.parked = false;
+        assert_eq!(restart_refusal(&current(&facts), &path, &stopped), "a fresh restart of a stopped node is refused: node.start starts it");
+        let mut silent = stopped.clone();
+        silent.stopped = false;
         silent.status = NodeStatus::PendingReconnect;
         assert_eq!(restart_refusal(&current(&facts), &path, &silent), "a restart needs a live node");
     }

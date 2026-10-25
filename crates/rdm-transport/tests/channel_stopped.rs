@@ -1,10 +1,10 @@
-//! A node that parks leaves its mesh topic and a node that unparks joins it again.
+//! A node that stops leaves its mesh topic and a node that starts joins it again.
 //!
-//! CONTRACT: parking a topology view drops its gossip sender and receiver, so no one counts it as a
+//! CONTRACT: stopping a topology view drops its gossip sender and receiver, so no one counts it as a
 //! neighbour and a publish on it is refused by name; nothing it would have said reaches the others.
-//! Unparking joins the topic again through the peers it knows, its neighbours return, and its digest
-//! sequence continues from where it stopped. What must NOT happen: a parked node still counted as a
-//! neighbour, a frame leaving a parked node, or an unpark that leaves the node deaf.
+//! Starting joins the topic again through the peers it knows, its neighbours return, and its digest
+//! sequence continues from where it stopped. What must NOT happen: a stopped node still counted as a
+//! neighbour, a frame leaving a stopped node, or an start that leaves the node deaf.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -82,16 +82,16 @@ async fn a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_star
     until("A hears B", || ma.digest_view.get(db.node.node_id.as_str()).is_some()).await;
     let seq_before = ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq;
 
-    // B parks: A no longer counts it a neighbour, and B refuses to send, by name.
+    // B stops: A no longer counts it a neighbour, and B refuses to send, by name.
     mb.stop().await;
     until("A has lost its neighbour", || ma.neighbours() == 0).await;
-    assert_eq!(mb.neighbours(), 0, "a parked node holds no neighbour");
-    let refused = mb.publish(&db).await.expect_err("a publish on a parked channel is refused");
-    assert!(refused.to_string().contains("parked"), "the refusal names why: {refused}");
+    assert_eq!(mb.neighbours(), 0, "a stopped node holds no neighbour");
+    let refused = mb.publish(&db).await.expect_err("a publish on a stopped channel is refused");
+    assert!(refused.to_string().contains("stopped"), "the refusal names why: {refused}");
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was parked");
+    assert_eq!(ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was stopped");
 
-    // B unparks: the topic is joined again, the neighbours return and B's digest sequence continued.
+    // B starts: the topic is joined again, the neighbours return and B's digest sequence continued.
     mb.start().await;
     until("A and B are neighbours again", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
     mb.publish(&db).await.unwrap();

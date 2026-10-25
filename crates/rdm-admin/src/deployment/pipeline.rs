@@ -157,7 +157,7 @@ impl CreateStep {
 /// The step a start adds to the wait for ready it shares with a create.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartStep {
-    /// `start-node` to the parked birth: the reply is `Started` once it has rejoined as itself.
+    /// `start-node` to the stopped birth: the reply is `Started` once it has rejoined as itself.
     StartNode,
 }
 
@@ -610,7 +610,7 @@ pub enum CommandAdmission {
     },
     /// The birth answered `start-node` with `Started`: it rejoined as itself.
     Started {},
-    /// The birth answered `start-node` with `StartFailed`: it is parked still, and nothing after
+    /// The birth answered `start-node` with `StartFailed`: it is stopped still, and nothing after
     /// `step` ran.
     StartFailed {
         /// The step that failed.
@@ -805,7 +805,7 @@ pub trait LifecycleEvents: Send + Sync {
     async fn deleted(&self, op: &LifecycleOp);
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
-    /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
+    /// The exact birth answered `stop-node` with `stopped`: it is stopped. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
     async fn stopped(&self, op: &LifecycleOp);
     /// The stopped birth answered `start-node` with `Started`: this executor took its `node.joined`
@@ -971,7 +971,7 @@ pub struct RetireRequest {
     pub unreached: bool,
 }
 
-/// A request to start (or restart) a parked birth: the same process rejoins as itself.
+/// A request to start (or restart) a stopped birth: the same process rejoins as itself.
 #[derive(Debug, Clone)]
 pub struct StartRequest {
     /// The Build.
@@ -986,14 +986,14 @@ pub struct StartRequest {
     pub deployed: Deployed,
 }
 
-/// What follows a stop's `stopped`: the process stays parked (a standalone stop, a restart), or the
+/// What follows a stop's `stopped`: the process stays stopped (a standalone stop, a restart), or the
 /// provider ends it and proves the exit (a delete, a mesh leave). `publish_stopped` is
 /// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: every whole node.stop
 /// does (node-stop.md step 5), a delete's and a mesh leave member's included; a restart
 /// holds the birth with `NodeRestarting` instead (node-restart.md).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StopEnd {
-    Park { publish_stopped: bool },
+    Stop { publish_stopped: bool },
     Terminate { publish_stopped: bool },
 }
 
@@ -1999,7 +1999,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// A standalone stop (node-stop.md): `node.stop:<path>` is the stop-node command, whose reply is the
-    /// exact birth's `stopped`: it drained, cut its mesh connections and is parked, its process alive.
+    /// exact birth's `stopped`: it drained, cut its mesh connections and is stopped, its process alive.
     /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth and the
     /// rafka-time it stopped at. No
     /// runtime exit is asked and no departure is published.
@@ -2010,7 +2010,7 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.stop:{name}")).await?;
             let mut node = req.node.clone();
-            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Stop { publish_stopped: true }).await?;
             // The `Complete` receipt opens the birth's stopped period: it commits the stop's
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
             // garbage collector ages it from (node-identity-and-state.md §6.9 Age).
@@ -2023,7 +2023,7 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A standalone start (node-start.md): `node.start:<path>` is the start-node command to the parked
+    /// A standalone start (node-start.md): `node.start:<path>` is the start-node command to the stopped
     /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
     pub async fn start(&self, req: &StartRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
@@ -2042,7 +2042,7 @@ impl DeploymentPipeline<'_> {
 
     /// A restart (node-restart.md): ONE operation, `node.restart:<path>`, on the live process, which
     /// never exits. Its `NodeRestarting` pre-event holds the birth through the stop that follows; the
-    /// birth's seats move (a node-admin), it drains and stops and parks, its process alive; the same
+    /// birth's seats move (a node-admin), it drains and stops, and stays stopped, its process alive; the same
     /// process starts again, the same node id, incarnation, endpoint key and port. The stop and the
     /// start are the stop and start steps every stop and start runs, here as steps of this one
     /// operation, and its one `Complete`, after the start, ends the restart.
@@ -2066,17 +2066,17 @@ impl DeploymentPipeline<'_> {
             };
             let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.restarting(&op).await;
-            if node.parked {
-                // The birth is parked: this restart's own earlier attempt stopped it and ended before its
-                // start completed (only this restart's attempts carry a restart of a parked birth: the
+            if node.stopped {
+                // The birth is stopped: this restart's own earlier attempt stopped it and ended before its
+                // start completed (only this restart's attempts carry a restart of a stopped birth: the
                 // door refuses a fresh one, `node-not-live`). Its stop is done in the world; the run
                 // resumes at the start (R-PV1: "`node.start` when start is the pending step").
                 tracing::info_span!("rdm.node_admin.node.update.via-restart-resumed", build_id = %req.build_id.log(), attempt = req.attempt, node = %name, node_id = %node.node_id, incarnation_id = %op.incarnation.as_str(), resumes_at = StartStep::StartNode.name())
-                    .in_scope(|| tracing::info!("the restart's birth is parked by its own stop: the run resumes at its start"));
+                    .in_scope(|| tracing::info!("the restart's birth is stopped by its own stop: the run resumes at its start"));
             } else {
-                // The stop of the live process: it parks and stays, and its `stopped` is the stop's
+                // The stop of the live process: it stops and stays, and its `stopped` is the stop's
                 // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
-                self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
+                self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Stop { publish_stopped: false }).await?;
             }
             // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
@@ -2092,7 +2092,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The start leg: the admin holds what it deployed for the birth again (its `JoinNode` is
-    /// verified against it), `start-node` goes to the parked birth and its reply is `Started`, then
+    /// verified against it), `start-node` goes to the stopped birth and its reply is `Started`, then
     /// the wait for the birth to report ready.
     async fn start_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed) -> Result<(), PipelineError> {
         self.start_steps_as(run, node, handle, deployed, [StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name()]).await
@@ -2161,7 +2161,7 @@ impl DeploymentPipeline<'_> {
     /// ```
     ///
     /// Its stop steps are done ("For a crashed process those stop steps are already done", and a
-    /// parked one already sent its `stopped`): it is sent no command. Only the provider's matching
+    /// stopped one already sent its `stopped`): it is sent no command. Only the provider's matching
     /// Exited is the proof, and the executor publishes NodeDeleted from it. Storage is kept: "It
     /// releases node.id and name, not storage". The lifecycle events name the birth as its own
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
@@ -2264,7 +2264,7 @@ impl DeploymentPipeline<'_> {
             // reply or receipt is fabricated; `TerminateRuntime` first when its runtime runs at the
             // step's instant, and nothing waits for a proof of termination.
             self.terminate_step_when(&mut run, &node, handle, unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
-        } else if node.parked {
+        } else if node.stopped {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
@@ -2339,7 +2339,7 @@ impl DeploymentPipeline<'_> {
             };
             let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.deleting(&op).await;
-            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Park { publish_stopped: true }).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Stop { publish_stopped: true }).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
             let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&node, op.clone(), false)).await?;
             self.lifecycle.deleted(&op).await;
@@ -2399,12 +2399,12 @@ impl DeploymentPipeline<'_> {
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
     /// drain), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
-    /// `NodeStopped` from that matching reply, then, by `end`, the parked process or the provider's
+    /// `NodeStopped` from that matching reply, then, by `end`, the stopped process or the provider's
     /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `proof` says
     /// what the wait step must have seen to complete (a standalone
     /// stop fails it by name unless stop-node was admitted and the
     /// birth's `stopped` reply received).
-    /// `end` says what follows: the process parks, or the provider ends it.
+    /// `end` says what follows: the process stops, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
         self.stop_steps_as(run, node, handle, proof, end, [RetireStep::StopNode.name(), RetireStep::AwaitNodeLeft.name()]).await
     }
@@ -2414,8 +2414,8 @@ impl DeploymentPipeline<'_> {
     async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
-        let publish_stopped = matches!(end, StopEnd::Park { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
-        // `stop-node` is held until the birth is parked, and its reply is `stopped`: the birth drained,
+        let publish_stopped = matches!(end, StopEnd::Stop { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
+        // `stop-node` is held until the birth is stopped, and its reply is `stopped`: the birth drained,
         // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
         // The mesh-primary sets the birth stopping on the stop call's admission and never before it
         // (states.md "Who sets each state"): a command the birth never held sets nothing.
@@ -2465,7 +2465,7 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         match end {
-            StopEnd::Park { .. } => Ok(None),
+            StopEnd::Stop { .. } => Ok(None),
             StopEnd::Terminate { .. } => Ok(Some(self.terminate_step(run, node, handle).await?)),
         }
     }
@@ -2914,7 +2914,7 @@ mod tests {
     /// CONTRACT (deployment-provider.md §2.5: "An explicit `node.delete` of an OS-stopped birth stays
     /// available: it skips the Node RPC stop by name (a suspended process answers no call), runs
     /// `TerminateRuntime` on the exact handle, takes the exit proof and continues"; node-delete.md
-    /// "OS-suspended target"): the delete of a live (not parked) birth whose provider reads its exact
+    /// "OS-suspended target"): the delete of a live (not stopped) birth whose provider reads its exact
     /// runtime `OsStopped` at the delete's instant sends it no command; the inspection is spanned
     /// (`caller = delete`, `os-stopped`), the skip is named (`rdm.node_admin.node.delete.via-os-stopped`),
     /// and the run's receipts are NodeDeleting, TerminateRuntime, NodeDeleted,
@@ -3043,15 +3043,15 @@ mod tests {
 
     /// CONTRACT (R-PV1: "The pending lifecycle action is resumed per its receipts: `node.start` when
     /// start is the pending step (the node did stop)"; node-restart.md steps 2-4): a restart whose
-    /// earlier attempt parked the birth (its stop completed; its start failed) is resumed by its next
-    /// attempt at the start: the birth is parked, so `start-node` is the one command sent, and the run's
+    /// earlier attempt stopped the birth (its stop completed; its start failed) is resumed by its next
+    /// attempt at the start: the birth is stopped, so `start-node` is the one command sent, and the run's
     /// receipts are NodeRestarting, StartNode, WaitForNodeReady, Complete. Must NOT happen: a
-    /// `stop-node` sent again to the parked birth, a StopNode or AwaitNodeLeft receipt in the resumed run.
+    /// `stop-node` sent again to the stopped birth, a StopNode or AwaitNodeLeft receipt in the resumed run.
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_restart_of_a_birth_its_own_restart_stopped_resumes_at_start() {
         let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default(), refuse: None };
-        let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its parked birth no stop".into() , code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
+        let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its stopped birth no stop".into() , code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;
         let template = cell_template("restart-resumed");
@@ -3059,7 +3059,7 @@ mod tests {
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
         node.status = NodeStatus::Leaving;
-        node.parked = true;
+        node.stopped = true;
         node.incarnation_id = Some(IncarnationId::mint());
         node.endpoint_id = Some(EndpointId("key-mesh1.rpc.1".into()));
         let handle = process_handle();
@@ -3077,7 +3077,7 @@ mod tests {
         };
         let req = StartRequest { build_id: build_id.clone(), attempt: 2, node, handle, deployed };
         pipeline.restart(&req).await.expect("the resumed restart completes");
-        assert_eq!(*observer.sent.lock().unwrap(), vec![crate::node_commands::NodeCommand::Start], "start-node is the one command the parked birth is sent");
+        assert_eq!(*observer.sent.lock().unwrap(), vec![crate::node_commands::NodeCommand::Start], "start-node is the one command the stopped birth is sent");
         let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().filter(|r| r.attempt == 2).map(|r| r.step).collect();
         assert_eq!(steps, ["NodeRestarting", "StartNode", "WaitForNodeReady", "Complete"].map(String::from).to_vec(), "the resumed restart begins at its start");
     }

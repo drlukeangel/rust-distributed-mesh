@@ -289,9 +289,9 @@ A Status call.
 | 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose connections are cut. |
 | 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 21.2 | `scope` | `ConnectionScope` → [`ConnectionScope`](#t-rdm_core-status-ConnectionScope) |  |  | Which connections. |
-| 22 | **`GetNodes`** |  |  | `op() = "node.get"` | `node.get` (node-rpc-envelope.md "Typed objects mapped to wire and execution owners"): a |
+| 22 | **`GetNodes`** |  |  |  | The node reads (node-rpc-envelope.md "Typed objects mapped to wire and execution owners", |
 | 22.0 | `select` | `NodeSelect` → [`NodeSelect`](#t-rdm_core-status-NodeSelect) |  |  | Which nodes. |
-| 23 | **`GetMeshes`** |  |  | `op() = "mesh.get"` | `mesh.get`: a caller asks a node-admin for one mesh its view holds, by the mesh's minted id |
+| 23 | **`GetMeshes`** |  |  | `op() = "mesh.get"`<br>`op() = "fabric.meshes.get"` | `mesh.get { name }` (`Some`): a caller asks a node-admin for one mesh its view holds, by the |
 | 23.0 | `mesh` | `Option<String>` |  |  | The mesh's minted id or name; `None` for every mesh of the fabric. |
 | 24 | **`GetFabric`** |  |  | `op() = "fabric.get"` | `fabric.get`: a caller asks a node-admin for the fabric as its view holds it, answered |
 | 25 | **`GetConnections`** |  |  | `op() = "node.connections.get"` | `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held |
@@ -375,11 +375,11 @@ The typed result of a Status call.
 | 16.2 | `reported` | `String` |  |  | What the completion reported. |
 | 17 | **`Stopped`** |  |  | `name() = "stopped"` | The reply of a `StopNode` call, sent when the stop is done (`node.stopped`): the birth's |
 | 17.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | What the stop's `node.connections.delete { All }` established. |
-| 18 | **`Started`** |  |  | `name() = "started"` | The reply of a `StartNode` call: the parked birth rejoined as itself. |
+| 18 | **`Started`** |  |  | `name() = "started"` | The reply of a `StartNode` call: the stopped birth rejoined as itself. |
 | 19 | **`StartFailed`** |  |  | `name() = "start-failed"` | The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran. |
 | 19.0 | `step` | `String` |  |  | The step that failed: `node.join`, `node.topology` or `node.before-ready`. |
 | 19.1 | `reason` | `String` |  |  | Why it failed. |
-| 20 | **`CurrentParked`** |  |  | `name() = "current-parked"` | The exact birth's own answer to a probe while it is parked: `Leaving`, its process alive and |
+| 20 | **`CurrentStopped`** |  |  | `name() = "current-stopped"` | The exact birth's own answer to a probe while it is stopped: `Leaving`, its process alive and |
 | 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
 | 20.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
 | 21 | **`ConfigUpdated`** |  |  | `name() = "config-updated"` | The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact |
@@ -1031,7 +1031,7 @@ A command to the exact birth it names.
 | 1.2 | `build_id` | `String` |  |  | The Build that owns this operation. |
 | 1.3 | `attempt` | `u32` |  |  | Its executing attempt. |
 | 1.4 | `operation` | `String` |  |  | The operation's declared identity. |
-| 2 | **`StartNode`** |  |  | `op() = "start-node"` | Start this parked exact birth, reporting join and readiness on this stream (Q47). |
+| 2 | **`StartNode`** |  |  | `op() = "start-node"` | Start this stopped exact birth, reporting join and readiness on this stream (Q47). |
 | 2.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The commanded node. |
 | 2.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its exact incarnation. |
 | 2.2 | `build_id` | `String` |  |  | The Build that owns this operation. |
@@ -1077,7 +1077,7 @@ One reply frame of a node command's stream. Positional order is part of the wire
 | 10.0 | `reason` | `String` |  |  | Why, by name. |
 | 11 | **`StopConnectionsDeleted`** |  |  | `name() = "stop-connections-deleted"` | The stop's whole All closure; progress, never the stop's terminal. |
 | 11.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | The closure's Established or Deadline evidence. |
-| 12 | **`NodeStopped`** |  |  | `name() = "node-stopped"` | The stop's transport cut is complete; the live process is parked. |
+| 12 | **`NodeStopped`** |  |  | `name() = "node-stopped"` | The stop's transport cut is complete; the live process is stopped. |
 | 13 | **`NodeJoined`** |  |  | `name() = "node-joined"` | The accepted join and channel join completed; start gates remain. |
 | 14 | **`NodeStarted`** |  |  | `name() = "node-started"` | Every start gate completed; the receiver records ReadyForTraffic. |
 | 15 | **`Failed`** |  |  | `name() = "failed"` | An accepted command failed at this named step. |
@@ -1680,7 +1680,7 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 7.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 8 | **`Stop`** |  |  | Stop the live birth at `node` with no implicit drain and no departure. |
 | 8.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
-| 9 | **`Start`** |  |  | Start the parked birth at `node`: the same process rejoins as itself. |
+| 9 | **`Start`** |  |  | Start the stopped birth at `node`: the same process rejoins as itself. |
 | 9.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 10 | **`Recover`** |  |  | Recover the node at `node` whose exact birth `(node_id, incarnation)` its mesh-primary proved |
 | 10.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
@@ -2394,19 +2394,22 @@ One process's CPU and RAM, as its digest carries them: what is used and the ceil
 
 ### `NodeSelect`
 
-`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 5 variants · rdm-core
 
-Which nodes `node.get` selects. Positional order is part of the wire schema.
+Which nodes a `GetNodes` selects (Q165). Positional order is part of the wire schema.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`Id`** |  |  | `name() = "id"` | The node with this minted id. |
+| 0 | **`Id`** |  |  | `name() = "id"`<br>`read() = "node.get"` | The node with this minted id (`node.get { id }`). |
 | 0.0 | `0` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  |  |
-| 1 | **`Mesh`** |  |  | `name() = "mesh"` | Every node of the mesh with this name. |
+| 1 | **`Mesh`** |  |  | `name() = "mesh"`<br>`read() = "mesh.nodes.get"` | Every node of the mesh with this name (`mesh.nodes.get`, no filter). |
 | 1.0 | `0` | `String` |  |  |  |
-| 2 | **`Tags`** |  |  | `name() = "tags"` | Every node carrying the tag labels the filter names (R-TG1), read through the node store's |
+| 2 | **`Tags`** |  |  | `name() = "tags"`<br>`read() = "fabric.nodes.get"` | Every node of the fabric carrying the tag labels the filter names (R-TG1; |
 | 2.0 | `0` | `TagFilter` → [`TagFilter`](#t-rdm_core-status-TagFilter) |  |  |  |
-| 3 | **`Fabric`** |  |  | `name() = "fabric"` | Every node of every mesh (`fabric.nodes.get`): the mesh selector's answer over every mesh, |
+| 3 | **`Fabric`** |  |  | `name() = "fabric"`<br>`read() = "fabric.nodes.get"` | Every node of every mesh (`fabric.nodes.get`, no filter): the mesh selector's answer over |
+| 4 | **`MeshTags`** |  |  | `name() = "mesh-tags"`<br>`read() = "mesh.nodes.get"` | Every node of the mesh with this name carrying the tag labels the filter names |
+| 4.0 | `0` | `String` |  |  |  |
+| 4.1 | `1` | `TagFilter` → [`TagFilter`](#t-rdm_core-status-TagFilter) |  |  |  |
 
 <a id="t-rdm_core-digest-NodeState"></a>
 
@@ -2487,7 +2490,7 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 13 | `transport_addr` | `Option<std::net::SocketAddr>` |  | The address the node's mesh transport is bound to. |
 | 14 | `listeners` | `Vec<(String, std::net::SocketAddr)>` | `default` | The named listeners the node serves, each with its bound address. |
 | 15 | `declared` | `Option<String>` | `default` | The lifecycle state the birth declared to its authority, once applied. |
-| 16 | `parked` | `bool` | `default` | Stopped and parked: `leaving` with a live process, waiting for a start or a delete. |
+| 16 | `stopped` | `bool` | `default` | A stopped node with a live process, `leaving`, waiting for a start or a delete. |
 | 17 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) | `default` | The node's CPU and RAM from its latest digest, as the answering admin holds it. |
 | 18 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) | `default` | The node's mesh-channel counts from its latest digest: heard, neighbours, frames. |
 | 19 | `tags` | `std::collections::BTreeSet<String>` | `default` | The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the |
@@ -2945,7 +2948,7 @@ One node of a stored map: how to reach a birth the target stored, with no claim 
 
 `crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
-Which tag labels a `node.get` filter requires (node-rpc-envelope.md, node.get: "all of the given
+Which tag labels a `mesh.nodes.get` or `fabric.nodes.get` filter requires (node-rpc-envelope.md:
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|

@@ -294,7 +294,7 @@ mod tests {
         let ending = std::thread::spawn(move || drop(tracer.start("rdm.test.span.end.held")));
         entered_rx.recv_timeout(Duration::from_secs(10)).expect("the span's end reached the processor");
         let during = capture.flush(Duration::from_secs(10));
-        // Release before asserting, so a red does not leave the ending thread parked.
+        // Release before asserting, so a red does not leave the ending thread held.
         release_tx.send(()).unwrap();
         ending.join().unwrap();
         let after = capture.flush(Duration::from_secs(10));

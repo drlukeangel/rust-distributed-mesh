@@ -21,7 +21,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-core/src/cadence.rs` | 37 | fn `Cadences::from_env` | argument to `ms` |
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-test/src/estate.rs` | 231 | fn `spawn_admin_in_container_within` | literal |
 | `RDM_BACKBONE_INTERVAL_MS` | `tools/test-runner/src/lib.rs` | 41 | const `CADENCE` | literal |
-| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1411 | fn `start_booted` | argument to `.insert` |
+| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1455 | fn `start_booted` | argument to `.insert` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/records.rs` | 133 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/deployment/container.rs` | 273 | fn `launch_disk` | argument to `.get` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 48 | fn `bin_dir` | argument to `std::env::var` |
@@ -60,7 +60,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_DATA_DIR` | `crates/rdm-core/src/launch.rs` | 419 | fn `Launch::from_env` | `ENV_DATA_DIR`, argument to `req` |
 | `RDM_DATA_DIR` | `crates/rdm-test/src/estate.rs` | 702 | fn `Estate::born` | in `vec!` |
 | `RDM_DATA_DIR` | `crates/rdm-test/src/estate.rs` | 1029 | fn `Estate::admin_launch` | in `vec!` |
-| `RDM_DATA_DIR` | `crates/rdm-transport/src/telemetry.rs` | 216 | fn `build_resource_with` | literal |
+| `RDM_DATA_DIR` | `crates/rdm-transport/src/telemetry.rs` | 218 | fn `build_resource_with` | literal |
 | `RDM_DATA_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 87 | fn `header` | argument to `std::env::var_os` |
 | `RDM_DATA_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 100 | fn `header` | argument to `env` |
 | `RDM_DATA_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 113 | fn `start` | argument to `env` |
@@ -81,14 +81,14 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_EVIDENCE_DIR` | `crates/rdm-test/src/estate.rs` | 705 | fn `Estate::born` | in `vec!` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-test/src/estate.rs` | 1032 | fn `Estate::admin_launch` | in `vec!` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-test/src/estate.rs` | 1281 | fn `ProbeHandle::command` | argument to `.env` |
-| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 216 | fn `build_resource_with` | literal |
-| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 623 | fn `init_evidence` | argument to `std::env::var_os` |
-| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 628 | fn `init_evidence` | argument to `std::env::var` |
+| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 218 | fn `build_resource_with` | literal |
+| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 625 | fn `init_evidence` | argument to `std::env::var_os` |
+| `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/telemetry.rs` | 630 | fn `init_evidence` | argument to `std::env::var` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 93 | fn `header` | argument to `env` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/transport_diag.rs` | 113 | fn `start` | argument to `env` |
 | `RDM_EVIDENCE_DIR` | `crates/rdm-transport/src/watchdog.rs` | 193 | fn `spawn` | argument to `std::env::var` |
 | `RDM_EVIDENCE_DIR` | `tools/test-runner/src/lib.rs` | 52 | const `SCRUBBED` | literal |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1415 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1459 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 140 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 142 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1207 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
@@ -113,7 +113,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 392 | fn `Launch::to_env` | `ENV_FABRIC_CA_KEY`, argument to `.insert` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 422 | fn `Launch::from_env` | `ENV_FABRIC_CA_KEY`, argument to `get` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 370 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 372 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 112 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 113 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 183 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
@@ -196,11 +196,11 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_NODE_NAME` | `crates/rdm-core/src/launch.rs` | 17 | const `ENV_NODE_NAME` | literal |
 | `RDM_NODE_NAME` | `crates/rdm-core/src/launch.rs` | 371 | fn `Launch::to_env` | `ENV_NODE_NAME`, argument to `.insert` |
 | `RDM_NODE_NAME` | `crates/rdm-core/src/launch.rs` | 411 | fn `Launch::from_env` | `ENV_NODE_NAME`, argument to `req` |
-| `RDM_NODE_NAME` | `crates/rdm-transport/src/telemetry.rs` | 216 | fn `build_resource_with` | literal |
+| `RDM_NODE_NAME` | `crates/rdm-transport/src/telemetry.rs` | 218 | fn `build_resource_with` | literal |
 | `RDM_NODE_NAME` | `crates/rdm-transport/src/transport_diag.rs` | 86 | fn `header` | argument to `std::env::var` |
-| `RDM_OTEL_DEBUG` | `crates/rdm-transport/src/telemetry.rs` | 726 | fn `span_export_filter` | argument to `std::env::var` |
-| `RDM_OTLP_LOG_LEVEL` | `crates/rdm-transport/src/telemetry.rs` | 740 | fn `otlp_log_export_level` | argument to `std::env::var` |
-| `RDM_PROBE_BIND` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 457 | fn `probe_bind` | argument to `std::env::var` |
+| `RDM_OTEL_DEBUG` | `crates/rdm-transport/src/telemetry.rs` | 728 | fn `span_export_filter` | argument to `std::env::var` |
+| `RDM_OTLP_LOG_LEVEL` | `crates/rdm-transport/src/telemetry.rs` | 742 | fn `otlp_log_export_level` | argument to `std::env::var` |
+| `RDM_PROBE_BIND` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 466 | fn `probe_bind` | argument to `std::env::var` |
 | `RDM_PROBE_BIND` | `crates/rdm-test/src/estate.rs` | 1282 | fn `ProbeHandle::command` | argument to `.env` |
 | `RDM_RAM_BUDGET_BYTES` | `crates/rdm-transport/src/load.rs` | 34 | fn `LoadSampler::for_this_process` | argument to `env` |
 | `RDM_REQUIRE_CONTAINER` | `tools/test-runner/src/lib.rs` | 58 | const `SCRUBBED` | literal |

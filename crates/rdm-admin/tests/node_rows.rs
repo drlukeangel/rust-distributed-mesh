@@ -1,7 +1,7 @@
 //! The node rows of a mesh, written by its primary node-admin (R13; ops-naming "Node data: meta,
 //! config and exe"; lifecycles/node-create.md step 1; lifecycles/node-delete.md step 3): the executor's
 //! claim, move to `.old` and `Deleted` row, the rows of births no create claimed, and the
-//! fabric-primary's record of a parked predecessor, which the drive of a Build feeds.
+//! fabric-primary's record of a stopped predecessor, which the drive of a Build feeds.
 //!
 //! The fixture view: `mesh1` has the fabric-primary `mesh1.admin.1`, its mesh primary
 //! `mesh1.admin.2` (the executor of every `mesh1` node and the writer of its rows) and
@@ -387,7 +387,7 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
         let mut before = view();
         let rpc1 = before.nodes.iter_mut().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
         rpc1.status = NodeStatus::Leaving;
-        rpc1.parked = true;
+        rpc1.stopped = true;
         rpc1.routable = false;
         let rpc1 = rpc1.clone();
         let topology = Arc::new(RwLock::new(before.clone()));
@@ -1651,7 +1651,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
 /// and `node_type` through:
 /// 1. `create` (claiming `mesh1.broker.north` and installing the birth into the view),
 /// 2. `get` (`views::nodes_answer` by id and by mesh),
-/// 3. `stop`/`start` (parking at `Leaving` and unparking back to `ReadyForTraffic`),
+/// 3. `stop`/`start` (stopping at `Leaving` and starting back to `ReadyForTraffic`),
 /// 4. `recovery` (`NodeDeleted` writing the `Deleted` row at `mesh1.broker.north`, then the
 ///    recovered birth claiming `mesh1.broker.north` with `ClaimFor::Recovery` and inheriting
 ///    config, tags and `node_type`), and
@@ -1706,12 +1706,12 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             ("mesh1.broker.north", "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
         );
 
-        // 3. Stop / Start: parking and unparking preserve `name`, `path` and `node_type`.
+        // 3. Stop / Start: stopping and starting preserve `name`, `path` and `node_type`.
         let north_id = north.node_id.clone();
         install(&mp.records, &mp.view, move |v| {
             let n = v.nodes.iter_mut().find(|n| n.node_id == north_id).unwrap();
             n.status = NodeStatus::Leaving;
-            n.parked = true;
+            n.stopped = true;
             n.routable = false;
         })
         .await;
@@ -1725,7 +1725,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         install(&mp.records, &mp.view, move |v| {
             let n = v.nodes.iter_mut().find(|n| n.node_id == north_id).unwrap();
             n.status = NodeStatus::ReadyForTraffic;
-            n.parked = false;
+            n.stopped = false;
             n.routable = true;
         })
         .await;
@@ -1770,7 +1770,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
 
         let mut pred_stopped = recovered_north.clone();
         pred_stopped.status = NodeStatus::Leaving;
-        pred_stopped.parked = true;
+        pred_stopped.stopped = true;
         let old_row = mp.rows.rename_row(&pred_stopped, &old_key).await.expect("predecessor moves to mesh1.broker.north.old");
         assert_eq!((old_row.path().as_str(), old_row.node_name().as_str(), old_row.node_type()), ("mesh1.broker", "north.old", "broker"));
         assert_eq!(storage.record_at(&north_key).await.unwrap(), None, "mesh1.broker.north is free for the successor's claim");
@@ -1791,7 +1791,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let mut succ_ready = succ.clone();
         succ_ready.name = north_key.clone();
         succ_ready.status = NodeStatus::ReadyForTraffic;
-        succ_ready.parked = false;
+        succ_ready.stopped = false;
         succ_ready.config = succ_row.config.clone();
         let mut pred_old = pred_stopped.clone();
         pred_old.name = old_key.clone();

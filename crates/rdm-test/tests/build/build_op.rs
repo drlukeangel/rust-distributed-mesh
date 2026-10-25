@@ -720,7 +720,7 @@ struct Lost {
 /// The fabric is past its first state-commit, which published the rows its store held in the scratchpad:
 /// a claim from here on is written to the store root, never held in a scratchpad that dies with its
 /// writer. A fabric-primary grows the fabric by mesh2 through `build.create` and is lost at `cut` (the
-/// fabric-primary's own Door parks it there), after its claim of mesh2's name landed: mesh2's row is on
+/// fabric-primary's own Door holds it there), after its claim of mesh2's name landed: mesh2's row is on
 /// the store root. Fabric recovery restores the node it re-creates at the fabric-primary's path.name (Q122), and the caller re-submits the Build there by its id
 /// and follows it to `Complete`. mesh2 is then the mesh the lost fabric-primary's claim wrote.
 ///

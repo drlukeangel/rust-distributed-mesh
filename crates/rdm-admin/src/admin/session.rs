@@ -168,7 +168,7 @@ impl TopologyObserver {
 /// a Status `Blocked` answer, named with the birth and the event it runs again on and no attempt
 /// counter. Every other answer names no blocker and frames nothing: a `NotReady` is the subject's
 /// door or handler not serving yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"),
-/// and the step waits on; so does a birth that answers its state (`Current`, `CurrentParked`), a
+/// and the step waits on; so does a birth that answers its state (`Current`, `CurrentStopped`), a
 /// stale incarnation, or a call that ends unanswered: why it is not Ready is the Ready check's to
 /// report.
 pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, digest_view: &DigestView, node: &Node) -> Option<String> {
@@ -289,7 +289,7 @@ pub(crate) fn carried_admission(end: crate::status_rpc::CarryEnd) -> (crate::dep
     }
 }
 
-/// How a node-admin leaves its mesh when parked and joins it again when started
+/// How a node-admin leaves its mesh when stopped and joins it again when started
 /// (`node_self::Session`): its tasks are held at their gate, its gossip topics are left and its
 /// connections are cut; a start joins the commanding admin again, takes the topology and runs its hook.
 pub(crate) struct AdminSession {
@@ -328,15 +328,15 @@ pub(crate) struct AdminSession {
 
 #[async_trait::async_trait]
 impl crate::node_self::Session for AdminSession {
-    async fn hold_tasks(&self, commanded_by: Option<&str>) -> crate::node_self::TasksParked {
-        // The gate parks, so no turn begins; the turns already past their wait point end on their
+    async fn hold_tasks(&self, commanded_by: Option<&str>) -> crate::node_self::TasksStopped {
+        // The gate stops, so no turn begins; the turns already past their wait point end on their
         // own completion, and only then does the stop go on to its cut. A stop this admin's own run
         // commanded waits for every turn but that Build's, which wait on it (stop_gate.rs).
         let at = match commanded_by {
             Some(build) => self.gate.quiesce_commanded_by(build).await,
             None => self.gate.quiesce().await,
         };
-        crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
+        crate::node_self::TasksStopped { turns_in_progress: at.in_progress(), waited_for: at.named() }
     }
 
     fn callers_of(&self, build: &str) -> Vec<iroh::PublicKey> {
@@ -352,7 +352,7 @@ impl crate::node_self::Session for AdminSession {
     }
 
     async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
-        // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
+        // The stop held this admin's tasks before it (`hold_tasks`): nothing it was doing goes out on
         // the connections cut below.
         let turns_in_progress = self.gate.state().borrow().in_progress();
         let neighbours = self.topology_view.neighbours();
@@ -571,7 +571,7 @@ pub(crate) struct AdminAfterStopTail {
     pub(crate) wake: Arc<Records>,
     pub(crate) root: tracing::Span,
     pub(crate) floor: AdminFloor,
-    /// Set for a commanded `node.mesh.join`: a Build's start after a stop leaves nothing (its process stays parked).
+    /// Set for a commanded `node.mesh.join`: a Build's start after a stop leaves nothing (its process stays stopped).
     pub(crate) leave: Option<AdminLeave>,
 }
 

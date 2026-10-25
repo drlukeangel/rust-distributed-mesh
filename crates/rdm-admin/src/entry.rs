@@ -118,10 +118,10 @@ pub async fn run_on(service: &str, storage: impl FnOnce(&AdminConfig) -> std::sy
             rdm_core::runtime::exit_transport_stopped(&reason);
         }
     }
-    // A birth whose stop was admitted (stopped, its process alive, or a start of it under way) runs no
+    // A birth whose stop was admitted (its process alive, or a start of it under way) runs no
     // second stop on its signal (node-stop.md step 6): it closes at once.
     if running.node_self().stop_admitted() {
-        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", parked = true);
+        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", stopped = true);
         running.leave_after_stop().instrument(span).await;
         return;
     }

@@ -1,5 +1,5 @@
 //! i143.e12.s40 functional: a mesh primary publishes its Mesh's aggregate "on its anti-entropy timer
-//! and at once on a material change" (gossip.md, the `Members` row). A stop overlay that parks a
+//! and at once on a material change" (gossip.md, the `Members` row). A stop overlay that stops a
 //! member is such a change ("an in_flight overlay added or cleared" bumps `topology_version`), so the
 //! publication that publishes it is woken by the change itself, not by the next anti-entropy tick.
 
@@ -69,10 +69,10 @@ fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
 
 /// CONTRACT: the source mesh primary runs its publication as the node-admin does (publish,
 /// then wait for the publication's wake with a 30 s anti-entropy deadline). After a publication has published,
-/// its mesh channel takes a member's `NodeStopped`: the overlay parks the member in the primary's
+/// its mesh channel takes a member's `NodeStopped`: the overlay stops the member in the primary's
 /// view, the normalized projection moves, and the woken publication publishes it on the backbone at once.
-/// A peer mesh's admin holds the member parked (its stop overlay open, `via-member-state
-/// parked=true`) within 5 s, long before the next anti-entropy publication.
+/// A peer mesh's admin holds the member stopped (its stop overlay open, `via-member-state
+/// stopped=true`) within 5 s, long before the next anti-entropy publication.
 #[test]
 fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once() {
     let dir = crate::evidence_dir();
@@ -136,13 +136,13 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         src_bb.publish_status_event(StatusEvent::Stopped, &op).await;
 
         let held = loop {
-            let parked = peer_m.digest_view.in_flight().iter().any(|o| o.key() == op.key());
-            if parked {
+            let stopped = peer_m.digest_view.in_flight().iter().any(|o| o.key() == op.key());
+            if stopped {
                 break peer_bb.held_source("mesh2").map(|(_, v)| v);
             }
             assert!(
                 stopped_at.elapsed() < AT_ONCE,
-                "the peer mesh did not hold {} parked within {AT_ONCE:?} of its NodeStopped: the source primary's publication was not woken by its own projection's move (held source version {:?}, first {v1})",
+                "the peer mesh did not hold {} stopped within {AT_ONCE:?} of its NodeStopped: the source primary's publication was not woken by its own projection's move (held source version {:?}, first {v1})",
                 op.name,
                 peer_bb.held_source("mesh2").map(|(_, v)| v)
             );
@@ -159,12 +159,12 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let names = |n: &str| spans.iter().filter(|s| s["name"] == n).count();
-        let parked_at_peer = spans
+        let stopped_at_peer = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-state" && s["attributes"]["member"].as_str() == Some(op.name.to_string().as_str()) && (s["attributes"]["parked"] == Value::Bool(true) || s["attributes"]["parked"] == "true"))
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-state" && s["attributes"]["member"].as_str() == Some(op.name.to_string().as_str()) && (s["attributes"]["stopped"] == Value::Bool(true) || s["attributes"]["stopped"] == "true"))
             .count();
-        println!("{CELL}: overlay held at the peer {took:?} after NodeStopped; via-topology-version spans {}; via-member-state parked {}", names("rdm.mesh.backbone.update.via-topology-version"), parked_at_peer);
+        println!("{CELL}: overlay held at the peer {took:?} after NodeStopped; via-topology-version spans {}; via-member-state stopped {}", names("rdm.mesh.backbone.update.via-topology-version"), stopped_at_peer);
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
-        assert!(parked_at_peer >= 1, "the peer spans the member parked (via-member-state parked=true)");
+        assert!(stopped_at_peer >= 1, "the peer spans the member stopped (via-member-state stopped=true)");
     });
 }

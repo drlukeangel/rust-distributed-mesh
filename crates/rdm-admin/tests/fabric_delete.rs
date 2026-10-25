@@ -320,7 +320,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
-        n.parked = true;
+        n.stopped = true;
     });
     rows_m1.deleted(&m2_a1, "node.delete:mesh2.admin.1").await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
@@ -422,7 +422,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
-        n.parked = true;
+        n.stopped = true;
     });
     rows_m1.deleted(&m1_a1, "node.delete:mesh1.admin.1").await.unwrap();
     let left_m1 = mesh_left_proof(&manifest_m1, &term_m1_a1).unwrap();
@@ -693,7 +693,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
         view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
-            n.parked = true;
+            n.stopped = true;
         });
         rows_fp.deleted(&m2_a2, "node.delete:mesh2.admin.2").await.unwrap();
         let left = mesh_left_proof(&manifest, &term_a2).unwrap();

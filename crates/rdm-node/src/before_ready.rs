@@ -109,7 +109,7 @@ impl Authority {
 pub enum StartKind {
     /// The birth joins for the first time (create).
     FirstStart,
-    /// The parked birth rejoins as itself (`node.start` after `node.stop`): its data dir is its own
+    /// The stopped birth rejoins as itself (`node.start` after `node.stop`): its data dir is its own
     /// and what it held before the stop is still there.
     AfterStop,
 }

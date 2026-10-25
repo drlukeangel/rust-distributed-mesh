@@ -60,7 +60,7 @@ pub(crate) enum Rpc1 {
     Stopped,
     /// Exited and its exact Exited receipted (TerminateRuntime), the delete cut after NodeDeleted's
     /// work and before NodeDeleted's receipt is durable: the Build holds the exit proof and no
-    /// NodeDeleted, and none is published. The fault door's `Receipt` cut parks BEFORE the named
+    /// NodeDeleted, and none is published. The fault door's `Receipt` cut holds BEFORE the named
     /// receipt is durable (`FaultedBuilds::append_step_receipt`), so the cut that leaves
     /// TerminateRuntime durable is the next step's: NodeDeleted.
     ExitProven,

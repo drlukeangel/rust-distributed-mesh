@@ -4161,7 +4161,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let add_chain = check_replace_create_chain(&spans, &victim, &add_build, &new_id, &new_inc);
     let t_deleted = start_ns(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).unwrap());
     let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str()).unwrap());
-    assert!(t_ready < t_deleted, "the old identity's departure (the recipe's delete of the parked {victim}.old) is published only after the successor is admitted and ready (a replace is not a delete followed by a spawn)");
+    assert!(t_ready < t_deleted, "the old identity's departure (the recipe's delete of the stopped {victim}.old) is published only after the successor is admitted and ready (a replace is not a delete followed by a spawn)");
     // The death's recovery (node-recovery.md): the dead gateway's mesh-primary proves the exit and submits
     // one recovery, an attempt of the same Build (its delete, create and update); the fabric-primary's drift opens
     // nothing for an ordinary member.

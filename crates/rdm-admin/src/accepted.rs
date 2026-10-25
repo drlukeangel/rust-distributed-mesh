@@ -305,7 +305,7 @@ pub enum AttemptAction {
         /// The birth whose connections are deleted.
         from_incarnation: IncarnationId,
     },
-    /// Stop the exact birth at a path: it drains, cuts its mesh connections and parks, its process
+    /// Stop the exact birth at a path: it drains, cuts its mesh connections and stops, its process
     /// alive; no departure (node-stop.md).
     Stop {
         /// The node.
@@ -313,7 +313,7 @@ pub enum AttemptAction {
         /// The birth stopped.
         from_incarnation: IncarnationId,
     },
-    /// Start the parked exact birth at a path: the same process rejoins as itself (node-start.md).
+    /// Start the stopped exact birth at a path: the same process rejoins as itself (node-start.md).
     Start {
         /// The node.
         path: PathName,
@@ -676,7 +676,7 @@ pub(crate) enum RecoveryProgress {
 impl ActionProgress {
     /// The progress of `build`'s action, `default` for an attempt that carries none.
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
-        // A standalone drain, stop, start or parked delete: the receipts of its operation in an
+        // A standalone drain, stop, start or stopped delete: the receipts of its operation in an
         // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
         // are this birth's. Its first step's receipt says the operation began; its `Complete`, that
         // it completed for the birth.
@@ -936,7 +936,7 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
         }
         for p in order {
             let Some(binding) = target_executable(topology, p) else { continue };
-            let held = observed.node(p).filter(|n| (n.status.is_live() || n.parked) && n.incarnation_id.is_some());
+            let held = observed.node(p).filter(|n| (n.status.is_live() || n.stopped) && n.incarnation_id.is_some());
             let on_entry = |n: &crate::model::Node| recorded.get(p).is_some_and(|r| r.node_id == n.node_id && r.sha256.as_deref() == Some(binding.sha256.as_str()));
             match (replacement_progress(steps, p, recorded), held) {
                 // The successor its create launched is live on its entry's sha, its receipt never written:
@@ -1048,14 +1048,14 @@ fn plan_with(
         // it is planned until its `Complete` names the birth. A delete of the last admin of a deleted
         // mesh (mesh-delete.md step 7) is the ordinary node.delete of that exact birth, planned while
         // the view holds it.
-        let parked_old = matches!(action, Some(AttemptAction::Delete { .. })) && path.old;
-        let held = parked_old || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
+        let stopped_old = matches!(action, Some(AttemptAction::Delete { .. })) && path.old;
+        let held = stopped_old || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
         if !progress.finished && (held || progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
                 Some(AttemptAction::DeleteConnections { .. }) => BuildOperation::DeleteConnections { node, from_incarnation },
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
-                Some(AttemptAction::Delete { .. }) if parked_old => BuildOperation::DeleteNode { node, from_incarnation },
+                Some(AttemptAction::Delete { .. }) if stopped_old => BuildOperation::DeleteNode { node, from_incarnation },
                 Some(AttemptAction::Delete { .. }) => BuildOperation::RetireNode { node, exited: None },
                 _ => BuildOperation::StopNode { node, from_incarnation },
             });
@@ -1162,8 +1162,8 @@ fn plan_with(
     }
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
     // A restart's birth: the one the attempt is fenced to, when the view still holds exactly it and
-    // it is not leaving to a departure (a leaving birth keeps the path to its departure). A parked
-    // birth is the restart's own: only this restart's attempts carry a restart of a parked birth (the
+    // it is not leaving to a departure (a leaving birth keeps the path to its departure). A stopped
+    // birth is the restart's own: only this restart's attempts carry a restart of a stopped birth (the
     // door refuses a fresh one, `node-not-live`), and its run resumes at the start (R-PV1). The action
     // owns its path: the generic create below never plans it a second time.
     // A replacing attempt (no action) owes its replacements after the topology's creates; a path whose
@@ -1173,7 +1173,7 @@ fn plan_with(
     let replacements = replacements.filter(|_| action.is_none());
     let creates_owed = replacements.map(|(recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
     let restarted: Option<&PathName> = match action {
-        Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && (n.status != NodeStatus::Leaving || n.parked)).map(|_| path),
+        Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && (n.status != NodeStatus::Leaving || n.stopped)).map(|_| path),
         _ => None,
     };
     for (name, m) in &topology.meshes {
@@ -1209,7 +1209,7 @@ fn plan_with(
     if let Some((recorded, steps)) = replacements {
         ops.extend(replacements_owed(topology, observed, recorded, steps));
     }
-    // A live or stopped (parked) node of a kept mesh that the topology no longer names is retired
+    // A live or stopped node of a kept mesh that the topology no longer names is retired
     // (a node.delete of a stopped node retires it: lifecycles/node-delete.md), and so is one its
     // mesh-primary recorded os-stopped, silent as it is (node-delete.md "OS-suspended target": its
     // delete skips the stop by name); a birth that is only silent is never retired for its silence. A
@@ -1221,7 +1221,7 @@ fn plan_with(
     // caller's (lifecycles/node-replace.md "Rollback").
     let mut extra: Vec<&PathName> = observed
         .members()
-        .filter(|n| action.is_none() && (n.status.is_live() || n.parked) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .filter(|n| action.is_none() && (n.status.is_live() || n.stopped) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
     extra.sort();
@@ -1543,7 +1543,7 @@ mod tests {
     /// CONTRACT (mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): the
     /// fenced `Delete` action on a birth of a deleted mesh (no `.old` path: the topology names no
     /// such mesh) is the ordinary node.delete of that exact birth, `RetireNode`, planned while the
-    /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a parked
+    /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a stopped
     /// `.old` stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
     /// copy that skips its stop (`DeleteNode` sends no command to a live process).
     #[test]
@@ -1562,14 +1562,14 @@ mod tests {
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
         let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
-        let parked = AttemptAction::Delete { path: old.clone(), from_incarnation: birth.clone() };
-        assert_eq!(plan(&cur, &o, Some(&parked)).operations, vec![BuildOperation::DeleteNode { node: old, from_incarnation: birth }]);
+        let stopped = AttemptAction::Delete { path: old.clone(), from_incarnation: birth.clone() };
+        assert_eq!(plan(&cur, &o, Some(&stopped)).operations, vec![BuildOperation::DeleteNode { node: old, from_incarnation: birth }]);
     }
 
     /// CONTRACT (lifecycles/node-delete.md, node-identity-and-state.md 6.9 Effect): a stopped node (Leaving,
-    /// parked, its process alive) that the accepted topology no longer names, the topology a
+    /// stopped, its process alive) that the accepted topology no longer names, the topology a
     /// node.delete of it accepts, is retired: the plan is its one `RetireNode`. A node leaving under
-    /// another operation (Leaving, not parked) is that operation's, never retired beside it. Must NOT
+    /// another operation (Leaving, not stopped) is that operation's, never retired beside it. Must NOT
     /// happen: a node.delete of a stopped node that converges with nothing planned while its process
     /// lives on.
     #[test]
@@ -1577,7 +1577,7 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         let mut o = mn();
         let mut stopped = n("mesh1.rpc.7", NodeStatus::Leaving, false);
-        stopped.parked = true;
+        stopped.stopped = true;
         o.nodes.push(stopped);
         assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), exited: None }]);
         let mut leaving = mn();
@@ -1595,7 +1595,7 @@ mod tests {
             let mut o = mn();
             let mut old = n("mesh1.rpc.2", status, false);
             old.name = old.name.renamed();
-            old.parked = status == NodeStatus::Leaving;
+            old.stopped = status == NodeStatus::Leaving;
             o.nodes.push(old);
             assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}");
             let mut missing = mn();
@@ -1661,20 +1661,20 @@ mod tests {
     /// CONTRACT (R-PV1: "The pending lifecycle action is resumed per its receipts: `node.start` when
     /// start is the pending step (the node did stop)"; node-restart.md: a restart runs on the stopped
     /// process, which never exits): an attempt carrying the restart of the exact birth its own earlier
-    /// attempt parked (the view holds it `Leaving` and parked, the same incarnation) plans that restart
-    /// once, whose run resumes at its start. Must NOT happen: a create planned at the path of a parked
+    /// attempt stopped (the view holds it `Leaving` and stopped, the same incarnation) plans that restart
+    /// once, whose run resumes at its start. Must NOT happen: a create planned at the path of a stopped
     /// birth that is still alive and still the restart's.
     #[test]
     fn a_restart_of_a_birth_its_own_restart_stopped_plans_the_restart_never_a_create() {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
-        let mut parked = mn();
-        let birth = parked.nodes.iter_mut().find(|x| x.name == path).unwrap();
+        let mut stopped = mn();
+        let birth = stopped.nodes.iter_mut().find(|x| x.name == path).unwrap();
         birth.status = NodeStatus::Leaving;
-        birth.parked = true;
-        let from = parked.node(&path).unwrap().incarnation_id.clone().unwrap();
+        birth.stopped = true;
+        let from = stopped.node(&path).unwrap().incarnation_id.clone().unwrap();
         let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from };
-        assert_eq!(plan(&cur, &parked, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
+        assert_eq!(plan(&cur, &stopped, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
     }
 
     /// CONTRACT: an attempt that carries an action repairs exactly its birth, from whichever admin's
@@ -1841,7 +1841,7 @@ mod tests {
         assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
     }
 
-    /// CONTRACT (lifecycles/node-delete.md): the delete of the parked predecessor at `<path>.old` plans its
+    /// CONTRACT (lifecycles/node-delete.md): the delete of the stopped predecessor at `<path>.old` plans its
     /// one operation `node.delete:<path>.old` until its `Complete` names the birth, whatever the view
     /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
     /// names a `.old` path but its replace's executor's. It never plans a create or repair of the
@@ -1853,12 +1853,12 @@ mod tests {
         let path: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let mut held = mn();
         let from = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
-        let mut parked = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().clone();
-        parked.name = path.clone();
-        parked.status = NodeStatus::Leaving;
-        parked.parked = true;
+        let mut stopped = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().clone();
+        stopped.name = path.clone();
+        stopped.status = NodeStatus::Leaving;
+        stopped.stopped = true;
         held.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.2").unwrap().incarnation_id = Some(IncarnationId::mint());
-        held.nodes.push(parked);
+        held.nodes.push(stopped);
         held.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
         let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: from.clone() };
         let op = vec![BuildOperation::DeleteNode { node: path.clone(), from_incarnation: from.clone() }];
@@ -1888,7 +1888,7 @@ mod tests {
             last_failure: None,
             reason: AttemptReason::Delete,
             action: Some(delete.clone()),
-            // Attempt 8 deleted another parked birth at the path; attempt 9 is this delete.
+            // Attempt 8 deleted another stopped birth at the path; attempt 9 is this delete.
             attempt_actions: [(8, AttemptAction::Delete { path: path.clone(), from_incarnation: other.clone() }), (9, delete.clone())].into(),
             attempt_executors: Default::default(),
             opened: 0,
@@ -1899,7 +1899,7 @@ mod tests {
             lanes: Default::default(),
         };
         let gone = mn();
-        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, op, "the view never names the parked birth (a fabric-primary that did not run its replace) and nothing began: owed");
+        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, op, "the view never names the stopped birth (a fabric-primary that did not run its replace) and nothing began: owed");
         assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting")]), &gone).operations, op, "begun, the birth gone from the view: still owed");
         assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting"), step(9, "Complete")]), &gone).operations, vec![], "completed for this birth");
         assert_eq!(plan_for_build(&build(vec![step(8, "NodeDeleting"), step(8, "Complete")]), &gone).operations, op, "another birth's Complete is not this delete's");

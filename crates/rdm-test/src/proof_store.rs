@@ -428,7 +428,7 @@ impl FileProofStore {
     }
 }
 
-/// One failpoint of a proof-store call: armed for the NEXT call to cross it, it parks that call's
+/// One failpoint of a proof-store call: armed for the NEXT call to cross it, it holds that call's
 /// handler, signals that it holds (`reached`), and waits for `release`. Shaped like
 /// [`rdm_transport::Failpoint`], which it carries. Testkit only; the product handler has none.
 #[derive(Default)]
@@ -439,22 +439,22 @@ pub struct ApplyCut {
 }
 
 impl ApplyCut {
-    /// The next call to cross this cut parks there.
+    /// The next call to cross this cut holds there.
     pub fn arm(&self) {
         self.armed.store(true, Ordering::SeqCst);
     }
 
-    /// Resolves once a handler is parked at this cut: the active-injection acknowledgement.
+    /// Resolves once a handler is held at this cut: the active-injection acknowledgement.
     pub async fn reached(&self) {
         self.point.reached.notified().await
     }
 
-    /// Let the parked handler go on.
+    /// Let the held handler go on.
     pub fn release(&self) {
         self.point.release.notify_one()
     }
 
-    /// How many handlers have parked here since the process began.
+    /// How many handlers have held here since the process began.
     pub fn holds(&self) -> u64 {
         self.holds.load(Ordering::SeqCst)
     }
@@ -508,7 +508,7 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &La
                 op = at.op.as_str(),
                 outcome = tracing::field::Empty,
             );
-            // The span covers the whole handler, so a parked call's span lasts as long as it parks.
+            // The span covers the whole handler, so a held call's span lasts as long as it holds.
             let work = {
                 let span = span.clone();
                 async move {

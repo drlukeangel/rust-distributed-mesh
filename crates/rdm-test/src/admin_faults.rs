@@ -6,10 +6,10 @@
 //! takes the decorators here: a [`FaultedBuilds`] over the Build state, a [`FaultedProvider`] over
 //! the deployment provider, a [`FaultedEvents`]
 //! over the lifecycle events and one [`FaultedHook`] per reachable lifecycle phase. Each decorator
-//! asks the shared [`AdminFaults`] at its one cut; an armed, matching cut parks the caller there
+//! asks the shared [`AdminFaults`] at its one cut; an armed, matching cut holds the caller there
 //! until the door releases it. Nothing else changes: every other call passes straight through.
 //!
-//! A cut is one-shot: it parks the first matching call, records what parked ([`AdminFaults::state`]),
+//! A cut is one-shot: it holds the first matching call, records what held ([`AdminFaults::state`]),
 //! and after its release it is spent. The door is the testkit Node RPC op `0x75`
 //! ([`crate::fault_door`]): arm, release and state; the state is the active-injection
 //! acknowledgement (`held: true` with the exact call it holds) and the observed consequence
@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::Instrument;
 
-/// Where one armed cut parks a call.
+/// Where one armed cut holds a call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CutSpec {
@@ -121,7 +121,7 @@ pub enum CutSpec {
     /// The deployment provider refuses every `terminate` of the runtime at `pid` while the cut is
     /// armed: the call is answered `DeployError::Terminate`, named as the testkit's, and nothing is
     /// signalled. It models a provider that refuses a terminate (node-recovery.md step 4, "a
-    /// terminate the provider refuses"); nothing parks.
+    /// terminate the provider refuses"); nothing holds.
     ProviderTerminate {
         /// The exact runtime's pid; every runtime when absent.
         #[serde(default)] pid: Option<u32>,
@@ -147,7 +147,7 @@ pub enum CutSpec {
     /// The deployment provider's inspection of the runtimes at `pids` answers `Unknown` while the cut is
     /// armed: no exit proof of them can be read, while every other runtime, a launch of this admin's
     /// included, is inspected as ever. It models a lost mesh whose runtimes no surviving admin can
-    /// inspect (elections §5, i144 Q51), and nothing parks.
+    /// inspect (elections §5, i144 Q51), and nothing holds.
     ProviderUnproven {
         /// The runtimes' pids.
         pids: Vec<u32>,
@@ -335,19 +335,19 @@ impl Probe {
 
 struct Armed {
     spec: CutSpec,
-    /// The first call that parked here.
+    /// The first call that held here.
     hit: Option<Hit>,
     held: bool,
     released: bool,
-    /// Flips to `true` on release; every parked call waits on it.
+    /// Flips to `true` on release; every held call waits on it.
     release: tokio::sync::watch::Sender<bool>,
-    /// Calls parked here now.
-    parked: u64,
+    /// Calls held here now.
+    held_calls: u64,
     held_since: Option<Instant>,
     held_ms: Option<u64>,
-    /// Matching calls that arrived while another was already parked here (they park too).
+    /// Matching calls that arrived while another was already held here (they hold too).
     seen_while_held: u64,
-    /// For a condition (nothing parks): its hold span, open from the first consultation until the release.
+    /// For a condition (nothing holds): its hold span, open from the first consultation until the release.
     condition_span: Option<tracing::Span>,
 }
 
@@ -374,7 +374,7 @@ impl AdminFaults {
         }
         let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.name, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
-        cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, parked: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
+        cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, held_calls: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
         Ok(())
     }
 
@@ -386,9 +386,9 @@ impl AdminFaults {
         let was_held = c.held;
         let held_so_far = c.held_since.map(|t| t.elapsed().as_millis() as u64);
         c.release.send_replace(true);
-        // A cut that parked nothing is spent by its release too: it can no longer park.
+        // A cut that held nothing is spent by its release too: it can no longer hold.
         c.released = true;
-        // A condition (not a parked call) has no parked caller to clear it.
+        // A condition (not a held call) has no held caller to clear it.
         if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. } | CutSpec::ProviderUnproven { .. }) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
@@ -401,7 +401,7 @@ impl AdminFaults {
         Ok((was_held, held_ms))
     }
 
-    /// Every cut and what it parked, and the consequence counters.
+    /// Every cut and what it held, and the consequence counters.
     pub fn state(&self) -> FaultState {
         let cuts = self.cuts.lock().unwrap();
         let rows = cuts
@@ -422,9 +422,9 @@ impl AdminFaults {
         FaultState { node: self.name.clone(), cuts: rows, receipts_seen: self.receipts_seen.load(Ordering::SeqCst) }
     }
 
-    /// Park the caller if an armed cut matches `probe`; returns when the cut is released. Every
-    /// matching call parks until the release (a second writer of the same thing cannot slip past a
-    /// cut the first one is parked at).
+    /// Hold the caller if an armed cut matches `probe`; returns when the cut is released. Every
+    /// matching call holds until the release (a second writer of the same thing cannot slip past a
+    /// cut the first one is held at).
     pub async fn hold(&self, probe: Probe) {
         if let Some((id, release)) = self.hold_at_cut(&probe) {
             self.wait_release(&id, &probe, release).await;
@@ -436,11 +436,11 @@ impl AdminFaults {
     fn hold_at_cut(&self, probe: &Probe) -> Option<(String, tokio::sync::watch::Receiver<bool>)> {
         let mut cuts = self.cuts.lock().unwrap();
         cuts.iter_mut().find(|(_, c)| !c.released && c.spec.matches(probe)).map(|(id, c)| {
-            if c.parked > 0 {
+            if c.held_calls > 0 {
                 c.seen_while_held += 1;
             }
             c.hit.get_or_insert_with(|| probe.hit());
-            c.parked += 1;
+            c.held_calls += 1;
             c.held = true;
             c.held_since.get_or_insert_with(Instant::now);
             (id.clone(), c.release.subscribe())
@@ -454,15 +454,15 @@ impl AdminFaults {
         let _ = release.wait_for(|released| *released).instrument(span).await;
         let mut cuts = self.cuts.lock().unwrap();
         if let Some(c) = cuts.get_mut(id) {
-            c.parked -= 1;
-            if c.parked == 0 {
+            c.held_calls -= 1;
+            if c.held_calls == 0 {
                 c.held = false;
                 c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             }
         }
     }
 
-    /// For a cut that is a condition rather than a parked call: is it in force now? Records the first
+    /// For a cut that is a condition rather than a held call: is it in force now? Records the first
     /// time it was consulted while in force, and counts every consultation.
     pub fn in_force(&self, probe: Probe) -> bool {
         let mut cuts = self.cuts.lock().unwrap();
@@ -703,7 +703,7 @@ impl rdm_admin::wiring::AnnouncementSeam for FaultedAnnouncement {
     }
 }
 
-/// The topology read's seam: an armed [`CutSpec::TopologyRead`] parks the joining admin's start before it
+/// The topology read's seam: an armed [`CutSpec::TopologyRead`] holds the joining admin's start before it
 /// makes the read, until the release.
 struct FaultedRead(Arc<AdminFaults>);
 

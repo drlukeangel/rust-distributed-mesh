@@ -1,13 +1,13 @@
 //! A stop ends every turn already past its wait point before it cuts (node-stop.md steps 3-4: the
-//! node gossips nothing for its stop; R-ON1; park_gate.rs: a turn already past its wait point runs
-//! to the end of that turn). The stop parks the admin's gate, so no turn begins, and waits until no
+//! node gossips nothing for its stop; R-ON1; stop_gate.rs: a turn already past its wait point runs
+//! to the end of that turn). The stop holds the admin's gate, so no turn begins, and waits until no
 //! gated turn is in progress; only then are its connections cut. A turn that ran on past the cut
 //! would publish (the hierarchy's aggregate, its statuses) and call out (the executor, the
 //! declarer) from a stopped node.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) at the gate's cadence
 //! (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`: a digest heartbeat is
-//! never slower than 2 s, gossip.md §3.2), in a process of its own (the parking flag is
+//! never slower than 2 s, gossip.md §3.2), in a process of its own (the stop flag is
 //! process-wide).
 
 use rdm_core::NodeId;
@@ -82,17 +82,17 @@ impl Capture {
     }
 }
 
-/// CONTRACT (node-stop.md steps 3-4, R-ON1; park_gate.rs): the admin's executor is in a turn, past
+/// CONTRACT (node-stop.md steps 3-4, R-ON1; stop_gate.rs): the admin's executor is in a turn, past
 /// its wait point and held where it takes the view lock, when its mesh-admin's `stop-node` reaches
-/// it; the cell lets the lock go only once the stop has parked the gate. The stop is answered
+/// it; the cell lets the lock go only once the stop has stopped the gate. The stop is answered
 /// `Stopped`; its quiesce step (in the stop's own trace) names the executor among the turns it
 /// waited for, and the stop's connection cut begins only after the quiesce ended: the cut finds no
 /// turn in progress, and no aggregate of the admin's mesh is published once the cut began. The stop
 /// gossips nothing of its own (node-stop.md step 4, R-ON1, Q95): no stopping aggregate. Nothing of
 /// the admin's Build drive (its
 /// claim, its dispatch, the run it called, the facts it broadcast) runs on past the cut: a drive
-/// whose turn was in progress at the park ended it before the cut, and one that would begin after
-/// the park waits at the gate. Must NOT happen: a turn that was in progress at the park running on
+/// whose turn was in progress at the stop ended it before the cut, and one that would begin after
+/// the stop waits at the gate. Must NOT happen: a turn that was in progress at the stop running on
 /// past the cut, so a stopped admin plans, publishes or calls out after it was cut.
 ///
 /// The executor is the turn held because its idle wait (`select!` on a submitted Build or its
@@ -111,7 +111,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     }
     let cap = capture();
     let stop_trace = cap.run(async {
-        let dir = std::env::temp_dir().join(format!("park-gate-quiesce-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("stop-gate-quiesce-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
         let gate = running.gate().clone();
@@ -147,7 +147,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
         tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("executor"))).await.expect("the executor began no turn within its poll").unwrap();
 
         // Its mesh-admin's stop reaches it while that turn is in progress.
-        let root = tracing::info_span!("cell.park-gate-quiesce", node = %own.node.name);
+        let root = tracing::info_span!("cell.stop-gate-quiesce", node = %own.node.name);
         let stop_trace = root.in_scope(rdm_transport::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
         let node_self = running.node_self();
         let commander = NodeId::mint();
@@ -156,8 +156,8 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             node_self.serve_node_command(Some(&commander), &req, Box::new(rdm_admin::node_self::ChannelFrames(tx))).await
         }.instrument(root));
-        // Once the stop has parked the gate, the lock goes.
-        tokio::time::timeout(NEVER, state.wait_for(|s| s.parked)).await.expect("the stop never parked the gate").unwrap();
+        // Once the stop has stopped the gate, the lock goes.
+        tokio::time::timeout(NEVER, state.wait_for(|s| s.stopped)).await.expect("the stop never stopped the gate").unwrap();
         drop(holder);
         let reply = tokio::time::timeout(NEVER, stop).await.expect("the stop was not answered").unwrap();
         assert!(matches!(reply, rdm_core::node_command::NodeCommandReply::NodeStopped), "the stop is answered Stopped: {reply:?}");
@@ -203,7 +203,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     assert!(late.is_empty(), "the stopped admin published its mesh's aggregate after its cut began: {late:?}");
     // Nothing of the Build drive runs on past the cut: every span of a drive's trace, and of a run
     // it called (its own trace), ended before the cut began. The one exception is the span of a
-    // drive held at the gate's wait point (begun after the park, so it ran no pass): it ends when
+    // drive held at the gate's wait point (begun after the stop, so it ran no pass): it ends when
     // the cell's runtime drops it, with no outcome recorded, and nothing of it ran.
     let build_traces: std::collections::BTreeSet<&str> =
         spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive" || s["name"] == "rdm.node_admin.build.update.via-reconcile").filter_map(|s| s["trace_id"].as_str()).collect();

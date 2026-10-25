@@ -433,7 +433,7 @@ impl NodeRpcClient {
 
     /// Close the connections this client holds to `peer`: the next call to it dials afresh. A caller
     /// that has just been answered `left` by a node closes the connection the stop rode, so its start
-    /// reaches the parked node on a fresh dial.
+    /// reaches the stopped node on a fresh dial.
     pub fn close_pooled_to(&self, peer: &iroh::PublicKey, reason: &'static str) -> usize {
         self.pool.close_peer(peer, reason.as_bytes())
     }

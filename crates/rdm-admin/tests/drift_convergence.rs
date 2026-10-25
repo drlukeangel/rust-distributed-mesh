@@ -869,7 +869,7 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
 }
 
 /// CONTRACT (mesh-recovery.md:8-9 "A lost member of a mesh with a live mesh-primary is node
-/// recovery, driven by that mesh-primary"; node-restart.md: a restart parks a live process, so a
+/// recovery, driven by that mesh-primary"; node-restart.md: a restart stops a live process, so a
 /// proven exit is never restarted): a secondary node-admin of a peer mesh (its mesh-primary live and
 /// not the fabric-primary) that exits, with the TRANSPORT_STOPPED code (4) and with another code
 /// (137), is recovered by its mesh-primary: the fabric-primary's drift opens nothing, the recovery

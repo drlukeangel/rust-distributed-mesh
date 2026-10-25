@@ -94,7 +94,7 @@ async fn canary_cell(cell: &str, provider: &str) -> Value {
 }
 
 /// CONTRACT: on real processes, an RPC node restarted through Build is the same node, in the same
-/// process, under the same incarnation, endpoint and port (stop then start on the parked process);
+/// process, under the same incarnation, endpoint and port (stop then start on the stopped process);
 /// the value written before the restart is read back from its own data dir; a request cut before it
 /// finished is NotSent and never applied; the restart's Build -> reconcile -> node -> step -> start
 /// spans are parented in one trace.

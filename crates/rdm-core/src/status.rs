@@ -1026,7 +1026,7 @@ pub enum StatusReply {
         /// What the stop's `node.connections.delete { All }` established.
         receipt: ConnectionsReceipt,
     },
-    /// The reply of a `StartNode` call: the parked birth rejoined as itself.
+    /// The reply of a `StartNode` call: the stopped birth rejoined as itself.
     Started,
     /// The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran.
     StartFailed {
@@ -1035,9 +1035,9 @@ pub enum StatusReply {
         /// Why it failed.
         reason: String,
     },
-    /// The exact birth's own answer to a probe while it is parked: `Leaving`, its process alive and
+    /// The exact birth's own answer to a probe while it is stopped: `Leaving`, its process alive and
     /// its endpoint bound, waiting for `StartNode` or a delete.
-    CurrentParked {
+    CurrentStopped {
         /// The answering birth's logical node.
         node_id: NodeId,
         /// The answering birth's incarnation.
@@ -1546,7 +1546,7 @@ impl StatusReply {
             Self::Stopped { .. } => "stopped",
             Self::Started => "started",
             Self::StartFailed { .. } => "start-failed",
-            Self::CurrentParked { .. } => "current-parked",
+            Self::CurrentStopped { .. } => "current-stopped",
             Self::ConfigUpdated { .. } => "config-updated",
             Self::RejectedConfig { .. } => "rejected-config",
             Self::ConfigRowRefused { .. } => "config-row-refused",
@@ -1649,7 +1649,7 @@ impl NodeProtocol for Status {
             StatusReply::Stopped { .. } => "stopped",
             StatusReply::Started => "started",
             StatusReply::StartFailed { .. } => "start-failed",
-            StatusReply::CurrentParked { .. } => "current-parked",
+            StatusReply::CurrentStopped { .. } => "current-stopped",
             StatusReply::ConfigUpdated { .. } => "config-updated",
             StatusReply::RejectedConfig { .. } => "rejected-config",
             StatusReply::ConfigRowRefused { .. } => "config-row-refused",
@@ -1713,7 +1713,7 @@ impl NodeProtocol for Status {
             StatusReply::Stopped { .. } => ReplyKind::Success,
             StatusReply::Started  => ReplyKind::Success,
             StatusReply::StartFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            StatusReply::CurrentParked { .. } => ReplyKind::Success,
+            StatusReply::CurrentStopped { .. } => ReplyKind::Success,
             StatusReply::ConfigUpdated { .. } => ReplyKind::Success,
             StatusReply::RejectedConfig { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
             StatusReply::ConfigRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -1847,7 +1847,7 @@ mod tests {
             (StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 2, closed: vec![ConnectionId::mint()], held: vec![ConnectionId::mint()] } }, ReplyKind::new(crate::outcome::Code::DeadlineExceeded)),
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
+            (StatusReply::CurrentStopped { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),

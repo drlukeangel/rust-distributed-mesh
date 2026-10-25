@@ -168,8 +168,8 @@ mod tests {
     /// `deleted` ... deleted is final"; mesh-delete.md step 7: the fabric-primary stops the deleted
     /// mesh's last admin, "from that admin's stop on it publishes the deleted mesh's aggregate"): the
     /// fabric-primary accepted mesh.deleted for mesh1 and holds mesh1's last admin, mesh1.admin.1, from
-    /// that admin's own digest. The admin is stopped: the digest view holds it parked. The view still states
-    /// mesh1 deleted, under its id, with the parked admin its one node. Must NOT happen: the parked
+    /// that admin's own digest. The admin is stopped: the digest view holds it stopped. The view still states
+    /// mesh1 deleted, under its id, with the stopped admin its one node. Must NOT happen: the stopped
     /// birth carrying no mesh id into the view, so mesh1 loses its id and is projected
     /// ready-for-traffic again (handover stem: the fabric-primary re-sent mesh1 the down op for the id
     /// its view lost, 410 ms after the stop, and its view named mesh1 live).
@@ -195,7 +195,7 @@ mod tests {
         }));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         let n = t.node(&last.node.name).expect("the stopped admin is listed");
-        assert!(n.parked, "listed parked: {n:?}");
+        assert!(n.stopped, "listed stopped: {n:?}");
         assert_eq!(mesh1(&t), Some((Some(id), ScopeStatus::Dead)), "a deleted mesh whose last admin is stopped stays deleted, under its id");
     }
 
@@ -2878,7 +2878,7 @@ mod tests {
     /// CONTRACT (CLAUDE.md read rule: a kind with no projection is a point read through its store
     /// index; R12/R13: the mesh-primary writes the row, a stopped node is told nothing): `mesh1.rpc.1`
     /// is stopped and its mesh-primary moves its row to `mesh1.rpc.1.old` on the fabric's shared store
-    /// root. Another admin, which performed no rename and holds nothing of it, lists the parked birth
+    /// root. Another admin, which performed no rename and holds nothing of it, lists the stopped birth
     /// at the row's name: its view reads the name through the row's `path.name` key. What must NOT
     /// happen: that admin listing the birth at `mesh1.rpc.1`, the name its digest last published, so a
     /// start or a `node.get` there names a row that no longer holds it.
@@ -2917,8 +2917,8 @@ mod tests {
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         let names: Vec<String> = t.nodes.iter().map(|n| n.name.to_string()).collect();
-        let n = t.node(&to).unwrap_or_else(|| panic!("the parked birth is listed at its row's name: {names:?}"));
-        assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.parked), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
+        let n = t.node(&to).unwrap_or_else(|| panic!("the stopped birth is listed at its row's name: {names:?}"));
+        assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.stopped), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
         assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from: {names:?}");
         // The view's held stopped digest keeps the name the node last published (R-JN1's last accepted
         // name): only the view names the birth by its row.
@@ -2927,12 +2927,12 @@ mod tests {
         crate::node_rows::move_row(&primary, &Default::default(), &"mesh1.admin.1".parse().unwrap(), &record, &to, &held.node.name).await.unwrap();
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone())().await;
         let t = topology.read().await.clone();
-        assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
+        assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.stopped) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&d);
     }
 
     /// CONTRACT (CLAUDE.md error rule: "never written" and "could not be read" are different facts):
-    /// a parked birth whose row cannot be read (its entry in the row's id index is not a record this
+    /// a stopped birth whose row cannot be read (its entry in the row's id index is not a record this
     /// build reads) is not listed by the view, its name being unknown, and the refused read is one
     /// span naming the reading admin, the birth, the index and the store's own cause. What must NOT
     /// happen: the birth listed at the name its digest last published as if no row had moved it, or
@@ -3038,7 +3038,7 @@ mod tests {
         let listed = |at: std::time::Instant| project_at("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, at).node(&d.node.name).cloned();
 
         let within = listed(t0 + gossip_interval() + Duration::from_millis(1)).expect("a Leaving member one interval after its heartbeat is a member of the view");
-        assert_eq!((within.status, within.declared.as_deref(), within.routable, within.parked), (NodeStatus::Leaving, Some("Stopped"), false, false));
+        assert_eq!((within.status, within.declared.as_deref(), within.routable, within.stopped), (NodeStatus::Leaving, Some("Stopped"), false, false));
         let silent = listed(t0 + digest_view.staleness_floor() + Duration::from_millis(1)).expect("silent past the floor it is listed, not departed");
         assert_eq!((silent.status, silent.declared.as_deref()), (NodeStatus::PendingReconnect, Some("Stopped")), "silent past the staleness floor it is the silent member any silent member is");
     }
@@ -3101,12 +3101,12 @@ mod tests {
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
 
-    /// CONTRACT (node.stop: a parked admin's tasks are held; states.md "Routing"): the view rebuild
-    /// is held at its own wait, never inside the view's lock. While the admin's gate is parked a
-    /// routing fact makes no rebuild due; the gate opening does, at once. Must NOT happen: a parked
+    /// CONTRACT (node.stop: a stopped admin's tasks are held; states.md "Routing"): the view rebuild
+    /// is held at its own wait, never inside the view's lock. While the admin's gate is stopped a
+    /// routing fact makes no rebuild due; the gate opening does, at once. Must NOT happen: a stopped
     /// admin rebuilding its view, or a rebuild held where it waits on the view's lock (a gated task
     /// stops where it stands, and one stopped queued on the lock holds it from every reader: the
-    /// parked admin then never serves the start that would open it).
+    /// stopped admin then never serves the start that would open it).
     #[tokio::test(start_paused = true)]
     async fn a_stopped_admins_view_rebuild_is_held_at_its_own_wait_and_resumes_when_the_gate_opens() {
         use futures_util::FutureExt;
@@ -3121,7 +3121,7 @@ mod tests {
         assert!(digest_view.statuses.take(&f, &fabric1()));
         let due = view_rebuild_due(&mut facts, hour, &gate);
         tokio::pin!(due);
-        assert!((&mut due).now_or_never().is_none(), "parked: a routing fact makes no rebuild due");
+        assert!((&mut due).now_or_never().is_none(), "stopped: a routing fact makes no rebuild due");
         gate.resume();
         assert!((&mut due).now_or_never().is_some(), "the gate opening makes the held rebuild due at once");
     }
@@ -3242,7 +3242,7 @@ mod tests {
     }
 
     /// CONTRACT (CLAUDE.md read rule: "id: only a lookup by id that cannot read the store's own key";
-    /// "add the index, never the scan"): a parked birth whose row was moved twice (`mesh1.rpc.7` to
+    /// "add the index, never the scan"): a stopped birth whose row was moved twice (`mesh1.rpc.7` to
     /// `mesh1.rpc.1`, then to `mesh1.rpc.1.old`) is listed by another admin's
     /// view at the row's current name, `mesh1.rpc.1.old`, read by the birth's node id through the
     /// node row's id index: one read, no `path.name` key guessed. What must NOT happen: the birth
@@ -3255,7 +3255,7 @@ mod tests {
         let t = view.read().await.clone();
         let names: Vec<String> = t.nodes.iter().map(|n| n.name.to_string()).collect();
         let (moved, now): (PathName, PathName) = ("mesh1.rpc.1".parse().unwrap(), "mesh1.rpc.1.old".parse().unwrap());
-        assert!(t.node(&now).is_some_and(|n| n.node_id == held.node.node_id && n.parked), "the parked birth is listed at its row's current name: {names:?}");
+        assert!(t.node(&now).is_some_and(|n| n.node_id == held.node.node_id && n.stopped), "the stopped birth is listed at its row's current name: {names:?}");
         assert!(t.node(&held.node.name).is_none() && t.node(&moved).is_none(), "nothing is listed at a name the row moved from: {names:?}");
         assert_eq!((ProbedRows::count(&probed.key_reads), ProbedRows::count(&probed.id_reads)), (0, 1), "the birth's row is read once, by its node id, and no path.name key is tried");
         let _ = std::fs::remove_dir_all(&d);
@@ -3264,7 +3264,7 @@ mod tests {
     /// CONTRACT (no disk read under the view's write lock): the projection reads the rows of the
     /// births that do not publish first, then takes the view's write lock and installs. Every row
     /// read finds the view's lock free. What must NOT happen: a row read made while the view's write
-    /// lock is held, which holds every reader of the view (a parked admin's handlers, the router)
+    /// lock is held, which holds every reader of the view (a stopped admin's handlers, the router)
     /// behind a disk read.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
@@ -3272,14 +3272,14 @@ mod tests {
         let (d, _held, probed, view, records, digest_view) = renamed_twice("row-name-lock").await;
         view_projector("mesh1.admin.2".parse().unwrap(), view.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone())().await;
         let reads = ProbedRows::count(&probed.key_reads) + ProbedRows::count(&probed.id_reads);
-        assert!(reads >= 1, "the projection read the parked birth's row");
+        assert!(reads >= 1, "the projection read the stopped birth's row");
         assert_eq!(ProbedRows::count(&probed.under_write_lock), 0, "none of the {reads} row reads ran under the view's write lock");
         let _ = std::fs::remove_dir_all(&d);
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
     /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
-    /// by `GetTopology`). Its view lists the node `Leaving` and parked from that overlay.
+    /// by `GetTopology`). Its view lists the node `Leaving` and stopped from that overlay.
     #[test]
     fn a_successor_admin_lists_a_stopped_node_from_the_stop_overlay_it_read() {
         let digest_view = DigestView::default();
@@ -3296,8 +3296,8 @@ mod tests {
         assert!(digest_view.stopped(stop));
         assert!(digest_view.get(stopped.node.node_id.as_str()).is_none(), "this admin never held the node's digest");
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-        let n = t.node(&stopped.node.name).expect("the stop overlay lists the parked node");
-        assert_eq!((n.status, n.parked, n.routable), (NodeStatus::Leaving, true, false));
+        let n = t.node(&stopped.node.name).expect("the stop overlay lists the stopped node");
+        assert_eq!((n.status, n.stopped, n.routable), (NodeStatus::Leaving, true, false));
         assert_eq!(n.node_id, stopped.node.node_id);
         assert_eq!(n.incarnation_id.as_ref(), Some(&stopped.node.incarnation));
     }

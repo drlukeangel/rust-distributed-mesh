@@ -138,9 +138,9 @@ pub struct Node {
     /// (`status_rpc`); `None` until it declares. Not `status`: that is what the topology view hears.
     #[serde(default)]
     pub declared: Option<String>,
-    /// Stopped and parked: `Leaving` with a live process, waiting for a start or a delete.
+    /// Stopped: `Leaving` with a live process, waiting for a start or a delete.
     #[serde(default)]
-    pub parked: bool,
+    pub stopped: bool,
     /// The node's config as its digest carries it: the application's own key/values, opaque to RDM.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
@@ -174,7 +174,7 @@ impl Node {
             // Nothing realised yet: not ready-for-traffic, so not selected.
             routable: false,
             declared: None,
-            parked: false,
+            stopped: false,
             config: Default::default(),
         }
     }

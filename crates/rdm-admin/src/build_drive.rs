@@ -1131,7 +1131,7 @@ impl DriveEnv {
         loop {
             // Each pass is one turn of the admin's gate (stop_gate.rs): it begins here, holding
             // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
-            // progress when a stop parks the gate runs to its end (the attempt it dispatched, its
+            // progress when a stop holds the gate runs to its end (the attempt it dispatched, its
             // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
             let _ = last_turn.take();
             // Of its Build: a stop of this admin that the Build's own run commands does not wait for

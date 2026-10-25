@@ -79,7 +79,7 @@ pub enum BuildChange {
         /// The node.
         node: PathName,
     },
-    /// Start the parked birth at `node`: the same process rejoins as itself.
+    /// Start the stopped birth at `node`: the same process rejoins as itself.
     Start {
         /// The node.
         node: PathName,

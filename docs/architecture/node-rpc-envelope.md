@@ -838,7 +838,7 @@ pub enum StatusReply {
     Stopped { receipt: ConnectionsReceipt },
     Started,
     StartFailed { step: String, reason: String },
-    CurrentParked { node_id: NodeId, incarnation: IncarnationId },
+    CurrentStopped { node_id: NodeId, incarnation: IncarnationId },
     ConfigUpdated { node_id: NodeId, incarnation: IncarnationId },
     RejectedConfig { over: ConfigOverCap },
     ConfigRowRefused { node: String, reason: String },

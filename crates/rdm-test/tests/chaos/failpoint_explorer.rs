@@ -366,7 +366,7 @@ async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 /// CONTRACT (#2780): every documented Build/deployment step, lifecycle hook,
 /// accepted-Build persistence cut, runtime publication cut and Pending gate of a real
 /// node-admin is held independently at its one point and released. For each cut: the testkit door
-/// acknowledges the arming and then the active hold (naming the exact call that parked: Build,
+/// acknowledges the arming and then the active hold (naming the exact call that was held: Build,
 /// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
 /// and is not complete, the later steps have not begun, and
 /// the runtime count is the one the cut position implies; release alone completes the Build with
@@ -533,13 +533,13 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
     let hold_cut = c["hold_cut"].as_str().unwrap_or(cut);
     let holds: Vec<&Value> = named(spans, "rdm.testkit.fault.update.via-hold").into_iter().filter(|s| attr(s, "cut") == hold_cut).collect();
     assert!(!holds.is_empty(), "`{cut}`: a hold span was exported for the cut");
-    // Every call a cut parks has its own hold span (a cut may park several writers): the hold is
+    // Every call a cut holds has its own hold span (a cut may hold several writers): the hold is
     // from the first one's start to the last one's end.
     let first = holds.iter().min_by_key(|s| span_start(s)).unwrap();
     let last = holds.iter().max_by_key(|s| span_end(s)).unwrap();
     let hold = &json!({"span_id": first["span_id"], "start_unix_nano": span_start(first), "end_unix_nano": span_end(last), "service": first["service"]});
     assert!(span_end(hold) > span_start(hold));
-    let parked_calls = holds.len();
+    let held_calls = holds.len();
     let kind = c["kind"].as_str().unwrap();
     let hold_ms = (span_end(hold) - span_start(hold)) / 1_000_000;
     match kind {
@@ -548,7 +548,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             let published: Vec<&Value> = named(spans, name).into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap() && attr(s, "attempt") == c["attempt"].as_u64().unwrap().to_string()).collect();
             assert!(!published.is_empty(), "`{cut}`: {name} was published for the Build");
             assert!(published.iter().all(|s| span_start(s) >= span_end(hold)), "`{cut}`: the event was published only after the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "published_span_id": published[0]["span_id"], "published_ms_after_release": (span_start(published[0]) - span_end(hold)) / 1_000_000});
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "published_span_id": published[0]["span_id"], "published_ms_after_release": (span_start(published[0]) - span_end(hold)) / 1_000_000});
         }
         "hook" => {
             let hooks: Vec<&Value> = named(spans, "rdm.node_admin.lifecycle_hook.update.via-transition")
@@ -565,7 +565,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             // The acceptance spans the one write (R-BI3: the Build is current once durable), so the hold
             // before the write ends before the span does.
             assert!(span_end(written[0]) >= span_end(hold), "`{cut}`: the acceptance did not end before the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "accepted_span_id": written[0]["span_id"], "node": attr(written[0], "node"), "ended_ms_after_release": (span_end(written[0]) as i64 - span_end(hold) as i64) / 1_000_000});
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "accepted_span_id": written[0]["span_id"], "node": attr(written[0], "node"), "ended_ms_after_release": (span_end(written[0]) as i64 - span_end(hold) as i64) / 1_000_000});
         }
         "ready-after" => {
             let node = c["node"].as_str().unwrap();
@@ -575,7 +575,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             let want = c["blocked_detail"].as_str().unwrap();
             if want.is_empty() {
                 // Held inside its own start: it has not bound its control listener, published or evaluated a gate.
-                return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000});
+                return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000});
             }
             let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
                 .into_iter()
@@ -598,7 +598,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             };
             let blocked: Vec<&Value> = blocked.into_iter().filter(|s| span_start(s) < cleared_at).collect();
             assert!(!blocked.is_empty(), "`{cut}`: {node} named its blocker (\"{want}\") before the {cleared_by}");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000, "blocked_span_id": blocked[0]["span_id"], "blocked_detail": attr(blocked[0], "detail")});
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000, "blocked_span_id": blocked[0]["span_id"], "blocked_detail": attr(blocked[0], "detail")});
         }
         _ => {}
     }
@@ -669,7 +669,7 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
 
 /// A restart's steps, in order, all of its one operation `node.restart:<path>` (node-restart.md):
 /// the pre-event and the stop, so the birth stops with its process alive (no runtime is
-/// terminated and no membership is removed), then `start-node` to the parked birth, its ready, and
+/// terminated and no membership is removed), then `start-node` to the stopped birth, its ready, and
 /// one `Complete`.
 fn restart_order(retire_order: &[String]) -> Vec<String> {
     let mut o: Vec<String> = vec![RetireStep::NodeRestarting.name().to_string()];
@@ -710,10 +710,10 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(attempt)), Vec::<String>::new(), "no step of the restart is a retire-node receipt: {b}");
     let counts = step_counts(&b, &op, attempt);
     assert!(counts.values().all(|c| *c == 1) && counts.len() == order.len(), "no step receipt twice in {op}: {counts:?}");
-    let after_node = run.estate.until_node(node, &format!("{node} ready again and no longer parked"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
+    let after_node = run.estate.until_node(node, &format!("{node} ready again and no longer stopped"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
     let after_node = serde_json::to_value(after_node).expect("a view serializes");
     assert_eq!(after_node["node_id"], before["node_id"], "a restart keeps the NodeId");
-    assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the parked birth");
+    assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the stopped birth");
     assert_eq!(run.processes(node), process_before, "a restart is stop then start on the same process");
     assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
     assert_eq!(run.fabric_build_id().await, current_before, "the current build_id is unchanged by a restart");

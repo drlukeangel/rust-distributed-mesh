@@ -1244,7 +1244,7 @@ async fn a_replace_rolled_back_by_its_recipe_ends_with_the_predecessor_ready_und
 /// are already done): the removal is announced, the provider's exact Exited is the proof, then the
 /// executor publishes NodeDeleted and the operation's Complete names the birth. Storage is not
 /// released.
-const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
+const DELETE_STOPPED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
 
 /// CONTRACT: the recipe's `node[1].delete` of the stopped predecessor at `<path>.old`
 /// (lifecycles/node-replace.md step 2; node-delete.md) as its own call: `mesh1.rpc.1` has its
@@ -1260,8 +1260,8 @@ const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "Nod
 async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
     let (estate, birth_build) = estate("deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
     let nodes = objects(&estate).await;
-    let parked = leave_rename_and_stop(&estate, &nodes, "mesh1.rpc.1").await;
-    delete_stopped_and_assert(&estate, &birth_build, &parked).await;
+    let stopped = leave_rename_and_stop(&estate, &nodes, "mesh1.rpc.1").await;
+    delete_stopped_and_assert(&estate, &birth_build, &stopped).await;
     estate.shutdown().await;
 }
 
@@ -1274,11 +1274,11 @@ async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted
 async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record() {
     let (estate, birth_build) = two_mesh_estate("deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_primary_held_record").await;
     let nodes = objects(&estate).await;
-    let parked = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
-    assert!(parked.renamed_by.starts_with("mesh2.admin."), "mesh2's primary renamed it: {}", parked.renamed_by);
-    assert!(parked.fabric_primary.starts_with("mesh1.admin."), "the fabric-primary is in mesh1: {}", parked.fabric_primary);
-    let executor = delete_stopped_and_assert(&estate, &birth_build, &parked).await;
-    assert_eq!(executor, parked.renamed_by, "mesh2's primary, the writer of its rows, executes the delete");
+    let stopped = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
+    assert!(stopped.renamed_by.starts_with("mesh2.admin."), "mesh2's primary renamed it: {}", stopped.renamed_by);
+    assert!(stopped.fabric_primary.starts_with("mesh1.admin."), "the fabric-primary is in mesh1: {}", stopped.fabric_primary);
+    let executor = delete_stopped_and_assert(&estate, &birth_build, &stopped).await;
+    assert_eq!(executor, stopped.renamed_by, "mesh2's primary, the writer of its rows, executes the delete");
     estate.shutdown().await;
 }
 
@@ -1286,15 +1286,15 @@ async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_pr
 /// the delete (node-delete.md: "Stop and inspect the exact runtime through provider control"). mesh2's
 /// primary is stopped, its seats moving to mesh2's other admin; that admin did not rename the birth.
 /// It resolves the exact stopped birth the action is fenced to from what it holds of that birth (its
-/// topology view's parked digest, else its durable runtime row of it), ends it with the provider's
+/// topology view's stopped digest, else its durable runtime row of it), ends it with the provider's
 /// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
 /// `<path>.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
     let (estate, birth_build) = fabric_of("deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth", &[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = objects(&estate).await;
-    let parked = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
-    let first_primary = parked.renamed_by.clone();
+    let stopped_birth = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
+    let first_primary = stopped_birth.renamed_by.clone();
     assert!(first_primary.starts_with("mesh2.admin."), "mesh2's primary renamed it: {first_primary}");
     // mesh2's primary changes: its stop hands its seats to mesh2's other admin, which executes that
     // stop (executor_for: the mesh primary never executes its own).
@@ -1304,13 +1304,13 @@ async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_execut
         estate.meshes_obj().await.nodes("mesh2", None).await.ok()?.into_iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary && n.name.to_string() != first_primary).map(|n| n.name.to_string())
     })
     .await;
-    let executor = delete_stopped_and_assert(&estate, &birth_build, &parked).await;
+    let executor = delete_stopped_and_assert(&estate, &birth_build, &stopped_birth).await;
     assert_eq!(executor, new_primary, "mesh2's new primary, which did not rename the birth, executes the delete");
     estate.shutdown().await;
 }
 
 /// The stopped birth a recipe's rename left at `<path>.old`: who it was, where, who renamed it.
-struct Parked {
+struct StoppedBirth {
     node: String,
     before: Value,
     pid: u64,
@@ -1334,7 +1334,7 @@ async fn objects(estate: &Estate) -> Nodes {
 /// `node` off its mesh, renamed `<node>.old` live and stopped there by the predecessor's half of a
 /// replace recipe (lifecycles/node-replace.md steps 1-2): the stopped birth a recipe's `node[1].delete`
 /// deletes.
-async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> Parked {
+async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> StoppedBirth {
     let path: PathName = node.parse().unwrap();
     let before = estate.node_value(node).await;
     let pid = estate.pid_of(node).await;
@@ -1345,16 +1345,16 @@ async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &str) -> Pa
     let got = frames(nodes.recipe(predecessor_steps(&path)).await.expect("the predecessor's half of the replace was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let mesh = estate.meshes_obj().await.nodes(&path.mesh, None).await.expect("mesh.nodes.get");
-    let parked = mesh.iter().find(|n| n.name == path.renamed() && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} parked at {} once its recipe completed: {mesh:#?}", path.renamed()));
-    assert_eq!(parked.node_id.to_string(), s(&before["node_id"]), "the stopped birth at {} is {node}'s", path.renamed());
+    let stopped = mesh.iter().find(|n| n.name == path.renamed() && n.stopped).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} stopped at {} once its recipe completed: {mesh:#?}", path.renamed()));
+    assert_eq!(stopped.node_id.to_string(), s(&before["node_id"]), "the stopped birth at {} is {node}'s", path.renamed());
     assert!(alive(pid), "the stopped {node} ({pid}) is alive before its delete");
-    Parked { node: node.to_string(), before, pid, old_dir, renamed_by: primary.name.to_string(), fabric_primary }
+    StoppedBirth { node: node.to_string(), before, pid, old_dir, renamed_by: primary.name.to_string(), fabric_primary }
 }
 
-/// `build.create` of a RemoveNode change at `<path>.old` of `parked`, and everything node.delete owes (node-delete.md).
+/// `build.create` of a RemoveNode change at `<path>.old` of `stopped`, and everything node.delete owes (node-delete.md).
 /// Returns the admin that executed the delete.
-async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, parked: &Parked) -> String {
-    let Parked { node, before, pid, old_dir, .. } = parked;
+async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: &StoppedBirth) -> String {
+    let StoppedBirth { node, before, pid, old_dir, .. } = stopped;
     let old_name = format!("{node}.old");
     let delete = estate.submit_change(Change::RemoveNode { node: Estate::path(&old_name) }).await;
     assert_eq!(delete.build_id().as_str(), birth_build, "no Build is minted");
@@ -1376,7 +1376,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, parked: &
     let reconcile = reconcile_span(&spans, birth_build, &attempt).unwrap();
     assert_eq!(s(&reconcile["attributes"]["operations"]), format!("node.delete:{old_name}"), "one delete operation of the stopped birth: {reconcile}");
     let mut last = 0u64;
-    for step in DELETE_PARKED_ORDER {
+    for step in DELETE_STOPPED_ORDER {
         let sp = step_span(&spans, birth_build, &attempt, &old_name, step).unwrap_or_else(|| panic!("step {step} of the delete ran"));
         assert!(start(sp) >= last, "step {step} starts before the step it follows: {sp}");
         last = start(sp);

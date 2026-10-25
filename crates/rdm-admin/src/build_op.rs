@@ -108,7 +108,7 @@ impl BuildDoor {
             cp.submit_in(span, "build.create", c).await
         };
         let r = match change {
-            // The parked predecessor a replacement left at `<path>.old`, and the last admin of a mesh
+            // The stopped predecessor a replacement left at `<path>.old`, and the last admin of a mesh
             // deleted at mesh.deleted (mesh-delete.md step 7: a separate node.delete after
             // mesh.deleted), are deleted by the next attempt of the accepted Build, fenced to the exact
             // birth: the topology never names that path.

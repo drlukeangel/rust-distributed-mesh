@@ -167,13 +167,13 @@ impl Cadence {
 
 // ---- node.tickle (node-tickle.md): the one reach ladder ----
 
-/// The birth's own answer on the probe (node-tickle.md "Probe"): `Current`, `CurrentParked` while it
-/// is parked, or `Blocked` while its hook is Blocked, naming the exact birth probed. A carrier's
+/// The birth's own answer on the probe (node-tickle.md "Probe"): `Current`, `CurrentStopped` while it
+/// is stopped, or `Blocked` while its hook is Blocked, naming the exact birth probed. A carrier's
 /// `InnerNotSent` (no reply reaches the ladder), a `NotReady` and any refusal are not answers.
 pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> bool {
     use rdm_core::status::StatusReply;
     match reply {
-        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentParked { node_id: n, incarnation: i } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
+        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentStopped { node_id: n, incarnation: i } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
         _ => false,
     }
 }
@@ -495,7 +495,7 @@ struct LadderRun {
     path: String,
     /// The mark (or first sighting) the ladder ran on, named on its spans.
     seen_at: u64,
-    /// `None`: the ladder was cancelled at a stop's park.
+    /// `None`: the ladder was cancelled at a stop.
     task: tokio::task::JoinHandle<Option<LadderEnd>>,
 }
 
@@ -521,7 +521,7 @@ pub(crate) struct OfflineTickle {
     /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
     /// read from which admin ran each ladder.
     observer: String,
-    /// The admin's stop gate: a stop's park retires the ladders in flight.
+    /// The admin's stop gate: a stop retires the ladders in flight.
     gate: crate::stop_gate::StopGate,
 }
 
@@ -540,7 +540,7 @@ impl OfflineTickle {
         Self::default()
     }
 
-    /// The tickle of node-admin `observer` (its path.name), whose ladders a park of `gate` retires.
+    /// The tickle of node-admin `observer` (its path.name), whose ladders a stop of `gate` retires.
     pub fn observed_by(observer: String, gate: crate::stop_gate::StopGate) -> Self {
         let mut tickle = Self::default();
         tickle.observer = observer;
@@ -654,7 +654,7 @@ impl OfflineTickle {
             }
             let Some(LadderRun { started_at_ms, path, seen_at, task }) = self.running.remove(&birth) else { continue };
             // A ladder that panicked takes the loop with it, as one run inside the pass did. A ladder
-            // cancelled at a stop's park found nothing: nothing is folded, and the birth is due again.
+            // cancelled at a stop found nothing: nothing is folded, and the birth is due again.
             let end = match task.await {
                 Ok(Some(end)) => end,
                 Ok(None) => continue,
@@ -753,7 +753,7 @@ impl OfflineTickle {
                 "hold-down"
             };
             // The ladder: the one ladder over the birth (`tickle`). It takes no lock and waits on
-            // nothing of this admin's; a stop's park cancels it where it stands
+            // nothing of this admin's; a stop cancels it where it stands
             // (`StopGate::until_stopped`), and it never resumes.
             let ladder = tickle(id.clone());
             // The verdict's instant on the tick clock: this tick's `now_ms` plus the time since it began.
@@ -773,7 +773,7 @@ impl OfflineTickle {
             let task = tokio::spawn(async move {
                 let end = run.await;
                 if end.is_none() {
-                    tracing::info!(node_id = %cancelled_id, path = %cancelled_path, observer = %cancelled_by, "the tickle ladder was cancelled at the stop's park: it proves nothing, and the birth is due again");
+                    tracing::info!(node_id = %cancelled_id, path = %cancelled_path, observer = %cancelled_by, "the tickle ladder was cancelled at the stop: it proves nothing, and the birth is due again");
                 }
                 end
             });
@@ -785,7 +785,7 @@ impl OfflineTickle {
 
 /// The recovery of a TRUE OFFLINE birth (`follow`: the provider's proof, the submit, and the Build
 /// followed to its end, `RecoverySubmitter::recover_if_proven`), run beside the mesh-primary's loop.
-/// A stop's park cancels it where it stands, the view lock it holds or waits on included, and does not
+/// A stop cancels it where it stands, the view lock it holds or waits on included, and does not
 /// wait for it (`StopGate::until_stopped`); a submit it already made is answered AlreadyApplied or
 /// BuildInProgress when it comes again. The birth leaves `in_flight` either way, so the first tick
 /// that finds it due again, after a start or at the seat's next holder, submits it again.
@@ -796,7 +796,7 @@ where
     let follow = gate.until_stopped(follow);
     tokio::spawn(async move {
         if follow.await.is_none() {
-            tracing::info!(node_id = %birth.0, incarnation = %birth.1 .as_str(), "the recovery follower was cancelled at the stop's park: the next tick that finds the birth due submits it again");
+            tracing::info!(node_id = %birth.0, incarnation = %birth.1 .as_str(), "the recovery follower was cancelled at the stop: the next tick that finds the birth due submits it again");
         }
         in_flight.lock().unwrap().remove(&birth);
     })
@@ -1099,12 +1099,12 @@ pub(crate) mod tests {
         }
 
         /// CONTRACT (node-stop retires the work the loop runs beside it; the lead's decision: "a stop
-        /// cancels it as part of retiring the birth, and does not wait for it"): a stop's park while a
-        /// tickle ladder and a recovery follower are in flight ends both at the park, with no time
+        /// cancels it as part of retiring the birth, and does not wait for it"): a stop while a
+        /// tickle ladder and a recovery follower are in flight ends both at the stop, with no time
         /// passing. The follower, queued on the view lock a handler holds, leaves that queue, and its
         /// birth leaves `in_flight`, so the first tick after a start submits again; neither goes on
         /// when the gate opens again, and the next tick folds nothing of the cancelled ladder and starts
-        /// it again. Must NOT happen: a ladder's probe or a follower running on past the park, one held
+        /// it again. Must NOT happen: a ladder's probe or a follower running on past the stop, one held
         /// at the gate while it waits on the view lock, or one resumed by the start.
         #[tokio::test(start_paused = true)]
         async fn a_stops_gate_cancels_the_tickle_ladder_and_the_recovery_follower_in_flight() {
@@ -1155,10 +1155,10 @@ pub(crate) mod tests {
             let at = Instant::now();
             gate.quiesce().await;
             tokio::task::yield_now().await;
-            assert_eq!(t.ladders(), (1, 1), "the ladder ended at the park");
-            assert!(follower.is_finished(), "the follower ended at the park");
+            assert_eq!(t.ladders(), (1, 1), "the ladder ended at the stop");
+            assert!(follower.is_finished(), "the follower ended at the stop");
             assert!(in_flight.lock().unwrap().is_empty(), "its birth left in_flight: a tick after the start submits again");
-            assert_eq!(at.elapsed(), Duration::ZERO, "the park waited on neither");
+            assert_eq!(at.elapsed(), Duration::ZERO, "the stop waited on neither");
             gate.resume();
             drop(held);
             sleep(DIAL + INTERVAL).await;
@@ -1245,8 +1245,8 @@ pub(crate) mod tests {
             StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::ReadyForTraffic }
         }
 
-        fn parked(b: &(NodeId, IncarnationId)) -> StatusReply {
-            StatusReply::CurrentParked { node_id: b.0.clone(), incarnation: b.1.clone() }
+        fn stopped(b: &(NodeId, IncarnationId)) -> StatusReply {
+            StatusReply::CurrentStopped { node_id: b.0.clone(), incarnation: b.1.clone() }
         }
 
         /// The silent member `mesh1.rpc.1` at birth `b`, and its mesh: two ready members, this
@@ -1434,32 +1434,32 @@ pub(crate) mod tests {
             assert_eq!(rig.ended.load(Ordering::SeqCst), 2, "the probe still running was cancelled with the ladder");
         }
 
-        /// CONTRACT (R-SW1 acceptance 3; node-tickle.md "a stopped node answers CurrentParked"): a
-        /// stopped holder's `CurrentParked` through a peer is the birth's answer and ends the ladder;
+        /// CONTRACT (R-SW1 acceptance 3; node-tickle.md "a stopped node answers CurrentStopped"): a
+        /// stopped holder's `CurrentStopped` through a peer is the birth's answer and ends the ladder;
         /// a carrier's own refusal before it is not an answer.
         #[tokio::test(start_paused = true)]
         async fn a_stopped_primary_answering_current_through_a_peer_ends_the_ladder() {
             let b = birth();
             let (node, view) = member_and_view(&b);
-            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_millis(5), Some(StatusReply::NotReady { reason: "carrier not ready".into() }))), ("mesh1.rpc.3", probe(Duration::from_millis(20), Some(parked(&b))))]);
+            let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_millis(5), Some(StatusReply::NotReady { reason: "carrier not ready".into() }))), ("mesh1.rpc.3", probe(Duration::from_millis(20), Some(stopped(&b))))]);
             match tickle(&node, &view, &rig).await.unwrap() {
-                Tickle::Reached { answer, carrier: Some(c) } => assert_eq!((answer, c.as_str()), (parked(&b), "mesh1.rpc.3")),
-                other => panic!("CurrentParked through a peer is reached: {other:?}"),
+                Tickle::Reached { answer, carrier: Some(c) } => assert_eq!((answer, c.as_str()), (stopped(&b), "mesh1.rpc.3")),
+                other => panic!("CurrentStopped through a peer is reached: {other:?}"),
             }
         }
 
-        /// CONTRACT (R-SW1 item 3; node-tickle.md "Probe"): an answer is `Current`, `CurrentParked` or
+        /// CONTRACT (R-SW1 item 3; node-tickle.md "Probe"): an answer is `Current`, `CurrentStopped` or
         /// `Blocked` from the exact birth probed. A NotReady (a carrier's or anyone's), another
         /// incarnation's reply, a refusal and no reply at all are not answers.
         #[test]
         fn only_the_exact_births_state_is_an_answer() {
             let b = birth();
             let blocked = StatusReply::Blocked { node_id: b.0.clone(), incarnation: b.1.clone(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } };
-            for r in [current(&b), parked(&b), blocked] {
+            for r in [current(&b), stopped(&b), blocked] {
                 assert!(birth_answered(Some(&r), &b.0, &b.1), "{} is the birth's answer", r.name());
             }
             let other = (b.0.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("an-older-birth")).unwrap());
-            for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), parked(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
+            for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), stopped(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
                 assert!(!birth_answered(Some(&r), &b.0, &b.1), "{} is no answer from the exact birth", r.name());
             }
             assert!(!birth_answered(None, &b.0, &b.1), "no reply (a deadline, carrier-edge-lost) is no answer");

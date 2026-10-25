@@ -53,7 +53,7 @@ pub enum Age {
     /// The current stopped period's own stop receipt, stamped in rafka-time.
     StoppedAt(u64),
     /// No stop receipt opens the current stopped period (a later start ended the last one
-    /// receipted, or the birth was parked by something other than a standalone stop).
+    /// receipted, or the birth was stopped by something other than a standalone stop).
     NoCurrentReceipt(String),
     /// A stop receipt is held but cannot be read.
     Unreadable(String),
@@ -247,7 +247,7 @@ impl crate::control_plane::ControlPlane {
             },
         };
         let facts = self.builds.facts().await;
-        let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.parked).collect();
+        let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.stopped).collect();
         stopped.sort_by(|a, b| a.name.to_string().cmp(&b.name.to_string()));
         let mut out = Vec::new();
         for n in stopped {
@@ -360,7 +360,7 @@ impl crate::control_plane::ControlPlane {
     }
 
     /// The recheck at the delete's admission: the view still holds the candidate's exact birth
-    /// parked, no open Build references it, and its current stopped period is the one the scan aged.
+    /// stopped, no open Build references it, and its current stopped period is the one the scan aged.
     pub(crate) async fn recheck_stopped(&self, c: &Candidate) -> Result<(), BuildReject> {
         let not_stopped = |found: String| BuildReject::NodeNotStopped { node: c.node.to_string(), found };
         let view = self.view().await;
@@ -368,8 +368,8 @@ impl crate::control_plane::ControlPlane {
         if n.node_id != c.node_id || n.incarnation_id.as_ref() != Some(&c.incarnation) {
             return Err(not_stopped(format!("the view holds another birth there ({} at {:?})", n.node_id, n.incarnation_id)));
         }
-        if !n.parked {
-            return Err(not_stopped(format!("it is {:?} and not parked: started since the scan", n.status)));
+        if !n.stopped {
+            return Err(not_stopped(format!("it is {:?} and not stopped: started since the scan", n.status)));
         }
         match self.open_reference(&c.incarnation).await {
             Ok(Some(build_id)) => return Err(BuildReject::ReferencedByOpenBuild { node: c.node.to_string(), build_id: build_id.to_string() }),

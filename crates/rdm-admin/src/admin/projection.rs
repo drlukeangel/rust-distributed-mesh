@@ -373,8 +373,8 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             }
         }
     }
-    // A parked birth (stopped, its process alive): the digest view dropped it, and this view keeps it,
-    // `Leaving` and `parked`, until it rejoins as itself or departs.
+    // A stopped birth (its process alive): the digest view dropped it, and this view keeps it,
+    // `Leaving` and `stopped`, until it rejoins as itself or departs.
     for d in digest_view.stopped_digests() {
         if &d.fabric_id != fabric_id || digest_view.is_deleted(d.node.node_id.as_str()) {
             continue;
@@ -396,7 +396,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(provider);
         n.status = NodeStatus::Leaving;
-        n.parked = true;
+        n.stopped = true;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
@@ -411,8 +411,8 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         }
         nodes.entry(name).or_insert(n);
     }
-    // A parked birth this admin never held a digest of (it joined after the stop): the stop
-    // overlay the mesh topology carried names it, `Leaving` and `parked`, until it rejoins or departs.
+    // A stopped birth this admin never held a digest of (it joined after the stop): the stop
+    // overlay the mesh topology carried names it, `Leaving` and `stopped`, until it rejoins or departs.
     for op in digest_view.stopped_unheard() {
         if digest_view.is_deleted(op.node_id.as_str()) {
             continue;
@@ -427,7 +427,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.incarnation_id = Some(op.incarnation.clone());
         n.provider = Some(provider);
         n.status = NodeStatus::Leaving;
-        n.parked = true;
+        n.stopped = true;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
@@ -562,7 +562,7 @@ pub(crate) const VIEW_POLL: Duration = Duration::from_millis(200);
 
 /// The view's next rebuild is due: at once when a routing fact the digest view holds moved since the last
 /// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
-/// applied on receipt), else after `poll`; and only while the admin's gate is open. A parked admin's
+/// applied on receipt), else after `poll`; and only while the admin's gate is open. A stopped admin's
 /// rebuild is held here, holding nothing, and is due the moment the gate opens. Answers the
 /// rebuild's turn: the caller ends it before it waits here again.
 pub(crate) async fn view_rebuild_due(facts: &mut rdm_transport::topology::RoutingWatch, poll: Duration, gate: &crate::stop_gate::StopGate) -> crate::stop_gate::Turn {

@@ -89,7 +89,7 @@ fn refused(r: Result<rdm_admin::control_plane::Opened, Refusal>) -> (String, Str
 }
 
 /// CONTRACT (R-PC1): until the initial fabric has first reached ready-for-traffic, a caller's node.stop,
-/// node.start, node.restart, node.delete of a parked `.old` and recipe are each refused
+/// node.start, node.restart, node.delete of a stopped `.old` and recipe are each refused
 /// `fabric-not-ready`, whatever the node's own state: the refusal names the workflow and its node and
 /// the fabric's status (state-sync), no attempt is opened, and no Build fact is written. One
 /// `rdm.node_admin.build.reject.via-fabric-not-ready` span per refusal says the same.

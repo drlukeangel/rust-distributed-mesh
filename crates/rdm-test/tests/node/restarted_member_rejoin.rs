@@ -62,7 +62,7 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     Estate::complete(&mut restart).await;
     let after = estate.node_view(NODE).await;
     assert_eq!(after.status, NodeStatus::ReadyForTraffic, "the restarted birth is ready: {after:?}");
-    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart is stop then start on the parked process: it keeps the NodeId and the incarnation");
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart is stop then start on the stopped process: it keeps the NodeId and the incarnation");
     estate.stop().await;
     let spans = estate.spans();
     let json = |n: &NodeView| serde_json::to_value(n).expect("a view serializes");
@@ -123,7 +123,7 @@ async fn restarted_member_resubscribes_its_mesh_channel_and_its_entry_completes_
     std::fs::create_dir_all(&dir).unwrap();
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
 
-    // A restarted node rejoins on the process it parked on: its entry pull completes (`topology_view-joined`)
+    // A restarted node rejoins on the process it stopped on: its entry pull completes (`topology_view-joined`)
     // and its mesh channel is resubscribed at once after (the resubscribe span names no node: the first
     // one on the channel after the rejoin is the node's own).
     let rejoin = named(&spans, "rdm.mesh.node.update.via-topology-joined").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).min_by_key(|sp| at(sp)).cloned().expect("the restarted node rejoined its mesh");

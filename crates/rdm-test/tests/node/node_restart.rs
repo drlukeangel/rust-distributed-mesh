@@ -12,7 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// The fabric-primary's reason, on `rdm.node_admin.node.reject.via-not-live`, for a fresh `node.restart`
-/// of a stopped (parked) birth no restart is open on.
+/// of a stopped birth no restart is open on.
 const STOPPED: &str = "a fresh restart of a stopped node is refused: node.start starts it";
 
 fn owner(test: &str) -> Owner {
@@ -71,7 +71,7 @@ fn not_live<'a>(spans: &'a [Value], node: &PathName) -> Vec<&'a Value> {
     named(spans, "rdm.node_admin.node.reject.via-not-live").into_iter().filter(|sp| attr(sp, "node") == node.to_string()).collect()
 }
 
-/// CONTRACT: an RPC node restarted through Build is stop then start on the parked process: the same
+/// CONTRACT: an RPC node restarted through Build is stop then start on the stopped process: the same
 /// node id, incarnation, endpoint key and port, the same process; it still serves the value written
 /// before the restart from its own data dir, resets an unfinished request with 499 (NotSent), and
 /// leaves a Build -> node operation -> start step -> start span chain linked by ParentSpanId.
@@ -89,7 +89,7 @@ async fn rpc_node_restarts_as_the_same_birth_in_the_same_process_and_recovers_st
 }
 
 /// CONTRACT (R-PV1, D3 the fresh-request versus resumption rule; PRD i144 R12: "a new `node.restart`
-/// against a stopped node is refused by name"): a member stopped by `node.stop` (parked, `leaving`,
+/// against a stopped node is refused by name"): a member stopped by `node.stop` (`leaving`,
 /// its process alive) is not restarted by a fresh `node.restart`: the fabric-primary refuses it
 /// `node-not-live` before any attempt is opened, its `via-not-live` span naming the member, its status
 /// `leaving` and why (`node.start` starts a stopped node). `node.start` of the same member is then
@@ -104,8 +104,8 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
     let before = view_of(&estate.meshes_obj().await, &member).await;
     let stopped = frames(nodes.stop(&member).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let parked = view_of(&estate.meshes_obj().await, &member).await;
-    assert!(parked.stopped && parked.status == NodeStatus::Leaving, "node.get lists {member} parked: {parked:?}");
+    let stopped = view_of(&estate.meshes_obj().await, &member).await;
+    assert!(stopped.stopped && stopped.status == NodeStatus::Leaving, "node.get lists {member} stopped: {stopped:?}");
 
     match nodes.restart(&member).await {
         Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "node-not-live" && detail.contains(&member.to_string()), "the fresh restart is refused by name: {reason}: {detail}"),

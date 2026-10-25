@@ -330,7 +330,7 @@ fn assert_serve_chain(spans: &[Value], want_serves: usize) -> Value {
 /// counter at one and its dispatched and handler counters unmoved (no serve span for that call);
 /// (2) a complete, finished request whose handler holds before the apply answers Indeterminate
 /// (ReplyDeadline), never NotSent, with the store unchanged at that instant and the apply counter
-/// unmoved; the held handler is observed parked by its own reached signal; release then applies it
+/// unmoved; the held handler is observed held by its own reached signal; release then applies it
 /// exactly once and the caller's outcome stays Indeterminate with no second dispatch. What must NOT
 /// happen: NotSent inferred from a post-commit timeout, a dispatch for the unfinished request, or a
 /// replay by the client.
@@ -372,7 +372,7 @@ fn failpoint_explorer_before_apply_proves_not_sent_or_unapplied() {
                     r.cuts.before_apply.reached().await;
                     let at_timeout = r.counters();
                     assert_eq!(at_timeout["dispatched"].as_u64(), Some(before["dispatched"].as_u64().unwrap() + 1), "the complete request was dispatched");
-                    assert_eq!(at_timeout["in_flight"], 1, "the handler is parked at the cut");
+                    assert_eq!(at_timeout["in_flight"], 1, "the handler is held at the cut");
                     assert_eq!(at_timeout["applied"], before["applied"], "zero effects while it holds");
                     assert_eq!(r.held(b"k-held"), None, "the store is unchanged at the instant of Indeterminate");
                     r.cuts.before_apply.release();
@@ -409,7 +409,7 @@ fn failpoint_explorer_before_apply_proves_not_sent_or_unapplied() {
 
 /// CONTRACT (#2780): a request whose handler applied and then lost its reply is Indeterminate at the
 /// caller, never NotSent: the store holds exactly one mutation, the server dispatched the call once,
-/// and nothing replays it. The held handler is observed parked after its apply by its own reached
+/// and nothing replays it. The held handler is observed held after its apply by its own reached
 /// signal and still in flight; release finishes it with the mutation still stored once and the
 /// connection healthy for the next call. An explicit idempotent retry by the caller is a separate,
 /// recorded act and the only second dispatch. What must NOT happen: NotSent after an apply, a
@@ -434,7 +434,7 @@ fn failpoint_explorer_after_apply_lost_reply_proves_indeterminate() {
             let at_timeout = r.counters();
             assert_eq!(at_timeout["dispatched"].as_u64(), Some(before["dispatched"].as_u64().unwrap() + 1));
             assert_eq!(at_timeout["applied"].as_u64(), Some(before["applied"].as_u64().unwrap() + 1), "exactly one stored mutation");
-            assert_eq!(at_timeout["in_flight"], 1, "the handler applied and is parked before its reply");
+            assert_eq!(at_timeout["in_flight"], 1, "the handler applied and is held before its reply");
             assert_eq!(r.held(b"k-lost"), Some(b"v-lost".to_vec()), "the mutation is stored though the caller saw no reply");
             r.cuts.after_apply.release();
             eventually("the released handler finished", || ServerStats::get(&r.stats.in_flight) == 0).await;

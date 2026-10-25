@@ -35,30 +35,30 @@ use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, S
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Whether this process is parked: it was stopped and not yet started. A parked process exits at
+/// Whether this process is stopped: it was stopped and not yet started. A stopped process exits at
 /// once on a termination signal (nothing is left to drain); only a delete ends it.
-pub struct Parking {
-    parked: std::sync::atomic::AtomicBool,
+pub struct ProcessStop {
+    stopped: std::sync::atomic::AtomicBool,
 }
 
-/// The process's parking.
-pub fn process_stop() -> &'static Parking {
-    static PARKING: std::sync::OnceLock<Parking> = std::sync::OnceLock::new();
-    PARKING.get_or_init(|| Parking { parked: std::sync::atomic::AtomicBool::new(false) })
+/// The process's stopping.
+pub fn process_stop() -> &'static ProcessStop {
+    static PROCESS_STOP: std::sync::OnceLock<ProcessStop> = std::sync::OnceLock::new();
+    PROCESS_STOP.get_or_init(|| ProcessStop { stopped: std::sync::atomic::AtomicBool::new(false) })
 }
 
-impl Parking {
-    /// A `stop-node` completed: the process is parked.
+impl ProcessStop {
+    /// A `stop-node` completed: the process is stopped.
     pub fn stop(&self) {
-        self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     /// A `start-node` rejoined: the process is live again.
     pub fn start(&self) {
-        self.parked.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.stopped.store(false, std::sync::atomic::Ordering::SeqCst);
     }
-    /// Whether the process is parked.
+    /// Whether the process is stopped.
     pub fn is_stopped(&self) -> bool {
-        self.parked.load(std::sync::atomic::Ordering::SeqCst)
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -71,14 +71,14 @@ pub struct CutReport {
     pub pooled: usize,
     /// Connections peers had made to this node, closed (the commander's spared).
     pub accepted: usize,
-    /// Turns of the node's gated tasks in progress when the cut began (a node-admin's park gate,
+    /// Turns of the node's gated tasks in progress when the cut began (a node-admin's stop gate,
     /// quiesced by the stop before it; an ordinary node holds none).
     pub turns_in_progress: usize,
 }
 
 /// What holding a node's own tasks for its stop waited for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TasksParked {
+pub struct TasksStopped {
     /// Turns of its gated tasks already past their wait point when they were held; the stop waited
     /// for each to end.
     pub turns_in_progress: usize,
@@ -136,7 +136,7 @@ impl From<StartFailed> for String {
     }
 }
 
-/// How a process leaves its mesh when parked and joins it again when started: the part of
+/// How a process leaves its mesh when stopped and joins it again when started: the part of
 /// stop and start that differs by node kind.
 #[async_trait::async_trait]
 pub trait Session: Send + Sync {
@@ -146,8 +146,8 @@ pub trait Session: Send + Sync {
     /// to wait for. `commanded_by` is the Build whose run on this node commanded this stop (a node
     /// executing its own node.delete, fabric-delete.md step 4): that run and the work it runs under
     /// wait on this stop, so it never waits for them; `None` for every other stop.
-    async fn hold_tasks(&self, _commanded_by: Option<&str>) -> TasksParked {
-        TasksParked::default()
+    async fn hold_tasks(&self, _commanded_by: Option<&str>) -> TasksStopped {
+        TasksStopped::default()
     }
     /// The endpoint keys of the callers Build `build`'s run on this node answers (the calls reading
     /// its frames): a stop that run commands spares their connections at its cut, as every stop
@@ -255,7 +255,7 @@ enum Cycle {
         /// start that came on no Node RPC call.
         commander: Option<tokio::sync::watch::Sender<iroh::PublicKey>>,
         /// The endpoint keys of every call commanding the start, each awaiting its answer: a failed
-        /// start that parks the birth again spares their connections, so each call is answered.
+        /// start that stops the birth again spares their connections, so each call is answered.
         calls: Vec<iroh::PublicKey>,
     },
 }
@@ -694,8 +694,8 @@ impl NodeSelf {
         NodeCommandReply::ConnectionsDeleted { closed: d.closed, not_open: d.not_open, held: d.held, receipt: d.receipt }
     }
 
-    /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.
-    /// A birth whose start is under way is parked until the start ends.
+    /// Whether this birth is stopped: stopped, its process alive, waiting for a start or a delete.
+    /// A birth whose start is under way is stopped until the start ends.
     pub fn is_stopped(&self) -> bool {
         matches!(*self.cycle.lock().unwrap(), Cycle::Stopped(_) | Cycle::Starting { .. })
     }
@@ -943,7 +943,7 @@ impl NodeSelf {
             let cycle = self.cycle.lock().unwrap();
             match &*cycle {
                 Cycle::Starting { .. } if stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()))),
-                Cycle::Stopping(_) if !stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()))),
+                Cycle::Stopping(_) if !stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a stopped process", self.held_name()))),
                 Cycle::Live(Some((build, op))) if !stopping && build == build_id && op == operation => None,
                 Cycle::Live(_) if !stopping => Some(rdm_core::reply::node_command::rejected_invalid_node_transition(crate::status::declared_of_member((self.status)()))),
                 _ => None,
@@ -1038,7 +1038,7 @@ impl NodeSelf {
     /// refreshed last (node-start.md steps 2 to 5), the way a start after a stop does. The birth leaves
     /// its channels first and says Pending; the command is answered `MeshJoined` once the join is
     /// accepted and the channel entered (node.mesh.joined), while the rest of the start runs on, and a
-    /// start that ends before that answers how it ended. A parked birth is started by `node.start`,
+    /// start that ends before that answers how it ended. A stopped birth is started by `node.start`,
     /// never by this.
     async fn serve_join_mesh(self: &Arc<Self>, spare: Option<iroh::PublicKey>, operation: rdm_core::status::DeclaredOperation) -> StatusReply {
         let Some(key) = spare else {
@@ -1054,7 +1054,7 @@ impl NodeSelf {
             match &*cycle {
                 Cycle::Live(_) => {}
                 Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; node.mesh.join is decided on the cycle it ends in", self.held_name())),
-                Cycle::Stopping(_) | Cycle::Stopped(_) => return rdm_core::reply::status::not_ready(format!("{}: a parked birth is started by node.start, not by node.mesh.join", self.held_name())),
+                Cycle::Stopping(_) | Cycle::Stopped(_) => return rdm_core::reply::status::not_ready(format!("{}: a stopped birth is started by node.start, not by node.mesh.join", self.held_name())),
             }
             *cycle = Cycle::Starting { outcome: outcome_rx.clone(), commander: Some(commander_tx), calls: vec![key] };
         }
@@ -1130,7 +1130,7 @@ impl NodeSelf {
             let mut cycle = self.cycle.lock().unwrap();
             match &*cycle {
                 Cycle::Stopped(r) => Next::Done(r.clone()),
-                // The start ends the stopped cycle: the receipt that parked the birth does not
+                // The start ends the stopped cycle: the receipt that stopped the birth does not
                 // answer for a birth on its way out of Leaving, as a start does not run beside a stop.
                 Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name())),
                 Cycle::Stopping(rx) => Next::Wait(rx.clone()),
@@ -1190,7 +1190,7 @@ impl NodeSelf {
             StopBy::FailedStart { commander, calls, op } => (commander, calls.to_vec(), Some(op), None, calls.len() as u64, false),
         };
         let operation = op.map_or(SIGNAL_STOP, |o| o.operation.as_str());
-        // A commanded stop parks its live process; a signal's process ends with its stop.
+        // A commanded stop leaves its live process stopped; a signal's process ends with its stop.
         if op.is_some() {
             process_stop().stop();
         }
@@ -1310,7 +1310,7 @@ impl NodeSelf {
         SignalStopped { receipt, declarations }
     }
 
-    /// The start: a parked birth rejoins as itself through its session. A birth that is not parked
+    /// The start: a stopped birth rejoins as itself through its session. A birth that is not stopped
     /// refuses it, naming the state it is in. A start that reaches the birth while another start of
     /// it is under way is the same natural key `(node_id, incarnation, Pending)`: it runs no rejoin
     /// of its own and answers that start's outcome, and its call is the one the start's join goes
@@ -1356,7 +1356,7 @@ impl NodeSelf {
                         }
                         Next::Join(outcome.clone())
                     }
-                    Cycle::Stopping(_) => return rdm_core::reply::status::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name())),
+                    Cycle::Stopping(_) => return rdm_core::reply::status::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a stopped process", self.held_name())),
                     Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return rdm_core::reply::already_applied(),
                     Cycle::Live(_) => {
                         return rdm_core::reply::status::rejected_invalid_node_transition(crate::status::declared_of_member((self.status)()));
@@ -1412,7 +1412,7 @@ impl NodeSelf {
                     // operation: its connections deleted (the calls commanding the start are in flight
                     // and not eligible work), its tasks held (a turn its rejoin let begin runs to its
                     // end), its mesh left sparing every call commanding the start so each is answered,
-                    // its `Stopped` owed to the mesh-primary. The receipt it parks with is this stop's.
+                    // its `Stopped` owed to the mesh-primary. The receipt it stops with is this stop's.
                     let calls = match &*self.cycle.lock().unwrap() {
                         Cycle::Starting { calls, .. } => calls.clone(),
                         _ => spare.into_iter().collect(),

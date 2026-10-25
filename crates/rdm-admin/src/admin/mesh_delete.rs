@@ -59,7 +59,7 @@ impl AdminRunner {
     }
 
     /// The record this admin's topology view holds of the exact roster birth `b`: its digest, live or
-    /// parked, as the view projects a digest (the leave's records, [`crate::mesh_delete::roster_records`]).
+    /// stopped, as the view projects a digest (the leave's records, [`crate::mesh_delete::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
         let d = self.digest_view.get(&b.node_id).map(|(d, _)| d).or_else(|| self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
         let mut n = Node::allocated(d.node.name.clone());
@@ -909,7 +909,7 @@ impl AdminRunner {
             };
             // Whether the birth is stopped is the record's the leave works from (a stopped member's
             // delete goes straight to its exit proof), as `retire` takes it from the view.
-            let record = Node { parked: n.parked, ..record };
+            let record = Node { stopped: n.stopped, ..record };
             self.delete_birth(&key.build_id.clone(), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))
         }
         .instrument(span.clone())

@@ -1469,12 +1469,12 @@ impl OperationRunner for HeldUntilLetGo {
     }
 }
 
-/// CONTRACT (park_gate.rs: a task that takes the view lock begins each turn at the gate's wait
+/// CONTRACT (stop_gate.rs: a task that takes the view lock begins each turn at the gate's wait
 /// point, and a stop's quiesce resolves once every turn already past its wait point has ended;
 /// node-stop.md steps 3-4, R-ON1): the drive is one of its admin's gated tasks. A drive whose
-/// attempt is running at its executor when the admin's gate parks is a turn in progress at the
-/// park: the park names it, the quiesce waits for it, and resolves only once the drive handled the
-/// attempt's terminal and recorded the Build's end. Must NOT happen: a park that finds no turn of a
+/// attempt is running at its executor when the admin's gate stops is a turn in progress at the
+/// stop: the stop names it, the quiesce waits for it, and resolves only once the drive handled the
+/// attempt's terminal and recorded the Build's end. Must NOT happen: a stop that finds no turn of a
 /// drive whose attempt is running, so a stop cuts while that drive still claims, dispatches or
 /// records.
 #[tokio::test]
@@ -1490,9 +1490,9 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
     let driving = tokio::spawn(async move { env.run(&d).await });
     tokio::time::timeout(Duration::from_secs(5), running.wait_for(|b| *b)).await.expect("attempt 1 never reached its operation").unwrap();
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
-    // The stop parks the gate while the attempt runs.
+    // The stop holds the gate while the attempt runs.
     let at = gate.stop();
-    assert!(at.turns.contains_key("build-drive"), "the park finds the drive's turn in progress while its attempt runs; turns at the park: [{}]", at.named());
+    assert!(at.turns.contains_key("build-drive"), "the stop finds the drive's turn in progress while its attempt runs; turns at the stop: [{}]", at.named());
     let quiesce = tokio::spawn({
         let gate = gate.clone();
         async move { gate.quiesce().await }
@@ -1506,11 +1506,11 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()]);
 }
 
-/// CONTRACT (park_gate.rs: no turn begins while the gate is parked; node-stop.md step 4, R-ON1: a
-/// stopped node-admin calls nothing out): a drive that begins while its admin's gate is parked (the
+/// CONTRACT (stop_gate.rs: no turn begins while the gate is stopped; node-stop.md step 4, R-ON1: a
+/// stopped node-admin calls nothing out): a drive that begins while its admin's gate is stopped (the
 /// executor's last turn before a stop ensured it) waits at the gate's wait point. It claims no
 /// attempt and calls no executor until the gate opens (a start), and then drives the Build to its
-/// end. Must NOT happen: a parked admin's drive claiming an attempt or calling an executor.
+/// end. Must NOT happen: a stopped admin's drive claiming an attempt or calling an executor.
 #[tokio::test(start_paused = true)]
 async fn a_drive_that_begins_once_its_admin_stopped_claims_and_dispatches_nothing_until_the_admin_starts() {
     let r = rig().await;
@@ -1522,9 +1522,9 @@ async fn a_drive_that_begins_once_its_admin_stopped_claims_and_dispatches_nothin
     // Paused time moves on only once every task is idle: a drive that could go on has gone as far
     // as it can by then.
     let while_stopped = tokio::time::timeout(Duration::from_secs(60), &mut driving).await;
-    assert!(while_stopped.is_err(), "the drive ended while its admin's gate was parked: {while_stopped:?}");
-    assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed while the gate was parked");
-    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called while the gate was parked");
+    assert!(while_stopped.is_err(), "the drive ended while its admin's gate was stopped: {while_stopped:?}");
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed while the gate was stopped");
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called while the gate was stopped");
     gate.resume();
     assert_eq!(tokio::time::timeout(Duration::from_secs(60), driving).await.expect("the drive went on once the gate opened").unwrap(), DriveEnd::Terminal);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is claimed and run once the gate opened");
@@ -1706,7 +1706,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
         verdicts: e.verdicts.clone(),
         turns: e.turns.clone(),
     });
-    // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
+    // The successor: its own door, gate and stop gate over the fixture's one Build log, view and store
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
@@ -1903,7 +1903,7 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
     let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
-    // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
+    // The successor: its own door, gate and stop gate over the fixture's one Build log, view and store
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),

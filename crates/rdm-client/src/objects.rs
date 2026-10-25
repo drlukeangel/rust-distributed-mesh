@@ -79,7 +79,7 @@ where
 
 pub use rdm_core::status::TagFilter;
 
-/// A create or a rename into a `path.name` another node holds, parked or live: a name is held by
+/// A create or a rename into a `path.name` another node holds, stopped or live: a name is held by
 /// exactly one node until that node is renamed or deleted (ops-naming "Identity";
 /// node-rpc-envelope.md "Meta and config"). The row writer reads the row at the name's key and
 /// claims it.
@@ -250,7 +250,7 @@ impl Nodes {
         self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await
     }
 
-    /// `node.start` of the parked `node`: the same process rejoins as itself (same node id,
+    /// `node.start` of the stopped `node`: the same process rejoins as itself (same node id,
     /// incarnation, endpoint key and port). The stream is `Started`, then `node.joined` and
     /// `node.started`, ending `Complete` or `Failed { step, reason }`.
     pub async fn start(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {

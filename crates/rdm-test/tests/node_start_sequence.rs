@@ -26,7 +26,7 @@
 //! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
 //! node, and commands their stops and starts over Node RPC, so each start after a stop joins it back
 //! through its call (node-start.md step 2). Its own process: the cell holds process-wide state (the
-//! parking flag).
+//! stop flag).
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;

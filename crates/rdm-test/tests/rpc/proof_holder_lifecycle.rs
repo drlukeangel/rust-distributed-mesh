@@ -5,7 +5,7 @@
 //!
 //! The testkit proof store (op 0x70) on a real estate, driven only through the `node` objects and
 //! `rdm-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
-//! node.id and the incarnation (node-restart.md: stop then start on the parked process); the new
+//! node.id and the incarnation (node-restart.md: stop then start on the stopped process); the new
 //! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (an
 //! attempt of the accepted Build, reason recovery, a new node.id at the same path.name).
 
@@ -73,7 +73,7 @@ fn birth(n: &Value) -> Value {
 }
 
 /// CONTRACT (#2775): a restart of the logical node holding the proof store, a `node.restart` call to the
-/// fabric-primary (Node RPC -> reconcile -> node.update.via-build), is stop then start on the parked
+/// fabric-primary (Node RPC -> reconcile -> node.update.via-build), is stop then start on the stopped
 /// process: it keeps its NodeId, incarnation and data dir and serves the value written before it, the
 /// Put and the Get after the restart each naming the executing birth exactly as the node-admin view
 /// holds it. A holder of its type's seat has the seat moved first, in the request's attempt, and is
@@ -103,7 +103,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let restarted = view(&estate, NODE).await;
     assert_eq!(restarted["status"], "ready-for-traffic", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
-    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is stop then start on the parked process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
+    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is stop then start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
     let restarted_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
     assert_eq!(restarted_dir, first_dir, "a restart keeps the node's data dir");
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
@@ -145,7 +145,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
         Value::Null
     };
     let reconcile = spans.iter().find(|sp| sp["span_id"] == update["parent_span_id"]).cloned().unwrap_or(Value::Null);
-    // The restart is stop then start on the parked process: the Get after it is served by the incarnation that served the Put.
+    // The restart is stop then start on the stopped process: the Get after it is served by the incarnation that served the Put.
     assert_eq!(kept_span["attributes"]["incarnation_id"], put_span["attributes"]["incarnation_id"], "the restarted node is the same birth");
 
     let result = json!({

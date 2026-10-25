@@ -1,4 +1,4 @@
-//! The executor's run of a claimed attempt is a turn of its admin's park gate (park_gate.rs: a task
+//! The executor's run of a claimed attempt is a turn of its admin's stop gate (stop_gate.rs: a task
 //! that takes the view lock begins each turn at its own wait point; a stop's quiesce waits for every
 //! turn already past it). A run the admin serves for a remote fabric-primary (`build.attempt.run`,
 //! op `0x20`) is its own task: it begins at its wait point and the stop's quiesce waits for it, so
@@ -72,7 +72,7 @@ impl Calls {
 }
 
 /// The executor's runner: each operation is a call out of the admin, recorded with whether the
-/// admin's gate was parked when it was made. The first operation holds until the cell releases it
+/// admin's gate was stopped when it was made. The first operation holds until the cell releases it
 /// when `hold_first` is set.
 struct CallingOut {
     calls: Arc<Calls>,
@@ -84,7 +84,7 @@ struct CallingOut {
 impl OperationRunner for CallingOut {
     async fn run(&self, _: &BuildId, _: Option<&str>, _: u32, op: &BuildOperation) -> Result<(), RunEnd> {
         let first = self.calls.log().iter().all(|c| !c.starts_with("call "));
-        self.calls.push(format!("call {}{}", op.key(), if self.gate.is_stopped() { " (gate parked)" } else { "" }));
+        self.calls.push(format!("call {}{}", op.key(), if self.gate.is_stopped() { " (gate stopped)" } else { "" }));
         if first && self.hold_first {
             self.calls.entered.notify_one();
             self.calls.release.notified().await;
@@ -121,11 +121,11 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
     (door, gate, plan)
 }
 
-/// CONTRACT (node-stop.md steps 3-4, R-ON1; park_gate.rs:5-11): `mesh1.admin.1` serves
+/// CONTRACT (node-stop.md steps 3-4, R-ON1; stop_gate.rs:5-11): `mesh1.admin.1` serves
 /// `build.attempt.run` for a fabric-primary elsewhere and its run is inside its first operation when
-/// the admin's stop parks its gate. The stop's quiesce names the run (`build-run`) among the turns it
+/// the admin's stop holds its gate. The stop's quiesce names the run (`build-run`) among the turns it
 /// waits for and resolves only once the run has ended: every call the run makes (its second
-/// operation, on the parked gate, included) and its reconcile span end before the stop's cut. Must NOT happen: a quiesce
+/// operation, on the stopped gate, included) and its reconcile span end before the stop's cut. Must NOT happen: a quiesce
 /// that resolves while the run is mid-operation, so the stopped admin's run calls out after its cut.
 #[tokio::test(start_paused = true)]
 async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cut_and_calls_out_no_more() {
@@ -136,7 +136,7 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
     assert_eq!(disposition, Disposition::Started);
     calls.entered.notified().await;
 
-    // The admin's stop: park, wait for the turns in progress, then the cut.
+    // The admin's stop: stop, wait for the turns in progress, then the cut.
     let cut = tokio::spawn({
         let (gate, calls) = (gate.clone(), calls.clone());
         async move {
@@ -154,8 +154,8 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
         terminal = Some(f);
     }
     let (at, cut_at) = cut.await.unwrap();
-    // The run was past its wait point at the park: its second operation runs on the parked gate, before the cut.
-    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3 (gate parked)".into(), "stop cut".into()], "every call of the run precedes the stop's cut: none follows it");
+    // The run was past its wait point at the stop: its second operation runs on the stopped gate, before the cut.
+    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3 (gate stopped)".into(), "stop cut".into()], "every call of the run precedes the stop's cut: none follows it");
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "the run ran to its terminal before the cut: {terminal:?}");
     assert_eq!(at.named(), "build-run", "the quiesce waited for the run's turn, by name");
 
@@ -169,8 +169,8 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
     println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
 
-/// CONTRACT (node-stop: a stopped node does nothing outward until it is started; park_gate.rs:5-11):
-/// `mesh1.admin.1` is stopped (its gate parked) when a fabric-primary elsewhere calls
+/// CONTRACT (node-stop: a stopped node does nothing outward until it is started; stop_gate.rs:5-11):
+/// `mesh1.admin.1` is stopped (its gate stopped) when a fabric-primary elsewhere calls
 /// `build.attempt.run` for the attempt it claimed for it. The stopped admin answers the call (the run
 /// is started, so a later call reattaches to it) and its run waits at the gate: it makes no call while
 /// the admin is stopped. Once the admin starts, the run makes its calls and reaches its terminal.
@@ -202,9 +202,9 @@ async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_s
     println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
 
-/// CONTRACT (park_gate.rs: a turn already past its wait point when the gate parks runs to its end;
+/// CONTRACT (stop_gate.rs: a turn already past its wait point when the gate stops runs to its end;
 /// build_drive.rs, a pass is one turn and runs to its end, the attempt it dispatched included): the
-/// fabric-primary's own drive pass is past its wait point when its admin's stop parks the gate, and it
+/// fabric-primary's own drive pass is past its wait point when its admin's stop holds the gate, and it
 /// dispatches the attempt to its own admin. The run begins its turn under the pass's at once, runs to
 /// its terminal, and the stop's quiesce resolves once the pass and the run have both ended: nothing of
 /// either follows the cut. Must NOT happen: the pass's own run waiting at the gate for the pass that
@@ -224,7 +224,7 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
         }
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(gate.is_stopped(), "the stop parked the gate while the pass was in its turn");
+    assert!(gate.is_stopped(), "the stop held the gate while the pass was in its turn");
     let Attached::Live { disposition, mut reader, .. } = door.attempt_run_under(&pass, &build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the pass's own attempt is started") };
     assert_eq!(disposition, Disposition::Started);
     let terminal = tokio::time::timeout(Duration::from_secs(20), async {
@@ -237,10 +237,10 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
     .await
     .expect("the pass's own run reached its terminal: it did not wait at the gate for the pass");
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "{terminal:?}");
-    assert_eq!(calls.log(), vec!["call create-mesh:mesh2 (gate parked)".to_string(), "call create-mesh:mesh3 (gate parked)".into()], "the run of a pass past its wait point ran, and the stop has not cut");
+    assert_eq!(calls.log(), vec!["call create-mesh:mesh2 (gate stopped)".to_string(), "call create-mesh:mesh3 (gate stopped)".into()], "the run of a pass past its wait point ran, and the stop has not cut");
     drop(pass);
     let at = cut.await.unwrap();
-    assert_eq!(at.named(), "build-drive", "at the park only the pass was in a turn");
+    assert_eq!(at.named(), "build-drive", "at the stop only the pass was in a turn");
     assert_eq!(calls.log().last().map(String::as_str), Some("stop cut"), "the stop cut once the pass and its run had ended");
     let spans = capture.spans();
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));

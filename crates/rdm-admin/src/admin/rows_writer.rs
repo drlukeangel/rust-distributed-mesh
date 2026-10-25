@@ -135,15 +135,15 @@ impl MeshRowsWriter {
 /// carrying the primaries the view holds for it. A row the store did not acknowledge is owed: the sweep
 /// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
 /// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each sweep takes its
-/// turn of `park`.
-pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, park: crate::stop_gate::StopGate) {
+/// turn of `stop`.
+pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate) {
     let mut births = digest_view.birth_changes();
     let mut primaries = digest_view.seats.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
     let mut owed_sweeps = 0u32;
     loop {
-        // Held here while the admin is parked: its own wait, outside every lock.
-        let turn = park.turn("mesh-rows").await;
+        // Held here while the admin is stopped: its own wait, outside every lock.
+        let turn = stop.turn("mesh-rows").await;
         births.borrow_and_update();
         primaries.borrow_and_update();
         let meshes = writes.borrow_and_update().clone();

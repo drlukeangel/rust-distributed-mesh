@@ -989,7 +989,7 @@ impl AdminRunner {
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
         if stop {
-            // The process is parked, not exited: nothing is retired about its paths or its birth.
+            // The process is stopped, not exited: nothing is retired about its paths or its birth.
             self.pipeline(&template).stop(&req).await.map_err(crate::executor::RunEnd::from)?;
         } else {
             self.pipeline(&template).delete_connections(&req).await.map_err(crate::executor::RunEnd::from)?;
@@ -1024,15 +1024,15 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// The exact parked birth `from` that a delete of `node` (`<path>.old`) is fenced to, for an admin
+    /// The exact stopped birth `from` that a delete of `node` (`<path>.old`) is fenced to, for an admin
     /// whose view does not name `node` and which did not run the replace (the mesh's primary changed
-    /// since): the birth as its topology view holds it parked, or else its durable runtime row (every
+    /// since): the birth as its topology view holds it stopped, or else its durable runtime row (every
     /// admin keeps one per birth it heard, `runtime_rows_task`). The record is named `node`; its
     /// runtime is then adopted from the same sources by [`Self::handle_for`].
     pub(crate) async fn stopped_birth_by_incarnation(&self, node: &PathName, from: &IncarnationId) -> Result<Node, String> {
         let mut birth = Node::allocated(node.clone());
         birth.incarnation_id = Some(from.clone());
-        birth.parked = true;
+        birth.stopped = true;
         birth.status = NodeStatus::Leaving;
         if let Some(d) = self.digest_view.stopped_digests().into_iter().find(|d| &d.node.incarnation == from) {
             birth.node_id = d.node.node_id.clone();
@@ -1063,7 +1063,7 @@ impl AdminRunner {
         Ok(names.iter().map(|n| (n.clone(), std::net::SocketAddr::new(ip, 0))).collect())
     }
 
-    /// What this admin holds for the start of the parked `record`: the deployment its `JoinNode` is
+    /// What this admin holds for the start of the stopped `record`: the deployment its `JoinNode` is
     /// verified against, as the birth was admitted.
     pub(crate) fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.name))?;
@@ -1083,7 +1083,7 @@ impl AdminRunner {
         })
     }
 
-    /// The parked birth `from` at `node`: its record and exact runtime, and what the rejoin is
+    /// The stopped birth `from` at `node`: its record and exact runtime, and what the rejoin is
     /// verified against.
     pub(crate) async fn stopped_birth(&self, op: &str, node: &PathName, from: Option<&IncarnationId>) -> Result<(Node, DeploymentHandle, crate::join::Deployed), String> {
         let seen = self.topology.read().await.node(node).cloned().ok_or_else(|| format!("{op}:{node} is not in this admin's view"))?;
@@ -1094,7 +1094,7 @@ impl AdminRunner {
         }
         let (record, handle) = self.handle_for(&seen).await?;
         // The record the pipeline starts is the view's: it carries the endpoint, the address and the data dir the birth was admitted at.
-        let record = Node { status: seen.status, parked: seen.parked, ..record };
+        let record = Node { status: seen.status, stopped: seen.stopped, ..record };
         let record = Node { endpoint_id: seen.endpoint_id.clone().or(record.endpoint_id), transport_addr: seen.transport_addr.or(record.transport_addr), data_dir: seen.data_dir.clone().or(record.data_dir), ..record };
         let deployed = self.deployed_for(&record, &handle)?;
         Ok((record, handle, deployed))
@@ -1103,16 +1103,16 @@ impl AdminRunner {
     /// `node.restart:<path>` (node-restart.md): stop, then start, on the same process: the same node id,
     /// incarnation, endpoint key and port. The process never exits and no runtime is deployed.
     pub(crate) async fn restart_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<(), crate::executor::RunEnd> {
-        // A birth this restart's own earlier attempt parked is held as a parked one (its digest the
+        // A birth this restart's own earlier attempt stopped is held as a stopped one (its digest the
         // stopped one its rejoin is verified against), and its run resumes at the start.
-        let parked = self.topology.read().await.node(node).is_some_and(|n| n.parked);
-        let (record, handle, deployed) = if parked { self.stopped_birth("node.restart", node, None).await? } else { self.stopped_birth_or_live("node.restart", node).await? };
+        let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
+        let (record, handle, deployed) = if stopped { self.stopped_birth("node.restart", node, None).await? } else { self.stopped_birth_or_live("node.restart", node).await? };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = crate::deployment::pipeline::StartRequest { build_id: build_id.clone(), attempt, node: record, handle, deployed };
         self.pipeline(&template).restart(&req).await.map_err(crate::executor::RunEnd::from)
     }
 
-    /// The live birth at `node` before its stop, for a restart: the same record shape as a parked one.
+    /// The live birth at `node` before its stop, for a restart: the same record shape as a stopped one.
     pub(crate) async fn stopped_birth_or_live(&self, op: &str, node: &PathName) -> Result<(Node, DeploymentHandle, crate::join::Deployed), String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
@@ -1143,7 +1143,7 @@ impl AdminRunner {
         })
     }
 
-    /// `node.start:<path>` (node-start.md): the parked birth `from` rejoins as itself.
+    /// `node.start:<path>` (node-start.md): the stopped birth `from` rejoins as itself.
     pub(crate) async fn start_stopped(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), crate::executor::RunEnd> {
         let (record, handle, deployed) = self.stopped_birth("node.start", node, Some(from)).await?;
         let template = self.template_for(node.kind, &node.mesh).await?;
@@ -1171,10 +1171,10 @@ impl AdminRunner {
             }
         };
         // The record handed back with the runtime is the one this admin deployed; whether the birth
-        // is stopped (parked) is the view's, as `stopped_birth` takes it: a stopped birth's delete
+        // is stopped is the view's, as `stopped_birth` takes it: a stopped birth's delete
         // goes straight to its exact runtime's exit proof.
         let record = match &seen {
-            Some(n) => Node { parked: n.parked, ..record },
+            Some(n) => Node { stopped: n.stopped, ..record },
             None => record,
         };
         if record.node_id == self.node_id {
@@ -1309,7 +1309,7 @@ impl AdminRunner {
             }
             BuildOperation::CreateNode { node, over: None, executable } => self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Create).await,
             BuildOperation::RestartNode { node } => {
-                // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
+                // node-restart.md: the live process stops and rejoins; there is no relaunch. A member
                 // proven exited is node recovery's (node-recovery.md).
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.restart_in_place(build_id, attempt, node).instrument(span).await
@@ -1438,7 +1438,7 @@ impl AdminRunner {
                 // deleted fenced to its exact birth, its runtime read from its row.
                 let held = self.topology.read().await.node(node).filter(|n| n.incarnation_id.as_ref() == Some(&from_incarnation)).cloned();
                 let op = match held {
-                    Some(n) if !n.parked && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None },
+                    Some(n) if !n.stopped && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None },
                     _ => BuildOperation::DeleteNode { node: node.clone(), from_incarnation },
                 };
                 self.run_op(build_id, lane, attempt, &op).await
@@ -1712,7 +1712,7 @@ mod tests {
         let sha256 = rdm_core::binding::sha256_file(&exe).unwrap();
         let binding = Binding { launch_id: NodeKind::RpcNode.name().into(), sha256, executable: exe.clone(), image: None };
 
-        // A task parked on its channel, as a connection's driver is between packets.
+        // A task waiting on its channel, as a connection's driver is between packets.
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let woken = tokio::spawn(async move {

@@ -399,7 +399,7 @@ pub async fn run(w: Watch) {
             _ = w.records.view_changed.notified(), if !was_fabric_primary => {}
         }
         wait = w.interval;
-        // Held here while the admin is parked: its own wait, outside every lock. The turn ends with
+        // Held here while the admin is stopped: its own wait, outside every lock. The turn ends with
         // the pass.
         let _turn = w.gate.turn("peer-mesh-investigation").await;
         let view = Arc::new(w.topology.read().await.clone());
@@ -546,12 +546,12 @@ pub(crate) struct Investigations {
     /// This admin's `path.name`, named on the probe and verdict spans.
     me: Mutex<String>,
     ladder: Arc<Mutex<Ladder>>,
-    /// The probes in flight, each its own task, held by the admin's park gate while it is parked;
+    /// The probes in flight, each its own task, held by the admin's stop gate while it is stopped;
     /// dropped with the driver, they end with it.
     probes: Mutex<tokio::task::JoinSet<()>>,
     /// Woken when a probe ends, so the step it opens (probe 2, the decision) is taken then.
     landed: Arc<tokio::sync::Notify>,
-    /// The admin's stop gate: a probe in flight while the admin is parked is held where it stands.
+    /// The admin's stop gate: a probe in flight while the admin is stopped is held where it stands.
     gate: crate::stop_gate::StopGate,
 }
 
@@ -604,7 +604,7 @@ impl Investigations {
                 );
                 let (me, ladder, landed, mesh) = (me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string());
                 let probe = tracing::Instrument::instrument(start(n), span.clone());
-                // A probe takes no lock a handler needs: while the admin is parked it is held where it
+                // A probe takes no lock a handler needs: while the admin is stopped it is held where it
                 // stands, so a stopped admin's probe makes no further call.
                 probes.spawn(self.gate.hold(async move {
                     let found = probe.await;
@@ -1181,8 +1181,8 @@ mod tests {
 
     /// CONTRACT (node-stop: a stopped admin's tasks are held, and it says nothing once cut;
     /// stop_gate.rs: a task that takes no lock a handler needs is held where it stands while the gate
-    /// is parked): a probe the investigation started before its admin parked makes no step while the
-    /// admin is parked, and finishes, from where it was, once the gate opens. Must NOT happen: a
+    /// is stopped): a probe the investigation started before its admin stopped makes no step while the
+    /// admin is stopped, and finishes, from where it was, once the gate opens. Must NOT happen: a
     /// stopped admin's probe going on to its next call (a ping, a status kick through a peer) after
     /// the stop cut its connections.
     #[tokio::test(start_paused = true)]
@@ -1210,7 +1210,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the probe made its first call");
         gate.stop();
         tokio::time::sleep(Duration::from_secs(5)).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "the admin is parked: its probe made no step");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the admin is stopped: its probe made no step");
         gate.resume();
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2, "the gate opened: the probe finished from where it was");

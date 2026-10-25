@@ -1,7 +1,7 @@
 //! Where telemetry export runs, and what an unreachable collector costs the process: nothing.
 //!
 //! Export runs on one dedicated OS thread with its own single-threaded runtime ([`ExportRuntime`]),
-//! never on the application's runtime: a collector that is down, silent or unroutable parks only
+//! never on the application's runtime: a collector that is down, silent or unroutable blocks only
 //! that thread. The batch processors reach it through bounded queues that drop on overflow; the
 //! exporter wrappers ([`WatchedSpans`], [`WatchedLogs`]) turn every failed batch into a count and
 //! name each outage once, when it starts and when it ends. A caller that must wait for the
@@ -45,7 +45,7 @@ pub(crate) fn dropped_by_outage() -> u64 {
 /// Set by the export thread as it begins running the export runtime.
 static EXPORT_THREAD_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The dedicated export runtime: a current-thread tokio runtime parked on its own OS thread.
+/// The dedicated export runtime: a current-thread tokio runtime blocked on its own OS thread.
 #[derive(Debug, Clone)]
 pub(crate) struct ExportRuntime {
     handle: tokio::runtime::Handle,

@@ -327,7 +327,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
 /// real gossip, mesh1.rpc.2 (an own-mesh member holding its mesh-primary's seat) holds the primary's
 /// projection v1 listing mesh1.rpc.1 ready and takes the primary's `NodeStopped` event. No projection
 /// carrying the stop ever reaches it: the primary takes node.joined of the birth before its next
-/// publication, and the member is parked through that publication. Its top-up (a topology read of the primary)
+/// publication, and the member is stopped through that publication. Its top-up (a topology read of the primary)
 /// installs the projection listing the birth `Pending`, at a version past the one the stop changed the
 /// subject at, of the same publisher: the stop is over, and the member holds the birth again with
 /// the projection's status. Must NOT happen: the stop standing forever at a member that never applied
@@ -374,7 +374,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         until("the member to take NodeStopped", || m.digest_view.in_flight().contains(&stop)).await;
         assert_eq!(version_at_m(), Some(v1), "no projection carrying the stop reached the member");
 
-        // node.joined at the mesh-primary before its next publication; the member is parked through the publication,
+        // node.joined at the mesh-primary before its next publication; the member is stopped through the publication,
         // so the projection listing the birth again reaches it only through its top-up.
         let start = LifecycleOp { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
         assert!(p.digest_view.joined(&start), "the mesh-primary ends the stop at node.joined");

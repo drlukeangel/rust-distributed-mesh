@@ -1,6 +1,6 @@
 //! The restart canary (i143 PRD §5): an RPC node restarted through Build is the same node, the same
 //! process, under the same incarnation, endpoint key and port (restart is stop then start on the
-//! parked process; nothing is deployed), serves the value written before the restart from its own
+//! stopped process; nothing is deployed), serves the value written before the restart from its own
 //! data dir, resets an unfinished request with 499, and leaves a Build -> deployment -> node chain
 //! linked by ParentSpanId. `restart_canary` is run by `node_restart` and by the
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
@@ -68,7 +68,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let status_after = estate.builds_obj().await.get(&restart.build_id).await.unwrap_or_else(|e| panic!("build.get of {restart_build}: {e}"));
     estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": format!("{status_after:?}")}));
 
-    // The node is ready again (observed, not slept on), and no longer parked.
+    // The node is ready again (observed, not slept on), and no longer stopped.
     let after = estate
         .until_node(node_name, "rpc.2 ready after its restart", SETTLE, |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
@@ -82,7 +82,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "same transport identity (data dir kept)");
     assert_eq!(after["name"], before["name"]);
     assert_eq!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "the same runtime deployment: nothing was deployed");
-    assert_eq!(after["incarnation_id"].as_str(), Some(incarnation_before.as_str()), "the same incarnation: a restart is stop then start on the parked process");
+    assert_eq!(after["incarnation_id"].as_str(), Some(incarnation_before.as_str()), "the same incarnation: a restart is stop then start on the stopped process");
 
     // 6. The process never exited: it keeps its endpoint and its port.
     assert_eq!(after["transport_addr"], transport_before, "a restart keeps the transport port");

@@ -317,7 +317,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let after = estate.node_value(node).await;
         assert_eq!(after["status"], "ready-for-traffic", "{node}: ready after the restart: {after}");
         assert_eq!(after["node_id"], before["node_id"], "{node}: a restart keeps the NodeId");
-        assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node}: a restart is stop then start on the parked process: the same birth");
+        assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node}: a restart is stop then start on the stopped process: the same birth");
         let o = observe_launch(&estate, node).await;
         let b = expect_for(node);
         assert_eq!(launched_path(&o), b.executable, "{node} restarts on the bound executable: {o}");

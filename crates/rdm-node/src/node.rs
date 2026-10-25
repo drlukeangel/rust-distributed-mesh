@@ -153,7 +153,7 @@ impl RunningNode {
         }
     }
 
-    /// The shutdown of a parked process (stopped by `stop-node`, not started again): its mesh
+    /// The shutdown of a stopped process (stopped by `stop-node`, not started again): its mesh
     /// connections were cut and `Leaving` declared when it stopped, so nothing is announced. The
     /// tasks end and the endpoints close once every reply it owes is settled.
     pub async fn stop_commanded(self) {
@@ -857,7 +857,7 @@ fn spawn_publisher(topology_view: &TopologyView, digest: &MeshDigest, status: &A
     })
 }
 
-/// How an rpc node or role node leaves its mesh when parked and joins it again when started
+/// How an rpc node or role node leaves its mesh when stopped and joins it again when started
 /// (`node_self::Session`): the parts it was born with, kept for the rejoin.
 struct NodeSession {
     name: rdm_core::PathName,
@@ -1087,7 +1087,7 @@ struct RpcAfterHook {
     knob: Option<Box<dyn FnOnce() + Send>>,
     /// A commanded `node.mesh.join` (Q87): a step that fails after the hook leaves the birth off its
     /// channels, Pending, for its authority's next command (node-recovery.md step 2), as a failure
-    /// inside the start's own task does; a Build's start after a stop leaves nothing (its process stays parked).
+    /// inside the start's own task does; a Build's start after a stop leaves nothing (its process stays stopped).
     leave: Option<Leave>,
 }
 
@@ -1501,9 +1501,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 // node.cert.renew: its issuing authority installs a fresh member cert on this birth.
                 StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
                 StatusRequest::ProbeNodeState { .. } => {
-                    // A parked node is Leaving with a live process: it says so and presents nothing.
+                    // A stopped node is Leaving with a live process: it says so and presents nothing.
                     if me.own.is_stopped() {
-                        return Ok(StatusReply::CurrentParked { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone() });
+                        return Ok(StatusReply::CurrentStopped { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone() });
                     }
                     // node-start.md step 3: while its hook is Blocked, the probe served this exact birth
                     // and found an active readiness blocker; it answers Blocked with the hook's own
@@ -1544,10 +1544,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ApplyNodeConfig { config, .. } => {
                     // ops-naming "Node data": the node applies the config and carries it in its next
                     // digest. It is held first, so every later publish carries it; a live node
-                    // publishes now, a parked one presents nothing until it starts.
+                    // publishes now, a stopped one presents nothing until it starts.
                     me.topology_view.set_config(config.clone());
                     let published = if me.own.is_stopped() {
-                        "parked"
+                        "stopped"
                     } else {
                         let mut d = me.digest.clone();
                         d.status = *me.status.lock().unwrap();

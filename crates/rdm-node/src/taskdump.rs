@@ -9,7 +9,7 @@
 //! - its own await chain (the future under the test's `block_on` is no task, so `Handle::dump`
 //!   never holds it): one re-poll of the watched future inside `Trace::capture`;
 //! - every task of the test's runtime (`Handle::dump`): the gossip actor, the router's run task,
-//!   the endpoint and connection drivers, whichever side of the handshake is parked.
+//!   the endpoint and connection drivers, whichever side of the handshake is waiting.
 
 use std::future::Future;
 

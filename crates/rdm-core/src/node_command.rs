@@ -71,7 +71,7 @@ pub enum NodeCommandRequest {
         /// The operation's declared identity.
         operation: String,
     },
-    /// Start this parked exact birth, reporting join and readiness on this stream (Q47).
+    /// Start this stopped exact birth, reporting join and readiness on this stream (Q47).
     StartNode {
         /// The commanded node.
         node_id: NodeId,
@@ -184,7 +184,7 @@ pub enum NodeCommandReply {
         /// The closure's Established or Deadline evidence.
         receipt: ConnectionsReceipt,
     },
-    /// The stop's transport cut is complete; the live process is parked.
+    /// The stop's transport cut is complete; the live process is stopped.
     NodeStopped,
     /// The accepted join and channel join completed; start gates remain.
     NodeJoined,

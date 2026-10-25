@@ -815,12 +815,12 @@ mod tests {
     use crate::blocking::{io_time_with, IoTime};
 
     /// A current-thread runtime whose blocking pool has one thread: a disk job queued behind a
-    /// parked one stays issued and unfinished until the test releases the parked one.
+    /// held one stays issued and unfinished until the test releases the held one.
     fn one_blocking_thread() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap()
     }
 
-    /// Park the one blocking thread until the returned sender is sent to (or dropped).
+    /// Hold the one blocking thread until the returned sender is sent to (or dropped).
     fn hold_the_blocking_pool() -> std::sync::mpsc::Sender<()> {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         drop(tokio::task::spawn_blocking(move || {
@@ -856,7 +856,7 @@ mod tests {
             let d = tempdir("records-cancel");
             let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();
             let release = hold_the_blocking_pool();
-            assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was parked");
+            assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was held");
             assert!(r.0.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
             release.send(()).unwrap();
             r.finish_issued_writes().await;

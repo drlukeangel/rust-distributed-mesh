@@ -196,7 +196,7 @@ pub enum NodeEvent {
     Started,
     /// `node.connections.deleted`: the hard cut.
     ConnectionsDeleted,
-    /// `node.stopped`: the node reported it is parked, on the stop call's own stream.
+    /// `node.stopped`: the node reported it is stopped, on the stop call's own stream.
     Stopped,
     /// `node.deleted`: id and name released.
     Deleted,

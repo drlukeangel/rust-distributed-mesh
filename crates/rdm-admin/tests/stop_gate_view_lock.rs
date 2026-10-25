@@ -1,8 +1,8 @@
-//! A parked node-admin always serves its start: node-start.md makes start "the only exit from
-//! stopped Leaving", and node-stop parks the admin's tasks. A task held while it waits for, or
-//! holds, the view's lock keeps that lock from every handler of the parked admin, its start's among
+//! A stopped node-admin always serves its start: node-start.md makes start "the only exit from
+//! stopped Leaving", and node-stop holds the admin's tasks. A task held while it waits for, or
+//! holds, the view's lock keeps that lock from every handler of the stopped admin, its start's among
 //! them. Every task that can take the view lock is therefore held only at its own wait, outside
-//! every lock (`ParkGate::opened`).
+//! every lock (`StopGate::opened`).
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) whose gossip and backbone intervals
 //! are stretched far past the cell, in a process of its own: only the wakes the cell gives move its
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 /// Far past any checklist this cell could see.
 const STRETCHED_MS: &str = "600000";
-/// What a parked admin's handler is given to take the view lock before the cell fails. Taking an
+/// What a stopped admin's handler is given to take the view lock before the cell fails. Taking an
 /// uncontended lock is immediate; a lock a held task keeps is never given.
 const NEVER: Duration = Duration::from_secs(5);
 
@@ -31,12 +31,12 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// CONTRACT (node-start.md: start is the only exit from stopped Leaving; node-stop: the parked
+/// CONTRACT (node-start.md: start is the only exit from stopped Leaving; node-stop: the stopped
 /// admin's tasks are held): the loops that take the view lock, woken while the lock is taken (the
 /// hierarchy on a view change, the declarer on its wake, the executor on a submitted Build) and the
-/// admin parked while they wait on it, leave the lock free once its holder lets go: a handler of the
-/// parked admin takes it at once. Must NOT happen: a parked task keeping the view lock it was
-/// waiting on, so the parked admin never serves the start that would open it.
+/// admin stopped while they wait on it, leave the lock free once its holder lets go: a handler of the
+/// stopped admin takes it at once. Must NOT happen: a stopped task keeping the view lock it was
+/// waiting on, so the stopped admin never serves the start that would open it.
 #[test]
 fn a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers() {
     let cell = "a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers";
@@ -48,7 +48,7 @@ fn a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_l
     assert_eq!(rdm_core::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the cadence it was started with");
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {
-        let dir = std::env::temp_dir().join(format!("park-gate-view-lock-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("stop-gate-view-lock-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
         let (topology, records, submitted) = (running.control.topology.clone(), running.runner.records.clone(), running.control.build_submitted.clone());
@@ -60,13 +60,13 @@ fn a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_l
         records.wake.poke();
         submitted.notify_one();
         tokio::time::sleep(Duration::from_millis(500)).await;
-        // The stop parks the admin while they wait; then the holder lets go.
+        // The stop holds the admin while they wait; then the holder lets go.
         running.gate().stop();
         drop(holder);
 
-        // A handler of the parked admin (its start's) takes the view lock.
+        // A handler of the stopped admin (its start's) takes the view lock.
         let taken = tokio::time::timeout(NEVER, topology.write()).await;
-        assert!(taken.is_ok(), "a parked task kept the view lock it was waiting on: no handler of the parked admin can take it, so it never serves its start");
+        assert!(taken.is_ok(), "a held task kept the view lock it was waiting on: no handler of the stopped admin can take it, so it never serves its start");
         drop(taken);
 
         running.gate().resume();

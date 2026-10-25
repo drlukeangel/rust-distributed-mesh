@@ -4,7 +4,7 @@
 //! invokes the broker through it (`--via path:mesh1.gateway.1`), so the gateway's one
 //! `NodeRpcClient` holds the pooled connection to the broker's birth.
 //! 1. By `ExactNode` and by `CurrentPath`, the gateway reaches the broker: it served, nobody else.
-//! 2. The broker restarts (stop, then start, on the parked process: same NodeId, incarnation and port).
+//! 2. The broker restarts (stop, then start, on the stopped process: same NodeId, incarnation and port).
 //! 3. The next call through the gateway reaches the broker: its stop cut the connection the gateway
 //!    held (`rdm.node_rpc.connection.delete.via-hard-cut`, an accepted connection of the broker's), so
 //!    the gateway dialed afresh; the value written before the restart is read back from the broker's

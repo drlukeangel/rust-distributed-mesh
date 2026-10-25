@@ -3,8 +3,8 @@
 //! answers anyone who reaches it: the mesh adds no generic caller check or authorship validation").
 //!
 //! CONTRACT: a stopped node is commanded by an admin it never heard of (the admin created after its
-//! predecessor's loss, whose digest a parked node cannot hear). Its `stop-node` naming the exact birth
-//! is answered `Stopped` with the receipt that parked it, and its probe `CurrentParked`: the target is
+//! predecessor's loss, whose digest a stopped node cannot hear). Its `stop-node` naming the exact birth
+//! is answered `Stopped` with the receipt that stopped it, and its probe `CurrentStopped`: the target is
 //! the op and the exact birth the request names, never the caller. A command naming another birth
 //! of the node is `RejectedStaleIncarnation`; one naming another node id with this birth's
 //! incarnation is answered by the birth it reached (R-UC1a, R-RX5: no receiver refuses a call for
@@ -12,7 +12,7 @@
 //! or a `ReceiverNotPrimary` decided by who sent it or by the node id the call names). The node's
 //! decision span names the caller it holds no digest of by its endpoint.
 //!
-//! Its own process: the cell holds process-wide state (the parking flag).
+//! Its own process: the cell holds process-wide state (the stop flag).
 
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
@@ -88,7 +88,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt, operation: "node.stop:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
-        // The admin the node knows stops it: the node parks, and hears no digest from now on.
+        // The admin the node knows stops it: the node stops, and hears no digest from now on.
         let stopped = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
         assert!(matches!(stopped, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{stopped:?}");
 
@@ -102,8 +102,8 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
 
         // Its stop naming the exact birth is answered as the known admin's was: stopping a stopped birth is done.
         assert_eq!(call(&stranger, &target, &stop(2, &incarnation)).await, stopped, "a stopped endpoint answers anyone who reaches it");
-        // Its probe is answered for the subject: parked.
-        assert!(matches!(call(&stranger, &target, &probe).await, StatusReply::CurrentParked { .. }), "the probe is decided for the subject, not the caller");
+        // Its probe is answered for the subject: stopped.
+        assert!(matches!(call(&stranger, &target, &probe).await, StatusReply::CurrentStopped { .. }), "the probe is decided for the subject, not the caller");
 
         // The exact birth the request names is checked: another birth of the node is refused naming the one held.
         let stale = IncarnationId::mint();

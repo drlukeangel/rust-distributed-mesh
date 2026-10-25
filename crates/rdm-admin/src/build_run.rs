@@ -17,7 +17,7 @@
 //!   and is never a step outcome.
 //! - **a cut call cancels nothing.** The run is its own task; the stream is a view of its
 //!   [`RunLog`]. Only a failed step or a fence ends an attempt.
-//! - **a run is a turn of the admin's park gate** (stop_gate.rs). A run served for a call begins
+//! - **a run is a turn of the admin's stop gate** (stop_gate.rs). A run served for a call begins
 //!   its turn at its own wait point, before it runs anything: while the admin is stopped it waits
 //!   there, and a stop's quiesce waits for a run already past it, so nothing a run does follows the
 //!   stop's cut. A run the admin's own drive pass dispatches to itself begins its turn under the
@@ -683,7 +683,7 @@ impl RunDoor {
     }
 
     /// [`Self::attempt_run`] for the fabric-primary's own drive pass dispatching the attempt to this
-    /// admin, in the pass's `turn`: the run begins its own turn under it, at once, parked gate or not
+    /// admin, in the pass's `turn`: the run begins its own turn under it, at once, stopped gate or not
     /// (the pass waits on the run; a run waiting at the gate for it would hold the stop's quiesce).
     pub async fn attempt_run_under(
         &self,

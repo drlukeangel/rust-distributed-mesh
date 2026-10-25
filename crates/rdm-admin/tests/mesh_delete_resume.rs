@@ -698,7 +698,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
 /// deleted"), R-NS1 item 2 (from the stop of a mesh's last admin the fabric-primary is the writer of
 /// a mesh with no primary) and R-MD1 item 2 (mesh-left ensures the mesh row Dead). While the final
 /// primary holds its seat live, the fabric-primary writes none of mesh2's rows and a second claim of
-/// `mesh2.admin.1` is refused `name-held`; once it is stopped (parked, its seat held) the
+/// `mesh2.admin.1` is refused `name-held`; once it is stopped (its seat held) the
 /// fabric-primary writes its row Deleted, node id and config kept, as its node.delete's NodeDeleted
 /// step does; mesh-left puts the mesh row Dead as acting primary when no Dead row is held; and only
 /// then a new birth claims `mesh2.admin.1` `row-seeded` from the Deleted row (ops-naming "config
@@ -736,7 +736,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // Stopped, its seat still held (R-EL1): no primary for the writer rule (R-NS1 item 2).
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
-            n.parked = true;
+            n.stopped = true;
         });
         let stopped = rows.deleted(&last, &deleting).await;
         let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None, data_dir: None };
@@ -778,7 +778,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no Dead row held: the fabric-primary writes Dead as acting primary: {dead:#?}");
     let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject"] == FINAL).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(claims, ["row-held-by-node", "name-held", "row-seeded"], "{claims:?}");
-    eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted (stopped), mesh.update.via-dead-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
+    eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-dead-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
 }
 
 const NEW_ADMIN: &str = "mesh2.admin.3";
@@ -1740,7 +1740,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
 }
 
 /// A Build log whose executor is cut once: the `step` receipt of `operation` is refused, as the fault
-/// door's `Receipt` cut leaves it (`FaultedBuilds::append_step_receipt` parks BEFORE the receipt is
+/// door's `Receipt` cut leaves it (`FaultedBuilds::append_step_receipt` holds BEFORE the receipt is
 /// durable, so the step's work is done and its receipt is not). Everything else reads and writes the
 /// log it wraps.
 struct CutBuilds<'a> {
