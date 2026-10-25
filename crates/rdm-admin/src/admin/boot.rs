@@ -2738,7 +2738,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The current Build, read once per turn. A builds store that cannot be read is
                                                 // named once per distinct error and decides nothing this turn: no planned births,
                                                 // accepted meshes or step are taken from a read that failed.
-                                                let current = match adapter.current().await {
+                                                // Every step of the turn that needs it is handed this read (the fabric change's among
+                                                // them): no step reads it again, and nothing holds it past the turn.
+                                                let read = adapter.current().await;
+                                                let current = match &read {
                                                     Ok(c) => {
                                                         unreadable_named = None;
                                                         Some(c)
@@ -2754,7 +2757,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 };
                                                 // The current Build's planned births are what a mesh's readiness is counted over.
-                                                if let Some(Some(b)) = &current {
+                                                if let Some(Some(b)) = current {
                                                     records.set_planned(&b.topology);
                                                 }
                                                 records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY_FOR_TRAFFIC)).cloned().collect());
@@ -2778,7 +2781,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The accepted Build is the authority on which meshes the fabric has: the view
                                                 // takes no old aggregate of a mesh it does not name, and a mesh it does not name
                                                 // that has no member left keeps no recorded id (a name added again is a new mesh).
-                                                if let Some(Some(b)) = &current {
+                                                if let Some(Some(b)) = current {
                                                     topology_view.digest_view.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
                                                     records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
                                                 }
@@ -2825,7 +2828,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 was_fabric_primary = fabric_primary;
                                                 // The fabric-primary's change through the fabric states, one non-blocking step per turn
                                                 // of this loop; every other admin serves the state the holder published.
-                                                fabric_states.change_step(crate::fabric_status::ChangeInputs { is_fabric_primary: fabric_primary, heard: topology_view.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
+                                                fabric_states.change_step(crate::fabric_status::ChangeInputs { is_fabric_primary: fabric_primary, heard: topology_view.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t, current: &read }).await;
                                                 // The election's result this admin holds when a primary changes: the mesh-primary
                                                 // first, then the fabric-primary (R-A2); its digest carries it and the rows record it.
                                                 for (seat, holder) in seat_announcements(&t, &mesh, (&seat_node_id, &seat_incarnation), &decided) {
@@ -2858,7 +2861,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // complete: the planned births checked in, every mesh primary reported.
                                                 if announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist {
                                                     // An unreadable builds store steps no checklist: the adopted status waits, named above.
-                                                    if let Some(current) = &current {
+                                                    if let Some(current) = current {
                                                         let planned = current.as_ref().map(|b| crate::checklist::planned(&b.topology, &mesh));
                                                         // The checklist a new primary runs before it republishes the status it adopted (R-S3).
                                                         let done = fabric_states.adopted_step(announced, crate::fabric_status::AdoptedInputs { view: &t, planned, digest_view: &topology_view.digest_view });

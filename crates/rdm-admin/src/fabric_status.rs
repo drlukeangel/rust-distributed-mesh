@@ -119,6 +119,9 @@ fn delivery_of(reply: Option<&StatusReply>, outcome: &str) -> Delivery {
     }
 }
 
+/// The current Build as one status turn read it ([`BuildStateAdapter::current`]).
+pub type TurnRead = Result<Option<crate::build_state::BuildProjection>, crate::build_state::BuildStateError>;
+
 /// What the status loop hands the fabric-primary's step each turn.
 pub struct ChangeInputs<'a> {
     /// Whether this admin holds the fabric-primary role now.
@@ -127,6 +130,9 @@ pub struct ChangeInputs<'a> {
     pub heard: Option<&'a str>,
     /// This admin's view.
     pub view: &'a Topology,
+    /// The current Build as this turn read it, once ([`BuildStateAdapter::current`]): every step the turn
+    /// takes is decided on this read, and none reads the Build again. `Err` names a store that could not be read.
+    pub current: &'a TurnRead,
 }
 
 /// The shared handles one admin's checklists read and act through.
@@ -369,14 +375,15 @@ impl FabricStates {
             }
         }
         // A step that moved the fabric (or its checklist) is followed by the next at once: the change
-        // waits on its checklists and the application, never on the loop that carries it.
+        // waits on its checklists and the application, never on the loop that carries it. Every step is
+        // decided on the turn's one read of the current Build.
         for _ in 0..8 {
             let before = (self.env.records.fabric_state(), change.phase);
             match before.0 {
-                FabricState::Pending => self.step_pending(&mut change, inputs.view).await,
-                FabricState::StateSync => self.step_state_sync(&mut change).await,
-                FabricState::StateCommit => self.step_state_commit(&mut change, inputs.view).await,
-                FabricState::ReadyForTraffic => self.step_ready(&mut change).await,
+                FabricState::Pending => self.step_pending(&mut change, inputs.view, inputs.current).await,
+                FabricState::StateSync => self.step_state_sync(&mut change, inputs.current).await,
+                FabricState::StateCommit => self.step_state_commit(&mut change, inputs.view, inputs.current).await,
+                FabricState::ReadyForTraffic => self.step_ready(&mut change, inputs.current).await,
             }
             if before == (self.env.records.fabric_state(), change.phase) {
                 break;
@@ -484,11 +491,11 @@ impl FabricStates {
         reset
     }
 
-    async fn step_ready(self: &Arc<Self>, change: &mut Change) {
+    async fn step_ready(self: &Arc<Self>, change: &mut Change, current: &TurnRead) {
         let me = self.held_name().await;
-        match self.env.builds.current().await {
+        match current {
             Ok(Some(build)) => {
-                self.resized(change, &build, &me).await;
+                self.resized(change, build, &me).await;
             }
             Ok(None) => {}
             Err(e) => self.block(change, &[unreadable(&e)], "ready-for-traffic reads the current Build", &me),
@@ -564,20 +571,20 @@ impl FabricStates {
         true
     }
 
-    async fn step_pending(self: &Arc<Self>, change: &mut Change, view: &Topology) {
+    async fn step_pending(self: &Arc<Self>, change: &mut Change, view: &Topology, current: &TurnRead) {
         let me = self.held_name_in(view);
-        let accepted = match self.env.builds.current().await {
-            Ok(b) => b,
-            Err(e) => return self.block(change, &[unreadable(&e)], "state-sync names the current Build", &me),
+        let accepted = match current {
+            Ok(b) => b.as_ref(),
+            Err(e) => return self.block(change, &[unreadable(e)], "state-sync names the current Build", &me),
         };
-        if accepted.as_ref().is_some_and(|b| self.deleting(change, b, &me)) {
+        if accepted.is_some_and(|b| self.deleting(change, b, &me)) {
             return;
         }
-        let mut blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
+        let mut blockers = self.entry_blockers(view, accepted.map(|b| &b.topology));
         // During an executable replacement a member still on its old executable does not satisfy its
         // planned replacement: the fabric changes once every planned member runs its entry's executable
         // (states.md "Resize and executable replacement"), as the node rows record what each runs.
-        if let (Some(build), Some(rows)) = (accepted.as_ref().filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)), self.env.records.contacts.get()) {
+        if let (Some(build), Some(rows)) = (accepted.filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)), self.env.records.contacts.get()) {
             match crate::accepted::recorded_executables(&**rows, &build.topology).await {
                 Ok(recorded) => {
                     // A member whose row records another executable than its entry names is owed its
@@ -630,14 +637,14 @@ impl FabricStates {
         out
     }
 
-    async fn step_state_sync(self: &Arc<Self>, change: &mut Change) {
+    async fn step_state_sync(self: &Arc<Self>, change: &mut Change, current: &TurnRead) {
         let me = self.held_name().await;
-        let build = match self.env.builds.current().await {
+        let build = match current {
             Ok(Some(build)) => build,
             Ok(None) => return self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build", &me),
-            Err(e) => return self.block(change, &[unreadable(&e)], "sync_state names the current Build", &me),
+            Err(e) => return self.block(change, &[unreadable(e)], "sync_state names the current Build", &me),
         };
-        if self.topology_moved(change, &build, &me).await || self.deleting(change, &build, &me) {
+        if self.topology_moved(change, build, &me).await || self.deleting(change, build, &me) {
             return;
         }
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
@@ -728,14 +735,14 @@ impl FabricStates {
         self.enter(change, FabricState::StateCommit, &me);
     }
 
-    async fn step_state_commit(self: &Arc<Self>, change: &mut Change, view: &Topology) {
+    async fn step_state_commit(self: &Arc<Self>, change: &mut Change, view: &Topology, current: &TurnRead) {
         let me = self.held_name_in(view);
-        let build = match self.env.builds.current().await {
+        let build = match current {
             Ok(Some(build)) => build,
             Ok(None) => return self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build", &me),
-            Err(e) => return self.block(change, &[unreadable(&e)], "commit-state names the current Build", &me),
+            Err(e) => return self.block(change, &[unreadable(e)], "commit-state names the current Build", &me),
         };
-        if self.topology_moved(change, &build, &me).await || self.deleting(change, &build, &me) {
+        if self.topology_moved(change, build, &me).await || self.deleting(change, build, &me) {
             return;
         }
         match &change.key {
@@ -753,7 +760,7 @@ impl FabricStates {
         }
         let (phase, key) = (change.phase.unwrap_or(Phase::Commit), change.key.clone().expect("set above"));
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
-        let missing = self.fabric_checklist(&key, view, &parent).await;
+        let missing = self.fabric_checklist(&key, view, &parent, build).await;
         if !missing.is_empty() {
             self.block(change, &missing, &format!("{} waits for the check-in checklist", key.kind.command()), &me);
             return;
@@ -810,22 +817,16 @@ impl FabricStates {
         put.map(|_| ())
     }
 
-    /// One turn of a fabric-level checklist: open it, command the mesh primaries not yet
-    /// commanded as their exact birth, run this admin's own mesh as its mesh primary. The planned
-    /// births not checked in, named; empty is complete.
-    async fn fabric_checklist(self: &Arc<Self>, key: &StateKey, view: &Topology, parent: &tracing::Span) -> Vec<Missing> {
+    /// One turn of a fabric-level checklist of `build`, the current Build as the turn read it: open it,
+    /// command the mesh primaries not yet commanded as their exact birth, run this admin's own mesh as
+    /// its mesh primary. The planned births not checked in, named; empty is complete.
+    async fn fabric_checklist(self: &Arc<Self>, key: &StateKey, view: &Topology, parent: &tracing::Span, build: &crate::build_state::BuildProjection) -> Vec<Missing> {
         let me = self.held_name_in(view);
         if self.fabric_checklists.open(key) {
             tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-checklist-opened", node = %me, command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the fabric-primary opened a checklist"));
         }
-        // A builds store that cannot be read plans nothing: the checklist stays open, named, and is
-        // never planned from the view in its place.
-        let meshes: Vec<String> = match self.env.builds.current().await {
-            Ok(Some(b)) => b.topology.meshes.keys().cloned().collect(),
-            Ok(None) => view.meshes.iter().map(|m| m.name.clone()).collect(),
-            Err(e) => return vec![unreadable(&e)],
-        };
+        let meshes: Vec<String> = build.topology.meshes.keys().cloned().collect();
         let mut planned = BTreeMap::new();
         let mut unresolved = Vec::new();
         for mesh in &meshes {
@@ -1595,7 +1596,7 @@ mod tests {
         records.set_fabric_state(FabricState::StateSync);
         let mut change = fabric_states.change.lock().await;
         change.tracked = Some(one_mesh.clone());
-        fabric_states.step_state_sync(&mut change).await;
+        fabric_states.step_state_sync(&mut change, &fabric_states.env.builds.current().await).await;
         assert!(
             change.sync.is_none(),
             "no sync_state call is made for the two-mesh Build inside the one-mesh Build's state-sync: {:?}",
@@ -1604,7 +1605,7 @@ mod tests {
         assert_eq!(records.fabric_state(), FabricState::StateSync, "the move back to pending waits until state-sync went out");
         // State-sync went out: the changed topology puts the fabric back to pending.
         records.set_published_fabric_state(Some(FabricState::StateSync));
-        fabric_states.step_state_sync(&mut change).await;
+        fabric_states.step_state_sync(&mut change, &fabric_states.env.builds.current().await).await;
         assert_eq!(records.fabric_state(), FabricState::Pending, "the changed topology puts the fabric back to pending");
         drop(change);
         tokio::task::yield_now().await;
@@ -1705,7 +1706,7 @@ mod tests {
         let view = projected(vec![fp.clone(), m2.clone()]);
         let records = Arc::new(Records::default());
         let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view, current: &fabric_states.env.builds.current().await }).await;
         assert_eq!(records.fabric_state(), FabricState::StateCommit, "the published state is adopted");
         tokio::task::yield_now().await;
         fabric_states.fabric_checklists_reset();
@@ -1730,11 +1731,11 @@ mod tests {
         let fabric_id = FabricId::mint();
         let records = Arc::new(Records::default());
         let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), fabric_id.clone(), Arc::new(NoScratchpad)).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view, current: &fabric_states.env.builds.current().await }).await;
         let first = StateKey { kind: StateCommand::StateCommit, fabric_id, build_id: id.to_string(), attempt: 1 };
         fabric_states.fabric_checklists.answered(&first, &m2.node_id, m2.incarnation_id.as_ref().unwrap());
         claim(&builds, &id, 2).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view, current: &fabric_states.env.builds.current().await }).await;
         tokio::task::yield_now().await;
         fabric_states.fabric_checklists_reset();
         tokio::task::yield_now().await;
@@ -1766,7 +1767,7 @@ mod tests {
         resolver.insert(rdm_transport::ResolvedNode { node_id: m2.node_id.clone(), name: m2.name.clone(), endpoint_id: iroh::SecretKey::generate().public(), transport_addr: silent.local_addr().unwrap(), incarnation: m2.incarnation_id.clone().unwrap() });
         let fabric_states = states_resolving(&fp, ready.clone(), builds, Arc::new(Records::default()), FabricId::mint(), Arc::new(NoScratchpad), resolver).await;
         let commanded = tokio::time::Instant::now();
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &ready }).await;
+        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &ready, current: &fabric_states.env.builds.current().await }).await;
         let resends = || rdm_transport::DeliveryStats::get(&fabric_states.env.client.delivery().stats().resends);
         // A bounded call ends 10 s in (`CallOptions::default`). The Owed call is resent after that mark,
         // whatever the cadence: one attempt is bounded by the staleness floor, and its backoff is capped there.
@@ -1781,7 +1782,7 @@ mod tests {
         .await
         .unwrap_or_else(|_| panic!("the command to mesh2's primary is still out past the 10 s a bounded call ends on, and resent ({} resends, {at_mark} at the mark)", resends()));
         for view in [&gone, &gone, &ready, &ready] {
-            fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view }).await;
+            fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view, current: &fabric_states.env.builds.current().await }).await;
             tokio::task::yield_now().await;
         }
         let hooks = || capture.named("rdm.node_admin.fabric.update.via-state-hook").into_iter().filter(|s| s.attributes.get("command").map(String::as_str) == Some("commit-state")).count();
@@ -1803,6 +1804,127 @@ mod tests {
         assert!(commands[0].attributes.get("outcome").is_some_and(|o| o.contains("cancelled")), "closing the checklist cancels the owed call: {commands:?}");
         let calls: std::collections::BTreeSet<String> = capture.named("rdm.node_rpc.delivery.update.via-resend").into_iter().filter_map(|s| s.attributes.get("delivery_id").cloned()).collect();
         assert_eq!(calls.len(), 1, "every resend is the one call's: {calls:?}");
+    }
+
+    tokio::task_local! {
+        /// Set on the task that runs a status turn in [`CountedReads`]' cells: a read of the current Build
+        /// counts only on that task, never on a checklist driver or command the turn spawns.
+        static ON_THE_TURN: ();
+    }
+
+    /// A Build log whose current-Build reads ([`BuildStateAdapter::current_build`], the index read every
+    /// [`BuildStateAdapter::current`] starts with) are counted on the status turn's own task.
+    struct CountedReads {
+        inner: Arc<crate::build_state::MemoryBuildStateAdapter>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountedReads {
+        fn reads(&self) -> usize {
+            self.reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BuildStateAdapter for CountedReads {
+        async fn publish_accepted(&self, a: &crate::build_state::BuildAccepted) -> Result<(), crate::build_state::BuildStateError> {
+            self.inner.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
+            self.inner.open_attempt(o).await
+        }
+        async fn read_build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
+            self.inner.read_build(id).await
+        }
+        async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+            if ON_THE_TURN.try_with(|_| ()).is_ok() {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+            self.inner.newest_accepted_at_ms().await
+        }
+        async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
+            self.inner.list_active().await
+        }
+        async fn claim_attempt(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
+            self.inner.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
+            self.inner.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, r: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
+            self.inner.append_step_receipt(r).await
+        }
+        async fn append_attempt_receipt(&self, r: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
+            self.inner.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+            self.inner.facts().await
+        }
+        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, crate::build_state::BuildStateError> {
+            self.inner.recovery_of(path, node_id, incarnation).await
+        }
+        async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+            self.inner.mesh_deleted_of(node_id, incarnation).await
+        }
+        async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
+            self.inner.exits_owed(build_id, mesh).await
+        }
+        async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
+            self.inner.forget(id).await
+        }
+    }
+
+    /// CONTRACT (fabric-state-commit.md step 4: "After all meshes check in, proceed to Fabric
+    /// ready-for-traffic"; the status loop reads the current Build once per turn, `admin::boot`): one
+    /// status turn of the fabric-primary reads the current Build once, at its start, and every step of the
+    /// fabric's change it takes in that turn is decided on that read, however many steps the turn takes:
+    /// the commit-state checklist opened, completed, the open-traffic checklist opened and completed. On a
+    /// Build store whose read costs ~100 ms (an application's own backend), each further read is that much
+    /// longer between state-commit and ready-for-traffic. Must NOT happen: a step, or the checklist a step
+    /// runs, reading the current Build again inside the turn.
+    #[tokio::test]
+    async fn one_status_turn_reads_the_current_build_once_however_many_steps_of_the_change_it_takes() {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::BuildAccepted;
+        let capture = crate::span_capture::Capture::new("one-build-read-per-turn");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
+        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        claim(&builds.inner, &id, 1).await;
+        // The fabric-primary alone in its one-mesh fabric, heard in state-commit; the state it holds went out.
+        let (fp, _) = fabric_primary_and_mesh2();
+        let view = projected(vec![fp.clone()]);
+        let records = Arc::new(Records::default());
+        records.set_published_fabric_state(Some(FabricState::StateCommit));
+        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
+        // One status turn: the current Build read once, then the fabric's change stepped on that read.
+        let turn = || {
+            let (builds, fabric_states, view) = (builds.clone(), fabric_states.clone(), view.clone());
+            ON_THE_TURN.scope((), async move {
+                let before = builds.reads();
+                let read = builds.current().await;
+                fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view, current: &read }).await;
+                builds.reads() - before
+            })
+        };
+        let completed = || capture.named("rdm.node_admin.fabric.update.via-checklist-complete").into_iter().filter_map(|s| s.attributes.get("command").cloned()).collect::<Vec<_>>();
+        let mut reads = Vec::new();
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        // Turns until both checklists completed: the open-traffic checklist's completion puts the ready row,
+        // which no fabric store here holds, so the fabric stays in state-commit, named.
+        while completed().len() < 2 && tokio::time::Instant::now() < until {
+            reads.push(turn().await);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(completed(), ["commit-state", "open-traffic"], "the change ran the commit-state checklist, then the open-traffic checklist");
+        assert!(records.fabric_blocker().is_some_and(|b| b.contains("ready-row-unwritten")), "the change reached the ready row: {:?}", records.fabric_blocker());
+        assert!(reads.iter().all(|n| *n == 1), "each status turn reads the current Build once: reads per turn {reads:?}");
     }
 
     /// The state actions this cell counts.
@@ -1935,7 +2057,7 @@ mod tests {
             // As heard on gossip: the same Build, no executable on its entries.
             change.tracked = Some(topology(None));
             change.tracked_build = Some(a.clone());
-            states.step_ready(&mut change).await;
+            states.step_ready(&mut change, &states.env.builds.current().await).await;
         }
         assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the same Build read from the store root is no resize: the fabric stays ready-for-traffic");
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
@@ -1943,7 +2065,7 @@ mod tests {
         claim(&builds, &b, 1).await;
         {
             let mut change = states.change.lock().await;
-            states.step_ready(&mut change).await;
+            states.step_ready(&mut change, &states.env.builds.current().await).await;
         }
         assert_eq!(records.fabric_state(), FabricState::Pending, "a new Build that names a new executable puts the fabric back to pending");
     }
@@ -1990,7 +2112,7 @@ mod tests {
         records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
         {
             let mut change = states.change.lock().await;
-            states.step_ready(&mut change).await;
+            states.step_ready(&mut change, &states.env.builds.current().await).await;
             assert_eq!(change.tracked_build, Some(a.clone()), "day 0's Build is the topology the fabric changes under");
         }
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
@@ -1999,7 +2121,7 @@ mod tests {
         assert!(!states.accepted().await, "a request naming the executable the row records puts nothing back at its acceptance");
         {
             let mut change = states.change.lock().await;
-            states.step_ready(&mut change).await;
+            states.step_ready(&mut change, &states.env.builds.current().await).await;
             assert_eq!(change.tracked_build, Some(b.clone()), "the change holds the new Build's topology");
         }
         assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the executable the row records is no replacement: the fabric stays ready-for-traffic");
@@ -2039,7 +2161,7 @@ mod tests {
         let view = projected(vec![fp.clone(), member, m2]);
         let records = Arc::new(Records::default());
         let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view, current: &fabric_states.env.builds.current().await }).await;
         let settle = || async {
             for _ in 0..20 {
                 tokio::task::yield_now().await;
@@ -2050,7 +2172,7 @@ mod tests {
         // close before the change opens the checklist again.
         fabric_states.fabric_checklists_reset();
         settle().await;
-        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view, current: &fabric_states.env.builds.current().await }).await;
         settle().await;
         // Closing the reopened checklist ends what it holds open, so every span of the cell is read.
         fabric_states.fabric_checklists_reset();
@@ -2383,7 +2505,7 @@ mod tests {
             records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
             {
                 let mut change = states.change.lock().await;
-                states.step_ready(&mut change).await;
+                states.step_ready(&mut change, &states.env.builds.current().await).await;
             }
             let mut nodes: Vec<(PathName, PathConfig)> = topology.meshes.values().flat_map(|m| m.path_config_by_path.iter().map(|(p, c)| (p.clone(), c.clone()))).collect();
             edit(&mut nodes);
@@ -2395,7 +2517,7 @@ mod tests {
             let at_acceptance = states.accepted().await;
             {
                 let mut change = states.change.lock().await;
-                states.step_ready(&mut change).await;
+                states.step_ready(&mut change, &states.env.builds.current().await).await;
             }
             let now = records.fabric_state();
             let changed = next != topology;
