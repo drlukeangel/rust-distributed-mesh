@@ -65,9 +65,13 @@ line per fact, one appender.
   Luke rules it; this proposal introduces no compaction and assumes none.
 - **R-SR3, one append protocol for every file.** A line is `\n` + one JSON object + `\n`: JSONL,
   readable by ordinary tooling. The object's first field is `len`, the line's byte count between its
-  newlines; then `format`, `key`, the whole record, and last a `crc32` of the object's bytes before
-  that field. A writer appends one line in one `write` on a
-  descriptor opened `O_APPEND`, then `fsync`s, and reports success only after the fsync. Both
+  newlines; then `op`, the writer's birth (node id, incarnation) and a sequence the writer increments
+  per append, which names this write and no other; then `format`, `key`, the whole record, and last a
+  `crc32` of the object's bytes before that field. A writer appends one line in one `write` on a
+  descriptor opened `O_APPEND`, then `fsync`s, and reports success only after the fsync succeeds. A
+  failed fsync is never reported as success: after it the page cache cannot be trusted, so the write
+  is indeterminate and reconciled as a short write is, below. A write that wrote zero bytes landed
+  nothing and is retried as a fresh append. Both
   providers put the root on one host kernel (the process provider's directory, the container
   provider's bind mount), where a single `write` on `O_APPEND` to a regular file lands whole and in
   order; R14 item 5's filesystem contract is restated for it. A reader folds a file line by line: a
@@ -91,10 +95,18 @@ line per fact, one appender.
   object whole without a newline at the end of the file, so it appends one newline alone, fsyncs and
   proceeds, and if another writer's line landed in between the lone newline is a blank line, skipped;
   or its object absent or cut short, so it attests the fragment and appends the whole line again. The writer knows its own
-  write by its bytes, which end in its `crc32`. Under either schedule, the other writer first or the
+  write by its `op`, never by its bytes: an idempotent rewrite of an unchanged record is a second
+  `op` with the same payload, so the re-read cannot mistake the earlier identical line for the write
+  it is reconciling (dev review, 2026-10-25). Under either schedule, the other writer first or the
   retry first, the record is folded once (Architect 1, 2026-10-25). Corruption is refused rather
   than skipped because a skipped whole record exposes the line before it as current; a fragment is
-  skipped because it never was a record.
+  skipped because it never was a record. An unlanded commit on a lane (`df84386f1`) replaced the
+  attestation with a refusal of any torn tail, every open refused until a repair by hand. It is not
+  taken: R-SR3 acknowledges only after a full write and a successful fsync, so a torn or incomplete
+  line was never acknowledged wherever it sits, and refusing it trades the fabric's store for the
+  commonest failure an append log has. Kafka's log recovery, etcd's WAL repair and RocksDB's default
+  tail mode all drop the torn last record and refuse corruption in the middle; they truncate, and the
+  attestation is the append-only form of the same result (dev review, 2026-10-25).
 - **R-SR4, a reader of rows it does not write reads the tail first.** A writer's own objects live in
   its cache (storage-whole-records.md). Rows another writer appends (another mesh's node records,
   every node's connection facts, the Build facts a successor folds) are read by consuming the
@@ -190,10 +202,15 @@ action publishes them (fabric-state-sync.md), and the scratchpad publishes as li
 files. The three stores that write before state-commit append to the new files: the Build facts to
 `builds.jsonl`, the attempt claim to `locks/in-flight/`, the declaration to `nodes.jsonl`.
 
-**What open costs.** A fold reads each file once. At the record's size and count (142 nodes in the
-largest estate in the record) and the write rate the cells show, a long run's `nodes.jsonl` is
-thousands of lines and a few megabytes. A file whose size shows in telemetry is the first fact of a
-retention question, which is Luke's and not assumed here.
+**What open costs, and the measured trigger.** A fold reads each file once from byte 0. At the
+record's size and count (142 nodes in the largest estate in the record) a long run's `nodes.jsonl` is
+thousands of lines and a few megabytes. `connections.jsonl` is the largest by far: every connect,
+disconnect and reconnect attempt of every node of the fabric, so a fresh open's time grows with the
+fabric's whole history. The open records one span per file, `rdm.store.open.via-fold`, with the
+file's bytes, lines, fragments, the latest `op` per writer and the fold's duration. The trigger for
+the retention ruling, which is Luke's, is the first fold recorded over one second or the first file
+over 256 MiB on a real fabric, the same shape as the reads proposal's paging trigger (dev review,
+2026-10-25); the numbers are a line to strike.
 
 ## 5. Delta
 
@@ -309,7 +326,11 @@ connections.jsonl, the view the fold's latest line per key.`
   `len` corrupted upward, each reopen refused by name and not its predecessor shown; a torn tail
   attested at open and then skipped by every later fold while a later writer's lines are read; a
   short write cut short by another writer's line, attested by its writer and the record appended once
-  more; a lock naming a live claimant never removed by another.
+  more; an idempotent rewrite of an unchanged record whose write is cut short, the re-read finding
+  the earlier identical line but not its `op`, so the record is appended and both lines stand; a
+  failed fsync reported indeterminate and reconciled by `op`; a zero-byte write retried once; the
+  open span carrying each file's bytes, lines, fragments and duration; a lock naming a live claimant
+  never removed by another.
 - The path-asserting tests move to §4: `store_root.rs` (9 assertions), `build_state.rs` (11),
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
