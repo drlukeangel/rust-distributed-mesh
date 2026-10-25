@@ -488,15 +488,45 @@ async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec
 }
 
 /// `name` at its `path.name` again, ReadyForTraffic as a new node (new node.id and incarnation), running
-/// `next`; a `Persistent` path's successor over its predecessor's data dir with its endpoint key.
+/// `next`; a `Persistent` path's successor (a node-admin's, a broker's: their kinds' default storage) over
+/// its predecessor's data dir with its endpoint key, an `Ephemeral` path's over a newly allocated data dir
+/// with a new endpoint key (build-deployment.md §3).
 async fn replaced(estate: &Estate, name: &str, was: &Member, next: &Binding) {
     let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name} runs the executable its entry names");
-    if matches!(was.view.kind, NodeKind::NodeAdmin | NodeKind::Broker) {
+    if matches!(PathConfig::default_for(was.view.kind).storage, rdm_core::meta::StorageMeta::Persistent { .. }) {
         assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name}: its endpoint key kept, loaded from its kept data dir");
         assert_eq!(estate.data_dir(name).await, was.data_dir, "{name}: created over its kept data dir");
+    } else {
+        assert_ne!(now.endpoint_id, was.view.endpoint_id, "{name}: an Ephemeral path's successor has a new endpoint key");
+        assert_ne!(estate.data_dir(name).await, was.data_dir, "{name}: an Ephemeral path's successor is created over a newly allocated data dir");
     }
+}
+
+/// CONTRACT (build-deployment.md §3: "The successor's storage follows the path's config: `Persistent`
+/// inherits the predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one"; proposal
+/// executable-bindings-at-create.md §4: "of an `Ephemeral` gateway: a fresh data dir"): a mesh of two
+/// node-admins and two rpc nodes (an rpc node's path `Ephemeral`, its kind's default) has one rpc node's
+/// executable replaced by a request naming another. The rpc node comes back at its `path.name` as a new
+/// node.id and incarnation on the new executable, over a newly allocated data dir with a new endpoint key;
+/// its predecessor's data dir is left where it was. Must NOT happen: the successor created over its
+/// predecessor's data dir or loading its endpoint key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ephemeral_paths_replacement_is_created_over_a_newly_allocated_data_dir_with_a_new_endpoint_key() {
+    let estate = Estate::bootstrap(owner("an_ephemeral_paths_replacement_is_created_over_a_newly_allocated_data_dir_with_a_new_endpoint_key"), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settles_to(&[("mesh1", 2, 2)], SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let before = members(&estate).await;
+    let (based_on, request) = read_request(&estate).await;
+    assert_eq!(request.iter().find(|(p, _)| p.to_string() == "mesh1.rpc.1").map(|(_, c)| c.storage), Some(rdm_core::meta::StorageMeta::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
+    let current = before["mesh1.rpc.1"].view.executable.clone().expect("mesh1.rpc.1's row records its executable");
+    let next = another_build(&estate, &current, "next");
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, "mesh1.rpc.1", Some(&next)) }).await).await;
+    replaced(&estate, "mesh1.rpc.1", &before["mesh1.rpc.1"], &next).await;
+    assert!(std::path::Path::new(&before["mesh1.rpc.1"].data_dir).is_dir(), "the predecessor's data dir is left where it was (node-delete.md \"Storage\")");
+    estate.shutdown().await;
 }
 
 /// A Build's stream followed to its terminal across the fabric-primary's own replacement: a stream that

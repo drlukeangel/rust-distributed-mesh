@@ -286,6 +286,13 @@ impl AdminRunner {
         Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.path_config(node)).and_then(|c| c.executable.clone())))
     }
 
+    /// The storage `node`'s entry names in Build `build_id`'s accepted topology as builds.storage records
+    /// it ([`BuildStateAdapter::stored_accepted`]), when the topology holds the path.
+    async fn entry_storage(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::meta::StorageMeta>, String> {
+        let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's storage: {e}"))?;
+        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.path_config(node)).map(|c| c.storage)))
+    }
+
     /// The executable binding the row a create of `node` is seeded from records (the claim's seed,
     /// [`crate::node_rows::NodeRows::claim`]): the row at the path, else its `<name>.old` row.
     async fn recorded_executable(&self, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
@@ -782,11 +789,13 @@ impl AdminRunner {
 
     /// A replacement's node.create of the member at `node` whose birth `from` the replacement's
     /// node.delete deleted (build-deployment.md §3): a new node.id and incarnation at the same
-    /// `path.name`, over the predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the
-    /// endpoint key loaded from it), config and tags seeded from the Deleted row (node-replace.md
+    /// `path.name`, its storage following the path's entry in the accepted topology: a `Persistent`
+    /// path's over the predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint
+    /// key loaded from it), an `Ephemeral` path's over a newly allocated data dir with a newly minted key
+    /// (`RDM_INHERITED_DATA_DIR=0`); config and tags seeded from the Deleted row (node-replace.md
     /// "Inherited"), launching `executable`, the path's entry's. The Build fixes the binding, as a recipe's Create
     /// step does, so the launch never takes the one the Deleted row still records; the claim records it
-    /// on the node's row, so a later node recovery runs it (node-recovery.md "Retained"). The data dir
+    /// on the node's row, so a later node recovery runs it (node-recovery.md "Retained"). A kept data dir
     /// is the one the delete's `TerminateRuntime` receipt names: the delete stopped the exact runtime
     /// and proved it exited, and kept its storage (node-delete.md step 3). The old birth's resolver entry
     /// and direct paths are dropped right before the new runtime with its key is launched, as node
@@ -809,7 +818,14 @@ impl AdminRunner {
             .filter(|(_, t)| t.node_id == from.node_id.to_string() && t.incarnation_id == from.incarnation.to_string())
             .max_by_key(|(a, _)| *a)
             .map(|(_, t)| t)
-            .ok_or_else(|| format!("node.create:{node}: Build {build_id} holds no completed TerminateRuntime of {operation} for birth {} at {} up to attempt {attempt}: the successor's data dir is the one that delete kept", from.node_id, from.incarnation.as_str()))?;
+            .ok_or_else(|| format!("node.create:{node}: Build {build_id} holds no completed TerminateRuntime of {operation} for birth {} at {} up to attempt {attempt}: the successor is created only after that delete", from.node_id, from.incarnation.as_str()))?;
+        // The successor's storage follows the path's entry in the accepted topology (build-deployment.md
+        // §3): `Persistent` inherits the data dir the delete kept, `Ephemeral` allocates a fresh one.
+        let inherits = match self.entry_storage(build_id, node).await? {
+            Some(rdm_core::meta::StorageMeta::Ephemeral) => false,
+            Some(rdm_core::meta::StorageMeta::Persistent { .. }) => true,
+            None => return Err(format!("node.create:{node}: the accepted Build {build_id} holds no entry for the path: its storage decides the successor's data dir; nothing is launched").into()),
+        };
         let first_admin = {
             let t = self.topology.read().await;
             t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
@@ -823,14 +839,20 @@ impl AdminRunner {
         let mut predecessor = Node::allocated(node.clone());
         predecessor.node_id = from.node_id.clone();
         predecessor.incarnation_id = Some(from.incarnation.clone());
-        predecessor.data_dir = terminal.data_dir;
-        let data_dir = pipeline.birth_dir(&predecessor);
-        crate::deployment::pipeline::inspect_transport_key(&data_dir).map_err(|e| format!("node.create:{node}: {}", e.into_message()))?;
-        // The key whose old paths are dropped is the one the kept data dir holds: the node created over it loads exactly it.
-        predecessor.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
+        let data_dir = if inherits {
+            predecessor.data_dir = terminal.data_dir;
+            let data_dir = pipeline.birth_dir(&predecessor);
+            crate::deployment::pipeline::inspect_transport_key(&data_dir).map_err(|e| format!("node.create:{node}: {}", e.into_message()))?;
+            // The key whose old paths are dropped is the one the kept data dir holds: the node created over it loads exactly it.
+            predecessor.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
+            Some(data_dir)
+        } else {
+            None
+        };
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
-        let created = pipeline.create_with(&req, before_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir, held_runtimes };
+        // The claim seeds config and tags from the Deleted row on both arms (node-replace.md "Inherited").
+        let created = pipeline.create_recovery_with(&req, before_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
