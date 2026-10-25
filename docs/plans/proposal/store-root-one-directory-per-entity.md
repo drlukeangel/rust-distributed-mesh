@@ -63,23 +63,29 @@ line per fact, one appender.
   node ran appends the record marked Withdrawn, over which a name claim wins as over a Deleted one,
   so the one place a record disappears today goes. Retention of a file's lines is nobody's until
   Luke rules it; this proposal introduces no compaction and assumes none.
-- **R-SR3, one append protocol for every file.** A line is `\n` + `<len>` + tab + record + `\n`,
-  `len` the record's byte count in decimal. A writer appends one line in one `write` on a descriptor
-  opened `O_APPEND`, then `fsync`s. Both providers put the root on one host kernel (the process
-  provider's directory, the container provider's bind mount), where a single `write` on `O_APPEND`
-  to a regular file lands whole and in order; R14 item 5's filesystem contract is restated for it.
-  A reader folds a file line by line: a blank line is skipped; a line whose record is shorter than
-  its `len`, or that ends the file without its newline, is a torn fragment, skipped and counted in
-  the open's span with its offset; a line whose record has its `len` bytes and does not parse as a
-  record is corruption, and the open is refused by name naming the file and the offset, never an
-  older line shown as current. Because every line opens with its own newline and carries its length,
-  a fragment another writer appends after is a line of its own, swallows nothing and is told from a
-  whole record. A short write (fewer bytes written than the line) is indeterminate, as a cut call is
-  (Node RPC §34): the writer's record may or may not be complete once the next writer's newline
-  lands, so before its next append the writer re-reads the tail from its consumed offset and finds
-  its record there whole or not, and only then retries or proceeds (Architect 1, 2026-10-25).
-  Corruption is refused rather than skipped because a skipped whole record exposes the line before
-  it as current, which is a lie about state; a fragment is skipped because it never was a record.
+- **R-SR3, one append protocol for every file.** A line is `\n` + one JSON object + `\n`: JSONL,
+  readable by ordinary tooling. The object carries `format`, `key`, the whole record, and last a
+  `crc32` of the object's bytes before that field. A writer appends one line in one `write` on a
+  descriptor opened `O_APPEND`, then `fsync`s, and reports success only after the fsync. Both
+  providers put the root on one host kernel (the process provider's directory, the container
+  provider's bind mount), where a single `write` on `O_APPEND` to a regular file lands whole and in
+  order; R14 item 5's filesystem contract is restated for it. A reader folds a file line by line: a
+  blank line is skipped; a line that does not parse as JSON is a torn fragment, skipped and counted
+  in the open's span with its offset; a line that parses and whose `crc32` does not match is
+  corruption, and the open is refused by name naming the file and the offset, never an older line
+  shown as current. Because every line opens with its own newline, a fragment another writer appends
+  after is a line of its own and swallows nothing. A short write (fewer bytes written than the line)
+  is indeterminate, as a cut call is (Node RPC §34): the writer's object may already be complete but
+  for its newline, and any later opening newline completes it. Before its next append the writer
+  re-reads the tail from its consumed offset and finds one of three things: its object whole and
+  terminated (another writer's newline did it), so it fsyncs and proceeds, appending nothing; its
+  object whole without a newline at the end of the file, so it appends one newline alone, fsyncs and
+  proceeds, and if another writer's line landed in between the lone newline is a blank line, skipped;
+  or its object absent or cut short, so it appends the whole line again. The writer knows its own
+  write by its bytes, which end in its `crc32`. Under either schedule, the other writer first or the
+  retry first, the record is folded once (Architect 1, 2026-10-25). Corruption is refused rather
+  than skipped because a skipped whole record exposes the line before it as current; a fragment is
+  skipped because it never was a record.
 - **R-SR4, a reader of rows it does not write reads the tail first.** A writer's own objects live in
   its cache (storage-whole-records.md). Rows another writer appends (another mesh's node records,
   every node's connection facts, the Build facts a successor folds) are read by consuming the
@@ -89,17 +95,24 @@ line per fact, one appender.
   it, so after A consumes to 100, B appends and A appends, A's next fold starts at 100 and reads B's
   line and then its own (Architect 1, 2026-10-25). The shared file's view is not the writer's cache.
 - **R-SR5, one winner stays one winner.** The conditional operations keep their guarantees outside
-  the logs, under `locks/`, because an append cannot refuse. The attempt in flight on a mesh name is
-  `locks/in-flight/<mesh name>`, taken and released as `mesh_claims.rs` does today. A name claim is
-  `locks/name/<name>`, a create-exclusive file naming its claimant, taken before the claim line is
-  appended and released at Deleted or Dead by the holder of the name, so the next claimant inserts
-  it again; a re-creation at the name inserts the lock then appends its claim over the Deleted or
-  Withdrawn line. That is what the code does today for both names: `claim_mesh_name` and the file
-  backend's `claim_node_name` are the record store's exclusive `insert` (`storage.rs:356`, `:1303`),
-  though R14 item 3 describes the node name as a conditional write; the code is kept and item 3 is
-  corrected to it (Architect 1, 2026-10-25). The writer map says who may claim a name; the lock is
-  what makes two processes that both believe they may, a recovery executor and an adoption launch,
-  yield one winner.
+  the logs, under `locks/`, because an append cannot refuse. A lock is a create-exclusive file whose
+  content names its claimant: the birth (node id, incarnation) and, for an attempt, the attempt
+  `(build_id, mesh, attempt)`. The attempt in flight on a mesh name is `locks/in-flight/<mesh name>`,
+  taken and released as `mesh_claims.rs` does today. A name claim is `locks/name/<name>`, and the
+  lock is the claim, as today's exclusive insert is (`claim_mesh_name`, `storage.rs:356`; the file
+  backend's `claim_node_name`, `:1303`; R14 item 3 describes the node name as a conditional write and
+  is corrected to the code): there is no claim line, so there is no window between a lock and a
+  line. The name is released at Deleted or Dead by the name's holder, and the next claimant inserts
+  the lock again over a Deleted or Withdrawn latest line, which `claim_against` decides before the
+  take. Recovery across a crash: a lock whose claimant's latest record line is Deleted, Dead or
+  Withdrawn is a release not finished, and the next claimant finishes it, releasing and taking in
+  one step, which is idempotent and replays safely; a lock whose claimant birth is proven exited
+  with no record line of that birth under the name is a claim not finished, and the executor
+  resuming that attempt adopts it (the lock names the attempt), while any other claimant waits for
+  the attempt's verdict, which releases it. A lock naming a live claimant, or a claimant whose latest
+  line is anything but Deleted, Dead or Withdrawn, is never removed by another (Architect 1,
+  2026-10-25). The writer map says who may claim a name; the lock is what makes two processes that
+  both believe they may, a recovery executor and an adoption launch, yield one winner.
 
 ## 4. The layout
 
@@ -108,12 +121,12 @@ line per fact, one appender.
 <store_dir>/<fabric id>/
   layout                                         r-sr1
   fabric.jsonl                                   the Fabric record's writes; every primary move (one line at its T)
-  meshes.jsonl                                   every Mesh record's writes; every mesh name claim
-  nodes.jsonl                                    every node record's writes; every runtime row; every node name claim; every tag change
+  meshes.jsonl                                   every Mesh record's writes
+  nodes.jsonl                                    every node record's writes; every runtime row; every tag change
   connections.jsonl                              every connection fact of every source (the raw log; the latest per key is the current view)
   builds.jsonl                                   every Build fact: accepted, opened, claimed, step and attempt receipts, forgotten
   locks/in-flight/<mesh name>                    the one attempt in flight on that mesh name, create-exclusive
-  locks/name/<name>                              the holder of a mesh name or a node path.name, create-exclusive
+  locks/name/<name>                              the claim of a mesh name or a node path.name, create-exclusive, naming its claimant
 ```
 
 Writers, file by file; one writer per key, keys never shared:
@@ -121,18 +134,18 @@ Writers, file by file; one writer per key, keys never shared:
 | File | Record kinds and keys | Writers |
 |---|---|---|
 | `fabric.jsonl` | `fabric-record` at the fabric; `primary-move` at `T` | the fabric-primary; a primary move's own writer at the next `T`, having folded every earlier move (Q109) |
-| `meshes.jsonl` | `mesh-record` at the mesh id; `mesh-name` at the name | that mesh's primary; the fabric-primary for a mesh with none |
-| `nodes.jsonl` | `node-record` at the node id; `node-runtime` at the node id; `node-name` at the path.name; `node-tag` at (label, node id) | the mesh-primary of the node's mesh; the fabric-primary for a mesh with none; under build.md §5.3's exception (Q122) the fabric recovery workflow's executor for the rows its operations require, and the adoption launch for its own row; the launching admin for the runtime row |
+| `meshes.jsonl` | `mesh-record` at the mesh id | that mesh's primary; the fabric-primary for a mesh with none |
+| `nodes.jsonl` | `node-record` at the node id; `node-runtime` at the node id; `node-tag` at (label, node id) | the mesh-primary of the node's mesh; the fabric-primary for a mesh with none; under build.md §5.3's exception (Q122) the fabric recovery workflow's executor for the rows its operations require, and the adoption launch for its own row; the launching admin for the runtime row |
 | `connections.jsonl` | `node-connection` at (source, destination, alpn, kind) | the source node |
 | `builds.jsonl` | the Build facts at their keys: `<build_id>`, `<build_id>-<attempt>`, `<build_id>-<mesh>-<attempt>`, a claim, a receipt per step | the fabric-primary for a topology attempt; the mesh-primary for its drift attempt, the mesh in the key (R-BI7) |
 | `locks/in-flight/<mesh name>` | the mesh name | its claimant, create-exclusive, released at the attempt's verdict while it still names that attempt |
-| `locks/name/<name>` | the mesh name or the path.name | its claimant, create-exclusive, released at Deleted or Dead by the name's holder; the claim line in `meshes.jsonl` or `nodes.jsonl` follows the take |
+| `locks/name/<name>` | the mesh name or the path.name | its claimant, create-exclusive, the lock being the claim; released at Deleted or Dead by the name's holder, or by the next claimant when the holder's latest line is Deleted, Dead or Withdrawn |
 
-**Path uniqueness holds without the mesh directory.** The claim on `mesh2.admin.1` is the latest
-`node-name` line for that key, fabric-wide and independent of any mesh id, written by one writer, so
-a mesh created again under the same name, a new mesh with a new id (R-ML2 item 3), contends on the
-same key and wins only over a Deleted or Withdrawn line, exactly as today. Two `mesh2.admin.1` cannot
-exist because the claim is by name and has one writer; where any record sits does not enter.
+**Path uniqueness holds without the mesh directory.** The claim on `mesh2.admin.1` is the lock
+`locks/name/mesh2.admin.1`, fabric-wide and independent of any mesh id, so a mesh created again under
+the same name, a new mesh with a new id (R-ML2 item 3), contends on the same lock and takes it only
+over a Deleted or Withdrawn latest line, exactly as today's exclusive insert. Two `mesh2.admin.1`
+cannot exist because the claim is one file by name; where any record sits does not enter.
 
 **Connections stay keyed by path.name.** A fact's ends are path.names (`ConnectionEnd.name`;
 node-identity-and-state.md §2.2) and its key is `(source, destination, alpn, kind)` (connections.md
@@ -211,10 +224,10 @@ connections/<node>/.` → `In RDM's file adapter they open under <store_dir>/fab
 store root per fabric, <store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl,
 connections.jsonl, builds.jsonl, locks/}: one append-only JSONL file per storage boundary, every
 write one line carrying the whole record with its format and key, the latest complete line for a key
-the current state, nothing ever removed, indexes folded in memory, the attempt in flight a
-create-exclusive lock, and a layout marker a root is refused without (R-SR1 to R-SR5). One writer per
+the current state, nothing ever removed, indexes folded in memory, the attempt in flight and every
+name claim a create-exclusive lock under locks/, and a layout marker a root is refused without (R-SR1 to R-SR5). One writer per
 key: the fabric-primary writes the Fabric record and every topology attempt's Build facts, … each
-mesh-primary its mesh's record and name claim, its mesh's node records, name claims and tag rows
+mesh-primary its mesh's record, its mesh's node records and tag rows, and the name locks of both
 (where is_primary and is_fabric_primary record the election's result) and its drift attempts' Build
 facts, the mesh in the key; the launching admin a birth's runtime row; each node its own connection
 facts.` The Q122 exception and the sentence from `The Build journal holds one record per fact` on
@@ -238,18 +251,18 @@ connections.jsonl, the view the fold's latest line per key.`
   the layout is {layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl,
   locks/}, one append-only JSONL file per storage boundary, every write the whole record as one line
   with its format and key, nothing removed, indexes folded, a layout marker; status/ is gone; path
-  uniqueness lives in the node-name and mesh-name lines, one writer per name, fabric-wide.` Item 3:
+  uniqueness lives in the name locks under locks/name/, as today's exclusive inserts, fabric-wide.` Item 3:
   corrected to the code: `The name claim is the sole writer's conditional write, not a
   create-exclusive insert.` → `The name claim is a create-exclusive insert under locks/name/, as the
-  code has made it for both names (storage.rs:356, :1303), followed by the claim line; the attempt in
+  code has made it for both names (storage.rs:356, :1303), the lock being the claim; the attempt in
   flight is the other, under locks/in-flight/.` Its `claim_against` sentence stands: the decision over
   a Deleted or Withdrawn line is the claimant's, before the take. Item 5: `relies on hard-link insertion, atomic rename,
   file and directory fsync, and coherent reads and listings` → `relies on one-line O_APPEND writes
   landing whole and in order, file fsync, create-exclusive insertion under locks/, and coherent reads
   on one backing namespace (R-SR3)`. Item 7: `reads nodes/<mesh>/ and meshes/<mesh>` → `folds
   meshes.jsonl and nodes.jsonl and keeps its mesh's records`.
-- R-ML2 item 4 gains: `Amended 2026-10-25 (R-SR1): the recreated mesh shares the node-name keys in
-  nodes.jsonl and the in-flight lock under its name, not a directory.` Item 5's reason stands: no
+- R-ML2 item 4 gains: `Amended 2026-10-25 (R-SR1): the recreated mesh shares the name locks under
+  locks/name/ and the in-flight lock under its name, not a directory.` Item 5's reason stands: no
   MeshId is in a name claim's key.
 - R-BI6 is unchanged: the journal's location was the adapter's choice, and `builds.jsonl` is it.
 - R-FN1 is unchanged.
@@ -259,14 +272,19 @@ connections.jsonl, the view the fold's latest line per key.`
 - `StoreLog`, one cell set: two writers appending concurrently to one file, every line found whole
   and in order; a torn tail followed by another writer's line, the fragment skipped and counted and
   the line read; the short-write boundary, a record written whole but for its final newline and
-  reported short, then completed by the next writer's opening newline: the writer's tail re-read
-  finds it whole and does not append it twice, and the fold reads it once; a whole line that does
-  not parse refusing the open by name with the file and the offset; a blank line skipped; several
+  reported short, under both schedules: another writer's newline completes it before the re-read,
+  and the re-read comes first and appends one newline alone; in each the record is folded once and
+  success is reported after the fsync; a line that parses with a wrong `crc32` refusing the open by
+  name with the file and the offset; a blank line skipped; several
   writes of one key, every line present after reopen and the latest read as current; the A–B–A
   interleaving, A consumed to an offset, B appends, A appends, A's next fold reads B's line (R-SR4);
   the in-flight lock taken once across two claimants and released only by the attempt that holds
-  it; two processes claiming one name, one lock taken, one claim line appended, the other refused
-  `NameHeld` and launching nothing (R-SR5).
+  it; two processes claiming one name, one lock taken, the other refused `NameHeld` and launching
+  nothing; the two crash boundaries of a name (R-SR5): a lock taken by a birth that died before any
+  record line, adopted by the executor resuming its attempt and refused to any other claimant until
+  the verdict; and a Deleted, Dead or Withdrawn line appended by a holder that died before the
+  release, released and taken by the next claimant in one step and replayable; a lock naming a live
+  claimant never removed by another.
 - The path-asserting tests move to §4: `store_root.rs` (9 assertions), `build_state.rs` (11),
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
