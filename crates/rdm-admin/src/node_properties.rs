@@ -1,9 +1,10 @@
 //! A caller's node property commands at the node's mesh-primary, the one writer of its mesh's rows
-//! (proposal node-properties-own-commands.md §1, §3; R-OW1, R14, R-TG1): each command is refused
-//! `fabric-not-ready` until the initial fabric has first reached ready-for-traffic, and each runs once
-//! through the writer's held record, one change at a time with every other change to a node record
+//! (proposal node-properties-own-commands.md §1, §3; R-OW1, R14, R-TG1): each command but
+//! `node.config.update`, admitted at any time (Q166), is refused `fabric-not-ready` until the initial
+//! fabric has first reached ready-for-traffic, and each runs once through the writer's held record, one
+//! change at a time with every other change to a node record
 //! (`crate::node_config::NodeConfigs::one_at_a_time`). Here: that refusal, shared by every property
-//! command, and `node.tags.create` / `node.tags.delete` (node-rpc-envelope.md node.tags): each label is
+//! command it holds for, and `node.tags.create` / `node.tags.delete` (node-rpc-envelope.md node.tags): each label is
 //! its own key of the node store's tags index, kept with the row by the store adapter (a label the
 //! row stops carrying is tombstoned, one it gains is put); a label the node already carries is ignored
 //! and writes nothing. Neither has a precondition beyond the fabric being ready, neither touches the
@@ -28,7 +29,8 @@ pub struct FirstReadyOnRoot<'a> {
     pub fabric: &'a dyn crate::fabric_storage::FabricStorage,
 }
 
-/// The refusal of a caller's property command `op` (`node.tags.create`, `node.config.update`, ...) of
+/// The refusal of a caller's property command `op` (`node.tags.create`, `node.name.update`, ...; never
+/// `node.config.update`, Q166) of
 /// `node_id` while the initial fabric has not first reached ready-for-traffic (states.md, "The initial
 /// fabric before ready-for-traffic"; R-PC1): before state-commit the node's row would live only in this
 /// mesh-primary's scratchpad. Decided on the durable fact, the ready-for-traffic fact on the fabric (the

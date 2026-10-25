@@ -539,7 +539,8 @@ pub struct StatusAuthority {
     /// owns a digest view.
     pub digest_view: Option<rdm_transport::topology::DigestView>,
     /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
-    /// property command is refused `RejectedFabricNotReady` and nothing is written.
+    /// property command other than `node.config.update` (Q166) is refused `RejectedFabricNotReady` and
+    /// nothing is written.
     pub first_ready: crate::fabric_state::FirstReady,
     /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
     /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
@@ -918,13 +919,9 @@ impl StatusAuthority {
                 let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), first_ready, req).await;
             }
-            StatusRequest::UpdateNodeConfig { node_id, .. } => {
-                // A caller's config put, like every property command, is refused until the initial fabric
-                // has first reached ready-for-traffic (proposal node-properties-own-commands.md §1).
-                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, fabric: &*self.fabric_storage };
-                if let Some(refused) = crate::node_properties::refused_before_first_ready(&me_name, &self.topology, first_ready, "node.config.update", node_id, &tracing::Span::current()).await {
-                    return refused;
-                }
+            StatusRequest::UpdateNodeConfig { .. } => {
+                // A caller's config put is admitted at any time (Q166, node-config-update.md): never refused
+                // `fabric-not-ready`, before the initial fabric's first ready-for-traffic or after.
                 return match self.configs.get() {
                     Some(configs) => configs.update(&me_name, &self.node_id, &view, &*self.nodes_storage, req).await,
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),

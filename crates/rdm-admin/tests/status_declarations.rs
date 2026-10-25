@@ -1775,20 +1775,24 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
 /// and neither touches the name; node-rpc-envelope.md node.tags: "Create is a blind put of that key, so
 /// creating a label the node already carries is ignored and writes no duplicate; delete tombstones the
 /// named keys ... a node carries at most 32; a label ... past the 32, is refused by name and nothing is
-/// written"): while the initial fabric is in state-sync, a caller's `node.tags.create`,
-/// `node.tags.delete` and `node.config.update` of `mesh1.rpc.1` at its mesh-primary are each refused
-/// `RejectedFabricNotReady` naming the workflow with its node and the fabric's status, and nothing is
-/// written or told. Once the fabric has first reached ready-for-traffic: create {rabbit} ends
+/// written"; Q166, node-config-update.md: `node.config.update` "is admitted at any time ... never refused
+/// `fabric-not-ready`, before the initial fabric's first ready-for-traffic or after"): while the initial
+/// fabric is in state-sync, a caller's `node.tags.create` and `node.tags.delete` of `mesh1.rpc.1` at its
+/// mesh-primary are each refused `RejectedFabricNotReady` naming the workflow with its node and the
+/// fabric's status, and no tag is written or told; its `node.config.update` {zone: a} is applied: it
+/// ends `ConfigUpdated`, the row carries the map (and no tag) and the birth is sent `ApplyNodeConfig`
+/// with it. Once the fabric has first reached ready-for-traffic: create {rabbit} ends
 /// `TagsCreated` and the tags index answers rabbit; create {rabbit, red} names rabbit already carried;
 /// delete {rabbit, blue} names blue not carried and rabbit leaves the index; a create that would carry
 /// the node past 32 labels is refused `RejectedTags` naming the count and writes nothing; delete
 /// `All` leaves the row with no label and the index with none of its labels. The node is told
-/// nothing by any tags command. One `rdm.node_admin.node.reject.via-fabric-not-ready` span per refusal;
-/// each tags command's `via-writer` span ends with the reply's name. What must NOT happen: a row
-/// written before the fabric first reached ready-for-traffic, a duplicate label row, a label past the
-/// cap, or a tags command that calls the node.
+/// nothing by any tags command. One `rdm.node_admin.node.reject.via-fabric-not-ready` span per refusal,
+/// none for the config; each tags command's `via-writer` span ends with the reply's name. What must NOT
+/// happen: a tag written before the fabric first reached ready-for-traffic, a config update refused
+/// `fabric-not-ready`, a duplicate label row, a label past the cap, or a tags command that calls the
+/// node.
 #[test]
-fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traffic_are_refused_by_name_and_after_it_write_the_row_and_its_tags_index() {
+fn node_tags_commands_before_the_fabric_first_reaches_ready_for_traffic_are_refused_by_name_a_config_update_is_applied_and_after_it_tags_write_the_row_and_its_tags_index() {
     use rdm_core::status::TagScope;
     let cap = capture();
     cap.run(async {
@@ -1800,11 +1804,15 @@ fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traff
         let not_ready = |workflow: &str| StatusReply::RejectedFabricNotReady { workflow: format!("{workflow} mesh1.rpc.1"), status: "state-sync".into() };
         assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit"])).await), not_ready("node.tags.create"));
         assert_eq!(reply(&call(&rig, &b["admin2"], &delete_tags(rpc1, TagScope::All)).await), not_ready("node.tags.delete"));
-        let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "a".to_string())].into() };
-        assert_eq!(reply(&call(&rig, &b["admin2"], &config).await), not_ready("node.config.update"));
-        assert_eq!(rig.nodes.record_at(&rpc1.node.name).await.unwrap(), None, "no row is written");
+        assert_eq!(rig.nodes.record_at(&rpc1.node.name).await.unwrap(), None, "no tag is written");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing of a tag");
+        let zone: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+        let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
+        assert_eq!(reply(&call(&rig, &b["admin2"], &config).await), StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() }, "node.config.update is admitted before the first ready-for-traffic");
+        let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the config update writes the row");
+        assert_eq!((row.config, row.tags), (zone.clone(), Default::default()), "the row carries the map and no tag");
         assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert_eq!(node.seen.lock().unwrap().drain(..).collect::<Vec<_>>(), vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone }], "the birth is sent the map");
 
         rig.authority.first_ready.reach("the test fabric reached ready-for-traffic");
         let (id, birth) = (rpc1.node.node_id.clone(), rpc1.node.incarnation_id.clone().unwrap());
@@ -1830,7 +1838,7 @@ fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traff
     });
     let rejects = cap.spans("rdm.node_admin.node.reject.via-fabric-not-ready");
     let workflows: Vec<_> = rejects.iter().map(|(_, a)| a.get("workflow").cloned().unwrap_or_default()).collect();
-    assert_eq!(workflows, vec!["node.tags.create mesh1.rpc.1".to_string(), "node.tags.delete mesh1.rpc.1".into(), "node.config.update mesh1.rpc.1".into()], "{rejects:?}");
+    assert_eq!(workflows, vec!["node.tags.create mesh1.rpc.1".to_string(), "node.tags.delete mesh1.rpc.1".into()], "{rejects:?}");
     let outcomes = |name: &str| cap.spans(name).iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>();
     assert_eq!(outcomes("rdm.node_admin.node.tags.create.via-writer"), vec!["rejected-fabric-not-ready", "tags-created", "tags-created", "rejected-tags"]);
     assert_eq!(outcomes("rdm.node_admin.node.tags.delete.via-writer"), vec!["rejected-fabric-not-ready", "tags-deleted", "tags-deleted"]);
