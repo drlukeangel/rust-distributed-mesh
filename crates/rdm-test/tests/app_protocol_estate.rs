@@ -255,7 +255,8 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
     run("app-protocol-one-mesh", |dir| {
         Box::pin(async move {
             let d = day0(&dir).await;
-            d.reconcile(&[MeshDesired::of("mesh1", [(LaunchKind::NodeAdmin, 2), (LaunchKind::RpcNode, 1)])]).await;
+            // Two rpc nodes: a restart of the type primary hands the role to the other first (node-stop.md "Primary": a sole one is refused no-secondary).
+            d.reconcile(&[MeshDesired::of("mesh1", [(LaunchKind::NodeAdmin, 2), (LaunchKind::RpcNode, 2)])]).await;
             let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
             d.until_ready(&rpc).await;
             d.until_fabric_ready().await;
@@ -288,7 +289,10 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
             d.until_fabric_ready().await;
             Estate::workflow("node.restart of mesh1.rpc.1", d.nodes.restart(&rpc).await).await;
             d.until_ready(&rpc).await;
-            let again = d.resolved(&rpc, Some(&first.incarnation)).await;
+            // A restart keeps the birth (same node.id and incarnation; node-restart.md): its start's join
+            // issues it a fresh member cert, and the dials are admitted again on that birth.
+            let again = d.resolved(&rpc, None).await;
+            assert_eq!(again.incarnation, first.incarnation, "a restart keeps the birth");
             d.both_ways(&again).await;
 
             d.running.leave().await;
