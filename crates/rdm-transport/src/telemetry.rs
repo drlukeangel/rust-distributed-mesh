@@ -57,7 +57,7 @@ impl Exporters {
         let deadline = std::time::Instant::now() + export::EXIT_FLUSH_BOUND;
         if let Some(evidence) = self.evidence.clone() {
             if !export::ExportRuntime::running() {
-                eprintln!("telemetry: {what}: the export thread has not begun running; the evidence flush waits for it within {} ms", export::EXIT_FLUSH_BOUND.as_millis());
+                export::name_on_stderr(format!("telemetry: {what}: the export thread has not begun running; the evidence flush waits for it within {} ms", export::EXIT_FLUSH_BOUND.as_millis()));
             }
             let loss = evidence.0.loss();
             let flushed = export::bounded_until(
@@ -73,12 +73,12 @@ impl Exporters {
             // The bound is the contract: a flush the disk holds past it ends there, its loss named
             // (Luke 2026-10-17: a named, bounded loss, never an exit that waits on the disk).
             if !flushed {
-                eprintln!(
+                export::name_on_stderr(format!(
                     "telemetry: the evidence flush ended at its bound ({} ms): {} of {} spans not confirmed written to the evidence file",
                     export::EXIT_FLUSH_BOUND.as_millis(),
                     loss.lost(),
                     loss.handed()
-                );
+                ));
             }
         }
         let provider = self.provider.clone();
@@ -122,12 +122,14 @@ static EXIT_FLUSH: std::sync::OnceLock<Exporters> = std::sync::OnceLock::new();
 /// The transport diagnostic file's writer ([`transport_diag`]), flushed with the fmt log's.
 static DIAG_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock::new();
 
-/// Flush both logs within the same process deadline as the evidence and collector.
+/// Flush both logs within the same process deadline as the evidence and collector. A flush that ends at
+/// its bound is named through [`export::name_on_stderr`]: when the unconfirmed log is stderr itself, a
+/// direct `eprintln!` would wait on the very writer that holds it.
 fn flush_log_sinks(deadline: std::time::Instant) {
     for (name, sink) in [("stderr log", STDERR_SINK.get()), ("transport diagnostic log", DIAG_SINK.get())] {
         if let Some(sink) = sink {
             if !sink.flush_until(deadline) {
-                eprintln!("telemetry: the {name} flush ended at its bound ({} ms); queued lines not confirmed written", export::EXIT_FLUSH_BOUND.as_millis());
+                export::name_on_stderr(format!("telemetry: the {name} flush ended at its bound ({} ms); queued lines not confirmed written", export::EXIT_FLUSH_BOUND.as_millis()));
             }
         }
     }
@@ -825,6 +827,88 @@ mod evidence_tests {
         assert!(status.success(), "the child failed: {status:?}; {output:?}; {error}");
         assert!(elapsed.unwrap() < bound.as_millis(), "the exit flush exceeded its bound: {output:?}; {error}");
         assert!(error.contains("stderr log flush ended at its bound"), "the unconfirmed log flush is named: {error}");
+    }
+
+    /// CONTRACT (CLAUDE.md `RDM_CONNECTIONS_DELETE_DEADLINE_MS`: a signal stop is bounded "before the node
+    /// leaves"; `flush_before_exit`: "an unreachable collector never holds the exit"): a process whose
+    /// stderr is a pipe nobody reads, full, ends its exit flush within its one bound plus the lines that
+    /// name it. The fmt log's thread is blocked inside a stderr write, holding std's stderr lock; what
+    /// must NOT happen is the exit naming that unconfirmed flush with an `eprintln!` that waits on the
+    /// same lock for good (store_root_boot's Day-0 admin never exited after SIGTERM: its main thread
+    /// in `flush_log_sinks`'s `eprintln!`, its `rdm-log` thread in `write(2)` on fd 2).
+    #[test]
+    fn an_exit_flush_on_a_full_stderr_pipe_nobody_reads_ends_at_its_bound() {
+        use std::io::{BufRead, Read, Write};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        const CHILD: &str = "RDM_FULL_STDERR_EXIT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let sink = crate::log_sink::LogSink::start(std::io::stderr());
+            assert!(super::STDERR_SINK.set(sink.clone()).is_ok());
+            // Over a pipe's capacity (64 KiB on Linux) many times: the pipe fills and the log's thread
+            // blocks inside its write. A flush that cannot finish within a second confirms it.
+            let line = [b'x'; 1023];
+            let held_by = Instant::now() + Duration::from_secs(10);
+            loop {
+                for _ in 0..256 {
+                    use tracing_subscriber::fmt::MakeWriter;
+                    let mut w = sink.make_writer();
+                    w.write_all(&line).unwrap();
+                    w.write_all(b"\n").unwrap();
+                }
+                if !sink.flush_until(Instant::now() + Duration::from_secs(1)) {
+                    break;
+                }
+                assert!(Instant::now() < held_by, "stderr never filled: the parent reads it");
+            }
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+            let exporters = super::Exporters::new(provider, None, None);
+            println!("FLUSH_STARTED");
+            let started = Instant::now();
+            exporters.flush_before_exit("the full-stderr exit flush");
+            println!("FLUSH_DONE_MS={}", started.elapsed().as_millis());
+            std::process::exit(0);
+        }
+        let name = concat!(module_path!(), "::an_exit_flush_on_a_full_stderr_pipe_nobody_reads_ends_at_its_bound");
+        let name = name.split_once("::").unwrap().1;
+        // stderr is piped and not read until the child has ended, as a launcher that never reads it.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"]).env(CHILD, "1")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let output = child.stdout.take().unwrap();
+        let (lines, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(output).lines() {
+                if lines.send(line.unwrap()).is_err() { break; }
+            }
+        });
+        let mut output = Vec::new();
+        let ready_by = Instant::now() + Duration::from_secs(30);
+        loop {
+            match received.recv_timeout(ready_by.saturating_duration_since(Instant::now())) {
+                Ok(line) => { let ready = line == "FLUSH_STARTED"; output.push(line); if ready { break; } }
+                Err(e) => { let _ = child.kill(); let _ = child.wait(); panic!("the child did not fill its stderr and enter its exit flush: {e}; {output:?}"); }
+            }
+        }
+        // The flush's one bound, plus the lines that name it: each waits a quarter second at most.
+        let bound = super::export::EXIT_FLUSH_BOUND + Duration::from_millis(1500);
+        let end = Instant::now() + bound;
+        let mut elapsed = None;
+        while let Ok(line) = received.recv_timeout(end.saturating_duration_since(Instant::now())) {
+            if let Some(value) = line.strip_prefix("FLUSH_DONE_MS=") {
+                elapsed = value.parse::<u128>().ok();
+                break;
+            }
+            output.push(line);
+        }
+        if elapsed.is_none() { let _ = child.kill(); }
+        let status = child.wait().unwrap();
+        let _ = reader.join();
+        let mut error = Vec::new();
+        let _ = child.stderr.take().unwrap().read_to_end(&mut error);
+        assert!(elapsed.is_some(), "the full stderr held the exit flush past its bound ({} ms): status={status:?}; stdout={output:?}; {} stderr bytes", bound.as_millis(), error.len());
+        assert!(status.success(), "the child failed: {status:?}; {output:?}");
+        assert!(elapsed.unwrap() < bound.as_millis(), "the exit flush exceeded its bound: {elapsed:?} ms; {output:?}");
     }
 
 

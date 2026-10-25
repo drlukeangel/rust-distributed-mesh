@@ -219,7 +219,34 @@ pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
 /// `what`, a wait on the collector, was abandoned at [`EXIT_FLUSH_BOUND`]: named on stderr with what the
 /// collector's outage dropped so far.
 pub(crate) fn name_abandoned(what: &str) {
-    eprintln!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", EXIT_FLUSH_BOUND.as_millis(), dropped_by_outage());
+    name_on_stderr(format!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", EXIT_FLUSH_BOUND.as_millis(), dropped_by_outage()));
+}
+
+/// The longest the exit waits for one line it names a bound or a loss with on stderr.
+const NAMED_ON_STDERR_WITHIN: Duration = Duration::from_millis(250);
+
+/// Set once a line of the exit was not written within [`NAMED_ON_STDERR_WITHIN`]: stderr is held, and
+/// no later line of the exit waits on it.
+static STDERR_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Name `line` on stderr from the exit flush, never letting stderr hold the exit. A launcher may hold
+/// stderr (a full pipe it does not read, a held disk): the fmt log's thread ([`crate::log_sink`]) is
+/// then blocked inside a stderr write, holding std's stderr lock, and an `eprintln!` on the exiting
+/// thread waits on that lock for good. The line is written on a thread of its own and waited for at
+/// most [`NAMED_ON_STDERR_WITHIN`]; past it the line is left with its thread (the exit takes both),
+/// and every later line of the exit is too.
+pub(crate) fn name_on_stderr(line: String) {
+    if STDERR_HELD.load(Ordering::SeqCst) {
+        return;
+    }
+    let (done, written) = std::sync::mpsc::channel::<()>();
+    let spawned = std::thread::Builder::new().name("rdm-exit-flush".into()).spawn(move || {
+        eprintln!("{line}");
+        let _ = done.send(());
+    });
+    if spawned.is_ok() && written.recv_timeout(NAMED_ON_STDERR_WITHIN).is_err() {
+        STDERR_HELD.store(true, Ordering::SeqCst);
+    }
 }
 
 /// [`bounded`] up to `deadline`, one deadline for every wait of an exit flush, so the flush ends within

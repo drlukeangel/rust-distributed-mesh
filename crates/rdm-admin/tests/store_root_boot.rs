@@ -133,10 +133,23 @@ impl Day0 {
         Running { child, pid }
     }
 
-    /// Stop `running` as a signal does, and the spans it left.
+    /// Stop `running` as a signal does, and the spans it left. The admin leaves within its bound
+    /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, CLAUDE.md: a signal stop's in-flight handlers finish within
+    /// it "before the node leaves"), then exits through its telemetry's exit flush (2 s); one that has not
+    /// exited by both and a margin fails by name and is killed by its pid, never waited on for good.
     fn stop(&self, mut running: Running) -> Vec<serde_json::Value> {
+        // The admin's environment is cleared (`run`): it holds the default deadline.
+        let deadline = Duration::from_millis(5_000);
+        let within = deadline + Duration::from_secs(2) + Duration::from_secs(8);
         unsafe { libc::kill(running.pid as i32, libc::SIGTERM) };
-        let status = running.child.wait().unwrap();
+        let until = Instant::now() + within;
+        let status = loop {
+            if let Some(status) = running.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < until, "the Day-0 admin {} did not exit within {within:?} of its SIGTERM (its connections-delete deadline {deadline:?}, its exit flush 2 s, a margin of 8 s)", running.pid);
+            std::thread::sleep(Duration::from_millis(50));
+        };
         let mut err = String::new();
         std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
         assert!(status.success(), "the stop of {}: {status:?} {err}", running.pid);
