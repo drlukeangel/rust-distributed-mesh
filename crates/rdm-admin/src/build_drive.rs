@@ -787,9 +787,11 @@ fn ended_incomplete(me: &PathName, executor: &PathName, to: &PathName, before: &
 }
 
 /// What the next claim of a Build decides on: the first operation left, the receipts the Build
-/// holds, and the members of the mesh that operation acts on, by birth, status and seat. An attempt
-/// that ended with this unchanged would end the same way again.
-fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
+/// holds, the members of the mesh that operation acts on, by birth, status and primary, and whether the
+/// fabric holds ready-for-traffic (`fabric_ready`, [`Gate::fabric_ready`]: a Build that put the fabric
+/// back to pending is claimed again once it does). An attempt that ended with this unchanged would end
+/// the same way again.
+fn world(drive: &Drive, p: &BuildProjection, t: &Topology, fabric_ready: bool) -> String {
     let first = left(drive, p, t).into_iter().next();
     let mesh = first.as_ref().and_then(|op| match op {
         BuildOperation::CreateMesh { mesh, .. } | BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
@@ -801,7 +803,7 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
         .map(|n| format!("{}:{}:{:?}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("-"), n.status, n.is_primary))
         .collect();
     members.sort();
-    format!("{} receipts={} members=[{}]", first.map(|op| op.key()).unwrap_or_default(), p.steps.len(), members.join(","))
+    format!("{} receipts={} members=[{}] fabric_ready={fabric_ready}", first.map(|op| op.key()).unwrap_or_default(), p.steps.len(), members.join(","))
 }
 
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
@@ -1069,11 +1071,13 @@ impl DriveEnv {
     /// ([`run_of`]) is cut before the first operation on a peer mesh held unheard (R-D1) and before
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
     /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
-    /// the investigation. `Err` names the fence on the first operation.
-    fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName, crashed: &HashSet<String>) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
+    /// the investigation. `Err` names the target on the first operation. With the plan, whether the run
+    /// hands back at the hold for the fabric's change (Q154): the state it was planned on, which decides
+    /// how its hand-back is read, whatever the fabric's state when the run ends.
+    fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName, crashed: &HashSet<String>) -> Result<(RunPlan, bool), (BuildOperation, (PathName, u64, bool))> {
         let ops = left(drive, p, t);
         if let Some(op) = ops.first().filter(|op| *executor == *me && self.recovery_admits(p, op, crashed)) {
-            return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| me.to_string()) });
+            return Ok((RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| me.to_string()) }, false));
         }
         let mut plan = run_of(&ops, t, executor);
         let mut cut = None;
@@ -1101,10 +1105,11 @@ impl DriveEnv {
         // The last run of a Build that put the fabric back to pending hands back here rather than
         // ending `Complete` while the fabric's ready-for-traffic state is not set (Q154; states.md "Resize
         // and executable replacement"): the next pass waits for it.
-        if changes_the_fabric(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
+        let held = changes_the_fabric(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready();
+        if held {
             plan.hand_off_to = Some(me.to_string());
         }
-        Ok(plan)
+        Ok((plan, held))
     }
 
     async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32, last_turn: &mut Option<crate::stop_gate::Turn>) -> DriveEnd {
@@ -1270,7 +1275,7 @@ impl DriveEnv {
             let fresh = !drive.has_run_log();
             let first = drive.note_first_attempt(attempt);
             self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
-            let plan = {
+            let (plan, held) = {
                 let t = self.topology.read().await.clone();
                 match self.plan_dispatch(&me, drive, &p, &t, &executor, &crashed) {
                     Ok(plan) => plan,
@@ -1292,7 +1297,7 @@ impl DriveEnv {
             // What the attempt decides on, as claimed: an attempt handed back to this admin with this
             // unchanged would end the same way again.
             let before = match self.builds.read_build(&id).await {
-                Ok(claimed) => Some(world(drive, &claimed, &self.topology.read().await.clone())),
+                Ok(claimed) => Some(world(drive, &claimed, &self.topology.read().await.clone(), self.gate.fabric_ready())),
                 Err(_) => None,
             };
             let inner = self.run_inner(&turn, drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
@@ -1330,11 +1335,13 @@ impl DriveEnv {
                     if next == me {
                         if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
                             let t = self.topology.read().await.clone();
-                            let after = world(drive, &ended, &t);
+                            let after = world(drive, &ended, &t, self.gate.fabric_ready());
                             // A run with nothing left, handed back by the hold of a Build that put the
                             // fabric back to pending ([`Self::plan_dispatch`]), did not end incomplete: it
-                            // waits on the fabric's change, and the next pass reports it Blocked naming it.
-                            let held_for_the_fabric_change = changes_the_fabric(&ended) && !self.gate.fabric_ready() && left(drive, &ended, &t).is_empty();
+                            // waits on the fabric's change, and the next pass reports it Blocked naming it,
+                            // or claims the next attempt once the fabric is ready-for-traffic. The hold is
+                            // the one the run was planned with, never the fabric's state read after it.
+                            let held_for_the_fabric_change = held && left(drive, &ended, &t).is_empty();
                             if !held_for_the_fabric_change && ended_incomplete(&me, &executor, &next, &before, &after) {
                                 let why = format!(
                                     "{me}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves"
@@ -1592,7 +1599,7 @@ impl DriveEnv {
                 dspan.record("reason", why.as_str());
                 self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 if let Ok(ended) = self.builds.read_build(id).await {
-                    drive.set_idle(Some(Idle { attempt, world: world(drive, &ended, &after), why: why.clone() }));
+                    drive.set_idle(Some(Idle { attempt, world: world(drive, &ended, &after, self.gate.fabric_ready()), why: why.clone() }));
                 }
                 Err(self.stalled(me, drive, why))
             }
@@ -1607,7 +1614,7 @@ impl DriveEnv {
             drive.set_idle(None);
             return None;
         }
-        let now = world(drive, p, &self.topology.read().await.clone());
+        let now = world(drive, p, &self.topology.read().await.clone(), self.gate.fabric_ready());
         if now == idle.world {
             return Some(self.stalled(me, drive, idle.why));
         }

@@ -2463,3 +2463,65 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
     assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready-for-traffic: {done:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
+
+/// The fixture's dispatcher, the fabric's change setting ready-for-traffic while the attempt it calls runs:
+/// after the drive planned the run and before it reads how the run ended.
+struct ReadyDuringTheRun {
+    inner: Arc<crate::loopback::Loopback>,
+    gate: Arc<FabricChange>,
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::Dispatcher for ReadyDuringTheRun {
+    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+        let run = self.inner.dispatch(turn, executor, build_id, attempt, context, intent, plan).await;
+        self.gate.ready.store(true, Ordering::SeqCst);
+        run
+    }
+    fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<rdm_admin::build_run::HeldRun> {
+        self.inner.hold(me, build_id, attempt)
+    }
+}
+
+/// CONTRACT (Q154, Q158; states.md "Resize and executable replacement": "Its Build is Complete only when the
+/// fabric is ready-for-traffic again from this Build's own change"; a Build is never blocked for ever): a
+/// Build that put the fabric back to pending, nothing left to execute, claims its attempt, whose run hands
+/// back at the hold for the fabric's change; the fabric reaches ready-for-traffic while that run is in
+/// flight. The run was held for the fabric's change, which is decided from the plan it ran, and the fabric's
+/// move is movement: the Build is Complete. Must NOT happen: the hand-back read as "ended incomplete with
+/// nothing moved" because the fabric was ready by the time it was read, the drive idle on a world that
+/// never moves, the Build Pending at attempt 1 for ever.
+#[tokio::test]
+async fn a_fabric_ready_for_traffic_while_the_held_run_is_in_flight_completes_the_build() {
+    let r = rig().await;
+    {
+        let mut v = r.env.topology.write().await;
+        v.nodes.push(node("mesh1.rpc.2", false, false));
+    }
+    let gate = Arc::new(FabricChange { view: Some(r.env.topology.clone()), ..Default::default() });
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: Arc::new(ReadyDuringTheRun { inner: r.dispatch.clone(), gate: gate.clone() }),
+        gate: gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let mut ends = Vec::new();
+    for _ in 0..4 {
+        let end = tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("a pass ends");
+        ends.push(end.clone());
+        if end == DriveEnd::Terminal {
+            break;
+        }
+    }
+    assert_eq!(ends.last(), Some(&DriveEnd::Terminal), "the Build ends once the fabric is ready-for-traffic: {ends:?}");
+    let done = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready-for-traffic: {done:?}");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
+}

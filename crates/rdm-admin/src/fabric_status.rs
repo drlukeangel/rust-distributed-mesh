@@ -402,8 +402,11 @@ impl FabricStates {
     /// A resize or an executable replacement puts the fabric back to pending: the accepted Build's topology is no longer
     /// the one the fabric changes under, so its planned births must check in again and the checklists
     /// run again. A new attempt of the same Build changes no topology and moves nothing here.
+    /// A Build whose request names, for a path, the executable that path's row already records is
+    /// neither: its topology, each path's executable resolved against the rows
+    /// ([`crate::accepted::same_on_the_rows`]), is the one the fabric changes under, which holds it.
     /// Returns whether the fabric was put back; the move waits until the state it leaves went out.
-    fn resized(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
+    async fn resized(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
         match &change.tracked {
             None => {
                 change.tracked = Some(build.topology.clone());
@@ -417,6 +420,13 @@ impl FabricStates {
                 false
             }
             Some(held) if *held != build.topology => {
+                if self.same_on_the_rows(held, &build.topology).await {
+                    tracing::info_span!("rdm.node_admin.fabric.update.via-executables-recorded", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), attempt = build.attempt, state = self.env.records.fabric_state().as_str(), "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the Build names, for each path, the executable its row records: no resize and no executable replacement, and the fabric stays where it is"));
+                    change.tracked = Some(build.topology.clone());
+                    change.tracked_build = Some(build.build_id.clone());
+                    return false;
+                }
                 if !self.may_advance() {
                     return false;
                 }
@@ -443,8 +453,8 @@ impl FabricStates {
     /// changes under. Either [`Self::resized`] put the fabric back to pending, or the move waits until
     /// the state it leaves went out, and until then no checklist of the new Build runs inside the old
     /// one's change (fabric-state-sync.md: the hook follows "all planned meshes ready").
-    fn topology_moved(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
-        self.resized(change, build, me) || (change.tracked.as_ref().is_some_and(|held| *held != build.topology) && change.tracked_build.as_ref() != Some(&build.build_id))
+    async fn topology_moved(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
+        self.resized(change, build, me).await || (change.tracked.as_ref().is_some_and(|held| *held != build.topology) && change.tracked_build.as_ref() != Some(&build.build_id))
     }
 
     /// A Build this fabric-primary has just accepted (states.md, Resize and executable replacement: "A resize or an executable replacement puts
@@ -460,7 +470,7 @@ impl FabricStates {
         }
         let me = self.held_name().await;
         let reset = match self.env.builds.current().await {
-            Ok(Some(build)) => self.resized(&mut change, &build, &me),
+            Ok(Some(build)) => self.resized(&mut change, &build, &me).await,
             Ok(None) => false,
             Err(e) => {
                 self.block(&mut change, &[unreadable(&e)], "the acceptance reads the current Build", &me);
@@ -477,10 +487,25 @@ impl FabricStates {
         let me = self.held_name().await;
         match self.env.builds.current().await {
             Ok(Some(build)) => {
-                self.resized(change, &build, &me);
+                self.resized(change, &build, &me).await;
             }
             Ok(None) => {}
             Err(e) => self.block(change, &[unreadable(&e)], "ready-for-traffic reads the current Build", &me),
+        }
+    }
+
+    /// Whether `next` is `held` with each path's executable resolved against what the node rows record
+    /// ([`crate::accepted::same_on_the_rows`]). Rows this admin cannot read hold nothing: the two differ.
+    async fn same_on_the_rows(&self, held: &FabricTopology, next: &FabricTopology) -> bool {
+        let Some(rows) = self.env.records.contacts.get() else {
+            return false;
+        };
+        match crate::accepted::recorded_executables(&**rows, next).await {
+            Ok(recorded) => crate::accepted::same_on_the_rows(held, next, &recorded),
+            Err(e) => {
+                tracing::info!(error = %e, "the node rows could not be read for what each path runs: the accepted topology is taken as changed");
+                false
+            }
         }
     }
 
@@ -611,7 +636,7 @@ impl FabricStates {
             Ok(None) => return self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build", &me),
             Err(e) => return self.block(change, &[unreadable(&e)], "sync_state names the current Build", &me),
         };
-        if self.topology_moved(change, &build, &me) || self.deleting(change, &build, &me) {
+        if self.topology_moved(change, &build, &me).await || self.deleting(change, &build, &me) {
             return;
         }
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
@@ -709,7 +734,7 @@ impl FabricStates {
             Ok(None) => return self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build", &me),
             Err(e) => return self.block(change, &[unreadable(&e)], "commit-state names the current Build", &me),
         };
-        if self.topology_moved(change, &build, &me) || self.deleting(change, &build, &me) {
+        if self.topology_moved(change, &build, &me).await || self.deleting(change, &build, &me) {
             return;
         }
         match &change.key {
@@ -1920,6 +1945,68 @@ mod tests {
             states.step_ready(&mut change).await;
         }
         assert_eq!(records.fabric_state(), FabricState::Pending, "a new Build that names a new executable puts the fabric back to pending");
+    }
+
+    /// CONTRACT (states.md, Resize and executable replacement: "A resize or an executable replacement puts the
+    /// fabric back to pending"; build-deployment.md §3: a member is replaced when its row records another
+    /// executable than its entry names): day 0's entry for the Day-0 admin names no executable, and its row
+    /// records the one it runs. A Build whose request names, for that path, the executable its row records
+    /// is neither a resize nor a replacement: the fabric stays ready-for-traffic and the change holds the
+    /// new Build. A later Build naming another executable for it is a replacement and puts the fabric back
+    /// to pending. Must NOT happen: a request naming what the admin already runs taken as "the accepted
+    /// topology changed", the fabric reset to pending for a Build that has nothing to do.
+    #[tokio::test]
+    async fn a_request_naming_the_executable_the_row_records_is_no_replacement_and_another_executable_is() {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+        use crate::node_rows::WriteRecord;
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let admin: PathName = "mesh1.admin.1".parse().unwrap();
+        let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/admin".into(), sha256: sha.into(), image: None };
+        let day0 = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
+        let topology = |sha: Option<&str>| {
+            let mut m = day0.clone();
+            let mut c = m.path_config(&admin).cloned().unwrap();
+            c.executable = sha.map(exe);
+            m.set_path_config(&admin, c).unwrap();
+            FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+        };
+        let (fp, _) = fabric_primary_and_mesh2();
+        // The Day-0 admin's row records the executable it runs.
+        let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let mut row = crate::storage::NodeRow::new(admin.clone(), fp.node_id.clone(), NodeStatus::ReadyForTraffic);
+        row.executable = Some(exe("aa"));
+        rows.write_record(&row).await.unwrap();
+        let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(None), submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        claim(&builds, &a, 1).await;
+        let view = projected(vec![fp.clone()]);
+        let records = Arc::new(Records::default());
+        let _ = records.contacts.set(rows.clone());
+        let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
+        records.set_fabric_state(FabricState::ReadyForTraffic);
+        records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
+        {
+            let mut change = states.change.lock().await;
+            states.step_ready(&mut change).await;
+            assert_eq!(change.tracked_build, Some(a.clone()), "day 0's Build is the topology the fabric changes under");
+        }
+        let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("aa")), submitted_change: None, submitted_at_ms: 2_000 }).await.unwrap();
+        claim(&builds, &b, 1).await;
+        assert!(!states.accepted().await, "a request naming the executable the row records puts nothing back at its acceptance");
+        {
+            let mut change = states.change.lock().await;
+            states.step_ready(&mut change).await;
+            assert_eq!(change.tracked_build, Some(b.clone()), "the change holds the new Build's topology");
+        }
+        assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the executable the row records is no replacement: the fabric stays ready-for-traffic");
+        let c = crate::build::BuildId::parse("cprrv6tggykq").unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: c.clone(), topology: topology(Some("cc")), submitted_change: None, submitted_at_ms: 3_000 }).await.unwrap();
+        claim(&builds, &c, 1).await;
+        assert!(states.accepted().await, "another executable than the row records is a replacement: the fabric is back to pending at its acceptance");
+        assert_eq!(records.fabric_state(), FabricState::Pending, "an executable replacement puts the fabric back to pending");
     }
 
     /// CONTRACT (i146 Q45; states.md, The check-in checklist: "A new primary, through election or recovery,
