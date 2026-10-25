@@ -1517,6 +1517,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     turns: park_gate.clone(),
                                 });
                                 let _ = control.departure.set(env.departure.clone());
+                                let _ = control.node_rows.set(nodes_storage.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(book.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
                                 let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.primaries().clone(), incarnation: incarnation.clone() }));
                                 env

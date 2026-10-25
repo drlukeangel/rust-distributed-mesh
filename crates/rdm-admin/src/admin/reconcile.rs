@@ -108,6 +108,10 @@ impl crate::build_drive::Gate for SeatGate {
         crate::accepted::recorded_executables(&*rows, topology).await
     }
 
+    async fn open_replacement_attempt(&self, p: &crate::build_state::BuildProjection) -> Result<bool, String> {
+        self.control.open_replacement_attempt(p).await.map(|_| true)
+    }
+
     fn fabric_ready(&self) -> bool {
         self.handover.records.fabric_state() == crate::fabric_state::FabricState::ReadyForTraffic
     }

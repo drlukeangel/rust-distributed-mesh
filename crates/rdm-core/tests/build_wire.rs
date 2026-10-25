@@ -54,6 +54,28 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
             },
             "00 00 0e 01 63 01 62 01 0a 6e6f64655f61646d696e 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00",
         ),
+        // the complete topology (proposal executable-bindings-at-create.md rule 1): the change's last
+        // variant; based_on, then each node's path.name and config positional (storage's variant and its
+        // disposition, placement empty, the executable an Option of the binding, its image written even when none)
+        (
+            BuildRequest::Create {
+                submit: BuildSubmit::Change(BuildChange::Reconcile {
+                    based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(),
+                    nodes: vec![
+                        (
+                            "m.admin.1".parse().unwrap(),
+                            rdm_core::meta::PathConfig {
+                                storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Preserve },
+                                placement: Default::default(),
+                                executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
+                            },
+                        ),
+                        ("m.rpc.1".parse().unwrap(), rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None }),
+                    ],
+                }),
+            },
+            "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 07 6d2e7270632e31 00 00",
+        ),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]], operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()), mesh: None }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00 01 02 7b7d 01 01 6e 00"),
         // a drift attempt names its mesh (Q118): mesh "m"

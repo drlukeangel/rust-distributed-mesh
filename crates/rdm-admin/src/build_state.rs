@@ -3284,6 +3284,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "a Build decoded from the journal whose
+    /// paths name none ... is valid history with its births' rows as the record, and an admin restarted over
+    /// an old store reads its current Build as it is, never as malformed"; durable format moved): a store
+    /// whose current Build was written before `PathConfig.executable` (its records carry no such field) is
+    /// read by a restarted admin as its current Build, complete, every entry naming none; the next
+    /// complete-topology request compiles over it. Must NOT happen: the restart refusing the record as
+    /// unrecognised, or the old Build read as anything but current.
+    #[tokio::test]
+    async fn an_admin_restarted_over_a_store_written_before_the_executable_field_reads_its_current_build() {
+        let dir = tmp();
+        {
+            let j = open_at(&dir).await.unwrap();
+            j.publish_accepted(&intent("b1")).await.unwrap();
+            j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+            j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        }
+        // The records as a writer before the field wrote them: no `executable` on any path config.
+        let mut rewritten = 0;
+        for b in std::fs::read_dir(dir.join("fabric").join("builds")).unwrap().flatten() {
+            for r in std::fs::read_dir(b.path()).unwrap().flatten() {
+                let text = std::fs::read_to_string(r.path()).unwrap();
+                if text.contains("\"executable\":null") {
+                    std::fs::write(r.path(), text.replace(",\"executable\":null", "")).unwrap();
+                    rewritten += 1;
+                }
+            }
+        }
+        assert_eq!(rewritten, 1, "the accepted Build's record carries the field, once");
+        let j = open_at(&dir).await.unwrap(); // the admin restarted over the old store
+        let current = j.current().await.unwrap().expect("the old Build is current");
+        assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
+        assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
+        let admin = rdm_core::meta::PathConfig::default_for(crate::model::NodeKind::NodeAdmin);
+        let mut rpc = rdm_core::meta::PathConfig::default_for(crate::model::NodeKind::RpcNode);
+        rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
+        let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![("mesh1.admin.1".parse().unwrap(), admin), ("mesh1.rpc.1".parse().unwrap(), rpc)] };
+        let observed = crate::topology::Topology {
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: vec![],
+            nodes: vec![],
+        };
+        let next = crate::accepted::compile(&current.topology, &change, &observed).expect("the next request compiles over it");
+        assert_eq!(next.meshes["mesh1"].nodes.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn accepted_at(id: &str, at_ms: u64) -> BuildAccepted {
         BuildAccepted { submitted_at_ms: at_ms, ..intent(id) }
     }

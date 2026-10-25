@@ -123,6 +123,8 @@ impl MeshOp {
 pub enum FabricOp {
     /// `fabric.get`: the fabric as the answering admin holds it.
     Get,
+    /// `fabric.nodes.get`: every node of every mesh, from the rows.
+    NodesGet,
 }
 
 impl FabricOp {
@@ -130,6 +132,7 @@ impl FabricOp {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Get => "fabric.get",
+            Self::NodesGet => "fabric.nodes.get",
         }
     }
 
@@ -137,6 +140,7 @@ impl FabricOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.fabric.get.via-call", op = "fabric.get", outcome = tracing::field::Empty),
+            Self::NodesGet => tracing::info_span!("rdm.node_admin.fabric.get.via-nodes-call", op = "fabric.nodes.get", outcome = tracing::field::Empty),
         }
     }
 }

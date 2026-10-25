@@ -14,14 +14,21 @@ pub struct PathConfig {
     pub storage: StorageMeta,
     /// Placement constraints.
     pub placement: PlacementMeta,
+    /// The executable a node created at the path runs (path, sha256 and, under the container
+    /// provider, the image): named per node by the request that creates the path, compiled onto the
+    /// accepted topology's entry, recorded on the node's row at the claim and re-hashed at the launch
+    /// (proposal executable-bindings-at-create.md rule 1). An entry that differs from what the row
+    /// records is that node's replacement. A Build accepted before the field decodes with none: valid
+    /// history, its births' rows the record of what they run.
+    #[serde(default)]
+    pub executable: Option<crate::binding::Binding>,
 }
 
 /// What survives a topology-preserving runtime loss or restart, and the declared disposition of
 /// persistent storage once its node is gone. A delete releases no storage in any state
 /// (node-delete.md "Storage"). The type holds exactly the three meaningful states; no invalid
 /// combination is representable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "persistence", rename_all = "kebab-case", try_from = "StorageMetaRow")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageMeta {
     /// Fresh storage for a new node.
     Ephemeral,
@@ -31,6 +38,61 @@ pub enum StorageMeta {
         /// The declared disposition of the storage once the node is gone.
         on_retire: PersistentRetireDisposition,
     },
+}
+
+/// The journaled (JSON) shape of [`StorageMeta`], `persistence`-tagged; a positional codec (the Build
+/// wire's postcard, where a request's [`PathConfig`] travels) carries [`StorageMetaPositional`], since
+/// an internally tagged enum cannot be read positionally.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "persistence", rename_all = "kebab-case", try_from = "StorageMetaRow")]
+enum StorageMetaTagged {
+    Ephemeral,
+    Persistent { on_retire: PersistentRetireDisposition },
+}
+
+impl TryFrom<StorageMetaRow> for StorageMetaTagged {
+    type Error = String;
+
+    fn try_from(row: StorageMetaRow) -> Result<Self, String> {
+        Ok(match StorageMeta::try_from(row)? {
+            StorageMeta::Ephemeral => Self::Ephemeral,
+            StorageMeta::Persistent { on_retire } => Self::Persistent { on_retire },
+        })
+    }
+}
+
+/// [`StorageMeta`] on a positional codec: the variant's index, then its fields.
+#[derive(Serialize, Deserialize)]
+enum StorageMetaPositional {
+    Ephemeral,
+    Persistent { on_retire: PersistentRetireDisposition },
+}
+
+impl Serialize for StorageMeta {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match (*self, s.is_human_readable()) {
+            (Self::Ephemeral, true) => StorageMetaTagged::Ephemeral.serialize(s),
+            (Self::Persistent { on_retire }, true) => StorageMetaTagged::Persistent { on_retire }.serialize(s),
+            (Self::Ephemeral, false) => StorageMetaPositional::Ephemeral.serialize(s),
+            (Self::Persistent { on_retire }, false) => StorageMetaPositional::Persistent { on_retire }.serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StorageMeta {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if d.is_human_readable() {
+            Ok(match StorageMetaTagged::deserialize(d)? {
+                StorageMetaTagged::Ephemeral => Self::Ephemeral,
+                StorageMetaTagged::Persistent { on_retire } => Self::Persistent { on_retire },
+            })
+        } else {
+            Ok(match StorageMetaPositional::deserialize(d)? {
+                StorageMetaPositional::Ephemeral => Self::Ephemeral,
+                StorageMetaPositional::Persistent { on_retire } => Self::Persistent { on_retire },
+            })
+        }
+    }
 }
 
 /// The journaled shape of `StorageMeta`, read field by field so an illegal combination is
@@ -96,7 +158,7 @@ impl PathConfig {
             NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
             NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
         };
-        Self { storage, placement: PlacementMeta::default() }
+        Self { storage, placement: PlacementMeta::default(), executable: None }
     }
 }
 
@@ -119,8 +181,8 @@ pub fn normalize_path_config(kind: NodeKind, legacy: LegacyPathConfigInput) -> P
         return explicit;
     }
     match legacy.stateful {
-        Some(true) => PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, placement: PlacementMeta::default() },
-        Some(false) => PathConfig { storage: StorageMeta::Ephemeral, placement: PlacementMeta::default() },
+        Some(true) => PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, placement: PlacementMeta::default(), executable: None },
+        Some(false) => PathConfig { storage: StorageMeta::Ephemeral, placement: PlacementMeta::default(), executable: None },
         None => PathConfig::default_for(kind),
     }
 }
@@ -140,7 +202,7 @@ mod tests {
         assert_eq!(PathConfig::default_for(NodeKind::Gateway).storage, StorageMeta::Ephemeral);
         assert_eq!(PathConfig::default_for(NodeKind::Compute).storage, StorageMeta::Ephemeral);
         assert_eq!(PathConfig::default_for(NodeKind::RpcNode).storage, StorageMeta::Ephemeral);
-        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: PlacementMeta::default() };
+        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: PlacementMeta::default(), executable: None };
         assert_eq!(normalize_path_config(NodeKind::Gateway, LegacyPathConfigInput { explicit: Some(release.clone()), stateful: Some(false) }), release);
         assert_eq!(normalize_path_config(NodeKind::Gateway, LegacyPathConfigInput { explicit: None, stateful: Some(true) }).storage, preserve);
         assert_eq!(normalize_path_config(NodeKind::Broker, LegacyPathConfigInput { explicit: None, stateful: Some(false) }).storage, StorageMeta::Ephemeral);

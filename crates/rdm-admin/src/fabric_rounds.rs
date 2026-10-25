@@ -539,9 +539,14 @@ impl FabricRounds {
         // During a roll a member still on its old binary does not satisfy its planned replacement: the
         // fabric climbs once every planned member is on the set (states.md "Resize and roll"; proposal
         // roll.md step 8), as the node rows record what each runs.
-        if let (Some(build), Some(rows)) = (accepted.as_ref().filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll)), self.env.records.contacts.get()) {
+        if let (Some(build), Some(rows)) = (accepted.as_ref().filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)), self.env.records.contacts.get()) {
             match crate::accepted::recorded_executables(&**rows, &build.topology).await {
-                Ok(recorded) => blockers.extend(crate::accepted::off_the_set(&build.topology, &recorded).into_iter().map(|p| Missing { who: p.to_string(), why: "not-on-the-rolled-set" })),
+                Ok(recorded) => {
+                    // A complete-topology request's member whose row records another executable than its
+                    // entry names is owed its replacement (proposal executable-bindings-at-create.md rule 5).
+                    let why = if build.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll) { "not-on-the-rolled-set" } else { "replacement-owed" };
+                    blockers.extend(crate::accepted::off_the_set(&build.topology, &recorded).into_iter().map(|p| Missing { who: p.to_string(), why }))
+                }
                 Err(e) => blockers.push(Missing { who: e, why: "rows-unreadable" }),
             }
         }

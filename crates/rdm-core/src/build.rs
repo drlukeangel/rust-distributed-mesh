@@ -161,6 +161,20 @@ pub enum BuildChange {
         /// The executable set every launch of the fabric runs from once accepted.
         bindings: crate::binding::BindingSet,
     },
+    /// The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the
+    /// fabric, each by its `path.name` with its config, the executable included. A node left out is
+    /// removed, one added is created, one whose executable differs from what its row records is
+    /// replaced (node.delete then node.create at the path, in RDM's order). A mesh named for the
+    /// first time is created with its first node-admin; a mesh left out is mesh.delete. Refused by
+    /// name when `based_on` is no longer the current Build (nothing accepted; the caller re-reads),
+    /// when it lists no node (that is fabric.delete), and when a path it creates names no
+    /// executable. Appended last: the Build wire is positional.
+    Reconcile {
+        /// The build_id of the current Build the caller read.
+        based_on: crate::BuildId,
+        /// Every node of the fabric, by `path.name`, with its config.
+        nodes: Vec<(PathName, crate::meta::PathConfig)>,
+    },
 }
 
 /// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names

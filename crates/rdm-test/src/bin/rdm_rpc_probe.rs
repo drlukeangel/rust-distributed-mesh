@@ -587,7 +587,7 @@ mod tests {
     /// are all given.
     fn view(name: &str, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
         let name: PathName = name.parse().unwrap();
-        NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             kind: name.kind,
             mesh: name.mesh.clone(),
             name,

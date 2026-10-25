@@ -465,6 +465,38 @@ pub enum BuildReject {
         /// The defect, naming the launch id or file at fault.
         detail: String,
     },
+    /// A complete-topology request (`Reconcile`) built from a read of a Build that is no longer the
+    /// current one (proposal executable-bindings-at-create.md rule 1, optimistic concurrency): nothing
+    /// is accepted, and the caller re-reads.
+    BasedOnNotCurrent {
+        /// The Build the request names.
+        based_on: String,
+        /// The current Build.
+        current: String,
+    },
+    /// A complete-topology request that lists no node: a fabric with no mesh is fabric.delete, never a
+    /// request read as "delete everything".
+    NoNodeListed,
+    /// A complete-topology request naming one `path.name` twice.
+    NodeNamedTwice {
+        /// The `path.name` named twice.
+        node: String,
+    },
+    /// A path the request creates whose config names no executable: nothing runs (proposal
+    /// executable-bindings-at-create.md rule 1; no stored default).
+    ExecutableMissing {
+        /// The path created.
+        node: String,
+    },
+    /// An executable a request names for a path, refused at acceptance before anything is accepted:
+    /// its file missing, its hash another, its launch id not the path's kind, or its image not the
+    /// fabric provider's.
+    ExecutableRefused {
+        /// The path.
+        node: String,
+        /// Why.
+        detail: String,
+    },
 }
 
 impl BuildReject {
@@ -495,6 +527,11 @@ impl BuildReject {
             Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
             Self::FabricNotReady { .. } => "fabric-not-ready",
             Self::BindingsRefused { .. } => "bindings-refused",
+            Self::BasedOnNotCurrent { .. } => "based-on-not-current",
+            Self::NoNodeListed => "no-node-listed",
+            Self::NodeNamedTwice { .. } => "node-named-twice",
+            Self::ExecutableMissing { .. } => "executable-missing",
+            Self::ExecutableRefused { .. } => "executable-refused",
         }
     }
 }
@@ -533,6 +570,11 @@ impl fmt::Display for BuildReject {
             ),
             Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::BindingsRefused { defect, detail } => write!(f, "the roll's executable set is refused ({defect}): {detail}; nothing is accepted"),
+            Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
+            Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
+            Self::NodeNamedTwice { node } => write!(f, "the request names `{node}` twice: each node is listed once"),
+            Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its config names no executable: every created node names the executable it runs; nothing is accepted"),
+            Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for `{node}` is refused: {detail}; nothing is accepted"),
             Self::PathConfigMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",

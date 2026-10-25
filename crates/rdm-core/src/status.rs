@@ -556,6 +556,9 @@ pub enum NodeSelect {
     /// Every node carrying the tag labels the filter names (R-TG1), read through the node store's
     /// tags index: one point read per label.
     Tags(TagFilter),
+    /// Every node of every mesh (`fabric.nodes.get`): the mesh selector's answer over every mesh,
+    /// read from the rows, no filter. Appended last: positional.
+    Fabric,
 }
 
 impl NodeSelect {
@@ -565,6 +568,7 @@ impl NodeSelect {
             Self::Id(_) => "id",
             Self::Mesh(_) => "mesh",
             Self::Tags(_) => "tags",
+            Self::Fabric => "fabric",
         }
     }
 }
@@ -2058,7 +2062,7 @@ mod tests {
     }
 
     fn node_view() -> crate::views::NodeView {
-        crate::views::NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        crate::views::NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             name: "mesh1.rpc.12".parse().unwrap(),
             kind: crate::NodeKind::RpcNode,
             mesh: "mesh1".into(),

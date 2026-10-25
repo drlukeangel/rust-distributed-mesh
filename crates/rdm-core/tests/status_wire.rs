@@ -142,6 +142,8 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
                 "00", "00", "0000000000000000000000000000000000000000000000000000000000000000",
                 // cert None (i145 e3)
                 "00",
+                // executable None (the row's, proposal executable-bindings-at-create.md rule 7), appended last
+                "00",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31", "00")),
@@ -261,7 +263,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: "mesh1.rpc.1".parse().unwrap(),
         kind: rdm_core::NodeKind::RpcNode,
         mesh: "mesh1".into(),
@@ -328,6 +330,8 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
     golden(NodeSelect::Id(node()), "000c303132333435363738396162");
     golden(NodeSelect::Mesh("m".into()), "01016d");
+    // fabric.nodes.get: the selector over every mesh, appended last
+    golden(NodeSelect::Fabric, "03");
     // Tags | Any | len 1 | "red"
     golden(NodeSelect::Tags(TagFilter::Any(["red".to_string()].into())), "02010103726564");
     golden(TagScope::All, "00");

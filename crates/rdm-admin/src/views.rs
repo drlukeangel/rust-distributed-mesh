@@ -61,7 +61,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
-    NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -105,6 +105,8 @@ enum Chosen<'a> {
     Id(&'a NodeId),
     /// Every node of this mesh.
     Mesh(&'a str),
+    /// Every node of every mesh (`fabric.nodes.get`).
+    Fabric,
     /// The nodes the tags index named for the filter.
     Ids(BTreeSet<NodeId>),
 }
@@ -172,12 +174,15 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Id(id) => &n.node_id == *id,
             Chosen::Mesh(mesh) => n.mesh == *mesh,
             Chosen::Ids(ids) => ids.contains(&n.node_id),
+            Chosen::Fabric => true,
         })
         .collect();
     let read = births.iter().map(|n| async move {
         let row = row_of(storage, n).await?;
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
         let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default());
+        // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
+        v.executable = row.as_ref().and_then(|r| r.executable.clone());
         if let Some(declared) = row.as_ref().and_then(|r| r.app_types.clone()).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
             v.types = declared.types;
             v.held = v.types.clone();
@@ -206,6 +211,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 Chosen::Id(id) => &r.node_id == *id,
                 Chosen::Mesh(m) => r.name.mesh == *m,
                 Chosen::Ids(ids) => ids.contains(&r.node_id),
+                Chosen::Fabric => true,
             };
             if !matches_chosen || out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
                 continue;
@@ -218,6 +224,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             n.status = crate::model::NodeStatus::Dead;
             n.config = r.config.clone();
             let mut v = node_view(&n, None, None, r.tags.clone());
+            v.executable = r.executable.clone();
             v.data_dir_unreadable = Some(DataDirUnreadable { path: unreadable.path, cause: unreadable.cause });
             out.push(v);
         }
@@ -268,6 +275,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         let chosen = match select {
             NodeSelect::Id(id) => Chosen::Id(id),
             NodeSelect::Mesh(mesh) => Chosen::Mesh(mesh),
+            NodeSelect::Fabric => Chosen::Fabric,
             NodeSelect::Tags(filter) => {
                 span.record("filter", filter.name()).record("labels", crate::node_rows::labels(filter.labels()).as_str());
                 if let Some(reason) = filter.refusal() {

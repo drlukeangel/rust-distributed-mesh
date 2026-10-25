@@ -56,6 +56,8 @@ mod accepted_topology;
 mod await_attempt;
 #[path = "build/build_op.rs"]
 mod build_op;
+#[path = "build/executables.rs"]
+mod executables;
 #[path = "fabric/issuance.rs"]
 mod issuance;
 #[path = "fabric/cert_renewal.rs"]

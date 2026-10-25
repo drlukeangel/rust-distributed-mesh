@@ -161,6 +161,11 @@ pub struct NodeView {
     /// when no row names it (an admin configured with no certs issues none).
     #[serde(default)]
     pub cert: Option<NodeCertView>,
+    /// The executable this birth runs, as its node row records it (proposal
+    /// executable-bindings-at-create.md rule 7): read from the row, never from gossip; `None` for a row
+    /// that records none (written before the field).
+    #[serde(default)]
+    pub executable: Option<crate::binding::Binding>,
 }
 
 /// A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,

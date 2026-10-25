@@ -105,6 +105,14 @@ pub trait Gate: Send + Sync {
     fn state_sync_failed(&self, _build_id: &BuildId, _attempt: u32) -> Option<(String, String)> {
         None
     }
+    /// Open the next attempt of `p` with no action: a Build that plans replacements whose run has nothing
+    /// left while its rows still owe a replacement (a path this run re-created on another executable, an
+    /// attempt that carried an action) runs that replacement as its next attempt's, a new run (proposal
+    /// executable-bindings-at-create.md rule 5: "never in the same attempt"). `Ok(false)`: a gate that
+    /// opens none.
+    async fn open_replacement_attempt(&self, _p: &BuildProjection) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 /// The node.primary.update that precedes an operation on a primary (R-MT1), named by its operation
@@ -731,9 +739,11 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
 
-/// Whether `p` is a roll's Build (proposal roll.md).
+/// Whether `p` is a Build that owes the replacements its rows say are left (a `Roll` change's;
+/// a complete-topology request's, proposal executable-bindings-at-create.md rule 5): its rows are read
+/// at every pass.
 fn is_roll(p: &BuildProjection) -> bool {
-    p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll)
+    p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)
 }
 
 /// Whether `p`'s Build puts the fabric back to pending (states.md "Resize and roll"; Q154): every Build a
@@ -1083,6 +1093,26 @@ impl DriveEnv {
                 if p.deletes_fabric() {
                     if let Some(end) = self.interrupted_ended(&me, drive, &p).await {
                         return end;
+                    }
+                }
+                // A replacement the rows still owe once this run has nothing left: a path whose birth this
+                // run re-created on another executable than its target (a recovery's create, on the row's)
+                // keys the same operations this run already completed, and an attempt that carried an
+                // action leaves that action standing. Its replacement follows as the next attempt's, a new
+                // run with no action (proposal executable-bindings-at-create.md rules 5 and 6).
+                if is_roll(&p) {
+                    let view = self.topology.read().await.clone();
+                    let recorded = drive.recorded.lock().unwrap().clone();
+                    if let Some(recorded) = recorded.filter(|_| left(drive, &p, &view).is_empty()) {
+                        let mut next = p.clone();
+                        next.action = None;
+                        if !crate::accepted::plan_for_roll(&next, &view, &recorded).operations.is_empty() {
+                            match self.gate.open_replacement_attempt(&p).await {
+                                Ok(true) => continue,
+                                Ok(false) => {}
+                                Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id}'s replacement is owed after its action's attempt, and its next attempt could not be opened: {e}")),
+                            }
+                        }
                     }
                 }
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {

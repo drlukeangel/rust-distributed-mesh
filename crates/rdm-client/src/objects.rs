@@ -433,6 +433,23 @@ impl Fabrics {
         r
     }
 
+    /// `fabric.nodes.get`: every node of every mesh, as the fabric-primary reads them from the rows (the
+    /// mesh selector's answer over every mesh, no filter), each with its status, config, tags and the
+    /// executable its row records.
+    pub async fn nodes(&self) -> Result<Vec<NodeView>, CallEnd> {
+        let span = FabricOp::NodesGet.span();
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::GetNodes { select: NodeSelect::Fabric }).await? {
+                StatusReply::Nodes { nodes } => Ok(nodes),
+                other => Err(refused(&target, FabricOp::NodesGet.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, FabricOp::NodesGet.name(), &r);
+        r
+    }
+
     /// Await the typed fact `holds` of the fabric as the admin the carrier starts at reports it
     /// (`fabric.get`), read at half the gossip interval so a fact that spreads by gossip is read as it
     /// lands. `fact` names it. An admin that does not report it within `within` ends the call

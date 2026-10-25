@@ -61,6 +61,10 @@ pub(crate) struct WireAccepted {
     topology: WireTopology,
     submitted_change: Option<WireChange>,
     submitted_at_ms: u64,
+    /// Every distinct executable the topology's entries and the change name, once: an entry carries
+    /// its index here, so a Build of many paths on a few executables fits the Build topic's frame
+    /// (proposal executable-bindings-at-create.md rule 1), appended last.
+    executables: Vec<rdm_core::binding::Binding>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -123,6 +127,9 @@ struct WireMesh {
 struct WirePathConfig {
     storage: WireStorage,
     placement: PlacementMeta,
+    /// The executable a node created at the path runs (proposal executable-bindings-at-create.md
+    /// rule 1): its index in the accepted fact's `executables`, appended last.
+    executable: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -158,6 +165,8 @@ enum WireChange {
     DeleteFabric,
     /// Appended last: the variants are positional.
     Roll { bindings: rdm_core::binding::BindingSet },
+    /// The complete topology (proposal executable-bindings-at-create.md rule 1), appended last.
+    Reconcile { based_on: BuildId, nodes: Vec<(PathName, WirePathConfig)> },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -195,33 +204,69 @@ impl From<WireFabricDesired> for FabricDesired {
         Self { fabric: f.fabric, meshes: f.meshes.into_iter().map(Into::into).collect() }
     }
 }
-impl From<&TopologyChange> for WireChange {
-    fn from(c: &TopologyChange) -> Self {
-        match c {
-            TopologyChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
-            TopologyChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            TopologyChange::AddNode { mesh, node_kind } => Self::AddNode { mesh: mesh.clone(), node_kind: *node_kind },
-            TopologyChange::RemoveNode { node } => Self::RemoveNode { node: node.clone() },
-            TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
-            TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
-            TopologyChange::DeleteFabric => Self::DeleteFabric,
-            TopologyChange::Roll { bindings } => Self::Roll { bindings: bindings.clone() },
+/// The distinct executables one accepted fact names, each once, in the order first named.
+#[derive(Default)]
+struct Executables(Vec<rdm_core::binding::Binding>);
+
+impl Executables {
+    /// The index of `b`, added when it is new.
+    fn index(&mut self, b: &rdm_core::binding::Binding) -> u32 {
+        match self.0.iter().position(|x| x == b) {
+            Some(i) => i as u32,
+            None => {
+                self.0.push(b.clone());
+                (self.0.len() - 1) as u32
+            }
         }
     }
 }
-impl From<WireChange> for TopologyChange {
-    fn from(c: WireChange) -> Self {
-        match c {
-            WireChange::ReconcileFabric { desired } => Self::ReconcileFabric { desired: desired.into() },
-            WireChange::ReconcileMesh { desired } => Self::ReconcileMesh { desired: desired.into() },
-            WireChange::AddNode { mesh, node_kind } => Self::AddNode { mesh, node_kind },
-            WireChange::RemoveNode { node } => Self::RemoveNode { node },
-            WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
-            WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
-            WireChange::DeleteFabric => Self::DeleteFabric,
-            WireChange::Roll { bindings } => Self::Roll { bindings },
-        }
+
+fn config_to_wire(m: &PathConfig, table: &mut Executables) -> WirePathConfig {
+    let storage = match m.storage {
+        StorageMeta::Ephemeral => WireStorage::Ephemeral,
+        StorageMeta::Persistent { on_retire } => WireStorage::Persistent { on_retire },
+    };
+    WirePathConfig { storage, placement: m.placement, executable: m.executable.as_ref().map(|b| table.index(b)) }
+}
+
+fn config_from_wire(m: WirePathConfig, table: &[rdm_core::binding::Binding]) -> Result<PathConfig, String> {
+    let storage = match m.storage {
+        WireStorage::Ephemeral => StorageMeta::Ephemeral,
+        WireStorage::Persistent { on_retire } => StorageMeta::Persistent { on_retire },
+    };
+    let executable = match m.executable {
+        None => None,
+        Some(i) => Some(table.get(i as usize).cloned().ok_or_else(|| format!("an entry names executable {i} of the {} the fact carries", table.len()))?),
+    };
+    Ok(PathConfig { storage, placement: m.placement, executable })
+}
+
+fn change_to_wire(c: &TopologyChange, table: &mut Executables) -> WireChange {
+    match c {
+        TopologyChange::ReconcileFabric { desired } => WireChange::ReconcileFabric { desired: desired.into() },
+        TopologyChange::ReconcileMesh { desired } => WireChange::ReconcileMesh { desired: desired.into() },
+        TopologyChange::AddNode { mesh, node_kind } => WireChange::AddNode { mesh: mesh.clone(), node_kind: *node_kind },
+        TopologyChange::RemoveNode { node } => WireChange::RemoveNode { node: node.clone() },
+        TopologyChange::CreateMesh { desired } => WireChange::CreateMesh { desired: desired.into() },
+        TopologyChange::RemoveMesh { mesh } => WireChange::RemoveMesh { mesh: mesh.clone() },
+        TopologyChange::DeleteFabric => WireChange::DeleteFabric,
+        TopologyChange::Roll { bindings } => WireChange::Roll { bindings: bindings.clone() },
+        TopologyChange::Reconcile { based_on, nodes } => WireChange::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|(p, c)| (p.clone(), config_to_wire(c, table))).collect() },
     }
+}
+
+fn change_from_wire(c: WireChange, table: &[rdm_core::binding::Binding]) -> Result<TopologyChange, String> {
+    Ok(match c {
+        WireChange::ReconcileFabric { desired } => TopologyChange::ReconcileFabric { desired: desired.into() },
+        WireChange::ReconcileMesh { desired } => TopologyChange::ReconcileMesh { desired: desired.into() },
+        WireChange::AddNode { mesh, node_kind } => TopologyChange::AddNode { mesh, node_kind },
+        WireChange::RemoveNode { node } => TopologyChange::RemoveNode { node },
+        WireChange::CreateMesh { desired } => TopologyChange::CreateMesh { desired: desired.into() },
+        WireChange::RemoveMesh { mesh } => TopologyChange::RemoveMesh { mesh },
+        WireChange::DeleteFabric => TopologyChange::DeleteFabric,
+        WireChange::Roll { bindings } => TopologyChange::Roll { bindings },
+        WireChange::Reconcile { based_on, nodes } => TopologyChange::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, c)| Ok((p, config_from_wire(c, table)?))).collect::<Result<_, String>>()? },
+    })
 }
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
@@ -261,54 +306,48 @@ pub(crate) fn action_round_trip(a: &AttemptAction) -> AttemptAction {
     rdm_transport::wire::decode::<WireAction>(&bytes).expect("an action decodes").into()
 }
 
-impl From<&PathConfig> for WirePathConfig {
-    fn from(m: &PathConfig) -> Self {
-        let storage = match m.storage {
-            StorageMeta::Ephemeral => WireStorage::Ephemeral,
-            StorageMeta::Persistent { on_retire } => WireStorage::Persistent { on_retire },
-        };
-        Self { storage, placement: m.placement }
+/// An accepted Build of `topology` and `change` through its wire form and back, as the Build topic
+/// carries it, and the number of distinct executables its table carries.
+#[cfg(test)]
+pub(crate) fn accepted_through_the_wire(topology: &FabricTopology, change: Option<&TopologyChange>) -> (FabricTopology, Option<TopologyChange>, usize) {
+    let fact = BuildFact::Accepted(BuildAccepted { build_id: BuildId::mint(), topology: topology.clone(), submitted_change: change.cloned(), submitted_at_ms: 1 });
+    let wire = fact_to_wire(&fact).expect("an accepted Build has its wire shape");
+    let bytes = rdm_transport::wire::encode(&wire).expect("an accepted Build encodes");
+    let back = rdm_transport::wire::decode::<WireFact>(&bytes).expect("an accepted Build decodes");
+    let table = match &back {
+        WireFact::Accepted(a) => a.executables.len(),
+        _ => unreachable!(),
+    };
+    match fact_from_wire(back).expect("an accepted Build decodes to its fact") {
+        BuildFact::Accepted(a) => (a.topology, a.submitted_change, table),
+        _ => unreachable!(),
     }
 }
-impl From<WirePathConfig> for PathConfig {
-    fn from(m: WirePathConfig) -> Self {
-        let storage = match m.storage {
-            WireStorage::Ephemeral => StorageMeta::Ephemeral,
-            WireStorage::Persistent { on_retire } => StorageMeta::Persistent { on_retire },
-        };
-        Self { storage, placement: m.placement }
-    }
+
+fn topology_to_wire(t: &FabricTopology, table: &mut Executables) -> WireTopology {
+    let meshes = t
+        .meshes
+        .iter()
+        .map(|(k, m)| {
+            let mesh = WireMesh {
+                name: m.name.clone(),
+                mesh_id: m.mesh_id.clone(),
+                nodes: m.nodes.clone(),
+                path_config_by_path: m.path_config_by_path.iter().map(|(p, meta)| (p.clone(), config_to_wire(meta, table))).collect(),
+            };
+            (k.clone(), mesh)
+        })
+        .collect();
+    WireTopology { fabric: t.fabric.clone(), meshes, bindings: t.bindings.clone() }
 }
-impl From<&FabricTopology> for WireTopology {
-    fn from(t: &FabricTopology) -> Self {
-        let meshes = t
-            .meshes
-            .iter()
-            .map(|(k, m)| {
-                let mesh = WireMesh {
-                    name: m.name.clone(),
-                    mesh_id: m.mesh_id.clone(),
-                    nodes: m.nodes.clone(),
-                    path_config_by_path: m.path_config_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
-                };
-                (k.clone(), mesh)
-            })
-            .collect();
-        Self { fabric: t.fabric.clone(), meshes, bindings: t.bindings.clone() }
+
+fn topology_from_wire(t: WireTopology, table: &[rdm_core::binding::Binding]) -> Result<FabricTopology, String> {
+    let mut meshes = BTreeMap::new();
+    for (k, m) in t.meshes {
+        let path_config_by_path = m.path_config_by_path.into_iter().map(|(p, meta)| Ok((p, config_from_wire(meta, table)?))).collect::<Result<_, String>>()?;
+        meshes.insert(k, MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, path_config_by_path });
     }
-}
-impl From<WireTopology> for FabricTopology {
-    fn from(t: WireTopology) -> Self {
-        let meshes = t
-            .meshes
-            .into_iter()
-            .map(|(k, m)| {
-                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, path_config_by_path: m.path_config_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
-                (k, mesh)
-            })
-            .collect();
-        Self { fabric: t.fabric, meshes, bindings: t.bindings }
-    }
+    Ok(FabricTopology { fabric: t.fabric, meshes, bindings: t.bindings })
 }
 
 // ---- a step's output -----------------------------------------------------------------------
@@ -628,12 +667,12 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
 /// `fact` as its wire shape, or the refusal naming the step whose output has none.
 pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
     Ok(match fact {
-        BuildFact::Accepted(a) => WireFact::Accepted(WireAccepted {
-            build_id: a.build_id.clone(),
-            topology: (&a.topology).into(),
-            submitted_change: a.submitted_change.as_ref().map(Into::into),
-            submitted_at_ms: a.submitted_at_ms,
-        }),
+        BuildFact::Accepted(a) => {
+            let mut table = Executables::default();
+            let topology = topology_to_wire(&a.topology, &mut table);
+            let submitted_change = a.submitted_change.as_ref().map(|c| change_to_wire(c, &mut table));
+            WireFact::Accepted(WireAccepted { build_id: a.build_id.clone(), topology, submitted_change, submitted_at_ms: a.submitted_at_ms, executables: table.0 })
+        }
         BuildFact::Opened(o) => WireFact::Opened(WireOpened {
             build_id: o.build_id.clone(),
             attempt: o.attempt,
@@ -669,12 +708,15 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
 /// The Build fact a wire fact carries.
 pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
     Ok(match w {
-        WireFact::Accepted(a) => BuildFact::Accepted(BuildAccepted {
-            build_id: a.build_id,
-            topology: a.topology.into(),
-            submitted_change: a.submitted_change.map(Into::into),
-            submitted_at_ms: a.submitted_at_ms,
-        }),
+        WireFact::Accepted(a) => {
+            let refuse = |reason: String| WireRefusal { build_id: a.build_id.clone(), attempt: 0, step: "accepted".into(), reason };
+            let topology = topology_from_wire(a.topology, &a.executables).map_err(refuse)?;
+            let submitted_change = match a.submitted_change {
+                None => None,
+                Some(c) => Some(change_from_wire(c, &a.executables).map_err(refuse)?),
+            };
+            BuildFact::Accepted(BuildAccepted { build_id: a.build_id, topology, submitted_change, submitted_at_ms: a.submitted_at_ms })
+        }
         WireFact::Opened(o) => BuildFact::Opened(AttemptOpened {
             build_id: o.build_id,
             attempt: o.attempt,

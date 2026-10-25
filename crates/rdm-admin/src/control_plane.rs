@@ -10,7 +10,7 @@
 //! routes are runtime administration, outside Build.
 
 use tracing::Instrument as _;
-use crate::accepted::{compile, AcceptedStore, AttemptAction, TopologyChange};
+use crate::accepted::{AcceptedStore, AttemptAction, TopologyChange};
 use crate::build::{BuildId, BuildReject};
 use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildState, BuildStateAdapter, BuildStateError};
 use crate::model::{NodeKind, PathName};
@@ -84,6 +84,10 @@ pub struct ControlPlane {
     /// The exact departure proof of a drift lane's claimant (build.md: "after exact departure proof"),
     /// set once the admin's drive is built; none proves nothing.
     pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::DepartureProof>>,
+    /// The node rows (nodes.storage, every mesh's rows on the fabric's shared root), set once the admin
+    /// opens them: a complete-topology request is compiled against what each row records of its
+    /// executable (proposal executable-bindings-at-create.md rule 5, R4).
+    pub node_rows: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
 }
 
 impl ControlPlane {
@@ -113,6 +117,7 @@ impl ControlPlane {
             first_ready: crate::fabric_state::FirstReady::new(),
             ready_rows: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             departure: std::sync::OnceLock::new(),
+            node_rows: std::sync::OnceLock::new(),
         }
     }
 
@@ -447,6 +452,22 @@ impl ControlPlane {
                     return Ok(resumed);
                 }
             }
+            // A complete-topology request is built from a read of the current Build (proposal
+            // executable-bindings-at-create.md rule 1): one built from an older read is refused by name,
+            // nothing accepted, so a list from a stale read never removes a node another caller added.
+            // It compiles against what the rows record of each path's executable.
+            let recorded = match &change {
+                TopologyChange::Reconcile { based_on, .. } => {
+                    if based_on != &current.build_id {
+                        let reject = BuildReject::BasedOnNotCurrent { based_on: based_on.to_string(), current: current.build_id.to_string() };
+                        outer.in_scope(|| reject_span(route, &reject));
+                        return Err(Refusal::Reject(reject));
+                    }
+                    let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("{}: no nodes.storage is open yet to read what each node's row records", self.me)))?;
+                    crate::accepted::recorded_executables(&**rows, &current.topology).await.map_err(Refusal::Unavailable)?
+                }
+                _ => crate::accepted::Recorded::new(),
+            };
             if let TopologyChange::Roll { bindings } = &change {
                 let provider = self.topology.read().await.fabric.provider;
                 if let Some(reject) = roll_set_refusal(bindings, &current.topology, provider).await {
@@ -469,13 +490,22 @@ impl ControlPlane {
                     return Err(not_live(&outer, route, node, n.status, "a delete needs a live node or a stopped one"));
                 }
             }
-            let topology = match compile(&current.topology, &change, &observed) {
+            let topology = match crate::accepted::compile_against(&current.topology, &change, &observed, &recorded) {
                 Ok(t) => t,
                 Err(reject) => {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
             };
+            // Every executable the request creates a node on or replaces one with is hashed now, before
+            // anything is accepted; the launch hashes it again.
+            if matches!(change, TopologyChange::Reconcile { .. }) {
+                let provider = self.topology.read().await.fabric.provider;
+                if let Some(reject) = named_executable_refusal(&current.topology, &topology, &recorded, provider).await {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            }
             let operations = crate::accepted::plan(&topology, &observed, None).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
@@ -485,9 +515,17 @@ impl ControlPlane {
             if deletes && !interrupts {
                 settled(&current)?;
             }
+            // The replacements the request owes act in their meshes as every topology operation does:
+            // held by a mesh's open drift attempt (a recovery's), and refused before the initial fabric
+            // first reached ready-for-traffic. A replacement's own guards are the planner's (R4, R5), so
+            // the no-successor check below reads the topology's operations alone.
+            let replacements = match &change {
+                TopologyChange::Reconcile { .. } => crate::accepted::replacement_operations(&topology, &observed, &recorded),
+                _ => Vec::new(),
+            };
             // A mesh whose own drift attempt is open is held by it: a topology operation on that mesh
             // is refused, naming the Build, the mesh and the mesh-primary holding it (R-BI7 caveat 3).
-            if let Some(held) = operations.iter().filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))).filter(|_| !interrupts) {
+            if let Some(held) = operations.iter().chain(replacements.iter()).filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))).filter(|_| !interrupts) {
                 outer.in_scope(|| {
                     tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
                         .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
@@ -496,7 +534,7 @@ impl ControlPlane {
             }
             // A Build that deletes a node or a mesh writes caller state: it waits for the initial fabric
             // to first reach ready-for-traffic (R-PC1).
-            if let Some(workflow) = operations.iter().filter(|_| !interrupts).find_map(|op| match op {
+            if let Some(workflow) = operations.iter().chain(replacements.iter()).filter(|_| !interrupts).find_map(|op| match op {
                 crate::build::BuildOperation::RetireNode { node, exited: None } => Some(format!("node.delete {node}")),
                 crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(format!("mesh.delete {mesh}")),
                 _ => None,
@@ -564,6 +602,20 @@ impl ControlPlane {
         }
         .instrument(span.clone())
         .await
+    }
+
+    /// Open the next attempt of `current` in the fabric lane with no action: the replacement its rows
+    /// still owe after an attempt that carried an action (a recovery) runs as that attempt's (proposal
+    /// executable-bindings-at-create.md rules 5 and 6: "a pending replacement follows as its own step").
+    pub(crate) async fn open_replacement_attempt(&self, current: &crate::build_state::BuildProjection) -> Result<u32, String> {
+        let me = self.held_name().await;
+        let opened = AttemptOpened { mesh: None, build_id: current.build_id.clone(), attempt: next_in_lane(current, None), reason: AttemptReason::ProvenDrift, action: None, opened_by: me.to_string(), opened_at_ms: self.time.now_ms() };
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-replacement-owed", build_id = %current.build_id.log(), attempt = opened.attempt, node = %me);
+        self.contexts.put(&opened.build_id, opened.attempt, &span.in_scope(crate::build_claim::current_context)).await.map_err(|e| format!("attempt-context: {e}"))?;
+        self.builds.open_attempt(&opened).await.map_err(|e| e.to_string())?;
+        span.in_scope(|| tracing::info!("the action's attempt left the Build's replacement owed: its next attempt, with no action, is open"));
+        self.build_submitted.notify_waiters();
+        Ok(opened.attempt)
     }
 
     /// Open the next attempt of `current` in `lane` (`None` the fabric lane, `Some(mesh)` that mesh's
@@ -1161,6 +1213,26 @@ async fn roll_set_refusal(set: &rdm_core::binding::BindingSet, topology: &crate:
     checked.err().map(|e| BuildReject::BindingsRefused { defect: e.name().to_string(), detail: e.to_string() })
 }
 
+/// The first executable a complete-topology request names that cannot launch, refused by name before
+/// anything is accepted (proposal executable-bindings-at-create.md §2: a missing file or a wrong sha is
+/// refused by name at acceptance): each binding of a path `next` creates, or replaces because its row
+/// records another, checked as its launch checks it (launch id, image, hash), each file hashed once.
+async fn named_executable_refusal(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, recorded: &crate::accepted::Recorded, provider: crate::model::ProviderKind) -> Option<BuildReject> {
+    let mut checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)> = std::collections::BTreeSet::new();
+    for (path, config) in next.meshes.values().flat_map(|m| m.path_config_by_path.iter()) {
+        let Some(binding) = config.executable.as_ref() else { continue };
+        let created = !current.contains(path);
+        let replaced = recorded.get(path).is_some_and(|r| r.sha256.as_deref() != Some(binding.sha256.as_str()));
+        if !(created || replaced) || !checked.insert((binding.executable.clone(), binding.sha256.clone(), path.kind.name().to_string())) {
+            continue;
+        }
+        if let Err(detail) = crate::admin::runner::verify_binding(binding, path.kind, provider, "request").await {
+            return Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+        }
+    }
+    None
+}
+
 /// Why a fresh `node.restart` of the birth `n` at `path`, which is not live, is refused `node-not-live`
 /// (R-PV1, the fresh-request versus resumption rule): a birth whose own restart is open in `current`
 /// is resumed by the caller's resubmit of that Build (build.create with its existing build_id), which
@@ -1608,6 +1680,57 @@ mod tests {
         assert_eq!(defect, "no-image-bound", "a container fabric's set binds its one image");
         let reject = BuildReject::BindingsRefused { defect: "hash-mismatch".into(), detail: "x".into() };
         assert_eq!(reject.reason(), "bindings-refused");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (proposal executable-bindings-at-create.md §2: "the fabric-primary refuses a missing file or a
+    /// wrong sha by name at acceptance"; rule 4, the launch hashes again): every executable a complete-topology
+    /// request creates a node on, or replaces a node's with, is checked as its launch checks it, before
+    /// anything is accepted: a hash-true file of the path's kind passes; a missing file, a sha its bytes do not
+    /// hash to, and a binding of another kind are each refused `executable-refused` naming the path. A path
+    /// whose row already records the executable is not hashed again. Must NOT happen: a Build accepted onto
+    /// an executable no launch could run.
+    #[tokio::test]
+    async fn every_executable_a_request_creates_or_replaces_a_node_on_is_hashed_at_acceptance() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("named-executable-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bind = |id: &str| {
+            let p = dir.join(id);
+            std::fs::write(&p, format!("#!/bin/sh\n# {id}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
+        };
+        let current = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into(), bindings: None };
+        let with = |path: &str, b: rdm_core::binding::Binding| {
+            let mut next = current.clone();
+            let p: PathName = path.parse().unwrap();
+            let m = next.meshes.get_mut("mesh1").unwrap();
+            m.nodes.insert(p.clone());
+            let mut c = rdm_core::meta::PathConfig::default_for(p.kind);
+            c.executable = Some(b);
+            m.path_config_by_path.insert(p, c);
+            next
+        };
+        let rows = crate::accepted::Recorded::new();
+        let good = bind("rpc_node");
+        assert_eq!(named_executable_refusal(&current, &with("mesh1.rpc.2", good.clone()), &rows, ProviderKind::Process).await, None, "a hash-true file of the path's kind");
+        let refused = |r: Option<BuildReject>| match r {
+            Some(BuildReject::ExecutableRefused { node, detail }) => (node, detail),
+            other => panic!("refused executable-refused: {other:?}"),
+        };
+        let missing = rdm_core::binding::Binding { executable: dir.join("absent"), ..good.clone() };
+        let wrong = rdm_core::binding::Binding { sha256: "0".repeat(64), ..good.clone() };
+        let admin = bind("node_admin");
+        for (b, what) in [(missing, "a missing file"), (wrong, "a sha its bytes do not hash to"), (admin.clone(), "a binding of another kind")] {
+            let (node, detail) = refused(named_executable_refusal(&current, &with("mesh1.rpc.2", b), &rows, ProviderKind::Process).await);
+            assert_eq!(node, "mesh1.rpc.2", "{what}: {detail}");
+        }
+        // A held path whose row already records the executable is not hashed again: its file may be gone.
+        let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
+        let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
+        assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process).await, None);
+        assert_eq!(BuildReject::ExecutableRefused { node: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
