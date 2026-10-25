@@ -119,13 +119,17 @@ connections log holds it (connections.md, "the data plane is the connections log
   sends them. `Nodes`, `Meshes`, `Connections`, `ReadOverBound` and the malformed replies are reused;
   `UnknownMesh` is retained unsent.
 - **Build 0x20.** One request variant appended, `GetBuilds { ids, current }`; three reply variants
-  appended: `Current { build_id: Option<String> }` first on the stream, the Build selected once for the
-  read; per Build newest first `Topology { build_id, chunk_index, chunk_count, nodes: Vec<NodeSpec> }`
-  chunks (a 256 KiB request can carry a topology no 64 KiB reply frame holds), then the existing
-  `Steps` chunks and the existing `Got` header; `End { builds }` last. `REQUEST_VARIANTS` 4 → 5,
-  `REPLY_VARIANTS` 26 → 29. `Get { build_id }` keeps its position and decodes as
-  `GetBuilds { ids: [build_id] }`. A stream that ends before `End` is an incomplete read, never a
-  list (Node RPC §34, §43).
+  appended, per Build newest first: `Topology { build_id, chunk_index, chunk_count, nodes: Vec<NodeSpec> }`
+  chunks (a 256 KiB request can carry a topology no 64 KiB reply frame holds), the existing `Steps`
+  chunks, then the header `Build { build_id, phase, attempt, executor, reason, last_failure, current,
+  steps, chunks }`, `Got`'s fields with the `current` mark, a data frame that closes one Build; then
+  `End { builds }`, the read's one terminal. `Got` is a terminal frame today (`build.rs`
+  `frame_kind`) and cannot close one Build of several, so it is not on this stream (Architect 1,
+  2026-10-25). The current Build is selected once per read (Q98) and is the one header marked
+  `current`. `REQUEST_VARIANTS` 4 → 5, `REPLY_VARIANTS` 26 → 29. `Get { build_id }` keeps its
+  position and its answer (`Steps`, then `Got`) over the same read implementation; rdm-client no
+  longer sends it. A stream that ends before `End` is an incomplete read, never a list (Node RPC
+  §34, §43).
 
 ### 5.2 Client and spans
 
@@ -188,9 +192,10 @@ node-rpc-envelope.md:
 - line 366: `node.get answers the whole node.` → `nodes.get answers the whole node.`
 - line 1300, the Build calls table: `| build.get | caller → fabric-primary | build_id | read
   accepted Build and receipts for reattachment after a cut; never progress polling |` → `| builds.get
-  | caller → fabric-primary | ids?, current? | a stream: Current, then per Build newest first Topology
-  chunks, Steps chunks and Got, then End; each Build whole, its topology and receipts; the current
-  Build selected once per read; for reattachment after a cut, never progress polling |`.
+  | caller → fabric-primary | ids?, current? | a stream: per Build newest first Topology chunks,
+  Steps chunks and its Build header, then End; each Build whole, its topology and receipts; the
+  current Build selected once per read and its header marked current; for reattachment after a cut,
+  never progress polling |`.
 - line 1316: `build.get for the receipts` → `builds.get { ids: [build_id] } for the receipts`.
 - The 0x20 reply enum listing gains the three appended variants and the counts of §5.1.
 
@@ -239,10 +244,12 @@ Q167 as amended`.
 - One cell per Status entity: the AND filter, the empty list for no match (a mesh filter naming an
   unknown mesh included), `INVALID_ARGUMENT` for a filter that cannot be meant, the existing
   over-bound cell renamed.
-- `builds.get` over a history of three Builds, one Failed part-way: order, the current marked, every
+- `builds.get` over a history of three Builds through the real carrier, one Failed part-way: all
+  three arrive in order, only `End` completes the read, the current one's header is marked, every
   header, topology and receipt as `build.get` reads them today; the current Build moved mid-stream
   names one Build (the 0x1F cell at `build_facts_read.rs:599` is the model); a stream cut between
   chunks is an incomplete read.
+- The retained `Get { build_id }` still ends on `Got` (the existing `build.get` cells, kept).
 - The retained variants decode into the new path (`status.rs` wire tests, `build_wire.rs`).
 
 ## 6. Arms
