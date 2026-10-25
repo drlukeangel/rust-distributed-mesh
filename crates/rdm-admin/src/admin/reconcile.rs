@@ -101,7 +101,7 @@ impl crate::build_drive::Gate for SeatGate {
         Ok(())
     }
 
-    /// What the node rows record of each member's executable (proposal roll.md step 3), read from this
+    /// What the node rows record of each member's executable (build-deployment.md §3), read from this
     /// admin's nodes.storage, every mesh's rows on the fabric's shared root.
     async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
         self.control.claims.meshes().await.map_err(|e| format!("{}: the Mesh rows could not be read: {e}", self.handover.me))

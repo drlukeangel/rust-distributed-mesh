@@ -1164,7 +1164,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
 /// published. It is the create door's claim ([`ClaimFor::Create`], [`take_name`]), the record
 /// `Pending`, one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`.
 /// Another node's live claim of the name is `NameHeld` naming it, and nothing is written. The record
-/// carries `executable`, the binding the bootstrap admin's birth runs (proposal roll.md R6), as a
+/// carries `executable`, the binding the bootstrap admin's birth runs (build-deployment.md §2.3), as a
 /// create's claim carries a launched node's.
 pub async fn claim_day0_name(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {
     own_claim(None, storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable).await

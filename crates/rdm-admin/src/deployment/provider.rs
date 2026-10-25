@@ -116,10 +116,6 @@ pub struct ResolvedNodeLaunch {
     pub transport: std::net::SocketAddr,
     /// The non-Iroh listeners the runtime must bind, by name.
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The host directories the runtime reads at their host paths (a launched node-admin's bound
-    /// executables, [`crate::deployment::pipeline::LaunchTemplate::reads`]): a container provider
-    /// mounts them read-only.
-    pub reads: Vec<PathBuf>,
 }
 
 /// What a provider knows of one exact launch ([`DeploymentProvider::find`]): three distinct facts,

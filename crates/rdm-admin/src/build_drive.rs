@@ -88,8 +88,8 @@ pub trait Gate: Send + Sync {
     /// Refresh the fabric-primary's book and view from any completed stop-node receipt of `build_id`
     /// before `BuildReply::Complete` goes out on the caller's stream.
     async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
-    /// What the node rows record of each member of `topology`'s executable, for a roll's plan
-    /// ([`crate::accepted::recorded_executables`]; proposal roll.md step 3). A gate with no rows
+    /// What the node rows record of each member of `topology`'s executable, for a replacement's plan
+    /// ([`crate::accepted::recorded_executables`]; build-deployment.md §3). A gate with no rows
     /// records none: every member is owed its replacement.
     async fn recorded_executables(&self, _topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
         Ok(crate::accepted::Recorded::new())
@@ -110,7 +110,7 @@ pub trait Gate: Send + Sync {
     }
     /// Whether the fabric holds ready-for-traffic now: a Build that put the fabric back to pending is
     /// `Complete` only once the fabric's ready-for-traffic state is set from its change (Q154; states.md
-    /// "Resize and roll"). A gate with no fabric change holds it.
+    /// "Resize and executable replacement"). A gate with no fabric change holds it.
     fn fabric_ready(&self) -> bool {
         true
     }
@@ -316,7 +316,8 @@ pub struct Drive {
     wake: Notify,
     running: AtomicBool,
     /// What the node rows recorded of each member's executable when this drive's pass last read them:
-    /// a roll's plan ([`crate::accepted::plan_for_roll`]); `None` until a pass of a roll read them.
+    /// a replacement's plan ([`crate::accepted::plan_with_replacements`]); `None` until a pass of a Build
+    /// that plans replacements read them.
     recorded: Mutex<Option<crate::accepted::Recorded>>,
     /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::dead_meshes`]):
     /// planned as Dead whatever the view shows.
@@ -817,28 +818,27 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     } else {
         t
     };
-    // A roll plans from what the rows recorded at this pass ([`Gate::recorded_executables`]).
+    // A replacement plans from what the rows recorded at this pass ([`Gate::recorded_executables`]).
     // A fabric.delete plans every mesh the store holds a row of beside the view's ([`Gate::mesh_rows`]).
     let stored = drive.mesh_rows.lock().unwrap().as_ref().map(|rows| crate::accepted::with_mesh_rows(t, rows));
     let t = stored.as_ref().unwrap_or(t);
     let plan = match drive.recorded.lock().unwrap().as_ref() {
-        Some(recorded) => crate::accepted::plan_for_roll(p, t, recorded),
+        Some(recorded) => crate::accepted::plan_with_replacements(p, t, recorded),
         None => crate::accepted::plan_for_build(p, t),
     };
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
 
-/// Whether `p` is a Build that owes the replacements its rows say are left (a `Roll` change's;
-/// a complete-topology request's, proposal executable-bindings-at-create.md rule 5): its rows are read
-/// at every pass.
-fn is_roll(p: &BuildProjection) -> bool {
+/// Whether `p` is a Build that owes the replacements its rows say are left (a complete-topology
+/// request's, proposal executable-bindings-at-create.md rule 5): its rows are read at every pass.
+fn plans_replacements(p: &BuildProjection) -> bool {
     p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)
 }
 
-/// Whether `p`'s Build puts the fabric back to pending (states.md "Resize and roll"; Q154): every Build a
-/// change was submitted for, a resize and a roll alike, except fabric.delete, after which the fabric
-/// is never ready-for-traffic again. Day 0's Build carries no change and is not one of them (Q154: "day 0
-/// and the roll unchanged"). A Build
+/// Whether `p`'s Build puts the fabric back to pending (states.md "Resize and executable replacement";
+/// Q154): every Build a change was submitted for, a resize and an executable replacement alike, except
+/// fabric.delete, after which the fabric is never ready-for-traffic again. Day 0's Build carries no
+/// change and is not one of them (Q154: "day 0 ... unchanged"). A Build
 /// whose topology the change left as it was puts nothing back, and the fabric it finds ready-for-traffic
 /// holds it.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
@@ -1100,7 +1100,7 @@ impl DriveEnv {
         }
         // The last run of a Build that put the fabric back to pending hands back here rather than
         // ending `Complete` while the fabric's ready-for-traffic state is not set (Q154; states.md "Resize
-        // and roll"; proposal roll.md step 8): the next pass waits for it.
+        // and executable replacement"): the next pass waits for it.
         if changes_the_fabric(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
             plan.hand_off_to = Some(me.to_string());
         }
@@ -1160,12 +1160,12 @@ impl DriveEnv {
                 }
                 Err(e) => return self.stalled(&me, drive, format!("{me}: the current Build could not be read to admit Build {id}: {e}")),
             }
-            // A roll's remaining work is the members whose row records another sha than the set's for
-            // their kind (proposal roll.md step 3): the rows are read at every pass, before it plans.
-            if is_roll(&p) {
+            // A replacement's remaining work is the members whose row records another sha than their
+            // entry names (build-deployment.md §3): the rows are read at every pass, before it plans.
+            if plans_replacements(&p) {
                 match self.gate.recorded_executables(&p.topology).await {
                     Ok(recorded) => *drive.recorded.lock().unwrap() = Some(recorded),
-                    Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} is a roll and the node rows could not be read for what each member runs: {e}")),
+                    Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} plans replacements and the node rows could not be read for what each member runs: {e}")),
                 }
             }
             // A mesh the Mesh records hold Dead is done whatever the view shows (a view that has not heard
@@ -1206,8 +1206,8 @@ impl DriveEnv {
                 }
                 // A Build that put the fabric back to pending, its work all done, is Complete only once
                 // the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
-                // roll": "while the fabric changes, the Build reports Blocked naming the change, never
-                // Complete"; proposal roll.md step 8): no further attempt is claimed until the fabric holds
+                // executable replacement": "while the fabric changes, the Build reports Blocked naming the
+                // change, never Complete"): no further attempt is claimed until the fabric holds
                 // ready-for-traffic, and the reconcile loop drives the Build again. Its first attempt is
                 // always claimed, even with nothing left to execute (build.md §1: every attempt "computes
                 // remaining work"): the fabric's change names the accepted Build's attempt

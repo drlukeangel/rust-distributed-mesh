@@ -68,8 +68,6 @@ mod seeded;
 mod rounds;
 #[path = "fabric/owed_check_ins.rs"]
 mod owed_check_ins;
-#[path = "fabric/roll.rs"]
-mod roll;
 #[path = "fabric/declared_secrets.rs"]
 mod declared_secrets;
 #[path = "fabric/named_listeners.rs"]

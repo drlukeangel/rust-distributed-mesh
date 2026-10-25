@@ -322,7 +322,7 @@ async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
     period(&cp, &builds, &a, true, 1).await;
     period(&cp, &builds, &b, true, 2).await;
-    let other = cp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change is accepted").build_id;
+    let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("a topology change is accepted").build_id;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { node: a.0.clone(), current_build_id: other.clone() });
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(other.clone()));

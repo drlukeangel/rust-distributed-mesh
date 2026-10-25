@@ -65,9 +65,9 @@ async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId) {
 #[tokio::test]
 async fn a_change_after_a_failed_build_compiles_against_the_newest_completed_build() {
     let (cp, builds, b0) = fabric_primary().await;
-    let b1 = cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired: mesh("mesh2") }).await.expect("B1 is accepted").build_id;
+    let b1 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh2") }).await).await.expect("B1 is accepted").build_id;
     fail(&builds, &b1).await;
-    let b2 = cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired: mesh("mesh3") }).await.expect("B2 is accepted over the completed B0, the failed B1 skipped").build_id;
+    let b2 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh3") }).await).await.expect("B2 is accepted over the completed B0, the failed B1 skipped").build_id;
     let meshes: Vec<String> = builds.read_build(&b2).await.unwrap().topology.meshes.keys().cloned().collect();
     assert_eq!(meshes, vec!["mesh1".to_string(), "mesh3".to_string()], "B2 compiled against B0 ({b0}), never the failed B1 ({b1})");
 }

@@ -6,8 +6,8 @@
 //!   written them beside the root, in the custody document (`RDM_DECLARED_SECRETS`), so whichever admin
 //!   runs a create can launch the named kinds.
 //! - Every admin keeps the values beside its data dir ([`KEPT_FILE`]), as it keeps the root
-//!   (`ca-secret`), and reads them back on a start from disk without a launcher. A replace and a roll
-//!   launch from the launching admin's copy, so the value never changes while the fabric runs:
+//!   (`ca-secret`), and reads them back on a start from disk without a launcher. A replace and an executable
+//!   replacement launch from the launching admin's copy, so the value never changes while the fabric runs:
 //!   changing it is a new fabric.
 //! - A value is set in the process environment of the named kinds only, and every declared name is
 //!   withheld from what a process runtime inherits.

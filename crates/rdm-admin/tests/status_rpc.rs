@@ -490,8 +490,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         .unwrap();
     builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let node = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false).node;
-    let template = LaunchTemplate { reads: Vec::new(),
-        fabric: "fabric1".into(),
+    let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],

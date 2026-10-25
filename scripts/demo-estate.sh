@@ -29,15 +29,15 @@ CURRENT=$HERE/target/demo-estate.current
 
 up() {
   ROOT=${ROOT:-$HERE/target/demo-estate-$(date -u +%Y%m%dT%H%M%S)}
-  mkdir -p "$ROOT/evidence" "$ROOT/store" "$ROOT/no-built-ins"
+  mkdir -p "$ROOT/evidence" "$ROOT/store"
   echo "$ROOT" > "$CURRENT"
   # The Day-0 node-admin is the consumer's and records what it runs; every other node is created by a Build
-  # the UI submits naming each path's executable (the consumer's, beside the UI in $BIN, by sha256). Nothing
-  # is launched from a directory without a sha: RDM_BIN_DIR is an empty one.
+  # the UI submits naming each path's executable (the consumer's, beside the UI in $BIN, by sha256).
+  # RDM_BIN_DIR is where the node-admin itself is found, never a launch source.
   export RDM_EVIDENCE_DIR=$ROOT/evidence
   MESH_SPAWN_TYPE=process RDM_FABRIC=fabric1 RDM_MESH=mesh1 \
   RDM_DATA_DIR=$ROOT/mesh1.admin.1 RDM_STORE_DIR=$ROOT/store RDM_ESTATE_ROOT=$ROOT \
-  RDM_BIN_DIR=$ROOT/no-built-ins \
+  RDM_BIN_DIR=$BIN \
   RDM_NODE_ADMIN_API_BIND=127.0.0.1:0 \
     setsid nohup "$BIN/rshape-node-admin" > "$ROOT/admin1.log" 2>&1 < /dev/null &
   echo $! > "$ROOT/admin1.pid"

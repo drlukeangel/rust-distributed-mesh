@@ -560,7 +560,7 @@ impl Estate {
     /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The harness names every
     /// path ([`crate::executables`]): a shape of counts (`Fabric`, `Preset`, `CreateMesh`) is expanded
     /// against the current topology into the complete topology, each created path on its executable,
-    /// and submitted as `Change::Reconcile`; a `Roll` (landing 3's) is submitted as it is. A cell that
+    /// and submitted as `Change::Reconcile`. A cell that
     /// does not test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to
     /// its terminal frame, and a cell follows each Build it started (`Estate::follow`) before it submits
     /// the next, so a refusal here, a Build in progress included, is a defect of the cell and panics
@@ -570,12 +570,6 @@ impl Estate {
             BuildSpec::Fabric(d) => (d.meshes.clone(), true),
             BuildSpec::Preset { preset, fabric } => (preset.desired(fabric).meshes, true),
             BuildSpec::CreateMesh(m) => (vec![m.clone()], false),
-            BuildSpec::Roll(_) => {
-                return match Builds::new(self.carrier().await).create(spec).await {
-                    Ok(stream) => stream,
-                    Err(e) => panic!("the fabric-primary refused build.create {spec:?}: {e}"),
-                }
-            }
         };
         self.submit_named(&format!("{spec:?}"), |current, executables| current.resized(&meshes, whole, executables)).await
     }

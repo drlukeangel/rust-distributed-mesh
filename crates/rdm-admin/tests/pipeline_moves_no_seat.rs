@@ -104,8 +104,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             .await
             .unwrap();
         let joins = Joins::default();
-        let template = LaunchTemplate { reads: Vec::new(),
-            fabric: "fabric1".into(),
+        let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-node-admin".into(),
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],

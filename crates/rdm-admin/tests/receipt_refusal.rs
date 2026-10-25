@@ -185,8 +185,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::ReadyForTraffic;
-    let template = LaunchTemplate { reads: Vec::new(),
-        fabric: "fabric1".into(),
+    let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
@@ -377,8 +376,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::ReadyForTraffic;
-    let template = LaunchTemplate { reads: Vec::new(),
-        fabric: "fabric1".into(),
+    let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],

@@ -190,7 +190,7 @@ async fn the_initial_accepted_build_and_growth_are_admitted_before_the_fabric_fi
         ] {
             let r = rig(status).await;
             let before = r.facts().await;
-            let opened = r.cp.submit("test", change.clone()).await.unwrap_or_else(|e| panic!("{change:?} at {status:?} was refused: {e:?}"));
+            let opened = r.cp.submit("test", crate::named_request(&r.cp, change.clone()).await).await.unwrap_or_else(|e| panic!("{change:?} at {status:?} was refused: {e:?}"));
             assert_eq!(opened.attempt, 1, "{change:?}");
             assert_eq!(r.facts().await, before + 1, "{change:?}: one accepted Build");
         }
@@ -328,7 +328,7 @@ async fn a_fabric_delete_before_the_first_ready_for_traffic_interrupts_the_build
             other => panic!("the standalone {workflow} was not refused fabric-not-ready: {other:?}"),
         }
     }
-    let grow = r.cp.submit("test", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await.expect("growth is admitted before the first ready-for-traffic");
+    let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await.expect("growth is admitted before the first ready-for-traffic");
     running(&r, &grow.build_id, 1).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
     let before = r.facts().await;

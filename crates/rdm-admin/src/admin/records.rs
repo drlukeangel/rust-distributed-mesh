@@ -60,7 +60,8 @@ pub struct AdminConfig {
     /// The fabric's shared store root (`RDM_STORE_DIR`, or its launch's): its stores open under
     /// `<store_dir>/<fabric_id>/` (R14, `crate::store_root`).
     pub store_dir: PathBuf,
-    /// The directory the node executables are looked up in.
+    /// `RDM_BIN_DIR`: where `rdm-node-admin` itself is found; never a launch source (every created
+    /// node's executable is the Build's, build-deployment.md §2).
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
     pub spawn_type: Option<String>,
@@ -72,13 +73,13 @@ pub struct AdminConfig {
     pub launch: Option<Launch>,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
-    /// The explicit executable bindings this admin was started with (`RDM_EXECUTABLE_BINDINGS`),
-    /// validated before it opens a provider: the bootstrap admin's are day 0's input, B0's launch set
-    /// (proposal roll.md step 2). Every launch runs the current Build's set, never one held since this
-    /// admin's start; these only while the current Build carries none. `None` is the built-in mode:
-    /// executables come from `bin_dir`. Nothing hands them to a node-admin this admin launches: it
-    /// takes the current set from its entry answer.
-    pub bindings: Option<rdm_core::binding::Validated>,
+    /// `RDM_EXECUTABLE_DIRS` (proposal executable-bindings-at-create.md §2): the directories a
+    /// containerized admin has mounted read-only at their host paths. The bootstrap admin reads it from
+    /// its environment and a launched admin from the one its launcher wrote; this admin writes it into
+    /// every node-admin it launches, and as the fabric-primary of a container fabric refuses at
+    /// acceptance an executable outside them. Each entry absolute and a directory, else the start is
+    /// refused by name.
+    pub executable_dirs: Vec<PathBuf>,
     /// `RDM_STOPPED_NODE_TTL` (node-identity-and-state.md §6.9): a node stopped longer than it is
     /// collected by a node.delete Build the fabric-primary submits on a sweep every ttl. Read by the
     /// fabric-primary only, held by every admin (a successor sweeps with it). `None`: blank, forever.
@@ -136,21 +137,10 @@ impl AdminConfig {
             .map(|b| b.parse().map_err(|e| format!("RDM_NODE_ADMIN_API_BIND `{b}`: {e}")))
             .transpose()?
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
-        let bindings = match get(rdm_core::binding::ENV_EXECUTABLE_BINDINGS).filter(|v| !v.trim().is_empty()) {
-            None => None,
-            Some(file) => {
-                let candidate = get(rdm_core::binding::ENV_EXECUTABLE_CANDIDATE)
-                    .filter(|v| !v.trim().is_empty())
-                    .ok_or_else(|| format!("{} names a binding file but {} (the candidate sha this run is of) is not set", rdm_core::binding::ENV_EXECUTABLE_BINDINGS, rdm_core::binding::ENV_EXECUTABLE_CANDIDATE))?;
-                let set = rdm_core::binding::BindingSet::load(Path::new(&file)).map_err(|e| e.to_string())?;
-                let expect = rdm_core::binding::Expect { candidate_sha: &candidate, required: &[], provider_image: rdm_core::binding::ProviderImage::Unchecked };
-                // The bootstrap admin hashes every bound file before any provider opens; an admin
-                // another admin launched checks all but the hashes (its launch re-hashed its own
-                // executable; each later launch re-hashes the one it runs).
-                let validated = if launch.is_some() { set.validate_launched(&expect) } else { set.validate(&expect) };
-                Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
-            }
-        };
+        let executable_dirs = rdm_core::launch::decode_executable_dirs(&get(rdm_core::launch::ENV_EXECUTABLE_DIRS).unwrap_or_default())?;
+        if let Some(d) = executable_dirs.iter().find(|d| !d.is_dir()) {
+            return Err(format!("refusing to start: {} names {}, which is not a directory here", rdm_core::launch::ENV_EXECUTABLE_DIRS, d.display()));
+        }
         let passthrough = PASSTHROUGH
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
@@ -206,7 +196,7 @@ impl AdminConfig {
             api_bind,
             launch,
             passthrough,
-            bindings,
+            executable_dirs,
         })
     }
 }

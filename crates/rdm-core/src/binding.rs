@@ -1,16 +1,13 @@
-//! Explicit executable bindings: the launch seam an external consumer uses to say which
-//! executable each launch template runs.
+//! Executable bindings: an executable path, its sha256 and, under the container provider, the image
+//! (build-deployment.md). A [`Binding`] is what a node's path config names, what a create launches and
+//! what the node's row records.
 //!
-//! A binding set is a file (`RDM_EXECUTABLE_BINDINGS` names it) mapping every declared launch id
-//! (a [`crate::NodeKind`] label; the label carries no behaviour here) to one executable path, its
-//! expected sha256, and optionally the container image it must run in. The set names the candidate
-//! (the exact source and build) its executables were built from.
-//!
-//! In this mode node-admin launches ONLY what is bound: a launch id with no binding is refused by
-//! name and nothing falls back to a built-in binary. [`BindingSet::validate`] refuses every defect
-//! by name and is the one check both the harness (before it starts anything) and node-admin
-//! (before it opens a provider) run. A launch re-runs [`Validated::resolve`], which re-hashes the
-//! file, so a file replaced after validation is refused at the launch that would have run it.
+//! A [`BindingSet`] is a consumer's executables by launch id (a [`crate::NodeKind`] label; the label
+//! carries no behaviour here), built from one candidate: the input a harness or a product's door
+//! expands into per-path entries before the typed call. RDM keeps no set: every created path names its
+//! own binding. [`BindingSet::validate`] refuses every defect of a set by name, before anything
+//! starts. A launch re-hashes the one binding it runs ([`Binding::verify`]), so a file replaced after
+//! validation is refused at the launch that would have run it.
 
 use crate::NodeKind;
 use serde::{Deserialize, Serialize};
@@ -18,11 +15,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-
-/// The environment variable naming the binding file.
-pub const ENV_EXECUTABLE_BINDINGS: &str = "RDM_EXECUTABLE_BINDINGS";
-/// The environment variable carrying the candidate sha the runner expects the set to be built from.
-pub const ENV_EXECUTABLE_CANDIDATE: &str = "RDM_EXECUTABLE_CANDIDATE";
 
 /// The exact source and build the bound executables were built from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,8 +201,7 @@ pub enum BindingError {
         /// The image the provider runs every node in.
         provider: String,
     },
-    /// The launch id has no explicit binding; an explicit binding set never falls back to a
-    /// built-in executable.
+    /// The set binds no executable for the launch id; nothing falls back to another executable.
     Unbound {
         /// The launch id concerned.
         launch_id: String,
@@ -261,7 +252,7 @@ impl fmt::Display for BindingError {
             Self::ImageMismatch { launch_id, bound, provider } => write!(f, "launch id `{launch_id}`: bound to image {bound}, the provider runs every node in {provider}"),
             Self::ImageUnderProcessProvider { launch_id, bound } => write!(f, "launch id `{launch_id}`: bound to image {bound}, but the provider runs host processes"),
             Self::NoImageBound { launch_id, provider } => write!(f, "launch id `{launch_id}`: the provider runs nodes in image {provider} and the binding names no image"),
-            Self::Unbound { launch_id } => write!(f, "launch id `{launch_id}` has no explicit binding; an explicit binding set never falls back to a built-in executable"),
+            Self::Unbound { launch_id } => write!(f, "launch id `{launch_id}` has no binding in the set; nothing falls back to another executable"),
         }
     }
 }
@@ -305,19 +296,6 @@ impl BindingSet {
     /// Every defect refused by name, before any provider action: map shape, files, hashes,
     /// candidate, image.
     pub fn validate(&self, expect: &Expect) -> Result<Validated, BindingError> {
-        self.validate_with(expect, true)
-    }
-
-    /// The same refusals except the file hashes: what a node-admin another admin launched checks
-    /// at its start. Its own executable was re-hashed by the launch that started it, and every
-    /// executable it launches is re-hashed at that launch (`Validated::resolve`), so hashing every
-    /// bound file again at its start (hundreds of MB each in a debug build) proves nothing more
-    /// and only delays its join.
-    pub fn validate_launched(&self, expect: &Expect) -> Result<Validated, BindingError> {
-        self.validate_with(expect, false)
-    }
-
-    fn validate_with(&self, expect: &Expect, hash: bool) -> Result<Validated, BindingError> {
         let known: BTreeSet<&str> = NodeKind::ALL.iter().map(|k| k.name()).collect();
         let mut declared = BTreeSet::new();
         for id in &self.launch_ids {
@@ -356,7 +334,7 @@ impl BindingSet {
         let mut hashes = BTreeMap::new();
         for b in &self.bindings {
             Self::check_image(b, expect.provider_image)?;
-            hashes.insert(b.launch_id.clone(), if hash { Self::check_file(b)? } else { Self::check_present(b)? });
+            hashes.insert(b.launch_id.clone(), Self::check_file(b)?);
         }
         Ok(Validated { set: self.clone(), hashes })
     }
@@ -371,20 +349,6 @@ impl BindingSet {
             (Some(bound), ProviderImage::Container(p)) if bound != p => Err(BindingError::ImageMismatch { launch_id: id(), bound: bound.clone(), provider: p.to_string() }),
             (Some(_), ProviderImage::Container(_)) => Ok(()),
         }
-    }
-
-    /// The file is there and executable and its declared hash is well formed; the declared hash
-    /// is what is recorded (the launch that runs it re-hashes it).
-    fn check_present(b: &Binding) -> Result<String, BindingError> {
-        let id = &b.launch_id;
-        let absent = |e: std::io::Error| BindingError::ExecutableAbsent { launch_id: id.clone(), path: b.executable.clone(), reason: e.to_string() };
-        if b.sha256.len() != 64 || !b.sha256.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
-            return Err(BindingError::BadHash { launch_id: id.clone(), value: b.sha256.clone() });
-        }
-        if !is_executable(&b.executable).map_err(absent)? {
-            return Err(BindingError::NotExecutable { launch_id: id.clone(), path: b.executable.clone() });
-        }
-        Ok(b.sha256.clone())
     }
 
     fn check_file(b: &Binding) -> Result<String, BindingError> {
@@ -552,29 +516,6 @@ mod tests {
         s.bindings[1].image = Some("img:1".into());
         assert!(matches!(s.validate(&Expect { provider_image: ProviderImage::Container("img:1"), ..expect() }), Err(BindingError::ImageMismatch { .. })));
         assert!(matches!(s.validate(&expect()), Err(BindingError::ImageUnderProcessProvider { .. })));
-    }
-
-    /// CONTRACT: a launched admin's start checks everything but the hashes: every non-hash defect is
-    /// still refused by name, a file whose bytes no longer match passes the start, and the launch
-    /// that would run it refuses it (the hash is checked where the file is run).
-    #[test]
-    fn a_launched_admins_start_checks_all_but_the_hashes_and_the_launch_rehashes() {
-        let d = Dir::new("launched");
-        let good = || set(vec![d.exe("node_admin", "a"), d.exe("broker", "b")]);
-        let mut s = good();
-        s.bindings[1].executable = d.0.join("nope");
-        assert!(matches!(s.validate_launched(&expect()), Err(BindingError::ExecutableAbsent { .. })));
-        let mut s = good();
-        s.bindings[1].sha256 = "xyz".into();
-        assert!(matches!(s.validate_launched(&expect()), Err(BindingError::BadHash { .. })));
-        let mut s = good();
-        s.candidate.sha = "deadbeef".into();
-        assert!(matches!(s.validate_launched(&expect()), Err(BindingError::CandidateMismatch { .. })));
-        let s = good();
-        std::fs::write(&s.bindings[1].executable, "tampered").unwrap();
-        assert!(matches!(s.validate(&expect()), Err(BindingError::HashMismatch { .. })));
-        let v = s.validate_launched(&expect()).unwrap();
-        assert!(matches!(v.resolve(NodeKind::Broker), Err(BindingError::HashMismatch { .. })));
     }
 
     /// CONTRACT: an executable replaced after validation is refused at the launch that would have run it.

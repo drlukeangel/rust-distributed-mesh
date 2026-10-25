@@ -152,7 +152,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-admin-not-node-recovered"), "the node recovery of a mesh's last node-admin is refused by name: {refused:?}");
 
     // Another Build's attempt runs in mesh1 (claimed by the fabric-primary): the recovery waits for it.
-    let other = cp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change is accepted");
+    let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("a topology change is accepted");
     builds.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh1.admin.1".into()), mesh: None, build_id: other.build_id.clone(), attempt: other.attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
     let later = cp.open_recovery("build.create", path.clone(), NodeId::mint(), IncarnationId::mint()).await;
     assert!(matches!(&later, Err(Refusal::BuildInProgress(held)) if held.current_build_id == other.build_id && held.mesh.as_deref() == Some("mesh1")), "{later:?}");
@@ -440,7 +440,7 @@ async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_r
     let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
 
     // node.create in mesh1: a topology Build, its first attempt claimed for mesh1's admin.
-    let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted");
+    let create = fp.submit("build.create", crate::named_request(&fp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("the node.create is accepted");
     builds.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh1.admin.1".into()), mesh: None, build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
 
     // mesh2's mesh-primary opens its member's recovery at its own door.
@@ -483,7 +483,7 @@ async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() 
     let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
 
     // The fabric-primary's topology operation holds mesh2.
-    let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted");
+    let create = fp.submit("build.create", crate::named_request(&fp, TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await).await.expect("the node.create is accepted");
     builds.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh1.admin.1".into()), mesh: None, build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh2.admin.1".into() }).await.unwrap();
     let refused = match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
@@ -497,7 +497,7 @@ async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() 
         Ok(Recovery::Opened(o)) => o,
         other => panic!("the recovery opens once mesh2 is free: {other:?}"),
     };
-    let second = match fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await {
+    let second = match fp.submit("build.create", crate::named_request(&fp, TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("a node.create in mesh2 is refused build-in-progress while the recovery holds mesh2: {other:?}"),
     };
@@ -621,10 +621,10 @@ async fn a_topology_change_accepted_while_a_recovery_runs_is_the_current_build_a
         n.incarnation_id = Some(IncarnationId::mint());
         n.status = NodeStatus::ReadyForTraffic;
     });
-    let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change that touches no held mesh is admitted while a recovery runs in another mesh");
+    let create = fp.submit("build.create", crate::named_request(&fp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("a topology change that touches no held mesh is admitted while a recovery runs in another mesh");
     assert_ne!(create.build_id, b0, "a new topology Build");
     assert_eq!(builds.current().await.unwrap().map(|b| b.build_id), Some(create.build_id.clone()), "the newest Build in progress is the current one");
-    match fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await {
+    match fp.submit("build.create", crate::named_request(&fp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, create.build_id, "refused naming the topology Build in progress: {held:?}"),
         other => panic!("a second topology change waits for the one in progress: {other:?}"),
     }

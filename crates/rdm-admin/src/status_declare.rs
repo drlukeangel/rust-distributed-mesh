@@ -1114,7 +1114,7 @@ mod tests {
         );
     }
 
-    /// CONTRACT (states.md "A resize or roll puts the fabric back to pending"): once the fabric has first
+    /// CONTRACT (states.md "A resize or an executable replacement puts the fabric back to pending"): once the fabric has first
     /// reached ready-for-traffic, the fabric-primary owes the ready-for-traffic event to every mesh primary
     /// the view names, whatever status the fabric holds now: a mesh a resize adds while the fabric is back at
     /// pending is told too. Before the fabric first reached ready-for-traffic, nothing is owed.
@@ -1142,7 +1142,7 @@ mod tests {
     }
 
     /// CONTRACT (states.md "The initial fabric before ready-for-traffic": the ready-for-traffic event's row
-    /// among the mesh's status rows is the durable fact; "A resize or roll puts the fabric back to
+    /// among the mesh's status rows is the durable fact; "A resize or an executable replacement puts the fabric back to
     /// pending"): a fabric-primary whose latch was never set and whose view holds the fabric at pending
     /// (an outside successor of the fabric seat that has not heard ready) reads its mesh's status rows on
     /// the store root before it derives what it owes. Over rows with no ready-for-traffic row of its fabric

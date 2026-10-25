@@ -194,7 +194,7 @@ async fn secondary_rpc(e: &Estate, mesh: &str) -> String {
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect(), bindings: None };
+    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
     let mut nodes = Vec::new();
     let book = DigestBook::default();
     for m in topology.meshes.values() {
@@ -1088,7 +1088,8 @@ async fn a_topology_build_claims_nothing_in_a_mesh_its_recovery_holds_and_runs_o
     e.unheard(&[path]).await;
     let mp = e.mesh_primary_of(path).await;
     let fp = e.fabric_primary().await;
-    let create = e.door_at(&fp).await.submit("build.create", rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted: no attempt holds a mesh yet");
+    let door = e.door_at(&fp).await;
+    let create = door.submit("build.create", crate::named_request(&door, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await).await.expect("the node.create is accepted: no attempt holds a mesh yet");
     let Ok(rdm_admin::control_plane::Recovery::Opened(recovery)) = e.submit_recovery(path).await else { panic!("mesh1's primary opens its member's recovery: the node.create's attempt is not claimed") };
     assert_eq!((recovery.build_id.clone(), recovery.mesh.as_deref()), (create.build_id.clone(), Some("mesh1")), "the recovery is an attempt of the current Build, in mesh1's lane");
     match e.drive_once().await {
@@ -1319,7 +1320,7 @@ mod one_attempt_number {
         let cp = door(&e, g.clone()).await;
         let submit = tokio::spawn({
             let cp = cp.clone();
-            async move { cp.submit("POST /api/topology", rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await }.instrument(root.clone())
+            async move { cp.submit("POST /api/topology", crate::named_request(&cp, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await }.instrument(root.clone())
         });
         g.arrived.notified().await;
         // The drift pass of the same fabric-primary: the admission its door holds.

@@ -9,7 +9,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
-use rdm_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
+use rdm_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_claim::{AttemptContexts, ClaimDoor};
 use rdm_admin::build_drive::{DepartureProof, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
@@ -358,12 +358,13 @@ impl OperationRunner for RigRunner {
 struct Served {
     router: Router,
     carrier: BuildCarrier,
+    door: Arc<BuildDoor>,
 }
 
 async fn serve(door: Arc<BuildDoor>) -> Served {
     let (node_id, incarnation, key) = (NodeId::mint(), IncarnationId::mint(), SecretKey::generate());
     let slot: BuildSlot = Arc::new(OnceLock::new());
-    let _ = slot.set(door);
+    let _ = slot.set(door.clone());
     let server = rdm_admin::build_op::serve(ServerBuilder::new(), slot)
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
@@ -374,7 +375,17 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     resolver.insert(ResolvedNode { node_id, name: "mesh1.admin.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
-    Served { router, carrier: BuildCarrier::new(client, "mesh1.admin.1".parse().unwrap()) }
+    Served { router, carrier: BuildCarrier::new(client, "mesh1.admin.1".parse().unwrap()), door }
+}
+
+/// `node.create` of mesh1's next rpc node, named on its executable (proposal
+/// executable-bindings-at-create.md rule 1: the complete-topology request, the count expanded at the
+/// door), over `nodes`, built from what `served`'s door reads.
+async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {
+    let rdm_admin::accepted::TopologyChange::Reconcile { based_on, nodes: entries } = crate::named_request(&served.door.control, rdm_admin::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await else {
+        unreachable!("a create is named as the complete topology")
+    };
+    nodes.create_named(based_on, entries).await
 }
 
 /// The node objects over `carrier`; no cell of this file reads a view.
@@ -396,8 +407,7 @@ struct Rig {
 impl Rig {
     fn new() -> Rig {
         let data_root = std::env::temp_dir().join(format!("node-objects-{}", NodeId::mint()));
-        let template = LaunchTemplate { reads: Vec::new(),
-            fabric: "fabric1".into(),
+        let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-objects".into(),
             seeds: vec![],
@@ -520,7 +530,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
         let rig = Arc::new(Rig::new());
         let served = serve(door(&rig, Duration::from_millis(300)).await).await;
         let nodes = nodes_over(&served.carrier);
-        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(15)).await;
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
@@ -591,7 +601,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         *rig.membership.not_ready.lock().unwrap() = Some(why.to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
-        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
@@ -634,7 +644,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
         *rig.membership.pending.lock().unwrap() = Some("mesh1.rpc.3 reports Pending".to_string());
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
-        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
@@ -665,7 +675,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let door = door(&rig, Duration::from_secs(60)).await;
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
-        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         let mut frames = Vec::new();
@@ -751,7 +761,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         let fp = Arc::new(MemoryBuildStateAdapter::new());
         let served = serve(door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
-        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
@@ -789,7 +799,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let door = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
-        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
@@ -1006,7 +1016,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let fp = Arc::new(MemoryBuildStateAdapter::new());
         let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
-        let mut stream = nodes_over(&served.carrier).create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
         let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({

@@ -127,6 +127,8 @@ submitted change
 
 The accepted topology names the exact path.names that should exist, grouped by mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
 
+Each path's config carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path.name` and its config, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
+
 ~~~text
 B.topology:
   mesh1:
@@ -236,7 +238,7 @@ While a Build is in progress, `builds.storage` carries enough information for an
 
 ```text
 build_id (the current Build)
-complete explicit topology map
+complete explicit topology map, each path's config and executable
 submitted change history (optional; never the plan)
 current executor/attempt evidence
 completed step receipts and outputs
@@ -561,6 +563,19 @@ executes under the fabric-primary's claim; the fabric-primary never commands mes
 publishes its events. A delete of mesh2's mesh-primary: it first runs
 [node.primary.update](lifecycles/node-primary-update.md), commanded by the fabric-primary; its successor,
 now mesh2's primary, executes the delete.
+
+### 12.5 Replace a node's executable
+
+~~~text
+fabric-primary accepts Build B22:
+    mesh2.rpc.north: executable A -> executable B
+    B22 is the current Build
+~~~
+
+The topology names the same paths. mesh2.rpc.north's entry names executable B while its row records A,
+so the reconciler replaces it: [node.delete](lifecycles/node-delete.md) then [node.create](lifecycles/node-create.md)
+at the path, a new node.id, under mesh2's primary and the guards of [build-deployment.md §3](build-deployment.md).
+A primary of any type moves first. Nothing else in the fabric changes.
 
 ---
 

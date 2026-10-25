@@ -59,7 +59,8 @@ pub struct ControlPlane {
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// The fabric's climb told of a Build this admin accepted, before the door answers it: a resize or
-    /// roll puts the fabric back to pending inside the acceptance (states.md, Resize and roll), and the
+    /// an executable replacement puts the fabric back to pending inside the acceptance (states.md,
+    /// Resize and executable replacement), and the
     /// view this admin answers from holds it. Set once by the admin that owns the climb.
     pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
     /// Where each attempt this admin brings into being keeps its context, for the claim to return.
@@ -88,6 +89,9 @@ pub struct ControlPlane {
     /// opens them: a complete-topology request is compiled against what each row records of its
     /// executable (proposal executable-bindings-at-create.md rule 5, R4).
     pub node_rows: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
+    /// This admin's `RDM_EXECUTABLE_DIRS` (proposal executable-bindings-at-create.md §2): under the
+    /// container provider, an executable a request names outside them is refused by name at acceptance.
+    pub executable_dirs: Vec<std::path::PathBuf>,
 }
 
 impl ControlPlane {
@@ -118,7 +122,14 @@ impl ControlPlane {
             ready_rows: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             departure: std::sync::OnceLock::new(),
             node_rows: std::sync::OnceLock::new(),
+            executable_dirs: Vec::new(),
         }
+    }
+
+    /// This control plane holding `dirs`, the admin's `RDM_EXECUTABLE_DIRS`.
+    pub fn with_executable_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
+        self.executable_dirs = dirs;
+        self
     }
 
     /// This control plane reading whether the initial fabric first reached ready-for-traffic from
@@ -423,14 +434,9 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            // A roll replaces members and moves primaries: refused `fabric-not-ready` until the initial
-            // fabric first reached ready-for-traffic, as every recipe is (proposal roll.md step 1).
-            if change.is_roll() {
-                self.admit_once_ready(route, "roll".into(), &outer).await?;
-            }
             // node.delete and mesh.delete write caller state: refused `fabric-not-ready` until the initial
             // fabric first reached ready-for-traffic (states.md "The initial fabric before
-            // ready-for-traffic"), before the Build in progress is read, as the roll, a recipe and a node
+            // ready-for-traffic"), before the Build in progress is read, as a recipe and a node
             // workflow are: the Build that changes the initial fabric is in progress until its ready-for-traffic state is set (Q154).
             let standalone_delete = match &change {
                 TopologyChange::RemoveNode { node } => Some(format!("node.delete {node}")),
@@ -468,13 +474,6 @@ impl ControlPlane {
                 }
                 _ => crate::accepted::Recorded::new(),
             };
-            if let TopologyChange::Roll { bindings } = &change {
-                let provider = self.topology.read().await.fabric.provider;
-                if let Some(reject) = roll_set_refusal(bindings, &current.topology, provider).await {
-                    outer.in_scope(|| reject_span(route, &reject));
-                    return Err(Refusal::Reject(reject));
-                }
-            }
             if let Some(candidate) = collect {
                 if let Err(reject) = self.recheck_stopped(candidate).await {
                     outer.in_scope(|| reject_span(route, &reject));
@@ -497,11 +496,18 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             };
-            // Every executable the request creates a node on or replaces one with is hashed now, before
-            // anything is accepted; the launch hashes it again.
+            // Every create names its executable (build-deployment.md §2.1): whatever change compiled it, a
+            // path created with none is refused by name, nothing accepted.
+            if let Some(reject) = created_without_executable(&current.topology, &topology) {
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
+            }
+            // Every executable the request creates a node on or replaces one with is checked now, before
+            // anything is accepted: its place under the container provider, then its hash; the launch
+            // hashes it again.
             if matches!(change, TopologyChange::Reconcile { .. }) {
                 let provider = self.topology.read().await.fabric.provider;
-                if let Some(reject) = named_executable_refusal(&current.topology, &topology, &recorded, provider).await {
+                if let Some(reject) = named_executable_refusal(&current.topology, &topology, &recorded, provider, &self.executable_dirs).await {
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 }
@@ -592,7 +598,7 @@ impl ControlPlane {
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &me.to_string(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id.log(), "build accepted");
-            // A resize or roll puts the fabric back to pending (states.md, Resize and roll): the climb takes
+            // A resize or an executable replacement puts the fabric back to pending (states.md): the climb takes
             // the accepted Build before the door answers it and before the executor is woken.
             if let Some(resize) = self.resize.get() {
                 resize().await;
@@ -1145,7 +1151,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     let target = t.node(node)?;
     // The holder of any other cohort's seat: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
-    // leaves the topology (a removal) or is re-created at the same path.name (node recovery, a roll's
+    // leaves the topology (a removal) or is re-created at the same path.name (node recovery, an executable
     // replacement, the replace recipe's Delete step): R5, node-primary-update.md "No-successor cases".
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.node_type_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
@@ -1180,29 +1186,14 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     Some(BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal })
 }
 
-/// A roll's set refused by name (proposal roll.md step 1), or `None` when it is accepted: validated as
-/// the bootstrap admin validates its own at start (`BindingSet::validate`, every file hashed, on the
-/// blocking pool): every launch id `topology` uses declared and bound, `node_admin` always; every file
-/// present and hashing to its sha; every binding checked against the fabric's `provider` (a process
-/// fabric binds no image, a container fabric binds its one image). The set is held to its own
-/// candidate: a roll names the build it rolls to.
-async fn roll_set_refusal(set: &rdm_core::binding::BindingSet, topology: &crate::accepted::FabricTopology, provider: crate::model::ProviderKind) -> Option<BuildReject> {
-    let required: Vec<&'static str> = topology.meshes.values().flat_map(|m| m.nodes.iter().map(|p| p.kind.name())).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    let set = set.clone();
-    let image = crate::admin::provider_image(provider);
-    let checked = crate::blocking::blocking_io(move || {
-        let candidate = set.candidate.sha.clone();
-        set.validate(&rdm_core::binding::Expect { candidate_sha: &candidate, required: &required, provider_image: image }).map(|_| ())
-    })
-    .await;
-    checked.err().map(|e| BuildReject::BindingsRefused { defect: e.name().to_string(), detail: e.to_string() })
-}
-
 /// The first executable a complete-topology request names that cannot launch, refused by name before
-/// anything is accepted (proposal executable-bindings-at-create.md §2: a missing file or a wrong sha is
-/// refused by name at acceptance): each binding of a path `next` creates, or replaces because its row
-/// records another, checked as its launch checks it (launch id, image, hash), each file hashed once.
-async fn named_executable_refusal(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, recorded: &crate::accepted::Recorded, provider: crate::model::ProviderKind) -> Option<BuildReject> {
+/// anything is accepted (proposal executable-bindings-at-create.md §2: "the fabric-primary refuses a
+/// missing file or a wrong sha by name at acceptance"; "an executable outside them is refused by name
+/// at acceptance"): each binding of a path `next` creates, or replaces because its row records another,
+/// first held, under the container provider, to `executable_dirs` (a containerized admin reads only
+/// what is mounted, so its place is checked before its file is read), then checked as its launch
+/// checks it (launch id, image, hash), each file hashed once.
+async fn named_executable_refusal(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, recorded: &crate::accepted::Recorded, provider: crate::model::ProviderKind, executable_dirs: &[std::path::PathBuf]) -> Option<BuildReject> {
     let mut checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)> = std::collections::BTreeSet::new();
     for (path, config) in next.meshes.values().flat_map(|m| m.path_config_by_path.iter()) {
         let Some(binding) = config.executable.as_ref() else { continue };
@@ -1211,11 +1202,27 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
         if !(created || replaced) || !checked.insert((binding.executable.clone(), binding.sha256.clone(), path.kind.name().to_string())) {
             continue;
         }
+        if provider == crate::model::ProviderKind::Container && !executable_dirs.iter().any(|d| binding.executable.starts_with(d)) {
+            let named = executable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(",");
+            let detail = format!("{} is outside every directory {} names ({named:?}): a containerized admin mounts only those, so no launch could read it", binding.executable.display(), rdm_core::launch::ENV_EXECUTABLE_DIRS);
+            return Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+        }
         if let Err(detail) = crate::admin::runner::verify_binding(binding, path.kind, provider, "request").await {
             return Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
         }
     }
     None
+}
+
+/// The first path `next` creates that names no executable (proposal executable-bindings-at-create.md
+/// rule 1: "a created path whose config names no executable is refused by name at acceptance, nothing
+/// runs"), whatever change compiled it: a count form creates paths with none.
+fn created_without_executable(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology) -> Option<BuildReject> {
+    next.meshes
+        .values()
+        .flat_map(|m| m.path_config_by_path.iter())
+        .find(|(path, config)| !current.contains(path) && config.executable.is_none())
+        .map(|(path, _)| BuildReject::ExecutableMissing { node: path.to_string() })
 }
 
 /// Why a fresh `node.restart` of the birth `n` at `path`, which is not live, is refused `node-not-live`
@@ -1297,7 +1304,7 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "empty-recipe",
         "recipe-step-repeated",
         "recipe-node-unknown",
-        "bindings-refused"
+        "unknown-change"
     );
 }
 
@@ -1626,48 +1633,6 @@ mod tests {
         }
     }
 
-    /// CONTRACT (proposal roll.md step 1: "The fabric-primary validates it as the bootstrap admin
-    /// validates its own at start (`BindingSet::validate`): every launch id the accepted topology uses
-    /// declared and bound, `node_admin` always; every file present and hashing to its sha; every binding
-    /// checked against the fabric's provider ... Any defect is refused by name and nothing is
-    /// accepted"): a set whose files hash to their shas and bind every kind the topology uses is
-    /// accepted under the process provider; a sha that does not match, a launch id the topology uses
-    /// with no binding, and, under the container provider, a binding without the image are each refused
-    /// `bindings-refused` naming the defect and the launch id. Must NOT happen: a roll accepted onto a
-    /// file whose bytes are not the bound ones, or onto a set that cannot launch a member.
-    #[tokio::test]
-    async fn a_rolls_set_is_validated_at_acceptance_and_each_defect_is_refused_by_name() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("roll-set-{}-{}", std::process::id(), rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let bind = |id: &str| {
-            let p = dir.join(id);
-            std::fs::write(&p, format!("#!/bin/sh\n# {id}\n")).unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-            rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
-        };
-        let good = rdm_core::binding::BindingSet { candidate: rdm_core::binding::Candidate { sha: "next".into(), build: "b2".into() }, launch_ids: vec!["node_admin".into(), "rpc_node".into()], bindings: vec![bind("node_admin"), bind("rpc_node")] };
-        let topology = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)])))].into(), bindings: None };
-        assert_eq!(roll_set_refusal(&good, &topology, ProviderKind::Process).await, None, "a complete, hash-true set is accepted");
-        let refused = |r: Option<BuildReject>| match r {
-            Some(BuildReject::BindingsRefused { defect, detail }) => (defect, detail),
-            other => panic!("refused bindings-refused: {other:?}"),
-        };
-        let mut mismatched = good.clone();
-        mismatched.bindings[1].sha256 = "0".repeat(64);
-        let (defect, detail) = refused(roll_set_refusal(&mismatched, &topology, ProviderKind::Process).await);
-        assert_eq!(defect, "hash-mismatch");
-        assert!(detail.contains("rpc_node"), "{detail}");
-        let unbound = rdm_core::binding::BindingSet { launch_ids: vec!["node_admin".into()], bindings: vec![good.bindings[0].clone()], ..good.clone() };
-        let (defect, detail) = refused(roll_set_refusal(&unbound, &topology, ProviderKind::Process).await);
-        assert_eq!((defect.as_str(), detail.contains("rpc_node")), ("not-required-by-the-set", true), "{detail}");
-        let (defect, _) = refused(roll_set_refusal(&good, &topology, ProviderKind::Container).await);
-        assert_eq!(defect, "no-image-bound", "a container fabric's set binds its one image");
-        let reject = BuildReject::BindingsRefused { defect: "hash-mismatch".into(), detail: "x".into() };
-        assert_eq!(reject.reason(), "bindings-refused");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// CONTRACT (proposal executable-bindings-at-create.md §2: "the fabric-primary refuses a missing file or a
     /// wrong sha by name at acceptance"; rule 4, the launch hashes again): every executable a complete-topology
     /// request creates a node on, or replaces a node's with, is checked as its launch checks it, before
@@ -1686,7 +1651,7 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
         };
-        let current = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into(), bindings: None };
+        let current = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let with = |path: &str, b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = path.parse().unwrap();
@@ -1699,7 +1664,7 @@ mod tests {
         };
         let rows = crate::accepted::Recorded::new();
         let good = bind("rpc_node");
-        assert_eq!(named_executable_refusal(&current, &with("mesh1.rpc.2", good.clone()), &rows, ProviderKind::Process).await, None, "a hash-true file of the path's kind");
+        assert_eq!(named_executable_refusal(&current, &with("mesh1.rpc.2", good.clone()), &rows, ProviderKind::Process, &[]).await, None, "a hash-true file of the path's kind");
         let refused = |r: Option<BuildReject>| match r {
             Some(BuildReject::ExecutableRefused { node, detail }) => (node, detail),
             other => panic!("refused executable-refused: {other:?}"),
@@ -1708,14 +1673,88 @@ mod tests {
         let wrong = rdm_core::binding::Binding { sha256: "0".repeat(64), ..good.clone() };
         let admin = bind("node_admin");
         for (b, what) in [(missing, "a missing file"), (wrong, "a sha its bytes do not hash to"), (admin.clone(), "a binding of another kind")] {
-            let (node, detail) = refused(named_executable_refusal(&current, &with("mesh1.rpc.2", b), &rows, ProviderKind::Process).await);
+            let (node, detail) = refused(named_executable_refusal(&current, &with("mesh1.rpc.2", b), &rows, ProviderKind::Process, &[]).await);
             assert_eq!(node, "mesh1.rpc.2", "{what}: {detail}");
         }
         // A held path whose row already records the executable is not hashed again: its file may be gone.
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
         let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
-        assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process).await, None);
+        assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process, &[]).await, None);
         assert_eq!(BuildReject::ExecutableRefused { node: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (proposal executable-bindings-at-create.md §2: "A containerized admin's executable
+    /// directories become its launch configuration, `RDM_EXECUTABLE_DIRS` ...; an executable outside them
+    /// is refused by name at acceptance"; build-deployment.md §2.5: "before anything destructive"): under
+    /// the container provider an executable a request creates a node on is refused `executable-refused`,
+    /// naming the path and `RDM_EXECUTABLE_DIRS`, when it lies outside every configured directory, before
+    /// its file is read (a containerized fabric-primary cannot read outside its mounts, so a hash first
+    /// would misreport it missing); with none configured, every executable is outside. One inside a
+    /// configured directory is accepted. Under the process provider the directories are not consulted.
+    /// Must NOT happen: a container fabric accepting a Build whose launch could not read its executable.
+    #[tokio::test]
+    async fn an_executable_outside_the_executable_dirs_is_refused_by_name_under_the_container_provider() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("executable-dirs-{}-{}", std::process::id(), rand::random::<u32>()));
+        let (inside, outside) = (root.join("inside"), root.join("outside"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let bind = |dir: &std::path::Path, image: Option<&str>| {
+            let p = dir.join("rpc_node");
+            std::fs::write(&p, "#!/bin/sh\n# rpc_node\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            rdm_core::binding::Binding { launch_id: "rpc_node".into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: image.map(str::to_string) }
+        };
+        let image = Some(crate::deployment::container::RUNTIME_IMAGE);
+        let current = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
+        let with = |b: rdm_core::binding::Binding| {
+            let mut next = current.clone();
+            let p: PathName = "mesh1.rpc.1".parse().unwrap();
+            let m = next.meshes.get_mut("mesh1").unwrap();
+            m.nodes.insert(p.clone());
+            m.path_config_by_path.insert(p, rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default() });
+            next
+        };
+        let rows = crate::accepted::Recorded::new();
+        let dirs = vec![inside.clone()];
+        assert_eq!(named_executable_refusal(&current, &with(bind(&inside, image)), &rows, ProviderKind::Container, &dirs).await, None, "inside a configured directory");
+        let out = bind(&outside, image);
+        for (configured, what) in [(dirs.clone(), "outside every configured directory"), (Vec::new(), "none configured")] {
+            match named_executable_refusal(&current, &with(out.clone()), &rows, ProviderKind::Container, &configured).await {
+                Some(BuildReject::ExecutableRefused { node, detail }) => {
+                    assert_eq!(node, "mesh1.rpc.1", "{what}: {detail}");
+                    assert!(detail.contains("RDM_EXECUTABLE_DIRS") && detail.contains(&out.executable.display().to_string()), "{what}: {detail}");
+                }
+                other => panic!("{what}: refused executable-refused: {other:?}"),
+            }
+        }
+        // Outside, and absent: refused for its place, never misreported as missing.
+        let absent = rdm_core::binding::Binding { executable: root.join("elsewhere").join("rpc_node"), ..out.clone() };
+        match named_executable_refusal(&current, &with(absent), &rows, ProviderKind::Container, &dirs).await {
+            Some(BuildReject::ExecutableRefused { detail, .. }) => assert!(detail.contains("RDM_EXECUTABLE_DIRS"), "{detail}"),
+            other => panic!("refused executable-refused naming RDM_EXECUTABLE_DIRS: {other:?}"),
+        }
+        assert_eq!(named_executable_refusal(&current, &with(bind(&outside, None)), &rows, ProviderKind::Process, &dirs).await, None, "the process provider reads the host");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "a created path whose config names no
+    /// executable is refused by name at acceptance, nothing runs"; §2: "every create now names its
+    /// executable"): whatever change compiled the next topology, a path it creates whose entry names no
+    /// executable is refused `executable-missing` naming the path: a count form (`AddNode`) creates one.
+    /// A held path naming none (a Build written before the field) and a created path naming one pass.
+    /// Must NOT happen: a create accepted with nothing naming what it runs.
+    #[test]
+    fn a_path_created_naming_no_executable_is_refused_by_name_whatever_the_change() {
+        let current = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
+        let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &observed).unwrap();
+        assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: "mesh1.rpc.2".into() }));
+        assert_eq!(created_without_executable(&current, &current), None, "held paths naming none are history");
+        let mut named = grown.clone();
+        named.meshes.get_mut("mesh1").unwrap().path_config_by_path.get_mut(&"mesh1.rpc.2".parse().unwrap()).unwrap().executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/x/rpc".into(), sha256: "0".repeat(64), image: None });
+        assert_eq!(created_without_executable(&current, &named), None);
+        assert_eq!(BuildReject::ExecutableMissing { node: "x".into() }.reason(), "executable-missing");
     }
 }

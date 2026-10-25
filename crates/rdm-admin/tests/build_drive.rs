@@ -51,6 +51,23 @@ struct Switch {
     peer: Mutex<std::collections::HashMap<String, rdm_admin::investigate::PeerMesh>>,
     /// The meshes whose Mesh record is Dead, when the cell sets them.
     dead: Mutex<std::collections::HashSet<MeshId>>,
+    /// The view the fixture's nodes live in: its rows ([`rows_of`]).
+    view: Option<Arc<RwLock<Topology>>>,
+}
+
+/// What the node rows of a fixture whose nodes run what their entries name record: each live node of
+/// `view` at a path whose entry in `topology` names an executable, on that executable (the create's
+/// claim records it, build-deployment.md §2.3). A fixture lands its nodes in the view alone.
+async fn rows_of(topology: &rdm_admin::accepted::FabricTopology, view: &RwLock<Topology>) -> rdm_admin::accepted::Recorded {
+    let v = view.read().await;
+    v.nodes
+        .iter()
+        .filter(|n| n.status.is_live())
+        .filter_map(|n| {
+            let entry = rdm_admin::accepted::target_executable(topology, &n.name)?;
+            Some((n.name.clone(), rdm_admin::accepted::RecordedRow { node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
+        })
+        .collect()
 }
 
 impl Switch {
@@ -79,6 +96,12 @@ impl Gate for Switch {
     }
     async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<MeshId>, String> {
         Ok(self.dead.lock().unwrap().clone())
+    }
+    async fn recorded_executables(&self, topology: &rdm_admin::accepted::FabricTopology) -> Result<rdm_admin::accepted::Recorded, String> {
+        Ok(match &self.view {
+            Some(view) => rows_of(topology, view).await,
+            None => Default::default(),
+        })
     }
 }
 
@@ -119,11 +142,12 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let fp_id = t.node(&"mesh1.admin.1".parse().unwrap()).expect("the fabric-primary is in the view").node_id.clone();
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
     cp.topology = topology.clone();
+    let change = crate::named_request(&cp, change).await;
     let opened = cp.submit("test", change).await.unwrap();
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
+    let switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: Some(topology.clone()) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
@@ -1686,7 +1710,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
         topology: e.topology.clone(),
@@ -1878,7 +1902,7 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
     assert_eq!((p.attempt, handed), (1, vec![rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }]), "the holder's attempt ended handed off to the successor before the successor's drive begins");
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let successor = Arc::new(DriveEnv {
@@ -1985,7 +2009,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     let op = "node.delete:mesh1.admin.1";
     let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
     let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
@@ -2188,6 +2212,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let change = TopologyChange::ReconcileMesh {
             desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 2)]),
         };
+        let change = crate::named_request(&cp, change).await;
         let opened = cp.submit("test", change).await.expect("the renamed fabric-primary admits the Build");
 
         let nodes_storage = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
@@ -2233,6 +2258,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             record_holder: Mutex::new(None),
             peer: Mutex::new(Default::default()),
             dead: Mutex::new(Default::default()),
+            view: None,
         });
         let env = Arc::new(DriveEnv {
             me: boot.clone(),
@@ -2365,6 +2391,8 @@ async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view
 #[derive(Default)]
 struct FabricChange {
     ready: AtomicBool,
+    /// The view the fixture's nodes live in: its rows ([`rows_of`]).
+    view: Option<Arc<RwLock<Topology>>>,
 }
 
 #[async_trait::async_trait]
@@ -2372,9 +2400,15 @@ impl Gate for FabricChange {
     fn fabric_ready(&self) -> bool {
         self.ready.load(Ordering::SeqCst)
     }
+    async fn recorded_executables(&self, topology: &rdm_admin::accepted::FabricTopology) -> Result<rdm_admin::accepted::Recorded, String> {
+        Ok(match &self.view {
+            Some(view) => rows_of(topology, view).await,
+            None => Default::default(),
+        })
+    }
 }
 
-/// CONTRACT (Q154; states.md "Resize and roll": "Its Build is Complete only when the fabric is
+/// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
 /// ready-for-traffic again from this Build's own change ... while the fabric changes, the Build reports
 /// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
@@ -2392,7 +2426,7 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
         let mut v = r.env.topology.write().await;
         v.nodes.push(node("mesh1.rpc.2", false, false));
     }
-    let gate = Arc::new(FabricChange::default());
+    let gate = Arc::new(FabricChange { view: Some(r.env.topology.clone()), ..Default::default() });
     let e = &r.env;
     let env = Arc::new(DriveEnv {
         me: e.me.clone(),

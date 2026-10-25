@@ -263,8 +263,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
     // The fabric's one store root, handed to every launch (R14).
     let store_dir = data_root.join("store");
     std::fs::create_dir_all(&store_dir).expect("the store root");
-    LaunchTemplate { reads: Vec::new(),
-        fabric: "fabric1".into(),
+    LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: admin.fabric.clone(),
         executable: env!("CARGO_BIN_EXE_rdm-rpc-node").into(),
         seeds: vec![admin.seed.clone()],
@@ -295,7 +294,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one rpc node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into(), bindings: None }
+    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.

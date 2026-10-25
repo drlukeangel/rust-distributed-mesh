@@ -123,14 +123,9 @@ impl Current {
         self.rows.iter().find(|n| n.mesh == mesh && n.kind == kind && n.is_primary && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).map(|n| n.name.ordinal)
     }
 
-    /// The executable a path the request creates runs: the accepted topology's launch set's for its
-    /// kind while the accepted topology carries one (`Change::Roll`'s, landing 3's to remove), else
-    /// `executables`'.
+    /// The executable a path the request creates runs: `executables`' for its kind.
     fn created_executable(&self, kind: NodeKind, executables: &Executables) -> Result<Binding, String> {
-        match self.topology.binding_of(kind) {
-            Some(b) => Ok(b.clone()),
-            None => executables.binding(kind),
-        }
+        executables.binding(kind)
     }
 
     /// Every path the topology holds, with its config: its entry's, the executable its entry names,
@@ -258,7 +253,7 @@ mod tests {
             mesh.nodes.insert(p.clone());
             mesh.path_config_by_path.insert(p, created_config(NodeKind::RpcNode, binding("rpc_node", "r0")));
         }
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), mesh)].into_iter().collect(), bindings: None };
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), mesh)].into_iter().collect() };
         Current { based_on: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row("mesh1.admin.1", true, "a0"), row("mesh1.rpc.3", true, "r0")] }
     }
 

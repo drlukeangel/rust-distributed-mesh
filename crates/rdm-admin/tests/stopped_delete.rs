@@ -113,8 +113,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
     node.provider = Some(ProviderKind::Process);
     node.status = NodeStatus::Leaving;
     node.parked = true;
-    let template = LaunchTemplate { reads: Vec::new(),
-        fabric: "fabric1".into(),
+    let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/stopped-delete".into(),
         seeds: vec![],

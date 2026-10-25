@@ -21,7 +21,8 @@ pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, Workf
 
 /// What the reads answer: the views travel on op `0x1B` and the control API answers the same shapes.
 pub use rdm_core::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
-/// The executable-binding contract an operator hands node-admin (`RDM_EXECUTABLE_BINDINGS`).
+/// Executable bindings: what each created path's config names (build-deployment.md), and a
+/// consumer's per-kind set a caller expands into per-path entries before the typed call.
 pub use rdm_core::binding;
 pub use rdm_core::NodeKind as LaunchKind;
 /// A node's `path.name`, as the typed objects name nodes.

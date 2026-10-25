@@ -404,7 +404,6 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
         .unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let template = LaunchTemplate {
-            reads: Vec::new(),
             fabric: "fabric1".into(),
             fabric_id,
             executable: script,

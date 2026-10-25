@@ -232,6 +232,7 @@ The control domain is one host and pid namespace. The handle is `{ pid, start }`
 The control domain is one Docker daemon. The handle is `{ container id, init pid }`; the immutable id is the identity, the container's init pid a convenience for the netns reads.
 
 - **Network.** Each fabric gets a bridge network `rafka-<fabric>` carved from `RDM_CONTAINER_SUBNET_POOL` (a `/24` another network uses is skipped); node-admin assigns every container's address (`--ip`) so a node's bind address is known before it runs.
+- **Executables.** A containerized node-admin mounts the executable directories its launch named (`RDM_EXECUTABLE_DIRS`), read-only at their host paths; an executable outside them is refused by name at acceptance ([build-deployment.md §2](build-deployment.md)).
 - **Spawn and find.** The launch is recorded in the data dir, the container named deterministically for `find`, and the immutable id learned after `docker run`. `find` reads the daemon's state and the record: running, exited, or never created.
 - **Inspect** maps the daemon's state conservatively: `running`, and also `restarting` and `created` (a container not yet executing or between executions: nonterminal, not suspended, nothing more claimed), are `Running`; `paused` is `OsStopped` (the daemon freezes the container's cgroup: this reports container suspension, not a stopped process inside a running container); `exited` and `dead` are `Exited { code }` with Docker's own code; a daemon that cannot answer is `Unknown`. An unreachable daemon refuses the provider by name at bootstrap.
 - **Signal stop and terminate.** `signal_stop` is the daemon's kill of the exact id with SIGTERM, refused by name on a paused container, so this path cannot thaw it to deliver SIGTERM. `terminate(Graceful { grace })` is the daemon's stop, its grace the stop's timeout. `terminate(Immediate)` is the daemon's kill with SIGKILL, never a stop: a stop delivers SIGTERM and thaws a paused container, which then runs; a paused container killed with SIGKILL ends without running again (measured 2026-10-16 on Docker 29.6.2, trace 1921e2bc0ef83a739e75e4e7a14cb127: a paused container killed with SIGKILL ended in 159 ms with no application progress observed; docker stop -t 0 let it run).
@@ -262,6 +263,8 @@ Complete
 ```
 
 A launch that runs a bound executable re-hashes it before `DeployRuntime` and launches it only when the hash matches its binding; the hash reads the whole file, so it runs on the blocking pool, off the runtime's workers ([Node RPC §21](node-rpc.md#21-iroh-owns-liveness)).
+
+Which executable a node runs, and how it is named, recorded, replaced and read, is [build-deployment.md](build-deployment.md)'s.
 
 The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain`, `PublishRuntimeFactAndCurrentRuntimeMetadata`, then the normal bootstrap.
 

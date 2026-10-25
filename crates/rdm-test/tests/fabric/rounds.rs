@@ -396,7 +396,7 @@ async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Dura
     tokio::time::timeout(within, estate.follow(stream)).await.unwrap_or_else(|_| panic!("{what}: no Complete within {within:?}"))
 }
 
-/// CONTRACT (Q154; states.md "Resize and roll": "Its Build is Complete only when the fabric is
+/// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
 /// ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes,
 /// the Build reports Blocked naming the change, never Complete"; build.md §10: "A Build that put the
 /// fabric back to pending completes when its ready-for-traffic state is set, not with its last step"): a resize whose change the
@@ -449,7 +449,7 @@ async fn a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_ow
     estate.record_trace_url(&s(&ready["trace_id"]));
 }
 
-/// CONTRACT (Q158; states.md "Resize and roll": "a state's check-in or a hook that reports failure fails
+/// CONTRACT (Q158; states.md "Resize and executable replacement": "a state's check-in or a hook that reports failure fails
 /// the Build on that step"; build.md: hooks "report failure through the lifecycle receipt path"): a
 /// resize whose `sync_state` the application answers with its failure by name ends `Failed` on the step
 /// it was Blocked on, `fabric-change`, its operation `state-sync:<fabric_id>`, its reason carrying the
@@ -539,7 +539,7 @@ async fn a_resize_whose_sync_state_reports_failure_fails_on_the_fabric_change_st
 /// current Build.
 ///
 /// The second Build adds a node, a resize, and a resize puts the fabric back to pending (states.md,
-/// Resize and roll): the fabric-primary that accepts it holds the fabric pending before its
+/// Resize and executable replacement): the fabric-primary that accepts it holds the fabric pending before its
 /// build.create door answers, so no `fabric.get` after the answer pairs the second Build with the
 /// ready-for-traffic the first Build's climb reached, and the second Build climbs its own rounds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -133,9 +133,9 @@ impl BuildDoor {
                 Ok(None) => topology(TopologyChange::DeleteFabric).await,
                 Err(r) => Err(r),
             },
-            // A roll is a topology Build: the set becomes the accepted topology's launch set
-            // (proposal roll.md steps 1-2).
-            BuildChange::Roll { bindings } => topology(TopologyChange::Roll { bindings: bindings.clone() }).await,
+            // The reserved position decodes as an unknown variant (`Build::decode_request`); a caller that
+            // builds the value in process is refused by name, nothing accepted.
+            BuildChange::Reserved14 => Err(Refusal::Reject(crate::build::BuildReject::UnknownChange { change: "reserved-14".into() })),
             // The complete topology (proposal executable-bindings-at-create.md rule 1): a topology Build,
             // its `based_on` checked against the current Build at the door.
             BuildChange::Reconcile { based_on, nodes } => topology(TopologyChange::Reconcile { based_on: based_on.clone(), nodes: nodes.clone() }).await,

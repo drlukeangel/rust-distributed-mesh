@@ -145,12 +145,12 @@ async fn two_concurrent_topology_submissions_admit_one_build_and_refuse_the_othe
     let (held, cp) = rig().await;
     let a = {
         let cp = cp.clone();
-        tokio::spawn(async move { cp.submit("test-a", add_rpc()).await })
+        tokio::spawn(async move { cp.submit("test-a", crate::named_request(&cp, add_rpc()).await).await })
     };
     held.entered.notified().await;
     let mut b = Box::pin({
         let cp = cp.clone();
-        async move { cp.submit("test-b", add_rpc()).await }
+        async move { cp.submit("test-b", crate::named_request(&cp, add_rpc()).await).await }
     });
     // One poll of the second while the first is held in its write.
     let early = tokio::select! {
@@ -192,7 +192,7 @@ async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build
     // No acceptance is held inside its write here.
     held.first.store(true, Ordering::SeqCst);
     held.moves_at_accept.store(true, Ordering::SeqCst);
-    let opened = cp.submit("test-moved-at-accept", add_rpc()).await.unwrap_or_else(|r| panic!("the door answers the Build it accepted, not {r:?}"));
+    let opened = cp.submit("test-moved-at-accept", crate::named_request(&cp, add_rpc()).await).await.unwrap_or_else(|r| panic!("the door answers the Build it accepted, not {r:?}"));
     assert!(held.moved.load(Ordering::SeqCst), "the seat moved at the acceptance");
     let active = held.list_active().await.unwrap();
     assert_eq!(active.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![opened.build_id], "the Build the door answered is the one accepted");
@@ -200,7 +200,7 @@ async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build
     let (held, cp) = rig().await;
     held.first.store(true, Ordering::SeqCst);
     held.moved.store(true, Ordering::SeqCst);
-    match cp.submit("test-moved-before", add_rpc()).await {
+    match cp.submit("test-moved-before", crate::named_request(&cp, add_rpc()).await).await {
         Err(Refusal::State(BuildStateError::SeatYielded { to, .. })) => assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the new seat"),
         other => panic!("a seat that moved before the door wrote anything refuses SeatYielded: {other:?}"),
     }

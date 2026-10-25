@@ -1931,7 +1931,7 @@ mod tests {
         assert_eq!(status("mesh2"), ScopeStatus::ReadyForTraffic, "every node of mesh2 is ready");
     }
 
-    /// CONTRACT (states.md, "Resize and roll"): the nodes a mesh is counted over are the accepted
+    /// CONTRACT (states.md, "Resize and executable replacement"): the nodes a mesh is counted over are the accepted
     /// Build's planned births. A planned birth the view has not heard keeps its mesh `pending`, and a
     /// mesh planned and not yet created is not listed. Must NOT happen: a mesh ready because
     /// the births that happen to be heard are ready.
@@ -1944,7 +1944,7 @@ mod tests {
         }
         let desired = |mesh: &str, rpc: u32| crate::build::MeshDesired::of(mesh, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
         let records = Records::default();
-        let mut plan = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new(), bindings: None };
+        let mut plan = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
         plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 1)));
         records.set_planned(&plan);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
@@ -2829,7 +2829,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None, bindings: None },
+                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -3560,7 +3560,7 @@ mod tests {
     fn entry_answer(frames: Vec<rdm_transport::membership::Frame>) -> crate::wire::JoinAnswer {
         crate::wire::JoinAnswer {
             served_by: "mesh1.admin.1".into(),
-            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None, bindings: None },
+            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
             statuses: frames,
         }
     }

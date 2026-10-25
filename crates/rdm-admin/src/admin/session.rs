@@ -839,11 +839,9 @@ impl EntryState {
         // A store that cannot be read is no answer: the join is refused naming it, never answered as
         // an admin that holds no Build or no Fabric.
         let current = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?;
-        // The current Build's launch set rides the answer beside the provider policy (proposal roll.md step 2).
-        let bindings = current.as_ref().and_then(|b| b.topology.bindings.clone());
         let build = current.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
-        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None, bindings };
+        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
         let me_str = me.to_string();
         Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.membership.status_frames(&me_str) })
     }

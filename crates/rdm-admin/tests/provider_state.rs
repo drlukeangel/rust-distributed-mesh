@@ -170,7 +170,7 @@ mod process {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let provider = ProcessDeploymentProvider::new();
-            let spec = ResolvedNodeLaunch { reads: Vec::new(), secrets: Default::default(), withhold: Vec::new(),
+            let spec = ResolvedNodeLaunch { secrets: Default::default(), withhold: Vec::new(),
                 node: "mesh1.rpc.1".parse().unwrap(),
                 deployment_id: DeploymentId::mint(),
                 executable: executable.into(),

@@ -141,8 +141,13 @@ async fn fabric_at_its_primary(estate: &Estate) -> (String, ScopeStatus, Option<
 /// new executable with the tag `zone_a` and completes: the node runs that executable, its row records it
 /// and the tag, and `fabric.nodes.get` returns both. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
 /// accepted and `mesh1.rpc.2` untouched. A re-reads: a request listing no node is refused `no-node-listed`
-/// naming fabric.delete, one creating `mesh1.rpc.3` with no executable `executable-missing`, nothing
-/// accepted; the re-read request itself is accepted and completes, changing nothing.
+/// naming fabric.delete, one creating `mesh1.rpc.3` with no executable `executable-missing`, one creating it
+/// on an executable whose bytes do not hash to the sha it names `executable-refused` (build-deployment.md
+/// §2.4, "a differing hash is refused by name"), and the count form creating a node names none
+/// (`AddNode`): `executable-missing`, nothing accepted; the re-read request itself is accepted and
+/// completes, changing nothing. The bootstrap admin's row records the hash of the executable it runs
+/// (build-deployment.md §2.3: "the bootstrap admin's own included: it hashes the executable it is
+/// running").
 /// Must NOT happen: a stale list removing the node B added, an empty list read as delete everything, or a
 /// created node launched on an executable no request named.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -187,11 +192,21 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let (reason, detail) = rejected("a created path naming no executable", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), "mesh1.rpc.3", None) }).await);
     assert_eq!(reason, "executable-missing", "{detail}");
     assert!(detail.contains("mesh1.rpc.3"), "{detail}");
+    let differing = Binding { sha256: "0".repeat(64), ..next.clone() };
+    let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), "mesh1.rpc.3", Some(&differing)) }).await);
+    assert_eq!(reason, "executable-refused", "{detail}");
+    assert!(detail.contains("mesh1.rpc.3"), "{detail}");
+    let (reason, detail) = rejected("a count form creating a node", carrier.create(Change::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await);
+    assert_eq!(reason, "executable-missing", "a count form names no executable for the path it creates: {detail}");
     assert_eq!(estate.accepted_build_id().await, b, "nothing is accepted");
     assert!(estate.node_value_opt("mesh1.rpc.3").await.is_none(), "nothing runs at mesh1.rpc.3");
 
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: request }).await).await;
     assert_eq!(estate.node_value("mesh1.rpc.2").await["node_id"], json!(created.node_id), "the re-read request changes nothing");
+    // The bootstrap admin is the estate's own process, launched by no pipeline: its row records the binary it starts.
+    let day0 = record_of(&estate, "mesh1", &s(&estate.node_value("mesh1.admin.1").await["node_id"]));
+    let started = rdm_test::estate::binary("rdm-node-admin");
+    assert_eq!(day0["record"]["executable"]["sha256"], json!(sha256_file(&started).unwrap()), "the bootstrap admin's row records the hash of {} it runs: {day0}", started.display());
     estate.shutdown().await;
 }
 
@@ -440,4 +455,308 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     assert!(steps.iter().any(|r| r.operation.starts_with("mesh.delete:") && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED), "mesh1's mesh.deleted");
     assert!(!steps.iter().any(|r| r.operation == format!("mesh.delete:{mesh3_id}")), "mesh3, deleted by the Build before, is not deleted again: {steps:?}");
     estate.shutdown().await;
+}
+
+/// What a node was before a request replaced it: its view and its data dir.
+#[derive(Debug, Clone)]
+struct Member {
+    view: NodeView,
+    data_dir: String,
+}
+
+async fn members(estate: &Estate) -> BTreeMap<String, Member> {
+    let mut out = BTreeMap::new();
+    for (name, view) in fabric_nodes(estate).await {
+        let data_dir = estate.data_dir(&name).await;
+        out.insert(name, Member { view, data_dir });
+    }
+    out
+}
+
+/// The request that names, for every path the read lists, `next` of its kind, and the executables it
+/// names: each kind's current executable copied with one byte appended.
+async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName, PathConfig)>, BTreeMap<NodeKind, Binding>) {
+    let (based_on, mut request) = read_request(estate).await;
+    let mut next: BTreeMap<NodeKind, Binding> = BTreeMap::new();
+    for (p, c) in request.iter_mut() {
+        let current = c.executable.clone().unwrap_or_else(|| panic!("{p}'s row records its executable"));
+        let to = next.entry(p.kind).or_insert_with(|| another_build(estate, &current, "next")).clone();
+        c.executable = Some(to);
+    }
+    (based_on, request, next)
+}
+
+/// `name` at its `path.name` again, ReadyForTraffic as a new node (new node.id and incarnation), running
+/// `next`; a `Persistent` path's successor over its predecessor's data dir with its endpoint key.
+async fn replaced(estate: &Estate, name: &str, was: &Member, next: &Binding) {
+    let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != was.view.node_id).cloned()).await;
+    assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name}: a new birth");
+    assert_eq!(exe_of(estate, name).await, next.executable, "{name} runs the executable its entry names");
+    if matches!(was.view.kind, NodeKind::NodeAdmin | NodeKind::Broker) {
+        assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name}: its endpoint key kept, loaded from its kept data dir");
+        assert_eq!(estate.data_dir(name).await, was.data_dir, "{name}: created over its kept data dir");
+    }
+}
+
+/// A Build's stream followed to its terminal across the fabric-primary's own replacement: a stream that
+/// ends `FabricPrimaryMoved`, or breaks, is resubmitted by its build_id at the fabric-primary a node-admin
+/// of `admins` still answering names (the entry admin may be the replaced one). Every frame, and how
+/// many times the stream ended `FabricPrimaryMoved`.
+async fn follow_across_replacement(estate: &Estate, stream: rdm_client::BuildStream, admins: &[&str]) -> (Vec<BuildFrame>, usize) {
+    let build = stream.build_id().clone();
+    let followed = tokio::time::timeout(SETTLE * 3, rdm_client::follow_with(stream, |id, _from| async move {
+        let deadline = tokio::time::Instant::now() + SETTLE;
+        loop {
+            for admin in admins {
+                // The admin's node.get first: a path the Build re-created holds a birth the estate learns
+                // from a view that lists it, so each pass reaches the admins born since the last.
+                if estate.node_views_at(&Estate::path(admin)).await.is_none() {
+                    continue;
+                }
+                let Some(view) = estate.fabric_view_at(&Estate::path(admin)).await else { continue };
+                let Some(fp) = view.fabric_primary else { continue };
+                if estate.node_views_at(&fp).await.is_none() {
+                    continue;
+                }
+                if let Ok(again) = estate.carrier_at(&fp).await.reattach(&id).await {
+                    return Ok(again);
+                }
+            }
+            assert!(tokio::time::Instant::now() < deadline, "no node-admin of {admins:?} named a fabric-primary that resubmitted Build {id}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }))
+    .await
+    .unwrap_or_else(|_| panic!("Build {build} reached no terminal frame within {:?}", SETTLE * 3))
+    .unwrap_or_else(|e| panic!("Build {build} could not be followed to its terminal: {e}"));
+    match followed.frames.last() {
+        Some(BuildFrame::Complete { .. }) => {}
+        other => panic!("Build {build} ended {other:?}: {:?}", followed.frames),
+    }
+    let moves = followed.frames.iter().filter(|f| matches!(f, BuildFrame::FabricPrimaryMoved { .. })).count();
+    (followed.frames, moves)
+}
+
+/// CONTRACT (build-deployment.md §3: "RDM realizes it as node.delete then node.create at the path, a new
+/// node.id and incarnation, in its order with its guards: a type's non-primary members before its primary,
+/// the primary's move first by node.primary.update, the fabric-primary's move ending the caller's stream
+/// `FabricPrimaryMoved` and the caller resubmitting the same build_id, a type's only node replaced with no
+/// update ... A Build that puts the fabric back to pending completes only after its own ready-for-traffic
+/// state is set"; proposal executable-bindings-at-create.md §4: "a request replacing every node of a
+/// two-mesh fabric: Complete only after the ready-for-traffic state is set (Q154)"; "the fabric-primary's
+/// own replacement moving it once"; "a one-broker mesh's broker replaced: one `node.delete` then the
+/// create, no refusal at any step"): a fabric of two meshes, two node-admins and one rpc node in each, and a
+/// request naming another build for every path. Every node comes back at its `path.name` as a new node.id
+/// and incarnation running the executable its entry names, each node-admin over its kept data dir with its
+/// endpoint key. In each mesh its non-primary node-admin is deleted before its primary one, and node-admins
+/// before its rpc node; each node is created once. mesh1 holds the fabric-primary: the caller's stream ends
+/// `FabricPrimaryMoved` once, and the same build_id completes at the new fabric-primary, which holds the
+/// fabric ready-for-traffic under the Build. Each mesh's only rpc node is replaced by its `node.delete`, the
+/// whole stop inside it, with no standalone connections delete or mesh leave and no `no-secondary` refusal.
+/// Moved from the removed operation's `a_two_mesh_fabric_rolls_every_member_onto_the_set_at_its_path_over_its_kept_data_dir`
+/// and `a_mesh_with_one_admin_gains_a_second_first_and_its_only_rpc_node_is_replaced_with_no_update` (its
+/// one-admin half is `a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed`).
+/// Must NOT happen: a node left on its old executable, a primary replaced before its type's other members,
+/// a type's only node refused for want of a successor, or the Build complete before the fabric is
+/// ready-for-traffic under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready_for_traffic() {
+    let sha = candidate_sha();
+    let set = binding_set(&sha);
+    let test = "a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready_for_traffic";
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let before = members(&estate).await;
+    let fp_before = before.iter().find(|(_, m)| m.view.is_fabric_primary).map(|(n, _)| n.clone()).expect("a fabric-primary");
+    assert!(fp_before.starts_with("mesh1."), "the fabric-primary is mesh1's: {fp_before}");
+    let (based_on, request, next) = every_path_on_another_build(&estate).await;
+
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
+    let build = stream.build_id().to_string();
+    let (frames, moves) = follow_across_replacement(&estate, stream, &["mesh2.admin.1", "mesh2.admin.2", "mesh1.admin.1", "mesh1.admin.2"]).await;
+    assert_eq!(moves, 1, "the stream ended FabricPrimaryMoved once, at the fabric-primary's own replacement, and the same build_id completed at the new fabric-primary: {frames:?}");
+    let (fp, status, accepted) = fabric_at_its_primary(&estate).await;
+    assert_eq!((status, accepted.as_deref()), (ScopeStatus::ReadyForTraffic, Some(build.as_str())), "Complete only once the fabric is ready-for-traffic under it ({fp})");
+
+    for (name, m) in &before {
+        replaced(&estate, name, m, &next[&m.view.kind]).await;
+    }
+    let steps = receipts(&estate, &build).await;
+    for mesh in ["mesh1", "mesh2"] {
+        let admin = |primary: bool| before.iter().find(|(n, m)| n.starts_with(&format!("{mesh}.admin.")) && m.view.is_primary == primary).map(|(n, _)| n.clone()).expect("an admin");
+        let (secondary, primary) = (admin(false), admin(true));
+        let deleted = |n: &str| steps.iter().position(|r| r.operation == format!("node.delete:{n}") && r.step == "NodeDeleted").unwrap_or_else(|| panic!("{n} is deleted: {steps:?}"));
+        assert!(deleted(&secondary) < deleted(&primary), "{mesh}: its non-primary admin {secondary} is replaced before its primary {primary}");
+        assert!(deleted(&primary) < deleted(&format!("{mesh}.rpc.1")), "{mesh}: node-admins before the other types");
+        for n in before.keys().filter(|n| n.starts_with(&format!("{mesh}."))) {
+            assert_eq!(receipts_of(&steps, &format!("node.create:{n}"), "Complete").len(), 1, "{n} is created once");
+        }
+        let rpc_delete: Vec<&str> = steps.iter().filter(|r| r.operation == format!("node.delete:{mesh}.rpc.1")).map(|r| r.step.as_str()).collect();
+        assert!(rpc_delete.contains(&"StopNode") && rpc_delete.contains(&"TerminateRuntime"), "{mesh}: its only rpc node's node.delete composes the whole stop: {rpc_delete:?}");
+    }
+    assert!(!steps.iter().any(|r| r.operation.starts_with("node.connections.delete:") || r.operation.starts_with("node.mesh.leave:")), "no standalone connections delete or mesh leave precedes a delete");
+    estate.stop().await;
+    let spans = estate.spans();
+    assert!(rdm_test::estate::named(&spans, "rdm.node_admin.build.reject.via-no-secondary").is_empty(), "no step was refused no-secondary");
+    assert!(!spans.iter().any(|sp| sp.to_string().contains("cannot transfer: no secondary")), "no step failed no-secondary");
+}
+
+/// The two-mesh fabric of `role_fabric` and the request that names another build for mesh2's broker,
+/// its only broker, every other entry as read; the broker's executable it names.
+async fn broker_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName, PathConfig)>, Binding) {
+    let (based_on, request) = read_request(estate).await;
+    let current = request.iter().find(|(p, _)| p.to_string() == BROKER).and_then(|(_, c)| c.executable.clone()).expect("the broker's row records its executable");
+    let next = another_build(estate, &current, "next");
+    (based_on, naming(request, BROKER, Some(&next)), next)
+}
+
+const BROKER: &str = "mesh2.broker.1";
+
+/// CONTRACT (proposal executable-bindings-at-create.md rule 2: "Each attempt then computes remaining work
+/// from the accepted topology, the current node rows, observed state and its receipts ... an attempt
+/// interrupted halfway finishes the remaining ... the same way"; rule 5: "`Persistent` inherits the
+/// predecessor's data dir and its endpoint key"): the executor of mesh2's broker's replacement, mesh2's
+/// primary node-admin, is held by its fault door at the broker's `node.deleted` and killed once the
+/// fabric-primary's log holds that `NodeDeleted`. The Build goes on: mesh2's other admin takes the mesh,
+/// the broker is created once at its path over its kept data dir with its endpoint key on the executable
+/// its entry names, and the Build holds one `NodeDeleted` and one create `Complete` for it. Moved from the
+/// removed operation's `an_executor_lost_after_a_members_delete_leaves_its_create_alone_to_the_next_attempt`.
+/// Must NOT happen: the broker deleted twice, created twice, or created over a new data dir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alone_to_the_next_attempt() {
+    let estate = role_fabric("an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alone_to_the_next_attempt").await;
+    let before = members(&estate).await;
+    let p = before.iter().find(|(n, m)| n.starts_with("mesh2.admin.") && m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's primary");
+    let other = before.iter().find(|(n, m)| n.starts_with("mesh2.admin.") && !m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's other admin");
+    let door = Door::at(&estate, &p).await;
+    door.arm("broker-deleted", json!({"kind": "event", "event": "deleted", "node": BROKER})).await;
+    let (based_on, request, next) = broker_on_another_build(&estate).await;
+
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
+    let build = stream.build_id().to_string();
+    let held = door.wait_held("broker-deleted").await;
+    assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.delete:{BROKER}")), "{p} is held at the broker's node.deleted: {held}");
+    let fp = estate.fabric_view_at(&Estate::path(&other)).await.and_then(|v| v.fabric_primary).expect("mesh2's other admin names the fabric-primary");
+    estate.node_views_at(&fp).await.expect("the fabric-primary answers node.get");
+    build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{BROKER}'s NodeDeleted"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "NodeDeleted"))
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+    estate.kill_node(&p).await;
+
+    followed(&estate, stream).await;
+    replaced(&estate, BROKER, &before[BROKER], &next).await;
+    let steps = receipts(&estate, &build).await;
+    assert_eq!(receipts_of(&steps, &format!("node.delete:{BROKER}"), "NodeDeleted").len(), 1, "{BROKER} is deleted once");
+    assert_eq!(receipts_of(&steps, &format!("node.create:{BROKER}"), "Complete").len(), 1, "{BROKER} is created once");
+    estate.shutdown().await;
+}
+
+/// CONTRACT (proposal executable-bindings-at-create.md rule 2, as above; rule 5: "`Persistent` inherits the
+/// predecessor's data dir and its endpoint key"): the executor of mesh2's broker's replacement is held by
+/// its fault door inside the broker's `NodeDeleted` step, the runtime terminated and its row written
+/// Deleted but the receipt not yet durable, and killed once the fabric-primary's log holds the delete's
+/// `TerminateRuntime`. The next attempt reads the row and the receipts: the broker is created once at its
+/// path over the data dir that `TerminateRuntime` names, with its endpoint key, on the executable its entry
+/// names, and it is not deleted again. Moved from the removed operation's
+/// `an_executor_lost_inside_a_members_delete_has_its_successor_created_over_the_kept_data_dir`.
+/// Must NOT happen: the successor created over a newly allocated data dir or with a new endpoint key, the
+/// broker deleted again, or created twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_created_over_the_kept_data_dir() {
+    let estate = role_fabric("an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_created_over_the_kept_data_dir").await;
+    let before = members(&estate).await;
+    let p = before.iter().find(|(n, m)| n.starts_with("mesh2.admin.") && m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's primary");
+    let other = before.iter().find(|(n, m)| n.starts_with("mesh2.admin.") && !m.view.is_primary).map(|(n, _)| n.clone()).expect("mesh2's other admin");
+    let door = Door::at(&estate, &p).await;
+    door.arm("broker-deleted-row", json!({"kind": "receipt", "step": "NodeDeleted", "operation": format!("node.delete:{BROKER}")})).await;
+    let (based_on, request, next) = broker_on_another_build(&estate).await;
+
+    let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
+    let build = stream.build_id().to_string();
+    let held = door.wait_held("broker-deleted-row").await;
+    assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.delete:{BROKER}")), "{p} is held inside the broker's NodeDeleted step: {held}");
+    let fp = estate.fabric_view_at(&Estate::path(&other)).await.and_then(|v| v.fabric_primary).expect("mesh2's other admin names the fabric-primary");
+    estate.node_views_at(&fp).await.expect("the fabric-primary answers node.get");
+    build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{BROKER}'s TerminateRuntime"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "TerminateRuntime"))
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+    let record = record_of(&estate, "mesh2", before[BROKER].view.node_id.as_str());
+    assert_eq!(record["record"]["status"], "deleted", "{BROKER}'s row is written Deleted inside the held step: {record}");
+    estate.kill_node(&p).await;
+
+    // The successor is read first: one on a new data dir fails `replaced`.
+    replaced(&estate, BROKER, &before[BROKER], &next).await;
+    followed(&estate, stream).await;
+    let steps = receipts(&estate, &build).await;
+    assert_eq!(receipts_of(&steps, &format!("node.delete:{BROKER}"), "NodeDeleting").len(), 1, "{BROKER} is deleted once: the next attempt does not delete it again");
+    assert_eq!(receipts_of(&steps, &format!("node.create:{BROKER}"), "Complete").len(), 1, "{BROKER} is created once");
+    estate.shutdown().await;
+}
+
+/// CONTRACT (proposal executable-bindings-at-create.md §2: "A containerized admin's executable directories
+/// become its launch configuration, `RDM_EXECUTABLE_DIRS`, comma-separated host directories mounted
+/// read-only at their host paths ...; an executable outside them is refused by name at acceptance. The
+/// bootstrap admin reads it from its environment; the launching admin writes its own value into every
+/// node-admin launch"; §4: "a containerized admin launched by another admin mounts the launching admin's
+/// `RDM_EXECUTABLE_DIRS`"; "a container fabric: an executable outside the admin's configured directories
+/// refused by name at acceptance; one inside, from a directory absent from day 0's input, launched";
+/// deployment-provider.md §2.7 "Executables"): a container fabric whose bootstrap admin is given two
+/// directories, the binaries' and an empty one. Every node-admin another admin launched mounts both at
+/// their host paths, read-only, a write inside them refused. A request creating a node on an executable
+/// outside them is refused `executable-refused` naming `RDM_EXECUTABLE_DIRS`, nothing accepted; one on
+/// an executable copied into the second directory is accepted, and mesh2's admin, a launched one,
+/// launches it: the node's row records it. Moved from the removed operation's
+/// `a_container_fabrics_replacement_admin_launches_from_the_builds_set_and_reads_it_read_only`. Opt-in:
+/// the container-proof step (`RDM_CONTAINER_PROOF=1`, or `RDM_REQUIRE_CONTAINER=1`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_executable_outside_them_is_refused() {
+    if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+        eprintln!("SKIP container executable directories: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
+        return;
+    }
+    let test = "a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_executable_outside_them_is_refused";
+    let sha = candidate_sha();
+    let mut set = binding_set(&sha);
+    for b in set.bindings.iter_mut() {
+        b.image = Some(rdm_test::estate::RUNTIME_IMAGE.into());
+    }
+    let bin = set.bindings[0].executable.parent().expect("the binaries' directory").to_path_buf();
+    let added = std::env::temp_dir().join(format!("executable-dirs-{}-{}", std::process::id(), rdm_core::NodeId::mint()));
+    std::fs::create_dir_all(&added).unwrap();
+    let dirs = format!("{},{}", bin.display(), added.display());
+    let estate = Estate::bootstrap_on_with_env(Owner { provider: "container".into(), ..owner(test) }, "fabric1", "mesh1", &set, &sha, &["rpc_node"], &[("RDM_EXECUTABLE_DIRS", dirs.as_str())]).await.expect("the container set is accepted");
+    let shape = [("mesh1", 2, 1), ("mesh2", 2, 0)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    for name in ["mesh1.admin.2", "mesh2.admin.1", "mesh2.admin.2"] {
+        let id = estate.container_of(name).await.unwrap_or_else(|| panic!("{name} runs in a container"));
+        let mounts = std::process::Command::new("docker").args(["inspect", "--format", "{{json .Mounts}}", &id]).output().unwrap();
+        let mounts: Value = serde_json::from_slice(&mounts.stdout).unwrap();
+        for dir in [&bin, &added] {
+            let held = mounts.as_array().unwrap().iter().find(|m| m["Source"] == json!(dir.display().to_string())).unwrap_or_else(|| panic!("{name} mounts {}: {mounts}", dir.display()));
+            assert_eq!((held["Destination"].clone(), held["RW"].clone()), (json!(dir.display().to_string()), json!(false)), "{name}: at its host path, read-only: {held}");
+            let wrote = std::process::Command::new("docker").args(["exec", &id, "/bin/sh", "-c", &format!("echo x > {}/written", dir.display())]).output();
+            assert!(wrote.map(|o| !o.status.success()).unwrap_or(true), "{name}: a write inside {} is refused", dir.display());
+        }
+    }
+    let rpc = set.bindings.iter().find(|b| b.launch_id == "rpc_node").cloned().expect("the set binds rpc_node");
+    let outside = another_build(&estate, &rpc, "outside");
+    let (based_on, request) = read_request(&estate).await;
+    let (reason, detail) = rejected("an executable outside RDM_EXECUTABLE_DIRS", estate.carrier().await.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), "mesh2.rpc.1", Some(&outside)) }).await);
+    assert_eq!(reason, "executable-refused", "{detail}");
+    assert!(detail.contains("mesh2.rpc.1") && detail.contains("RDM_EXECUTABLE_DIRS"), "the refusal names the path and the directories: {detail}");
+    assert_eq!(estate.accepted_build_id().await, based_on.to_string(), "nothing is accepted");
+    let inside_path = added.join("rpc-node-inside");
+    std::fs::copy(&outside.executable, &inside_path).unwrap();
+    let inside = Binding { executable: inside_path, ..outside.clone() };
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, "mesh2.rpc.1", Some(&inside)) }).await).await;
+    let created = estate.until_node("mesh2.rpc.1", "mesh2.rpc.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
+    let row = record_of(&estate, "mesh2", created.node_id.as_str());
+    assert_eq!(row["record"]["executable"]["executable"], json!(inside.executable.display().to_string()), "mesh2's launched admin launched the executable from the added directory: {row}");
+    estate.shutdown().await;
+    let _ = std::fs::remove_dir_all(&added);
 }

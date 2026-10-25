@@ -1029,7 +1029,7 @@ impl Prepared {
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &writer).await.unwrap();
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
-                topology: rdm_admin::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default(), bindings: None },
+                topology: rdm_admin::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default() },
                 submitted_change: Some(rdm_admin::accepted::TopologyChange::DeleteFabric),
                 submitted_at_ms: now_ms(),
             };

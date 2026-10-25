@@ -121,8 +121,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             .unwrap();
         builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: "mesh1.admin.1".into() }).await.unwrap();
         let data_root = std::env::temp_dir().join(format!("i143-rb2-{}", NodeId::mint()));
-        let template = LaunchTemplate { reads: Vec::new(),
-            fabric: "fabric1".into(),
+        let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rb2-none".into(),
             seeds: vec![],

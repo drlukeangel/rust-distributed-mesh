@@ -2691,13 +2691,13 @@ async fn failed_recipe(nodes: &Nodes, steps: Vec<RecipeStep>) -> String {
 /// recipe's Create step, so every admin that runs or resumes the step launches that one, and the row
 /// records it beside `config`"; node-recovery.md "Retained": "config and the executable (both seeded
 /// from the deleted row: a recovered node runs the bin its row records, never the recovering
-/// admin's)"; proposal roll.md step 2: every admin launches from the current Build's set): the fabric
-/// is born on binding set A (`rpc_node` = the built rpc node), its launch set, and mesh1's and mesh2's
-/// admins alike launch set A's. A Create binding, a copy the set does not name, is the Create step of a
+/// admin's)"; build-deployment.md §2: every create names its executable): the fabric is born on
+/// binding set A (`rpc_node` = the built rpc node), every path named on set A's executable of its kind,
+/// and mesh1's and mesh2's admins alike launch set A's. A Create binding, a copy the set does not name, is the Create step of a
 /// replace recipe of `mesh1.rpc.1` (run by mesh1's admin) and of `mesh2.rpc.1` (run by mesh2's admin):
 /// both successors run that copy. `mesh1.rpc.1` is then killed and recovered over its inherited data
 /// dir, and `mesh2.rpc.1` held (SIGSTOP) and recovered over a newly allocated one: each recovered node
-/// runs the copy its row records, not the launch set's. A Create step naming a file that is not there,
+/// runs the copy its row records, not set A's. A Create step naming a file that is not there,
 /// and one naming the copy with a hash its bytes do not have, end Failed by name, nothing launched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery() {
@@ -2716,8 +2716,8 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     let binding = Binding { launch_id: "rpc_node".into(), sha256: sha256_file(&fixed).unwrap(), executable: fixed.clone(), image: None };
     let shape = [("mesh1", 1, 2), ("mesh2", 1, 2)];
     let estate = born_at(estate, &shape, Duration::from_secs(90)).await.0;
-    assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, rpc_a.executable, "mesh1's admin launches the launch set's rpc node");
-    assert_eq!(exe_of(&estate, "mesh2.rpc.2").await, rpc_a.executable, "mesh2's admin launches the launch set's rpc node");
+    assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, rpc_a.executable, "mesh1's admin launches set A's rpc node, the one its path names");
+    assert_eq!(exe_of(&estate, "mesh2.rpc.2").await, rpc_a.executable, "mesh2's admin launches set A's rpc node, the one its path names");
 
     let nodes = objects(&estate).await;
     let with_binding = |node: &PathName, b: &Binding| -> Vec<RecipeStep> {
@@ -2740,7 +2740,7 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     estate.kill_node("mesh1.rpc.1").await;
     let after = until_new_birth(&estate, "mesh1.rpc.1", &before, SETTLE).await;
     assert_eq!((after["endpoint_id"].clone(), estate.data_dir("mesh1.rpc.1").await), (before["endpoint_id"].clone(), dir), "recovered over the inherited data dir");
-    assert_eq!(exe_of(&estate, "mesh1.rpc.1").await, fixed, "the node recovered over its inherited dir runs the executable its row records, not the launch set's");
+    assert_eq!(exe_of(&estate, "mesh1.rpc.1").await, fixed, "the node recovered over its inherited dir runs the executable its row records, not its path's entry's");
 
     // Recovery over a newly allocated data dir: a held member is terminated and created afresh.
     let before = estate.node_value("mesh2.rpc.1").await;
@@ -2748,7 +2748,7 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     assert_eq!(exact_runtime(&estate, "mesh2.rpc.1").await.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
     let after = until_new_birth(&estate, "mesh2.rpc.1", &before, SETTLE).await;
     assert!(after["endpoint_id"] != before["endpoint_id"] && estate.data_dir("mesh2.rpc.1").await != dir, "recovered over a newly allocated data dir: {after}");
-    assert_eq!(exe_of(&estate, "mesh2.rpc.1").await, fixed, "the node recovered over a new dir runs the executable its row records, not the launch set's");
+    assert_eq!(exe_of(&estate, "mesh2.rpc.1").await, fixed, "the node recovered over a new dir runs the executable its row records, not its path's entry's");
 
     // The refusals, by name, nothing launched.
     let absent = Binding { executable: execs.join("not-there"), ..binding.clone() };

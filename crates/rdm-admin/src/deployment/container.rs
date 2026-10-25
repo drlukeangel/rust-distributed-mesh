@@ -233,8 +233,8 @@ struct LaunchDisk {
     bin_dir: Option<String>,
     /// A node-admin's fabric data root: the data dir's parent, when it is a directory.
     data_root: Option<PathBuf>,
-    /// A node-admin's explicit executable binding directories.
-    binding_dirs: Vec<PathBuf>,
+    /// A node-admin's executable directories (`RDM_EXECUTABLE_DIRS` of its launch), each once.
+    executable_dirs: Vec<PathBuf>,
     /// The span evidence directory (`RDM_EVIDENCE_DIR`), when it is a directory.
     evidence_dir: Option<String>,
     /// The fabric namespace, mounted writable at its supplied absolute path for every node.
@@ -244,7 +244,7 @@ struct LaunchDisk {
 /// Prepare a launch's disk: make the data dir, look at what is mounted, and remove a runtime
 /// record an earlier birth left in the data dir (the birth waits for the one the pipeline makes
 /// available). Every failure names its file. A blocking call: run it on the blocking pool.
-fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<String, String>, reads: &[PathBuf]) -> Result<LaunchDisk, String> {
+fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<String, String>) -> Result<LaunchDisk, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir {}: {e}", data_dir.display()))?;
     let mut disk = LaunchDisk::default();
     if let Some(dir) = env.get(rdm_core::launch::ENV_STORE_DIR) {
@@ -276,14 +276,16 @@ fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<St
         if let Some(root) = data_dir.parent() {
             disk.data_root = dir_present(root).map_err(|e| format!("data root {e}"))?.then(|| root.to_path_buf());
         }
-        // The launch set's bound executables the admin re-hashes and launches, at their host paths,
-        // read-only: one under the writable data root is mounted again over it, read-only (proposal
-        // roll.md, the container cell: "a write inside them refused").
-        let bin_dir = disk.bin_dir.as_ref().map(PathBuf::from);
-        for d in reads {
-            if Some(d) != bin_dir.as_ref() && dir_present(d).map_err(|e| format!("executable binding directory {e}"))? && !disk.binding_dirs.contains(d) {
-                disk.binding_dirs.push(d.clone());
+        // The executable directories its launch names (proposal executable-bindings-at-create.md §2),
+        // which it re-hashes and launches from, at their host paths, read-only: one under the writable
+        // data root is mounted again over it, read-only. A named directory that is not there is refused
+        // by name: the admin could launch nothing from it.
+        let named = rdm_core::launch::decode_executable_dirs(env.get(rdm_core::launch::ENV_EXECUTABLE_DIRS).map(String::as_str).unwrap_or_default())?;
+        for d in named {
+            if !dir_present(&d).map_err(|e| format!("{} {e}", rdm_core::launch::ENV_EXECUTABLE_DIRS))? {
+                return Err(format!("{} names {}, which is not a directory on the host", rdm_core::launch::ENV_EXECUTABLE_DIRS, d.display()));
             }
+            disk.executable_dirs.push(d);
         }
     }
     if let Some(dir) = env.get("RDM_EVIDENCE_DIR") {
@@ -543,8 +545,8 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         // The data dir, the mounts and an earlier birth's runtime record, on the blocking pool.
         let admin = spec.node.kind == rdm_core::NodeKind::NodeAdmin;
         let disk = {
-            let (data_dir, env, reads) = (spec.data_dir.clone(), spec.env.clone(), spec.reads.clone());
-            crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env, &reads)).await.map_err(err)?
+            let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
+            crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
         };
         // Which launch the container realises, durable before the container exists, so one that runs
         // always has its record and a later `find` knows the launch ran once the container is removed.
@@ -601,9 +603,10 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             if let Some(root) = &disk.data_root {
                 args.extend(["-v".into(), format!("{}:{}", root.display(), root.display())]);
             }
-            // The launch set's bound executables: the admin re-hashes them at every launch, so it reads
-            // each at its host path. A directory the admin already has mounted is not mounted twice.
-            for d in &disk.binding_dirs {
+            // The executable directories: the admin re-hashes what it launches at every launch, so it reads
+            // each at its host path, read-only.
+            // `RDM_BIN_DIR`, mounted above, is not mounted twice.
+            for d in disk.executable_dirs.iter().filter(|d| disk.bin_dir.as_deref() != d.to_str()) {
                 args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
             }
         }
@@ -804,6 +807,28 @@ mod tests {
 
     use super::*;
 
+    /// CONTRACT (proposal executable-bindings-at-create.md §2: "`RDM_EXECUTABLE_DIRS`, comma-separated host
+    /// directories mounted read-only at their host paths ... the launching admin writes its own value into
+    /// every node-admin launch, as it writes the root, so every admin of the fabric mounts the same
+    /// directories"; deployment-provider.md §2.7 "Executables"): a node-admin's launch whose environment
+    /// names `RDM_EXECUTABLE_DIRS` has each named directory mounted, read-only, at its host path; a
+    /// directory named twice is mounted once, and a non-admin launch mounts none. Must NOT happen: a
+    /// launched admin that cannot read an executable its fabric accepted.
+    #[test]
+    fn a_node_admins_launch_mounts_the_executable_dirs_its_environment_names() {
+        let root = std::env::temp_dir().join(format!("launch-dirs-{}-{}", std::process::id(), rand::random::<u32>()));
+        let (data, a, b) = (root.join("data").join("mesh1.admin.2"), root.join("a"), root.join("b"));
+        for d in [&data, &a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let env: std::collections::BTreeMap<String, String> = [(rdm_core::launch::ENV_EXECUTABLE_DIRS.to_string(), format!("{},{},{}", a.display(), b.display(), a.display()))].into();
+        let disk = launch_disk(&data, true, &env).unwrap();
+        assert_eq!(disk.executable_dirs, vec![a.clone(), b.clone()], "each named directory, once, at its host path");
+        let disk = launch_disk(&data, false, &env).unwrap();
+        assert!(disk.executable_dirs.is_empty(), "a node that launches nothing mounts none");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn node_addresses_start_after_the_gateway_and_stop_before_broadcast() {
         let n = FabricNetwork { name: "n".into(), base: Ipv4Addr::new(172, 18, 0, 0), prefix: 16, gateway: Ipv4Addr::new(172, 18, 0, 1) };
@@ -891,13 +916,13 @@ mod tests {
     fn a_stale_runtime_record_that_cannot_be_removed_fails_the_launch_naming_it() {
         let dir = crate::test_support::tempdir("container-launch-disk");
         let ok = dir.join("clean");
-        let disk = launch_disk(&ok, false, &std::collections::BTreeMap::new(), &[]).unwrap();
+        let disk = launch_disk(&ok, false, &std::collections::BTreeMap::new()).unwrap();
         assert!(ok.is_dir(), "the data dir is made");
         assert!(disk.runtime_mounts.contains(&"/usr"), "{:?}", disk.runtime_mounts);
         let stale = dir.join("stale");
         let record = stale.join(rdm_core::runtime::RUNTIME_FILE);
         std::fs::create_dir_all(record.join("held")).unwrap();
-        let err = launch_disk(&stale, false, &std::collections::BTreeMap::new(), &[]).unwrap_err();
+        let err = launch_disk(&stale, false, &std::collections::BTreeMap::new()).unwrap_err();
         assert!(err.contains(&record.display().to_string()), "{err}");
     }
 
@@ -958,7 +983,6 @@ mod tests {
             (rdm_core::launch::ENV_DECLARED_SECRETS, "{\"v\":1,\"declared\":[]}"),
         ];
         let spec = ResolvedNodeLaunch {
-            reads: Vec::new(),
             secrets: std::collections::BTreeMap::from([("APP_KEY".to_string(), rdm_core::launch::SecretHex::of_value("app,value=with\nnewline")), ("APP_EMPTY".to_string(), rdm_core::launch::SecretHex::of_value(""))]),
             withhold: vec!["APP_KEY".into(), "APP_EMPTY".into()],
             node: "mesh1.admin.2".parse().unwrap(),

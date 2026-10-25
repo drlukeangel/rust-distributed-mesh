@@ -40,13 +40,6 @@ pub struct AdminRunner {
     pub template: LaunchTemplate,
     /// The environment passed to every node-admin launch.
     pub admin_env: BTreeMap<String, String>,
-    /// The directory the node executables are looked up in.
-    pub bin_dir: PathBuf,
-    /// The executable set this admin started with (the bootstrap admin's `RDM_EXECUTABLE_BINDINGS`, a
-    /// launched admin's entry answer): launched from only while the current Build carries no launch set
-    /// ([`Self::launch_set`]). With a set, every launch runs its bound executable and `bin_dir` is
-    /// never consulted.
-    pub start_bindings: Option<rdm_core::binding::BindingSet>,
     /// The lifecycle transitions of the births this admin executes.
     pub lifecycle: LifecycleTransitionPipeline,
     /// The runtimes this admin started, by node.
@@ -246,50 +239,21 @@ impl AdminRunner {
         self.records.install_read(&me, &self.topology, &self.book, &self.fabric_id, |reads| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, reads)).await;
     }
 
-    /// A launch of `kind` in `mesh`. Every node carries its mesh's identity (it
-    /// names the mesh's channel): the one this admin created, else the one the
-    /// fabric knows (a recovered mesh is reconstructed as itself, never anew).
-
+    /// The template of an operation on a node of `kind` in `mesh` that launches nothing (a delete, a
+    /// stop, a start, a restart in place, a terminate, a rename): it names no executable. Every node
+    /// carries its mesh's identity (it names the mesh's channel): the one this admin created, else the
+    /// one the fabric knows (a recovered mesh is reconstructed as itself, never anew). A create's
+    /// template is [`Self::create_template`]'s, which names the executable it launches.
     pub(crate) async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
-        let (executable, binding) = match self.launch_set().await? {
-            // Explicit mode: the launch set's binding of the kind, re-hashed now; an unbound kind is
-            // refused, never launched from the built-in set.
-            Some(set) => {
-                let b = set.of(kind).cloned().ok_or_else(|| format!("{kind:?} in {mesh}: {}", rdm_core::binding::BindingError::Unbound { launch_id: kind.name().into() }, kind = kind.name()))?;
-                verify_binding(&b, kind, self.fabric_provider, "launch set").await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
-                tracing::info!(launch_id = %b.launch_id, executable = %b.executable.display(), sha256 = %b.sha256, candidate = %set.candidate.sha, "launching from the explicit executable binding");
-                (b.executable.clone(), Some(b))
-            }
-            // The built-in set: the node-admin, and the one node executable every other node_type
-            // runs, taking its node_type from the launch (rafka-node-base `run_launched`). The rpc
-            // node is the testkit's proof node: the proof protocols on top of the node runtime.
-            None => {
-                let name = match kind {
-                    NodeKind::NodeAdmin => "rdm-node-admin",
-                    NodeKind::RpcNode => "rdm-rpc-node",
-                    _ => "rdm-node",
-                };
-                (self.bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)), None)
-            }
-        };
-        self.template_launching(kind, mesh, executable, binding).await
-    }
-
-    /// The executable set a launch runs (proposal roll.md step 2): the current Build's launch set, read
-    /// at each launch and never held since this admin's start, so a replaced and an unreplaced admin
-    /// alike launch from the set the fabric last rolled to (R3); the set this admin started with only
-    /// while the current Build carries none (a topology written before the field). A Build state that
-    /// cannot be read is named.
-    pub(crate) async fn launch_set(&self) -> Result<Option<rdm_core::binding::BindingSet>, String> {
-        let current = self.builds.current().await.map_err(|e| format!("the current Build could not be read for its launch set: {e}"))?;
-        Ok(current.and_then(|b| b.topology.bindings).or_else(|| self.start_bindings.clone()))
+        self.template_launching(kind, mesh, PathBuf::new(), None).await
     }
 
     /// The template a node.create of `node` launches from (node-rpc-envelope.md "Build recipe";
-    /// node-replace.md step 3; node-recovery.md "Retained"): the binding `requested` names (a recipe's
-    /// Create step, which the Build fixes), else the one the node's seeding row records (the row at
-    /// the path, else its `<name>.old` row: the predecessor's, the exited birth's), else, for a node no
-    /// row records one for, its kind's binding at this admin. A binding the step or a row names is
+    /// node-replace.md step 3; node-recovery.md "Retained"; build-deployment.md §2): the binding
+    /// `requested` names (the Build's: a step's, or the path's entry), else the one the node's seeding
+    /// row records (the row at the path, else its `<name>.old` row: the predecessor's, the exited
+    /// birth's). A create nothing names an executable for is refused by name and nothing is launched:
+    /// no executable is taken from a directory with no sha. A binding the step or a row names is
     /// re-hashed now: a missing file and a hash that differs are refused by name and nothing is
     /// launched. The template carries the binding, so the create's name claim records it on the row.
     pub(crate) async fn create_template(&self, node: &PathName, requested: Option<&rdm_core::binding::Binding>) -> Result<LaunchTemplate, String> {
@@ -298,12 +262,9 @@ impl AdminRunner {
             None => self.recorded_executable(node).await?.map(|b| (b, "row")),
         };
         let Some((binding, from)) = chosen else {
-            let t = self.template_for(node.kind, &node.mesh).await?;
-            if t.binding.is_some() {
-                return Ok(t);
-            }
-            let binding = built_in_binding(node.kind, &t.executable, self.fabric_provider).await.map_err(|e| format!("node.create:{node}: {e}"))?;
-            return Ok(LaunchTemplate { binding: Some(binding), ..t });
+            tracing::info_span!("rdm.node_admin.node.reject.via-executable-missing", node = %node, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("nothing names the executable this create launches: refused, nothing launched"));
+            return Err(format!("node.create:{node}: executable-missing: neither the Build (its step or the path's entry) nor the row at the path names the executable it runs; nothing is launched (build-deployment.md §2)"));
         };
         self.template_bound(node, binding, from).await
     }
@@ -345,12 +306,9 @@ impl AdminRunner {
         t.executable = executable;
         t.binding = binding;
         if kind == NodeKind::NodeAdmin {
+            // `RDM_EXECUTABLE_DIRS` among them: the launched admin mounts the directories this admin's
+            // launch named (proposal executable-bindings-at-create.md §2).
             t.env.extend(self.admin_env.clone());
-            // The set's bound executables, read at their host paths by the admin launched.
-            let set = self.launch_set().await?;
-            let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-            dirs.extend(set.iter().flat_map(|s| s.bindings.iter()).filter_map(|b| b.executable.parent().map(std::path::Path::to_path_buf)));
-            t.reads = dirs.into_iter().collect();
         }
         // Every node of a mesh carries its id: it names the mesh's channel.
         if let Some(id) = known {
@@ -822,11 +780,11 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// A roll's node.create of the member at `node` whose birth `from` the roll's node.delete deleted
-    /// (proposal roll.md step 4, R1): a new node.id and incarnation at the same `path.name`, over the
-    /// predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the endpoint key loaded
-    /// from it), config and tags seeded from the Deleted row (node-replace.md "Inherited"), launching
-    /// `executable`, the set's binding of its kind. The Build fixes the binding, as a recipe's Create
+    /// A replacement's node.create of the member at `node` whose birth `from` the replacement's
+    /// node.delete deleted (build-deployment.md §3): a new node.id and incarnation at the same
+    /// `path.name`, over the predecessor's kept data dir (`inherited`, `RDM_INHERITED_DATA_DIR=1`, the
+    /// endpoint key loaded from it), config and tags seeded from the Deleted row (node-replace.md
+    /// "Inherited"), launching `executable`, the path's entry's. The Build fixes the binding, as a recipe's Create
     /// step does, so the launch never takes the one the Deleted row still records; the claim records it
     /// on the node's row, so a later node recovery runs it (node-recovery.md "Retained"). The data dir
     /// is the one the delete's `TerminateRuntime` receipt names: the delete stopped the exact runtime
@@ -835,7 +793,7 @@ impl AdminRunner {
     /// recovery's create drops them ([`Self::revise_exited`]). A birth
     /// other than `from` already live at the path (a create whose receipt an earlier attempt never
     /// wrote) is the member: nothing is created again.
-    pub(crate) async fn create_rolled(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: &rdm_core::binding::Binding) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create_replacement(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: &rdm_core::binding::Binding) -> Result<(), crate::executor::RunEnd> {
         if let Some(n) = self.topology.read().await.node(node).filter(|n| n.status.is_live() && n.node_id != from.node_id) {
             tracing::info!(successor = %n.node_id, "the member's successor is already live at its path: nothing is created again");
             return Ok(());
@@ -1261,11 +1219,11 @@ impl AdminRunner {
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &me.to_string(), build_id, attempt, op).await.map_err(Into::into),
-            // A roll's create of a replaced member: over its predecessor's kept data dir, launching the
-            // binding the Build fixed (proposal roll.md step 4).
+            // A replacement's create of a replaced member: over its predecessor's kept data dir, launching
+            // the binding the Build fixed (build-deployment.md §3).
             BuildOperation::CreateNode { node, over: Some(from), executable: Some(executable) } => {
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), sha256 = %executable.sha256);
-                self.create_rolled(&*builds, build_id, attempt, node, from, executable).instrument(span).await
+                self.create_replacement(&*builds, build_id, attempt, node, from, executable).instrument(span).await
             }
             BuildOperation::CreateNode { node, over: Some(from), executable: None } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
@@ -1536,7 +1494,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
     verdict
 }
 
-/// A binding the launch set, a Build or a node row names, checked at the launch that runs it: its
+/// A binding a request, a Build or a node row names, checked at the launch that runs it: its
 /// launch id is the node's kind, and its file is re-hashed now, so the launch proves the bytes it
 /// launches are the bound ones. A missing file and a hash that differs are refused by name. The hash
 /// reads the whole file, so it runs on the blocking pool, never on a worker of the runtime: a task the
@@ -1561,30 +1519,21 @@ pub(crate) async fn verify_binding(binding: &rdm_core::binding::Binding, kind: N
     checked.map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// The binding the bootstrap admin's own birth runs, recorded by its Day-0 claim (proposal roll.md
-/// R6): its running executable (`current_exe`) hashed now, on the blocking pool. With an explicit set,
-/// that hash must be the set's `node_admin` sha, and the set's binding is the one recorded: a valid
-/// binding file proves what was configured, not what started this process. With none, the running
-/// executable is the built-in binding.
-pub(crate) async fn running_binding(set: Option<&rdm_core::binding::Validated>, provider: ProviderKind) -> Result<rdm_core::binding::Binding, String> {
+/// The binding the bootstrap admin's own birth runs, recorded by its Day-0 claim (build-deployment.md
+/// §2.3: "the bootstrap admin's own included: it hashes the executable it is running"): its running
+/// executable (`current_exe`) hashed now, on the blocking pool; there is no configured sha to hold it to.
+pub(crate) async fn running_binding(provider: ProviderKind) -> Result<rdm_core::binding::Binding, String> {
     let exe = std::env::current_exe().map_err(|e| format!("this admin's running executable could not be named: {e}"))?;
-    let Some(set) = set else { return built_in_binding(NodeKind::NodeAdmin, &exe, provider).await };
-    let bound = set.set().of(NodeKind::NodeAdmin).cloned().ok_or_else(|| "the explicit executable bindings bind no `node_admin`".to_string())?;
-    let path = exe.clone();
-    let sha256 = crate::blocking::blocking_io(move || rdm_core::binding::sha256_file(&path)).await.map_err(|e| format!("this admin's running executable {} could not be hashed: {e}", exe.display()))?;
-    if sha256 != bound.sha256 {
-        return Err(format!("this admin's running executable {} hashes to {sha256}, the explicit executable bindings' `node_admin` ({}) to {}: the set configures another executable than the one started", exe.display(), bound.executable.display(), bound.sha256));
-    }
-    Ok(bound)
+    hashed_binding(NodeKind::NodeAdmin, &exe, provider).await
 }
 
-/// The built-in executable `kind` launches at this admin, as a binding: its file hashed now, so the
-/// row of the node created from it records exactly these bytes, and the image `provider` runs it in
-/// (the container provider's runtime image; none under the process provider), so a recovery seeded from
-/// that row passes the launch's image check.
-async fn built_in_binding(kind: NodeKind, executable: &std::path::Path, provider: ProviderKind) -> Result<rdm_core::binding::Binding, String> {
+/// `executable` as `kind`'s binding: its file hashed now, so the row of the birth that runs it records
+/// exactly these bytes, and the image `provider` runs it in (the container provider's runtime image;
+/// none under the process provider), so a recovery seeded from that row passes the launch's image
+/// check.
+async fn hashed_binding(kind: NodeKind, executable: &std::path::Path, provider: ProviderKind) -> Result<rdm_core::binding::Binding, String> {
     let path = executable.to_path_buf();
-    let sha256 = crate::blocking::blocking_io(move || rdm_core::binding::sha256_file(&path)).await.map_err(|e| format!("the built-in executable {} could not be hashed: {e}", executable.display()))?;
+    let sha256 = crate::blocking::blocking_io(move || rdm_core::binding::sha256_file(&path)).await.map_err(|e| format!("the executable {} could not be hashed: {e}", executable.display()))?;
     let image = match provider {
         ProviderKind::Process => None,
         ProviderKind::Container => Some(crate::deployment::container::RUNTIME_IMAGE.to_string()),
@@ -1660,11 +1609,11 @@ mod tests {
             let want = binding.check_image(super::super::boot::provider_image(provider)).unwrap_err().to_string();
             assert_eq!(verify_binding(&binding, NodeKind::RpcNode, provider, "build").await, Err(want), "{provider:?}");
         }
-        // The built-in binding a node's row records passes the same check under each provider: a container
+        // The running binding a row records passes the same check under each provider: a container
         // recovery seeded from that row launches (the release red at dc2b20be7: "the binding names no image").
         for provider in [ProviderKind::Process, ProviderKind::Container] {
-            let built_in = built_in_binding(NodeKind::RpcNode, &exe, provider).await.unwrap();
-            assert_eq!(verify_binding(&built_in, NodeKind::RpcNode, provider, "row").await, Ok(()), "{provider:?}");
+            let hashed = hashed_binding(NodeKind::RpcNode, &exe, provider).await.unwrap();
+            assert_eq!(verify_binding(&hashed, NodeKind::RpcNode, provider, "row").await, Ok(()), "{provider:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1699,7 +1648,7 @@ mod tests {
         // The launch wakes it, then re-hashes its executable.
         let hashed_at = tokio::spawn(async move {
             wake_tx.send(()).unwrap();
-            let resolved = verify_binding(&binding, NodeKind::RpcNode, ProviderKind::Process, "launch set").await;
+            let resolved = verify_binding(&binding, NodeKind::RpcNode, ProviderKind::Process, "build").await;
             assert!(resolved.is_ok(), "{resolved:?}");
             std::time::Instant::now()
         })

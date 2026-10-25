@@ -62,7 +62,7 @@ impl FabricState {
 }
 
 /// Whether the initial fabric has first reached ready-for-traffic (states.md, "The initial fabric
-/// before ready-for-traffic"). Once true it stays true: a resize or roll puts the fabric back to
+/// before ready-for-traffic"). Once true it stays true: a resize or an executable replacement puts the fabric back to
 /// pending, and the rows it already published to the store root stay there. One handle is shared by
 /// everything on an admin that refuses a workflow until it is true.
 ///
@@ -510,7 +510,7 @@ mod tests {
 
         let reborn = IncarnationId::mint();
         book.expect(&k, planned(&node, &reborn, "mesh2.admin.1"), Vec::new());
-        assert!(!book.complete(&k), "a rolled birth does not match its planned birth by the old birth's check-in");
+        assert!(!book.complete(&k), "a replaced birth does not match its planned birth by the old birth's check-in");
         assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "checked-in-as-another-birth" }]);
     }
 

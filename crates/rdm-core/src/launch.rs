@@ -35,6 +35,12 @@ pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
 /// The fabric's shared store root every node of the fabric reaches (R14): its stores live under
 /// `<store_dir>/<fabric id>/`.
 pub const ENV_STORE_DIR: &str = "RDM_STORE_DIR";
+/// A containerized node-admin's executable directories (proposal executable-bindings-at-create.md §2):
+/// comma-separated host directories mounted read-only at their host paths into a launched admin's
+/// container; an executable a Build names outside them is refused by name at acceptance. The
+/// bootstrap admin reads it from its environment; the launching admin writes its own value into every
+/// node-admin launch.
+pub const ENV_EXECUTABLE_DIRS: &str = "RDM_EXECUTABLE_DIRS";
 /// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 /// A launched node-admin's mesh issuing key (fabric-certs.md "Where a node-admin's signing material
@@ -325,6 +331,23 @@ pub fn decode_launcher(s: &str) -> Result<Launcher> {
         node_id: NodeId::parse(node_id).map_err(|e| format!("{ENV_LAUNCHER} node id: {e}"))?,
         incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("{ENV_LAUNCHER} incarnation: {e}"))?,
     })
+}
+
+/// [`ENV_EXECUTABLE_DIRS`] as given: comma-separated directories, each absolute (a container mounts
+/// it at its host path), in the order given, each once; an empty entry is skipped. A relative entry is
+/// refused by name.
+pub fn decode_executable_dirs(s: &str) -> Result<Vec<std::path::PathBuf>> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for e in s.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+        let d = std::path::PathBuf::from(e);
+        if !d.is_absolute() {
+            return Err(format!("{ENV_EXECUTABLE_DIRS} entry `{e}` is not an absolute directory: a container mounts each at its host path"));
+        }
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    Ok(dirs)
 }
 
 /// `<public key>@<addr>,...`

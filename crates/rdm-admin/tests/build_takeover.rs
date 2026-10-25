@@ -229,7 +229,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed(), crate::adopted_time());
     cp.topology = topology.clone();
     let build_id = cp
-        .submit("POST /api/build", TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)]) })
+        .submit("POST /api/build", crate::named_request(&cp, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)]) }).await)
         .await
         .unwrap()
         .build_id;
@@ -293,8 +293,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: None }),
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: None }),
+            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)) }),
+            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)) }),
         ]
     );
     assert_eq!(

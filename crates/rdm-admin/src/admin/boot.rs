@@ -470,11 +470,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // prepared before the mesh endpoint binds, and Day 0 binds it on the gateway. On an inherited
     // root, the provider also proves the inherited birth exited before `take_inherited_name` writes
     // its row `Deleted` (fabric-recovery.md "Nothing alive"). A launched admin learns the policy from
-    // its launcher's entry answer, after it binds. Explicit bindings are held to the provider's image
-    // before the provider does anything.
-    if let (Some(b), None, Ok(p)) = (&cfg.bindings, &cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
-        b.check_image(provider_image(p.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
-    }
+    // its launcher's entry answer, after it binds.
     let early = match (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
         (None, Ok(p)) => {
             let prepared = crate::deployment::prepare(p, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?;
@@ -575,10 +571,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
             // is written when it holds its mesh's seat, as every member's is (`NodeRows::arrivals`).
             if !cfg.mesh_primary && !cfg.fabric_primary {
-                // The row records what this birth runs (proposal roll.md R6): its running executable, held
-                // to the explicit set's `node_admin` binding when one is configured.
+                // The row records what this birth runs (build-deployment.md §2.3): its running executable,
+                // hashed now; there is no configured sha to hold it to.
                 let provider = early.as_ref().map(|(p, _)| p.provider.kind()).unwrap_or(ProviderKind::Process);
-                let running = super::runner::running_binding(cfg.bindings.as_ref(), provider).await.map_err(|e| format!("refusing to start: {}: {e}", cfg.data_dir.display()))?;
+                let running = super::runner::running_binding(provider).await.map_err(|e| format!("refusing to start: {}: {e}", cfg.data_dir.display()))?;
                 crate::node_rows::claim_day0_name_in_boot(&boot, &*nodes_storage, &caches.nodes, &name, &node_id, Some(&running))
                     .await
                     .map_err(|e| format!("refusing to start: {}: Day 0's {node_id} claims {name}: {e}", cfg.data_dir.display()))?;
@@ -1047,10 +1043,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 let joined_seam: crate::workflows::node_start::JoinedSeam<String> = Box::new(
                     move |_: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<String>>), String>> {
                         Box::pin(async move {
-                            // The launch set a launched admin starts with is its launcher's entry answer's, as the
-                            // provider policy is (proposal roll.md step 2): the current Build's set, read again at
-                            // every launch; the bootstrap admin's is day 0's `RDM_EXECUTABLE_BINDINGS`.
-                            let (policy, entry_bindings) = match joined {
+                            // A launched admin's provider policy is its launcher's entry answer's.
+                            let policy = match joined {
                                 Some(answer) => {
                                     // Fetch the current Build from the launching admin, and record the attempt floor its
                                     // answer names; without them this admin is not started. The Build it names arrives on
@@ -1063,7 +1057,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     if let Some(p) = answer.control.cert_policy {
                                         issuer.set_policy(p);
                                     }
-                                    (FabricPolicy { provider: answer.control.provider }, answer.control.bindings.clone())
+                                    FabricPolicy { provider: answer.control.provider }
                                 }
                                 None => {
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
@@ -1078,9 +1072,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     } else if matches!(builds.current_build().await, Ok(crate::build_state::CurrentBuild::None)) {
                                         let b0 = crate::build_state::BuildAccepted {
                                             build_id: crate::build::BuildId::mint(),
-                                            // B0's launch set is the bootstrap admin's `RDM_EXECUTABLE_BINDINGS`: the field exists
-                                            // from day 0, and every compile carries it forward (proposal roll.md step 2).
-                                            topology: crate::accepted::FabricTopology { bindings: cfg.bindings.as_ref().map(|v| v.set().clone()), ..crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()) },
+                                            // Day 0's shape is the bootstrap admin alone; its row records what it runs.
+                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()),
                                             submitted_change: None,
                                             submitted_at_ms: rafka_time.now_ms(),
                                         };
@@ -1096,7 +1089,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                                         crate::build_state::accept(&*builds, &b0, None, &name.to_string(), "day-0").await.map_err(|e| e.to_string())?;
                                     }
-                                    (FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?, None)
+                                    FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
                                 }
                             };
 
@@ -1112,10 +1105,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // Whether this admin enters an existing mesh: from its durable map here, or from the maker's
                             // topology at node.start's topology step. The Ready check waits for that entry's sweep.
                             let entering = Arc::new(std::sync::atomic::AtomicBool::new(entering_existing_mesh));
-
-                            if let Some(b) = &cfg.bindings {
-                                b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
-                            }
 
                             // A restart that enters its mesh from its durable map elects nobody until its entry read has
                             // told it who holds the seats.
@@ -1168,7 +1157,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         records.first_ready.clone(),
                                         fabric_storage.clone(),
                                     )
-                                    .with_claims(mesh_claims.clone()),
+                                    .with_claims(mesh_claims.clone())
+                                    .with_executable_dirs(cfg.executable_dirs.clone()),
                                 );
                                 // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
                                 // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
@@ -1398,9 +1388,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             };
                             let mut admin_env = BTreeMap::new();
                             admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
+                            // Every node-admin this admin launches mounts the directories its own launch named
+                            // (proposal executable-bindings-at-create.md §2), as it is written the root.
+                            if !cfg.executable_dirs.is_empty() {
+                                admin_env.insert(rdm_core::launch::ENV_EXECUTABLE_DIRS.to_string(), cfg.executable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(","));
+                            }
                             let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
-                            let template = LaunchTemplate { reads: Vec::new(),
-                                fabric: cfg.fabric.clone(),
+                            let template = LaunchTemplate { fabric: cfg.fabric.clone(),
                                 fabric_id: cfg.fabric_id.clone(),
                                 executable: PathBuf::new(),
                                 // The address this admin's mesh endpoint is bound on: where every birth it launches reaches
@@ -1460,8 +1454,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 local: journal.clone(),
                                 template,
                                 admin_env,
-                                bin_dir: cfg.bin_dir.clone(),
-                                start_bindings: entry_bindings.or_else(|| cfg.bindings.as_ref().map(|v| v.set().clone())),
                                 lifecycle: LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default())),
                                 handles: Mutex::new(HashMap::new()),
                                 topology: control.topology.clone(),

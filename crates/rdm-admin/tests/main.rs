@@ -33,6 +33,57 @@ pub fn adopted_time() -> rdm_transport::clock::RafkaTime {
     t
 }
 
+/// The executable a test request names for a path of `kind`: a file of its own per kind, hashed once,
+/// so the door's acceptance (it hashes every executable a request creates a node on) passes.
+pub fn test_executable(kind: rdm_core::NodeKind) -> rdm_core::binding::Binding {
+    use std::os::unix::fs::PermissionsExt;
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let d = std::env::temp_dir().join(format!("admin-test-executables-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    });
+    let p = dir.join(kind.name());
+    if !p.exists() {
+        let tmp = dir.join(format!("{}.{}", kind.name(), rand::random::<u32>()));
+        std::fs::write(&tmp, format!("#!/bin/sh\n# {}\nexit 0\n", kind.name())).unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::rename(&tmp, &p);
+    }
+    rdm_core::binding::Binding { launch_id: kind.name().into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
+}
+
+/// `change`, a count form, as the complete-topology request a caller builds from what it reads
+/// (proposal executable-bindings-at-create.md rule 1: the count is the door's vocabulary, expanded into
+/// named paths before the typed call): compiled against `cp`'s current Build, every path it creates
+/// named on [`test_executable`] of its kind, every held path listed as its entry holds it; a change
+/// that creates no path is returned as it is. `cp` reads its node rows from an empty store when it has
+/// none.
+pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: rdm_admin::accepted::TopologyChange) -> rdm_admin::accepted::TopologyChange {
+    use rdm_admin::build_state::BuildStateAdapter as _;
+    let current = cp.builds.current().await.expect("the Build state reads").expect("a current Build");
+    let observed = cp.topology.read().await.clone();
+    let next = rdm_admin::accepted::compile(&current.topology, &change, &observed).unwrap_or_else(|e| panic!("{change:?} compiles: {e}"));
+    // A change that creates no path is submitted as it is: only a create names an executable.
+    if next.meshes.values().flat_map(|m| m.nodes.iter()).all(|p| current.topology.contains(p)) {
+        return change;
+    }
+    let _ = cp.node_rows.set(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()));
+    let nodes = next
+        .meshes
+        .values()
+        .flat_map(|m| m.path_config_by_path.iter())
+        .map(|(p, c)| {
+            let mut c = c.clone();
+            if !current.topology.contains(p) && c.executable.is_none() {
+                c.executable = Some(test_executable(p.kind));
+            }
+            (p.clone(), c)
+        })
+        .collect();
+    rdm_admin::accepted::TopologyChange::Reconcile { based_on: current.build_id, nodes }
+}
+
 #[cfg(feature = "file-backend")]
 mod admin_app_alpns;
 mod admin_serves_forward;

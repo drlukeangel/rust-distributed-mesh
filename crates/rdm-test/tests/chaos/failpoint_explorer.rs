@@ -65,7 +65,7 @@ fn done_steps(build: &Value, operation: &str, attempt: Option<u64>) -> Vec<Strin
 
 /// The attempts a Build that put the fabric back to pending ends at when its one run ran every
 /// operation: that run, attempt 1, then the attempt claimed once the fabric changed to
-/// ready-for-traffic, which completes it and runs no step (Q154; states.md "Resize and roll").
+/// ready-for-traffic, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
 const RUN_THEN_CHANGE: u64 = 2;
 
 /// How many receipts of each step `operation` holds at `attempt`.

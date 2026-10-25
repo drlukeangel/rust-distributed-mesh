@@ -31,7 +31,7 @@
 
 use crate::context::CallContext;
 use crate::outcome::{MalformedKind, ReplyKind};
-use crate::protocol::NodeProtocol;
+use crate::protocol::{DecodeFailure, NodeProtocol};
 use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::{IncarnationId, NodeId, NodeKind, PathName};
 use serde::{Deserialize, Serialize};
@@ -153,14 +153,11 @@ pub enum BuildChange {
         /// The deleted birth's incarnation.
         incarnation: IncarnationId,
     },
-    /// Roll the fabric's members onto a new executable set (proposal roll.md, R1-R5): the set becomes
-    /// the accepted topology's launch set, and each member whose row records another sha for its kind
-    /// is replaced at the same `path.name` (node.delete, then node.create over its kept data dir
-    /// launching the set's binding of its kind). Appended last: the Build wire is positional.
-    Roll {
-        /// The executable set every launch of the fabric runs from once accepted.
-        bindings: crate::binding::BindingSet,
-    },
+    /// Reserved position: the removed per-kind executable-set change (proposal
+    /// executable-bindings-at-create.md §1, Q157). Never sent; a request at this position decodes as
+    /// `UnknownVariant` ([`Build::decode_request`]). A node's executable is replaced by a
+    /// [`Self::Reconcile`] naming it for its path. Kept so every later change keeps its position.
+    Reserved14,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the
     /// fabric, each by its `path.name` with its config, the executable included. A node left out is
     /// removed, one added is created, one whose executable differs from what its row records is
@@ -676,6 +673,15 @@ impl NodeProtocol for Build {
 
     type Request = BuildRequest;
     type Reply = BuildReply;
+
+    /// A change at a reserved position (the removed change, [`BuildChange::Reserved14`]) is a variant
+    /// this build does not know: refused as `UnknownVariant`, never a change.
+    fn decode_request(bytes: &[u8]) -> Result<Self::Request, DecodeFailure> {
+        match crate::protocol::decode_enum(bytes, Self::REQUEST_VARIANTS)? {
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reserved14) } => Err(DecodeFailure::UnknownVariant),
+            request => Ok(request),
+        }
+    }
 
     fn reply_detail(reply: &Self::Reply) -> &'static str {
         match reply {

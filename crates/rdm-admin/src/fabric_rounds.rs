@@ -243,8 +243,8 @@ struct Climb {
     phase: Option<Phase>,
     key: Option<RoundKey>,
     notified: bool,
-    /// The accepted topology the fabric climbs under: a Build that changes it (a resize or a roll)
-    /// puts the fabric back to pending (states.md, "Resize and roll").
+    /// The accepted topology the fabric climbs under: a Build that changes it (a resize or an executable
+    /// replacement) puts the fabric back to pending (states.md, "Resize and executable replacement").
     tracked: Option<FabricTopology>,
     /// The blocker last named, so a standing blocker is one span and a changed one is another.
     named: Option<String>,
@@ -395,7 +395,7 @@ impl FabricRounds {
         self.climb_wake.notified().await
     }
 
-    /// A resize or roll puts the fabric back to pending: the accepted Build's topology is no longer
+    /// A resize or an executable replacement puts the fabric back to pending: the accepted Build's topology is no longer
     /// the one the fabric climbs under, so its planned births must check in again and the rounds
     /// run again. A new attempt of the same Build changes no topology and moves nothing here.
     /// Returns whether the fabric was put back; the move waits until the state it leaves went out.
@@ -410,7 +410,7 @@ impl FabricRounds {
                     return false;
                 }
                 tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-reset", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), attempt = build.attempt, from = self.env.records.fabric_state().as_str(), reason = "the accepted topology changed", "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("a resize or roll puts the fabric back to pending"));
+                    .in_scope(|| tracing::info!("a resize or an executable replacement puts the fabric back to pending"));
                 climb.tracked = None;
                 climb.notified = false;
                 if let Some(run) = climb.sync.take() {
@@ -435,7 +435,7 @@ impl FabricRounds {
         self.resized(climb, build, me) || climb.tracked.as_ref().is_some_and(|held| *held != build.topology)
     }
 
-    /// A Build this fabric-primary has just accepted (states.md, Resize and roll: "A resize or roll puts
+    /// A Build this fabric-primary has just accepted (states.md, Resize and executable replacement: "A resize or an executable replacement puts
     /// the fabric back to pending"): when the current Build's topology is not the one the fabric climbs
     /// under, the fabric is back to pending now, inside the acceptance and before its door answers, and
     /// the status loop is woken to send the state at once. No read after the answer pairs the accepted
@@ -536,16 +536,15 @@ impl FabricRounds {
             return;
         }
         let mut blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
-        // During a roll a member still on its old binary does not satisfy its planned replacement: the
-        // fabric climbs once every planned member is on the set (states.md "Resize and roll"; proposal
-        // roll.md step 8), as the node rows record what each runs.
+        // During an executable replacement a member still on its old executable does not satisfy its
+        // planned replacement: the fabric changes once every planned member runs its entry's executable
+        // (states.md "Resize and executable replacement"), as the node rows record what each runs.
         if let (Some(build), Some(rows)) = (accepted.as_ref().filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)), self.env.records.contacts.get()) {
             match crate::accepted::recorded_executables(&**rows, &build.topology).await {
                 Ok(recorded) => {
-                    // A complete-topology request's member whose row records another executable than its
-                    // entry names is owed its replacement (proposal executable-bindings-at-create.md rule 5).
-                    let why = if build.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::is_roll) { "not-on-the-rolled-set" } else { "replacement-owed" };
-                    blockers.extend(crate::accepted::off_the_set(&build.topology, &recorded).into_iter().map(|p| Missing { who: p.to_string(), why }))
+                    // A member whose row records another executable than its entry names is owed its
+                    // replacement (proposal executable-bindings-at-create.md rule 5).
+                    blockers.extend(crate::accepted::paths_owed_replacement(&build.topology, &recorded).into_iter().map(|p| Missing { who: p.to_string(), why: "replacement-owed" }))
                 }
                 Err(e) => blockers.push(Missing { who: e, why: "rows-unreadable" }),
             }
@@ -635,7 +634,7 @@ impl FabricRounds {
             Progress::Answered(a) => Some(Ok(a.clone())),
             Progress::Failed(reason) => Some(Err(reason.clone())),
         };
-        // A failure the application reports is the call's answer (Q158; states.md "Resize and roll": "a
+        // A failure the application reports is the call's answer (Q158; states.md "Resize and executable replacement": "a
         // state's check-in or a hook that reports failure fails the Build on that step"): the drive fails
         // the Build it was called for on its `fabric-change` step, and the fabric stays in state-sync,
         // the failure named.
@@ -1435,7 +1434,7 @@ mod tests {
     async fn a_round_the_current_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_log_is_not() {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new(), bindings: None };
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
         let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
@@ -1465,7 +1464,7 @@ mod tests {
     async fn an_owed_completion_of_a_round_the_accepted_build_moved_past_is_withdrawn_when_it_is_superseded() {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
-        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new(), bindings: None };
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
         let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
@@ -1502,7 +1501,7 @@ mod tests {
     }
 
     /// CONTRACT (fabric-state-sync.md, sequence: "all planned meshes ready; enter state-sync", then
-    /// "state-sync hook (round + trace context)"; states.md, Resize and roll: "A resize or roll puts the
+    /// "state-sync hook (round + trace context)"; states.md, Resize and executable replacement: "A resize or an executable replacement puts the
     /// fabric back to pending"): a Build that changes the accepted topology while the fabric's
     /// state-sync has not gone out holds the climb. The application is asked to sync no round of a
     /// Build whose planned meshes the fabric did not find ready, and once state-sync went out the
@@ -1518,7 +1517,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
-        let one_mesh = FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1")].into(), bindings: None };
+        let one_mesh = FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1")].into() };
         let mut two_meshes = one_mesh.clone();
         two_meshes.meshes.extend([mesh("mesh2")]);
         let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
@@ -1608,7 +1607,7 @@ mod tests {
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1"), mesh("mesh2")].into(), bindings: None }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1"), mesh("mesh2")].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         for attempt in 1..=attempts {
             claim(&builds, &id, attempt).await;
         }
@@ -1883,7 +1882,7 @@ mod tests {
             ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]))),
             ("mesh2".to_string(), MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))),
         ];
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: meshes.into(), bindings: None }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: meshes.into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         claim(&builds, &id, 1).await;
         let (fp, m2) = fabric_primary_and_mesh2();
         let member = node("mesh1.rpc.1", NodeStatus::ReadyForTraffic, false);

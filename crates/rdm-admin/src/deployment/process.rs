@@ -758,7 +758,7 @@ mod tests {
     }
 
     fn launch(dir: &std::path::Path) -> ResolvedNodeLaunch {
-        ResolvedNodeLaunch { reads: Vec::new(), secrets: Default::default(), withhold: Vec::new(),
+        ResolvedNodeLaunch { secrets: Default::default(), withhold: Vec::new(),
             node: "mesh1.rpc.1".parse().unwrap(),
             deployment_id: DeploymentId::mint(),
             executable: "/bin/sleep".into(),

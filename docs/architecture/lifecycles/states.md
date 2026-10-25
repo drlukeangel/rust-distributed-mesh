@@ -171,14 +171,9 @@ are separate facts.
 - State-commit is a FABRIC state. A node's or mesh's state-committed reply is a check-in,
   not a node or mesh state.
 
-## Resize and roll
+## Resize and executable replacement
 
-A resize or roll puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; while the fabric awaits the application's answer the Build reports Blocked naming the blocker, never Complete; a state's check-in or a hook that reports failure fails the Build on that step. During a bin roll, a member still on its
-old binary/identity does not satisfy its planned replacement. A new binary requires
-a replacement node with a new NodeId and incarnation; node.restart retains the same
-process and binary. The mesh cannot report
-ready-for-traffic, and the fabric cannot climb, until the roll's last planned birth checks
-in. Rafka then answers the state-sync hook at once when no application content work is needed;
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; while the fabric awaits the application's answer the Build reports Blocked naming the blocker, never Complete; a state's check-in or a hook that reports failure fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in. Rafka then answers the state-sync hook at once when no application content work is needed;
 the internal state-commit and ready-for-traffic rounds still run.
 
 See [Fabric state-sync](fabric-state-sync.md), [Fabric state-commit](fabric-state-commit.md), [Fabric ready-for-traffic](fabric-ready-for-traffic.md) and [mesh.delete](mesh-delete.md).

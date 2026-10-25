@@ -632,7 +632,7 @@ async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, St
 
 /// Whether `frame` is a Blocked frame of a step in flight: the Build's own Blocked naming the fabric's
 /// change, which a Build that put the fabric back to pending reports once its operations are done
-/// (Q154; states.md "Resize and roll"), is no birth's.
+/// (Q154; states.md "Resize and executable replacement"), is no birth's.
 fn birth_blocked(frame: &BuildFrame) -> bool {
     matches!(frame, BuildFrame::Blocked { step, .. } if step != "fabric-change")
 }

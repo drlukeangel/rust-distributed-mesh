@@ -107,8 +107,6 @@ pub(crate) struct WireStep {
 struct WireTopology {
     fabric: String,
     meshes: BTreeMap<String, WireMesh>,
-    /// The launch set (proposal roll.md step 2), appended last.
-    bindings: Option<rdm_core::binding::BindingSet>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -156,8 +154,10 @@ enum WireChange {
     CreateMesh { desired: WireMeshDesired },
     RemoveMesh { mesh: String },
     DeleteFabric,
-    /// Appended last: the variants are positional.
-    Roll { bindings: rdm_core::binding::BindingSet },
+    /// Reserved position: the removed per-kind executable-set change (proposal
+    /// executable-bindings-at-create.md §1). Read as the stored history it is
+    /// ([`TopologyChange::Reserved`]); kept so `Reconcile` keeps its position.
+    Reserved7,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1), appended last. Each
     /// entry's config travels as the topology's do, with no executable and no tags (rule 7: nothing
     /// about executables rides gossip); the stored accepted Build keeps them.
@@ -209,7 +209,7 @@ impl From<&TopologyChange> for WireChange {
             TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
             TopologyChange::DeleteFabric => Self::DeleteFabric,
-            TopologyChange::Roll { bindings } => Self::Roll { bindings: bindings.clone() },
+            TopologyChange::Reserved {} => Self::Reserved7,
             TopologyChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|(p, c)| (p.clone(), c.into())).collect() },
         }
     }
@@ -224,7 +224,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
             WireChange::DeleteFabric => Self::DeleteFabric,
-            WireChange::Roll { bindings } => Self::Roll { bindings },
+            WireChange::Reserved7 => Self::Reserved {},
             WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, c)| (p, c.into())).collect() },
         }
     }
@@ -303,7 +303,7 @@ impl From<&FabricTopology> for WireTopology {
                 (k.clone(), mesh)
             })
             .collect();
-        Self { fabric: t.fabric.clone(), meshes, bindings: t.bindings.clone() }
+        Self { fabric: t.fabric.clone(), meshes }
     }
 }
 impl From<WireTopology> for FabricTopology {
@@ -316,7 +316,7 @@ impl From<WireTopology> for FabricTopology {
                 (k, mesh)
             })
             .collect();
-        Self { fabric: t.fabric, meshes, bindings: t.bindings }
+        Self { fabric: t.fabric, meshes }
     }
 }
 

@@ -40,20 +40,7 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
             "00 00 0b 07 05 07 6d2e7270632e31 06 07 6d2e7270632e31 02 07 6d2e7270632e31 0b 6d2e7270632e312e6f6c64 01 0b 6d2e7270632e312e6f6c64 00 07 6d2e7270632e31 00 03 0b 6d2e7270632e312e6f6c64 04 0b 6d2e7270632e312e6f6c64",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) }, "00 00 0c"),
-        // a roll (proposal roll.md): the change's last variant, the set positional (candidate, launch
-        // ids, bindings, each binding's image written even when none)
-        (
-            BuildRequest::Create {
-                submit: BuildSubmit::Change(BuildChange::Roll {
-                    bindings: rdm_core::binding::BindingSet {
-                        candidate: rdm_core::binding::Candidate { sha: "c".into(), build: "b".into() },
-                        launch_ids: vec!["node_admin".into()],
-                        bindings: vec![rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }],
-                    },
-                }),
-            },
-            "00 00 0e 01 63 01 62 01 0a 6e6f64655f61646d696e 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00",
-        ),
+        // position 14 is reserved (the removed change): `a_request_at_the_removed_change_position_is_an_unknown_variant`
         // the complete topology (proposal executable-bindings-at-create.md rule 1): the change's last
         // variant; based_on, then each node's path.name and config positional (storage's variant and its
         // disposition, placement empty, the executable an Option of the binding, its image written even when
@@ -355,4 +342,18 @@ fn failure_codes_are_appended_and_retained_by_the_build_wire() {
     }
     assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72")), Err(DecodeFailure::Corrupt));
     assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72 11")), Err(DecodeFailure::Corrupt));
+}
+
+/// CONTRACT (proposal executable-bindings-at-create.md §1: "Removed: `BuildChange::Roll` ... (their
+/// positional slots reserved, no format move)"; §4: "a `Roll` change refused as unknown; the Build wire's
+/// reserved slots decode as before"): a request a caller of the removed operation sends (change position
+/// 14, its set after it) decodes as `UnknownVariant`, never a change; the change after it keeps its
+/// position (`Reconcile` = 0f).
+#[test]
+fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
+    let removed = bytes("00 00 0e 01 63 01 62 01 0a 6e6f64655f61646d696e 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00");
+    assert_eq!(Build::decode_request(&removed), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Build::decode_request(&bytes("00 00 0e")), Err(DecodeFailure::UnknownVariant), "the bare position too");
+    let reconcile = bytes("00 00 0f 0c 303132333435363738396162 00");
+    assert!(matches!(Build::decode_request(&reconcile), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }
