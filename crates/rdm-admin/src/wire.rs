@@ -329,6 +329,8 @@ pub(crate) enum WireOutput {
     Terminal(TerminalReceipt),
     ExitManifest(ExitManifest),
     RosterAmended(RosterAmended),
+    /// The recorded transition under an in-force fabric.delete (Q160).
+    PrimariesTaken(crate::build_state::PrimariesTaken),
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -469,6 +471,7 @@ enum Produces {
     Terminal,
     ExitManifest,
     RosterAmended,
+    PrimariesTaken,
 }
 
 fn produces(operation: &str, step: &str) -> Option<Produces> {
@@ -511,6 +514,8 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::ExitManifest
     } else if step == crate::mesh_delete::STEP_ROSTER_AMENDED {
         Produces::RosterAmended
+    } else if step == crate::build_state::STEP_PRIMARIES_TAKEN {
+        Produces::PrimariesTaken
     } else {
         return None;
     })
@@ -577,6 +582,7 @@ fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<
         Produces::Terminal => WireOutput::Terminal(typed(v)?),
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
         Produces::RosterAmended => WireOutput::RosterAmended(typed(v)?),
+        Produces::PrimariesTaken => WireOutput::PrimariesTaken(typed(v)?),
     })
 }
 
@@ -613,6 +619,7 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::Terminal(t) => json(&t),
         WireOutput::ExitManifest(m) => json(&m),
         WireOutput::RosterAmended(a) => json(&a),
+        WireOutput::PrimariesTaken(t) => json(&t),
     }
 }
 

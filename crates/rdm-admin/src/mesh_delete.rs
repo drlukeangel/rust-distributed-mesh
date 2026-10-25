@@ -1611,6 +1611,34 @@ where
     F: Fn(RosterBirth) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
 {
+    unanswered_mesh_delete_with(builds, provider, records, rows, meshes, runtime_store, key, executor, mesh, mesh_nodes, held_paths, delete, &[]).await
+}
+
+/// [`unanswered_mesh_delete`], where the live ordinary members `in_process` names were deleted already by
+/// their ordinary node.delete, this fabric-primary their executor, each with its terminal receipt: under an
+/// in-force fabric.delete no node-admin is created for the mesh, which is deleted in process at the
+/// executor (mesh-delete.md "Resume after the primary's loss" step 2, Q160; mesh-investigation.md "During
+/// fabric.delete").
+#[allow(clippy::too_many_arguments)]
+pub async fn unanswered_mesh_delete_with<F, Fut>(
+    builds: &dyn BuildStateAdapter,
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    records: &crate::admin::Records,
+    rows: Option<&crate::node_rows::NodeRows>,
+    meshes: &dyn crate::storage::MeshStorage,
+    runtime_store: &dyn crate::storage::NodesStorage,
+    key: &MeshDeleteKey,
+    executor: &str,
+    mesh: &str,
+    mesh_nodes: &[Node],
+    held_paths: &[crate::model::PathName],
+    delete: F,
+    in_process: &[(RosterBirth, TerminalReceipt)],
+) -> Result<UnansweredMeshOutcome, String>
+where
+    F: Fn(RosterBirth) -> Fut,
+    Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
+{
     let outer = key.operation.as_str();
     let admins: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin).collect();
     let ordinary: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin).collect();
@@ -1638,6 +1666,10 @@ where
     let mut live_ordinary: Vec<RosterBirth> = Vec::new();
     for ord in &ordinary {
         let birth = RosterBirth::of(ord)?;
+        if let Some((_, terminal)) = in_process.iter().find(|(b, _)| *b == birth) {
+            ordinary_exits.push(terminal.clone());
+            continue;
+        }
         let inc = birth.birth().map_err(|e| format!("{outer}: {e}"))?;
         let row = runtime_store.runtime(&ord.node_id, &inc).await.map_err(|e| format!("{outer}: the runtime row of {} {} could not be read: {e}", birth.node, birth.incarnation_id))?;
         match row.as_ref() {
@@ -1670,41 +1702,7 @@ where
     if live_ordinary.is_empty() {
         let mut all_receipts: Vec<TerminalReceipt> = ordinary_exits;
         all_receipts.extend(admin_exits.iter().map(|(_, _, t)| t.clone()));
-        let other_receipts: Vec<TerminalReceipt> = all_receipts
-            .iter()
-            .filter(|r| r.node_id != first_admin.node_id || r.incarnation_id != first_admin.incarnation_id)
-            .cloned()
-            .collect();
-        // Every birth's row went Deleted inside its own node.delete; what is left is the mesh's.
-        mesh_left_rows(rows, meshes, &records.caches, &records.declared, executor, key, mesh, &all_receipts).await?;
-        let deleted_manifest = ExitManifest {
-            mesh_id: key.mesh_id.to_string(),
-            roster: roster.clone(),
-            final_primary: first_admin.clone(),
-            final_runtime: Some(first_runtime.clone()),
-            receipts: other_receipts,
-        };
-        record_completion(builds, key, executor, &deleted_manifest).await?;
-        let left_manifest = ExitManifest {
-            mesh_id: key.mesh_id.to_string(),
-            roster,
-            final_primary: first_admin.clone(),
-            final_runtime: None,
-            receipts: all_receipts,
-        };
-        builds
-            .append_step_receipt(&BuildStepReceipt {
-                mesh: None,
-                build_id: key.build_id.clone(),
-                attempt: key.attempt,
-                operation: key.operation.clone(),
-                step: STEP_MESH_LEFT.into(),
-                outcome: StepOutcome::Complete,
-                output: serde_json::to_value(&left_manifest).ok(),
-                executor: Some(executor.to_string()),
-            })
-            .await
-            .map_err(|e| format!("{outer}: the {STEP_MESH_LEFT} receipt could not be recorded: {e}"))?;
+        let left_manifest = deleted_in_process(builds, records, rows, meshes, key, executor, mesh, roster, first_admin, Some(first_runtime.clone()), all_receipts).await?;
         return Ok(UnansweredMeshOutcome::FullyCrashed(left_manifest));
     }
     // The exited node-admins' roster receipts are their node.delete's; the accepted roster names the
@@ -1712,6 +1710,49 @@ where
     accepted_roster(builds, key, STEP_ACCEPTED_ROSTER, executor, first_admin, first_runtime, || Ok(roster.clone())).await?;
     let path = leaving_mesh_admin_path(mesh, &roster, held_paths)?;
     Ok(UnansweredMeshOutcome::CreateAdmin { path, predecessor: first_admin.clone() })
+}
+
+/// The record of a mesh whose every birth was deleted in process by the fabric-primary's executor (an
+/// unanswered mesh during fabric.delete, mesh-investigation.md "During fabric.delete"; a mesh left with no
+/// node-admin under an in-force fabric.delete, mesh-delete.md "Resume after the primary's loss" step 2,
+/// Q160): every birth's row went Deleted inside its own node.delete, whose receipts are `all_receipts`;
+/// the mesh's rows left (mesh-left), mesh.deleted's completion receipt (`MeshDeleted`, its manifest every
+/// birth but `final_primary`) and `MeshLeft` (its manifest every birth) recorded. Answers the `MeshLeft`
+/// manifest.
+#[allow(clippy::too_many_arguments)]
+pub async fn deleted_in_process(
+    builds: &dyn BuildStateAdapter,
+    records: &crate::admin::Records,
+    rows: Option<&crate::node_rows::NodeRows>,
+    meshes: &dyn crate::storage::MeshStorage,
+    key: &MeshDeleteKey,
+    executor: &str,
+    mesh: &str,
+    roster: Vec<RosterBirth>,
+    final_primary: &RosterBirth,
+    final_runtime: Option<RuntimeProof>,
+    all_receipts: Vec<TerminalReceipt>,
+) -> Result<ExitManifest, String> {
+    let outer = key.operation.as_str();
+    let other_receipts: Vec<TerminalReceipt> = all_receipts.iter().filter(|r| r.node_id != final_primary.node_id || r.incarnation_id != final_primary.incarnation_id).cloned().collect();
+    mesh_left_rows(rows, meshes, &records.caches, &records.declared, executor, key, mesh, &all_receipts).await?;
+    let deleted_manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.clone(), final_primary: final_primary.clone(), final_runtime, receipts: other_receipts };
+    record_completion(builds, key, executor, &deleted_manifest).await?;
+    let left_manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster, final_primary: final_primary.clone(), final_runtime: None, receipts: all_receipts };
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
+            build_id: key.build_id.clone(),
+            attempt: key.attempt,
+            operation: key.operation.clone(),
+            step: STEP_MESH_LEFT.into(),
+            outcome: StepOutcome::Complete,
+            output: serde_json::to_value(&left_manifest).ok(),
+            executor: Some(executor.to_string()),
+        })
+        .await
+        .map_err(|e| format!("{outer}: the {STEP_MESH_LEFT} receipt could not be recorded: {e}"))?;
+    Ok(left_manifest)
 }
 
 /// Release the fabric's name on `storage` (`FabricStorage::release_name`) and record the

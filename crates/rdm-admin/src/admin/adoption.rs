@@ -182,18 +182,15 @@ pub struct Claimed {
     pub row: InFlight,
     /// The lost fabric-primary's birth.
     pub lost: crate::storage::NodeRecord,
-    /// Under an in-force fabric.delete (Q159): the launch's own new path.name, whose mesh's in-flight row
-    /// it took for the delete's next attempt. `None` for the adoption at the lost birth's path.name.
+    /// Under an in-force fabric.delete (Q159): the launch's own new path.name. `None` for the adoption at
+    /// the lost birth's path.name.
     pub under_delete: Option<PathName>,
 }
 
 impl Claimed {
     /// The mesh whose in-flight row the claim holds.
     fn mesh(&self) -> &str {
-        match &self.under_delete {
-            Some(me) => &me.mesh,
-            None => &self.lost.name.mesh,
-        }
+        &self.lost.name.mesh
     }
 
     /// The Build lane the claimed attempt is numbered in: the fabric lane under a delete, else the mesh's.
@@ -301,13 +298,14 @@ pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn Bu
 /// attempt") by the launch `me`, born `me_id`, at its new path.name: the attempt the lost fabric-primary
 /// claimed (the delete's current, in the fabric lane) holds the lost executor's mesh's in-flight row,
 /// which this claim supersedes and so releases (a removal that takes the row only while it names that
-/// attempt); then `me`'s own mesh's in-flight row is taken for the next attempt, naming this birth, so two
-/// launches are two claimants and one loses by name; won, the claim is recorded on the journal in the
+/// attempt); then the lost fabric-primary's mesh's in-flight row is taken for the next attempt, naming
+/// this birth, the one row every contender for the attempt takes (Q160), so two launches, or a launch and
+/// an executor, are two claimants and one loses by name; won, the claim is recorded on the journal in the
 /// fabric lane, `me` its executor. One `rdm.node_admin.fabric.update.via-adoption-claim` span, `lane`
 /// `fabric`.
 async fn claim_under_delete(me: &PathName, me_id: &NodeId, a: &Adoptable, delete: &BuildProjection, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts) -> Result<Claimed, String> {
     let lost = &a.lost;
-    let mesh = me.mesh.clone();
+    let mesh = lost.name.mesh.clone();
     let attempt = delete.attempt + 1;
     let span = tracing::info_span!(
         "rdm.node_admin.fabric.update.via-adoption-claim",

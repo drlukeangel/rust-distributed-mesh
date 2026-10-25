@@ -76,7 +76,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
    dir and endpoint key otherwise (R-FM2). Under an in-force fabric.delete (build.md §1), the workflow
    re-creates and restores nothing: the delete is the current Build and names no node, so the executor
    holds the fabric-primary's roles to the end and continues the delete, whose mesh.delete of the lost
-   birth's mesh deletes its row with the rest; no hand-back follows (Q155).
+   birth's mesh deletes its row with the rest; no hand-back follows (Q155). The executor takes the fabric-primary role and the lost mesh's mesh-primary role by one winning claim and one recorded transition at the next revision, keeping its own mesh's; a returning fabric-primary's writes carry its superseded revision and every reader ignores them, its Build calls are refused StaleClaim, and it stops on its first read after the heal (Q109); a runtime the executor cannot inspect or terminate fails the delete's step by name, no receipt manufactured, the intent retained; its own mesh is deleted last, it reports fabric.deleted alive, and an outside caller deletes it (Q160).
 
 | from the fabric-primary's last frame | default (floor 30 s) | gate (floor 3 s) |
 |---|---|---|

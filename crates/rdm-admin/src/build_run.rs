@@ -1302,6 +1302,46 @@ mod tests {
         assert_eq!(memory.facts().await.unwrap().len(), 3, "a refusal recorded nothing: acceptance, claim, verdict");
     }
 
+    /// CONTRACT (fabric-recovery.md step 4, Q160: "a returning fabric-primary's writes carry its superseded
+    /// revision and every reader ignores them, its Build calls are refused StaleClaim"; Q109's fold): under a
+    /// fabric.delete, the lost fabric-primary mesh1.admin.1 held attempt 1 and recorded mesh2's roster; the
+    /// executor mesh2.admin.1 won attempt 2 and recorded the transition, holding that one receipt of
+    /// attempt 1. The lost fabric-primary returns and, before it learns the transfer, writes more of
+    /// attempt 1 (mesh2 deleted, fabric.deleted, the attempt converged) and calls attempt 1 at an executor.
+    /// Every reader's fold keeps attempt 2 running at mesh2.admin.1 with only the roster of attempt 1, and
+    /// the call is refused StaleClaim naming attempt 2. Must NOT happen: a stale receipt read as the
+    /// delete's progress (a mesh or the fabric reported deleted that the executor never deleted), the stale
+    /// verdict deciding the Build, or the stale call run.
+    #[tokio::test]
+    async fn a_returning_fabric_primarys_writes_before_it_learns_the_transfer_are_ignored_and_its_call_refused_stale() {
+        let (door, memory) = door("mesh2.admin.1").await;
+        memory.publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: Default::default(), bindings: None }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 0 }).await.unwrap();
+        let step = |attempt: u32, operation: &str, step: &str, executor: &str, output: Option<serde_json::Value>| BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: operation.into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
+        let (lost, lost_inc, exec, exec_inc) = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        memory.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh1.admin.1".into()), mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        memory.append_step_receipt(&step(1, "mesh.delete:meshd0000002", "AcceptedRoster", "mesh1.admin.1", None)).await.unwrap();
+        // The executor's winning claim of the next attempt, then its recorded transition.
+        memory.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh2.admin.1".into()), mesh: None, build_id: id(), attempt: 2, executor: "mesh2.admin.1".into() }).await.unwrap();
+        let transition = serde_json::json!({
+            "lost_node_id": lost, "lost_incarnation": lost_inc, "executor": "mesh2.admin.1", "executor_node_id": exec, "executor_incarnation": exec_inc,
+            "fabric_revision": 2, "mesh": "mesh1", "mesh_revision": 2, "superseded_attempt": 1, "held": ["mesh.delete:meshd0000002 AcceptedRoster"],
+        });
+        memory.append_step_receipt(&step(2, &format!("fabric-recovery:{lost}"), "PrimariesTaken", "mesh2.admin.1", Some(transition))).await.unwrap();
+        // The returning fabric-primary's writes, before it learns the transfer.
+        memory.append_step_receipt(&step(1, "mesh.delete:meshd0000002", "MeshDeleted", "mesh1.admin.1", None)).await.unwrap();
+        memory.append_step_receipt(&step(1, "fabric.delete:fabric1", "Complete", "mesh1.admin.1", None)).await.unwrap();
+        memory.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+        let p = memory.read_build(&id()).await.unwrap();
+        assert_eq!((p.state, p.attempt, p.executor.as_deref()), (crate::build_state::BuildState::Running, 2, Some("mesh2.admin.1")), "the executor's attempt runs; the stale verdict decides nothing");
+        let of_first: Vec<String> = p.steps.iter().filter(|r| r.attempt == 1).map(|r| format!("{} {}", r.operation, r.step)).collect();
+        assert_eq!(of_first, vec!["mesh.delete:meshd0000002 AcceptedRoster".to_string()], "only the receipt of attempt 1 the transition held is read: {:?}", p.steps);
+        let ctx = CallContext::default();
+        match door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &[], &RunPlan::default()).await {
+            Attached::Refused(r) => assert_eq!(r, BuildReply::StaleClaim { held_attempt: 2, held_executor: Some("mesh2.admin.1".into()), carried_attempt: 1 }),
+            _ => panic!("the returning fabric-primary's call of attempt 1 is refused StaleClaim"),
+        }
+    }
+
     /// CONTRACT: a claimed attempt with no run on the admin is started (a fabric-primary that died
     /// after claiming, or an executor that was reborn); the run ends with its terminal; a call for
     /// the same attempt after its end reads the receipts it holds, replaying a frame per `Complete`

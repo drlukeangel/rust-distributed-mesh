@@ -481,6 +481,29 @@ impl HandoverDoor {
         r
     }
 
+    /// Under an in-force fabric.delete (fabric-recovery.md step 4, Q160), the executor `to` of another mesh
+    /// than the lost fabric-primary `target`'s holds, at the revisions of the recorded transition, the
+    /// fabric-primary role (`target`'s revision plus one) and the lost mesh's mesh-primary role at
+    /// `mesh_revision`, keeping its own mesh's: installed on its own node with no call, all or none.
+    pub async fn take_under_delete(&self, target: &rdm_core::Primary, mesh_revision: u64, to: &crate::model::Node) -> Result<Vec<Entry>, Reply> {
+        let Some(incarnation) = to.incarnation_id.clone() else {
+            return Err(rdm_core::reply::handover::not_ready(format!("{} holds no incarnation: no birth takes the roles", to.name)));
+        };
+        let held = |mesh: &str, revision: u64| rdm_core::Primary { mesh: mesh.to_string(), node_id: to.node_id.clone(), incarnation: incarnation.clone(), revision };
+        let records = vec![(rdm_core::Seat::FabricPrimary, held(&to.mesh, target.revision + 1)), (rdm_core::Seat::of_node_type(crate::model::NodeKind::NodeAdmin), held(&target.mesh, mesh_revision))];
+        let taken = {
+            let _decisions = self.decisions.clone().lock_owned().await;
+            self.membership.primaries().take_together(&records)
+        };
+        (self.project_view)().await;
+        if let Some(rdm_transport::membership::SeatTaken::Refused { held }) = taken.iter().find(|t| matches!(t, rdm_transport::membership::SeatTaken::Refused { .. })) {
+            return Err(rdm_core::reply::handover::not_ready(format!("{}: a record held here is newer than the transition's: {held:?}", to.name)));
+        }
+        let to_birth = Birth { node_id: to.node_id.clone(), incarnation };
+        let lost = Birth { node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+        Ok(vec![(FABRIC.to_string(), lost.clone(), to_birth.clone(), target.revision + 1), (crate::model::NodeKind::NodeAdmin.node_type().to_string(), lost, to_birth, mesh_revision)])
+    }
+
     // ---- the commander ----
 
     /// The fabric-primary commands the primary `holder` before the Build's stop, delete, restart, replace

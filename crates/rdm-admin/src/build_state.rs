@@ -699,10 +699,69 @@ impl std::fmt::Display for BuildStateError {
     }
 }
 
+/// The step of the recorded transition under an in-force fabric.delete (fabric-recovery.md step 4, Q160):
+/// the executor that won the delete's next attempt takes, at the next revision, the fabric-primary role
+/// and the lost mesh's mesh-primary role, keeping its own mesh's. Its receipt, in the attempt it won, is
+/// the record every reader folds by.
+pub const STEP_PRIMARIES_TAKEN: &str = "PrimariesTaken";
+
+/// The operation a [`PrimariesTaken`] receipt is recorded under: fabric recovery of the lost birth.
+pub fn primaries_taken_operation(lost: &crate::model::NodeId) -> String {
+    format!("fabric-recovery:{lost}")
+}
+
+/// The recorded transition under an in-force fabric.delete (Q160): who lost the roles, who took them at
+/// which revisions, and the attempt the taking supersedes with the receipts of it held then. A receipt of
+/// the superseded attempt not among `held` was written by a writer that had not yet learned the transfer:
+/// every reader ignores it (Q109's fold).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrimariesTaken {
+    /// The lost fabric-primary's birth.
+    pub lost_node_id: crate::model::NodeId,
+    /// The lost fabric-primary's incarnation.
+    pub lost_incarnation: crate::model::IncarnationId,
+    /// The executor that took the roles: its path.name and birth.
+    pub executor: String,
+    /// The executor's node id.
+    pub executor_node_id: crate::model::NodeId,
+    /// The executor's incarnation.
+    pub executor_incarnation: crate::model::IncarnationId,
+    /// The fabric-primary record's revision the executor holds from the transition.
+    pub fabric_revision: u64,
+    /// The lost mesh, and the revision of its mesh-primary record the executor holds from the transition.
+    pub mesh: String,
+    /// The revision of the lost mesh's mesh-primary record the executor holds from the transition.
+    pub mesh_revision: u64,
+    /// The attempt the transition supersedes: the delete's attempt the lost fabric-primary held.
+    pub superseded_attempt: u32,
+    /// The receipts of the superseded attempt the executor held at the transition, by [`receipt_key`].
+    pub held: Vec<String>,
+}
+
+/// A step receipt's key within its attempt: its operation and step.
+pub fn receipt_key(r: &BuildStepReceipt) -> String {
+    format!("{} {}", r.operation, r.step)
+}
+
 /// Fold an ordered fact log into Build views. Deterministic and idempotent:
 /// the same log gives the same views, and a duplicated fact changes nothing.
 /// The winning claim of an attempt is the first one appended.
+/// A fabric-lane receipt of an attempt a recorded transition supersedes ([`PrimariesTaken`], Q160) is
+/// ignored unless the transition held it, and that attempt's verdict decides nothing: the superseded
+/// writer wrote them after the transfer.
 pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
+    let superseded: BTreeMap<(BuildId, u32), std::collections::BTreeSet<String>> = facts
+        .iter()
+        .filter_map(|f| match f {
+            BuildFact::Step(s) if s.mesh.is_none() && s.step == STEP_PRIMARIES_TAKEN => s
+                .output
+                .clone()
+                .and_then(|v| serde_json::from_value::<PrimariesTaken>(v).ok())
+                .filter(|t| t.superseded_attempt < s.attempt)
+                .map(|t| ((s.build_id.clone(), t.superseded_attempt), t.held.into_iter().collect())),
+            _ => None,
+        })
+        .collect();
     // Facts arrive in any order (gossip, catch-up); the fold reads them in their one logical order:
     // per Build, acceptance first, then by attempt with its open before its claim, steps and
     // verdict, and forget last. Arrival order breaks ties, so the first-appended claim still wins.
@@ -826,6 +885,10 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
             }
             BuildFact::Step(s) => {
+                // A receipt the superseded writer wrote after the recorded transition: ignored (Q160).
+                if s.mesh.is_none() && superseded.get(&(s.build_id.clone(), s.attempt)).is_some_and(|held| !held.contains(&receipt_key(s))) {
+                    continue;
+                }
                 // A drift lane's step is its lane's, never the fabric lane's: every reader of the
                 // fabric lane's steps by attempt reads its own numbering only.
                 let steps = match (&s.mesh, out.get_mut(&s.build_id)) {
@@ -840,6 +903,11 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
             }
             BuildFact::Attempt(a) => {
+                // The verdict of an attempt a recorded transition superseded decides nothing (Q160): its
+                // writer had lost the roles.
+                if a.mesh.is_none() && superseded.contains_key(&(a.build_id.clone(), a.attempt)) {
+                    continue;
+                }
                 if !decided.insert((a.build_id.clone(), a.mesh.clone(), a.attempt)) {
                     continue; // the attempt already has its verdict
                 }

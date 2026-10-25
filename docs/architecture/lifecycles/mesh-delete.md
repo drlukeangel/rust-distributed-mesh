@@ -68,7 +68,7 @@ receipt:
    `reached` refuses the resume by name, since the primary is not lost.
 2. A named amendment, `RosterAmended { predecessor, final_primary }`, admits the new mesh-primary:
    the surviving admin of the mesh the election named or, when none survives, the one
-   node-admin the fabric-primary creates for it, the only new node a deleting mesh may gain. An
+   node-admin the fabric-primary creates for it, the only new node a deleting mesh may gain. Under an in-force fabric.delete no node-admin is created: the mesh is deleted in process at the executor holding the fabric-primary's roles (fabric-recovery.md step 4, Q160). An
    identical amendment replays `AlreadyApplied`; a second amendment for the same predecessor is
    refused by name.
 3. The new mesh-primary gets a fresh claim and runs only the tiers without a terminal receipt.
