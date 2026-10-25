@@ -690,11 +690,13 @@ fn two_admins_read_the_same_policy_from_the_entry_pull() {
 // @feature: node-lifecycle
 /// CONTRACT (fabric-certs.md §Tracking: "`fabric.get` shows the next expiry across the fabric, and a
 /// mesh whose renewals stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) is
-/// surfaced on `fabric.get` as `renewals: stalled`"): with one member, `fabric.get` shows its cert's
-/// expiry as the next and mesh1's renewals not stalled. While the mesh-primary's calls to it end
-/// NotSent, once its row is past its renew point by more than a floor, mesh1 is shown `stalled`
-/// naming it, and the next expiry is still its join cert's. Once the renewal reaches it, the stall is
-/// gone and the next expiry is the renewed cert's.
+/// surfaced on `fabric.get` as `renewals: stalled`"): with one member, `fabric.get` shows as the next
+/// expiry the sooner of its cert's and the Day-0 root's own (fabric-certs.md, When a cert is issued:
+/// the first node-admin of a mesh, by its maker), and mesh1's renewals not stalled. While the
+/// mesh-primary's calls to the member end NotSent, once its row is past its renew point by more than
+/// a floor, mesh1 is shown `stalled` naming it alone (the root renews itself in process), and the
+/// member's term of the next expiry is still its join cert's. Once the renewal reaches it, the stall
+/// is gone and the member's term is the renewed cert's.
 #[test]
 fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
     let cell = "a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get";
@@ -711,20 +713,39 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         let b = member(&root, &dir, "mesh1.rpc.1").await;
         let joined = signed(&b.member_cert).cert.expiry_ms;
         let mesh1 = |f: &FabricView| f.meshes.iter().find(|m| m.name == "mesh1").map(|m| m.renewals.clone());
-        let shown = until("fabric.get shows the member's cert expiry", BOUND, async || fabric_get(&root).await.filter(|f| f.next_expiry.is_some())).await;
-        assert_eq!((shown.next_expiry, mesh1(&shown)), (Some(joined), Some(None)), "the next expiry is the member's, nothing stalls");
+        let me = root.birth();
+        // The next expiry across the fabric with the member's cert expiring at `member`: the sooner of
+        // it and the Day-0 root's own, as its record holds it now.
+        let next = async |member: u64| {
+            let own = root.runner.nodes_storage.node(&me.node_id).await.unwrap().and_then(|r| r.birth(&me.incarnation).and_then(|f| f.cert.clone())).expect("the Day-0 root's own cert dates");
+            Some(member.min(own.expires_at))
+        };
+        let shown = until("fabric.get shows the next expiry across the member's and the root's certs", BOUND, async || {
+            let f = fabric_get(&root).await?;
+            (f.next_expiry == next(joined).await).then_some(f)
+        })
+        .await;
+        assert_eq!(mesh1(&shown), Some(None), "nothing stalls");
         cut_calls(&root, &b);
 
         let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
-        let stalled = until("fabric.get shows mesh1's renewals stalled", BOUND, async || fabric_get(&root).await.filter(|f| matches!(mesh1(f), Some(Some(_))))).await;
+        let stalled = until("fabric.get shows mesh1's renewals stalled", BOUND, async || {
+            let f = fabric_get(&root).await?;
+            (matches!(mesh1(&f), Some(Some(_))) && f.next_expiry == next(joined).await).then_some(f)
+        })
+        .await;
         let floor = rdm_core::cadence::staleness_floor().as_millis() as u64;
         assert!(root.rafka_time.now_ms() > row.renew_at + floor, "stalled only past the renew point by more than a floor");
-        assert_eq!((mesh1(&stalled), stalled.next_expiry), (Some(Some(Renewals::Stalled { nodes: vec!["mesh1.rpc.1".parse().unwrap()] })), Some(joined)), "{stalled:?}");
+        assert_eq!(mesh1(&stalled), Some(Some(Renewals::Stalled { nodes: vec!["mesh1.rpc.1".parse().unwrap()] })), "the member alone stalls: {stalled:?}");
 
         root.node_rpc.client.admit_new_connections();
         let renewed = until("the renewal reaches the member", BOUND, async || renewals_of(&spans, "mesh1.rpc.1").into_iter().find(|f| f["outcome"] == "installed")).await;
-        let cleared = until("the stall is gone from fabric.get", BOUND, async || fabric_get(&root).await.filter(|f| mesh1(f) == Some(None))).await;
-        assert_eq!(cleared.next_expiry, Some(num(&renewed, "expires_at")), "the next expiry is the renewed cert's");
+        let renewed_expiry = num(&renewed, "expires_at");
+        until("the stall is gone from fabric.get, the member's term the renewed cert's", BOUND, async || {
+            let f = fabric_get(&root).await?;
+            (mesh1(&f) == Some(None) && f.next_expiry == next(renewed_expiry).await).then_some(f)
+        })
+        .await;
         stop_all(vec![b], vec![root]).await;
         let _ = std::fs::remove_dir_all(&dir);
     })

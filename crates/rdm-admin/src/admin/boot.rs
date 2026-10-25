@@ -52,8 +52,9 @@ pub struct Running {
     pub(crate) before_ready_cancel: rdm_transport::Retirement,
     pub(crate) before_ready: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
     /// The member cert the launching admin's signer issued for this birth, as the opaque bytes the
-    /// join that admitted it carried (empty when that admin is configured with no certs). `None`
-    /// for a birth that made no JoinNode: the Day-0 root and a recovery start.
+    /// join that admitted it carried (empty when that admin is configured with no certs); the Day-0
+    /// root's, its own maker, issued by its own issuer. `None` for any other birth that made no
+    /// JoinNode: a recovery start, an inherited root, an adoption launch.
     pub member_cert: Option<Vec<u8>>,
     /// This admin's status authority, once it holds a view.
     pub(crate) authority: crate::status_rpc::AuthoritySlot,
@@ -863,10 +864,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // entry and builds what it serves and elects with; after its hook its Ready check reports.
     let enter: crate::workflows::node_start::EnterSeam<String> = {
         let out = out.clone();
+        let own_issuer = issuer.clone();
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(Membership, crate::workflows::node_start::JoinedSeam<String>), String>> {
             Box::pin(async move {
                 // The member cert the launching admin's signer issued for this birth, carried by the join that
-                // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
+                // admitted it; none yet for a birth that made no JoinNode (the Day-0 root, a recovery start).
                 let member_cert: Option<Vec<u8>> = joined.as_ref().map(|a| a.control.member_cert.clone());
                 if let Some(cert) = &member_cert {
                     rdm_node::node::install_join_cert(&data_connections, cert, &name.to_string(), &node_id, &incarnation);
@@ -878,6 +880,35 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_DAY0_ROOT);
                     sole_node_root = true;
                 }
+                // The Day-0 root is its mesh's first node-admin and its own maker (fabric-certs.md, When a
+                // cert is issued: "a new mesh's first node-admin is deployed | the maker, which holds the root
+                // or an issuing cert that may mint for that mesh"): it holds a member cert of its own, issued
+                // from its own issuer once it holds rafka-time, as every birth holds one ("held by the birth it
+                // was issued to"), so the app protocols it dials admit it. Its dates are on its own record, as
+                // a join's admission writes them (§Tracking), so the fabric-primary renews it in process.
+                let member_cert = match member_cert {
+                    None if sole_node_root => {
+                        let birth = crate::certs::BirthIdentity { node_id: node_id.clone(), incarnation: incarnation.clone(), mesh: name.mesh.clone(), name: name.clone(), endpoint_key: EndpointId(key.public().to_string()) };
+                        let issued = own_issuer.issue_member(&birth).map_err(|e| format!("{name}: the Day-0 root's own member cert could not be issued: {e}"))?;
+                        if !issued.bytes.is_empty() {
+                            let dates = crate::cert_renewal::dates_of(&issued);
+                            let signing = own_issuer.held_mint(&birth.mesh).map(|m| crate::cert_renewal::signing_dates(&m));
+                            let base = crate::storage::NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Pending);
+                            caches
+                                .nodes
+                                .update(&*nodes_storage, &node_id, Some(base), |r| {
+                                    let b = r.birth_mut(&incarnation, &name);
+                                    b.cert = Some(dates);
+                                    b.signing_cert = signing;
+                                })
+                                .await
+                                .map_err(|e| format!("{name}: the Day-0 root's own member cert dates could not be written on its record: {e}"))?;
+                        }
+                        rdm_node::node::install_join_cert(&data_connections, &issued.bytes, &name.to_string(), &node_id, &incarnation);
+                        Some(issued.bytes)
+                    }
+                    other => other,
+                };
                 let mesh_id = match (&cfg.mesh_id, &joined) {
                     (Some(id), _) => id.clone(),
                     (None, Some(answer)) => return Err(format!("{name}: a launched admin takes its mesh's id from its launch, and this launch names none (joined {})", answer.served_by)),

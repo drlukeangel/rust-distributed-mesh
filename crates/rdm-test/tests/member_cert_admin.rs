@@ -1,7 +1,9 @@
 //! Fabric certs on node-admins (i143.e12.s22): a node-admin is started with an explicit cert
-//! choice, the Day-0 root makes no JoinNode and holds no member cert, and an admin launched by
-//! another admin holds the member cert that admin issued for exactly its birth, verifying to the
-//! root, in its before_ready context and on its running handle.
+//! choice; the Day-0 root makes no JoinNode and, its mesh's first node-admin and its own maker,
+//! holds the member cert its own issuer issued for exactly its birth, which a node admitting on the
+//! fabric's root admits on an app ALPN; and an admin launched by another admin holds the member cert
+//! that admin issued for exactly its birth, verifying to the root, in its before_ready context and
+//! on its running handle.
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
@@ -13,6 +15,9 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use rdm_core::certs;
 use rdm_test::test_certs::{root_choice, test_root_public};
+use rdm_transport::connections::{Alpn, Birth, ConnectionsRegistry, MemoryConnectionsSink};
+use rdm_transport::{ResolvedNode, StaticResolver};
+use std::sync::Arc;
 use std::time::Duration;
 
 const WRONG: Duration = Duration::from_secs(60);
@@ -46,13 +51,15 @@ fn a_node_admin_started_with_no_cert_choice_is_refused_at_start_by_name() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: the Day-0 root made no JoinNode, so it holds no member cert (`None`, not empty bytes)
-/// in its context or on its handle. An admin it launches is issued a member cert by the root for
+/// CONTRACT (fabric-certs.md, When a cert is issued: "a new mesh's first node-admin is deployed |
+/// the maker, which holds the root or an issuing cert that may mint for that mesh"): the Day-0 root
+/// made no JoinNode, so its context carries none (`None`), and, its own maker, it holds on its handle
+/// the member cert its own issuer issued for exactly its birth, verifying to the root. An admin it launches is issued a member cert by the root for
 /// exactly that birth, on the root's rafka-time and verifying to the root, and finds the same bytes
 /// in its hook's context and on its handle.
 #[test]
-fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_root_holds_none() {
-    let cap = crate::common::capture("a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_root_holds_none");
+fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_root_holds_its_own() {
+    let cap = crate::common::capture("a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_root_holds_its_own");
     cap.run(crate::common::Threads::Current, async move {
         let root_dir = std::env::temp_dir().join(format!("member-cert-root-{}", NodeId::mint()));
         let joiner_dir = std::env::temp_dir().join(format!("member-cert-joiner-{}", NodeId::mint()));
@@ -62,8 +69,16 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let root = start_with(root_cfg, Wiring { before_ready: BeforeReadyHook::new(root_before_ready.clone()), certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         tokio::time::timeout(WRONG, root.before_ready().unwrap().settled()).await.expect("the root's hook returns");
-        assert_eq!(root.member_cert, None, "the Day-0 root made no JoinNode");
-        assert_eq!(root_before_ready.member_certs.lock().unwrap().clone(), vec![None], "its context says so");
+        let own = root.member_cert.clone().expect("the Day-0 root, its own maker, holds a member cert of its own");
+        let own_signed = certs::cert_from_bytes(&own).expect("the root's own issuer signed it");
+        let me = root.birth();
+        assert_eq!(
+            (own_signed.cert.node_id.to_string(), own_signed.cert.incarnation.as_str(), own_signed.cert.name.to_string(), own_signed.cert.mesh.as_str(), own_signed.cert.endpoint.0.as_str()),
+            (me.node_id.to_string(), me.incarnation.as_str(), "mesh1.admin.1".to_string(), "mesh1", me.endpoint_id.0.as_str()),
+            "issued for exactly the Day-0 root's birth"
+        );
+        assert_eq!(certs::verify(&own_signed, &[test_root_public()], root.rafka_time.now_ms(), 0), Ok(()), "member to issuer, issuer to CA, CA to the root");
+        assert_eq!(root_before_ready.member_certs.lock().unwrap().clone(), vec![None], "its context: it made no JoinNode");
 
         let (root_digest, root_mesh_id) = {
             let d = root.digest.lock().unwrap().clone();
@@ -129,5 +144,56 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         root.leave().await;
         let _ = std::fs::remove_dir_all(&root_dir);
         let _ = std::fs::remove_dir_all(&joiner_dir);
+    })
+}
+
+fn app_alpn() -> Alpn {
+    Alpn { name: b"member-cert-day0/1".to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (fabric-certs.md §On a connection: "On every inbound connection of an ALPN the embedding
+/// app registered at `bind`, the acceptor reads the dialer's member cert ... and admits or drops the
+/// connection"; When a cert is issued, the first node-admin of a mesh, by its maker): the Day-0 root's
+/// dial on an app ALPN presents the member cert its own issuer issued it, and a node admitting on the
+/// fabric's root admits it. Must NOT happen: the Day-0 root refused `no-credential` (Rafka 141).
+#[test]
+fn the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_admitted() {
+    let cap = crate::common::capture("the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_admitted");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let dir = std::env::temp_dir().join(format!("member-cert-day0-dial-{}", NodeId::mint()));
+        let alpn = app_alpn();
+        let root = start_with(day0_config(&dir), Wiring { alpns: vec![alpn.clone()], certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
+        root.stop_reconciling();
+        let (opener, _) = root.connections(&alpn.name).expect("the app takes its protocol's Connections from the admin").split();
+
+        // A node of mesh1 serving the app ALPN, admitting on the fabric's root.
+        let key = iroh::SecretKey::generate();
+        let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), std::slice::from_ref(&alpn.name)).await.unwrap();
+        let peer = Birth { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let sink = Arc::new(MemoryConnectionsSink::new(peer.clone()));
+        let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), Arc::new(StaticResolver::new()), sink, std::slice::from_ref(&alpn), Vec::new()).unwrap();
+        registry.admit_on(vec![test_root_public()], rdm_transport::clock::RafkaTime::unadopted());
+        let mut rb = iroh::protocol::Router::builder(ep.clone());
+        for (name, handler) in handlers {
+            rb = rb.accept(name, handler);
+        }
+        let router = rb.spawn();
+        let (_, mut app) = registry.connections(&alpn.name).unwrap().split();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the peer binds an IPv4 socket");
+        root.node_rpc.resolver.apply(ResolvedNode { node_id: peer.node_id.clone(), name: peer.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: peer.incarnation.clone() }, None);
+
+        let accepted = tokio::spawn(async move { app.accept().await });
+        let opened = tokio::time::timeout(WRONG, opener.open(&peer)).await.expect("the dial ends");
+        let conn = match opened {
+            Ok(conn) => conn,
+            Err(e) => panic!("the Day-0 root's dial on an app ALPN is admitted on the fabric's root: {e:?}"),
+        };
+        let reached = tokio::time::timeout(WRONG, accepted).await.expect("the admitted connection reaches the app").unwrap();
+        assert_eq!(reached.map(|c| c.id().clone()), Some(conn.id().clone()), "the peer's app accepts the Day-0 root's admitted connection");
+
+        let _ = router.shutdown().await;
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(&dir);
     })
 }
