@@ -247,7 +247,7 @@ fn run(cell: &str, body: impl FnOnce(PathBuf) -> std::pin::Pin<Box<dyn std::futu
 /// CONTRACT (fabric-certs.md §When a cert is issued, §On a connection; node-connections-admit.md): in a
 /// one-mesh fabric the Day-0 node-admin dials an rpc node of its mesh on a registered app protocol and is
 /// admitted (its stream answered by the node's app), and the rpc node's dial to the Day-0 admin is
-/// admitted; after the rpc node's `node.restart` (a new birth, its join issuing it a fresh cert) both
+/// admitted; after the rpc node's `node.restart` (the same birth, its start's join issuing it a fresh cert, and its drop record of the Day-0 admin dialled again, connections.md §7) both
 /// directions are admitted again. A second node-admin stopped and started as the same birth installs a
 /// fresh member cert at its start's join. Must NOT happen: the Day-0 admin refused `no-credential` (Rafka 141).
 #[test]
