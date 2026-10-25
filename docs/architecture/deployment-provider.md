@@ -63,7 +63,7 @@ pub trait DeploymentProvider: Send + Sync {
     fn control_domain(&self) -> String;
     /// Launch `spec`; the launch record is durable in the data dir before the executable runs.
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
-    /// What became of this exact launch in this domain: Running(handle) | Exited | NeverLaunched.
+    /// What became of this exact launch in this domain: Running(handle) | Exited(handle, when its record names one) | NeverLaunched.
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError>;
     /// The state of the exact runtime `handle`: Running | OsStopped | Exited { code } | Unknown.
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
