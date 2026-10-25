@@ -488,8 +488,10 @@ own caller span. Correlate events and receipts by `build_id`, `attempt`, `operat
 `node_id` and `incarnation`. Each completed workflow step has its event, a span under
 `rdm.node_admin.node.<verb>.via-…` and, for Build-backed work, its own receipt. Call and serve
 evidence includes the target node's action, not only the node-admin's. Gossip carries no
-CallContext: a gossip frame is correlated by identity ([gossip correlation](gossip.md#gossip-correlation)),
-never by a W3C parent edge.
+CallContext: a gossip frame's receive span is a child of its publishing span through the envelope's
+trace context ([gossip.md §3.4](gossip.md#34-the-envelope)), and the frame is correlated with its
+operation by identity ([gossip correlation](gossip.md#gossip-correlation)). How one trace crosses
+processes is [Telemetry](telemetry.md).
 
 The Node RPC runtime (`rdm-transport`) emits:
 

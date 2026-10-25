@@ -205,8 +205,9 @@ Receiver rules:
 - no Rafka-time field decides liveness or `Gone`: silence is local receipt age.
 
 <a id="gossip-correlation"></a>
-Correlation: a gossip frame carries no Node RPC target or CallContext and has no W3C parent edge.
-Correlate a frame with its operation by `build_id`, `attempt`, `operation`, `node_id` and
+Correlation: a gossip frame carries no Node RPC target or CallContext. Its envelope carries the
+publishing span's trace context (§3.4), so a receive span is that span's child; the publishing span
+need not be the operation's ([Telemetry](telemetry.md)). Correlate a frame with its operation by `build_id`, `attempt`, `operation`, `node_id` and
 `incarnation`, and an aggregate by its `publisher`, `topology_version` and `snapshot_id`. A gossip
 receiver's TraceId or ParentSpanId need not match the operation's trace.
 
