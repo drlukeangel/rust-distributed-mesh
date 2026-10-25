@@ -1,4 +1,4 @@
-//! frames.md: the gossip `Frame` enum (rafka-mesh-transport membership.rs), variants and fields in
+//! frames.md: the gossip `Frame` enum (rafka-mesh-transport topology.rs), variants and fields in
 //! declaration order (their postcard position), then every workspace type its fields carry.
 
 use crate::render::{self, Columns};
@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 pub const TITLE: &str = "Gossip frames";
 
 const CRATE: &str = "rdm-transport";
-const FILE: &str = "crates/rdm-transport/src/membership.rs";
+const FILE: &str = "crates/rdm-transport/src/topology.rs";
 const NAME: &str = "Frame";
 
 /// Render the page. The `Frame` enum missing from its file is refused by name.

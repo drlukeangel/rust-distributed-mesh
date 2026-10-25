@@ -1,6 +1,6 @@
 //! CloudEvents 1.0 binary-mode gossip binding. Data is selected only after context validation.
 
-use crate::membership::Frame;
+use crate::topology::Frame;
 use crate::wire::{self, WireError};
 use rdm_core::{FabricId, NodeId, IncarnationId, PublisherId};
 use serde::{Deserialize, Serialize};
@@ -302,7 +302,7 @@ pub(crate) fn decode_header(bytes: &[u8], trace: &mut rdm_core::context::CallCon
 }
 
 fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, dropped: &mut Vec<rdm_core::context::Dropped>) -> Result<Frame, DecodeError> {
-    let Header { source, id, kind, subject, time_ms, sequence, mut data, .. } = decode_header(bytes, trace, dropped, crate::membership::MAX_FRAME)?;
+    let Header { source, id, kind, subject, time_ms, sequence, mut data, .. } = decode_header(bytes, trace, dropped, crate::topology::MAX_FRAME)?;
     let index = TYPES.iter().position(|t| *t == kind);
     // Required context is checked before the named type outcome; no domain data is decoded.
     let Some(index) = index else { return Err(DecodeError::Unknown(kind)); };
@@ -415,7 +415,7 @@ mod tests {
         let frame = decode(&wire::encode(&(pairs, data)).unwrap()).unwrap();
         assert_eq!(frame.context().unwrap().id, baseline.context().unwrap().id);
         assert_eq!(frame.context().unwrap().traceparent.as_deref(), Some(parent));
-        let forwarded = crate::membership::forward_of(frame.clone(), "mesh2.admin.1", "mesh2").unwrap();
+        let forwarded = crate::topology::forward_of(frame.clone(), "mesh2.admin.1", "mesh2").unwrap();
         assert_eq!(forwarded.context(), frame.context(), "forwarder keeps the author's context");
         let retained = frames_roundtrip(&[forwarded]);
         assert_eq!(retained[0].context(), frame.context(), "directed replay keeps the author's context");
@@ -464,7 +464,7 @@ mod tests {
     fn operation_sequence_is_absent_and_source_survives_forwarding() {
         let op = rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: author().node, incarnation: author().incarnation, name: "m.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };
         let event = Frame::NodeDeleted { op, forwarded_by: None }.authored(&author(), 0, 1);
-        let forwarded = crate::membership::forward_of(event.clone(), "other.admin.1", "other").unwrap();
+        let forwarded = crate::topology::forward_of(event.clone(), "other.admin.1", "other").unwrap();
         assert_eq!(event.context(), forwarded.context());
         assert!(forwarded.context().unwrap().sequence.is_none());
         let (mut attrs, data): (Vec<(String, String)>, Vec<u8>) = wire::decode(&forwarded.encode()).unwrap();

@@ -16,14 +16,14 @@
 //! carries no status). A digest the book did not admit as newer is not a sample either.
 //!
 //! The stamps are publication time: `MeshDigest::emitted_at_rafka_ms` is read from the composed
-//! clock inside [`crate::membership::Membership::publish`] as the frame is built, and
+//! clock inside [`crate::topology::Membership::publish`] as the frame is built, and
 //! `Frame::Members::published_at_rafka_ms` is read from the same clock at the start of
 //! `Backbone::publish`, before the chunks are built and sent.
 
 use crate::clock::{Ignored, Observed, SharedClock};
 use rdm_core::{MemberStatus, MeshDigest, PublisherId};
 
-use crate::membership::SeatBook;
+use crate::topology::SeatBook;
 
 /// What a received frame is to the clock.
 #[derive(Debug, PartialEq, Eq)]

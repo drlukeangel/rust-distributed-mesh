@@ -384,7 +384,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                     let marked = reason.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        rdm_transport::membership::mark_transport_stopped(marked);
+                        rdm_transport::topology::mark_transport_stopped(marked);
                     });
                     OriginateReply::TransportStopMarked { by, reason }
                 }

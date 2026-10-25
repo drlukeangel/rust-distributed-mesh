@@ -6,7 +6,7 @@
 //! ```text
 //! wire.md      every Node RPC op (`impl NodeProtocol`), its request / reply bodies in declaration
 //!              order (postcard is positional) and the workspace types those bodies carry
-//! frames.md    the gossip `Frame` enum (rafka-mesh-transport membership.rs) the same way
+//! frames.md    the gossip `Frame` enum (rafka-mesh-transport topology.rs) the same way
 //! statuses.md  every `pub enum *Status` / `*State`, with serde names, and the status-string consts
 //! spans.md     every span name rafka-mesh-audit's scanner finds, with file:line
 //! config.md    every RDM_* / RAFKA_* env name and each place the source names it
@@ -265,7 +265,7 @@ mod tests {
     fn the_frames_page_lists_every_frame_variant_in_declaration_order() {
         let root = rafka_mesh_audit::workspace_root();
         let pages = pages(&root).unwrap();
-        let declared = declared_variants(&root, "crates/rdm-transport/src/membership.rs", "Frame");
+        let declared = declared_variants(&root, "crates/rdm-transport/src/topology.rs", "Frame");
         assert_eq!(variant_rows(page(&pages, "frames.md"), "Frame"), positions(&declared));
     }
 
@@ -278,7 +278,7 @@ mod tests {
         for (variant, serde) in [("Pending", "pending"), ("ReadyForTraffic", "ready-for-traffic"), ("PendingReconnect", "pending-reconnect"), ("Deleted", "deleted")] {
             assert!(node_status.contains(&format!("**`{variant}`** | `{serde}`")), "NodeStatus::{variant} is `{serde}` on the page:\n{node_status}");
         }
-        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/membership.rs` |"), "the mesh status string const is listed with its value and its file");
+        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/topology.rs` |"), "the mesh status string const is listed with its value and its file");
     }
 
     #[test]

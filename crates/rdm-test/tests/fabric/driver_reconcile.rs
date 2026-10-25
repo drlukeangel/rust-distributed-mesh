@@ -105,7 +105,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     let estate = Estate::bootstrap(owner(cell, provider), "fabric1", "mesh1").await;
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
-    let cfg = Config::mm(seed, secs, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_ladder());
+    let cfg = Config::mm(seed, secs, rdm_transport::topology::staleness_floor(), rdm_transport::topology::backbone_gossip_interval(), tickle_ladder());
     let driver = Driver::new(estate, cfg, crate::build_log::build_read).await;
     let progress = driver.progress();
     // The run is its own task: a panic inside it still leaves the seed and the executed sequence.

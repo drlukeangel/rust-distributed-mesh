@@ -109,7 +109,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     // The check-in is owed to a suspended primary, then the primary is killed, all inside the staleness
     // floor: past it the election names the next holder (Q119 arm A), and a check-in sent after that is
     // owed to the new holder from the start.
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let pid = estate.pid_of(&holder_s).await;
     signal(pid, "-STOP");
     tokio::time::sleep(floor / 4).await;
@@ -169,7 +169,7 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), state_key: &str) {
     // mesh2's primary from the backbone at mesh investigation's decision step.
     let runner = standby.clone().unwrap_or_else(|| primary_s.clone());
     let arm = if standby.is_some() { "own-mesh" } else { "backbone" };
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
 
     let door = Door::at(&estate, &primary_s).await;
     door.arm("state-action", json!({"kind": "state-action", "node": primary_s, "command": state_key})).await;

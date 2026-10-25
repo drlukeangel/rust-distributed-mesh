@@ -14,7 +14,7 @@ use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::Primary;
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::NodeRpcClient;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -234,7 +234,7 @@ pub async fn run(w: Watch) {
         drop(turn.take());
         tokio::select! {
             _ = seats_changed.changed() => {}
-            _ = tokio::time::sleep(rdm_transport::membership::gossip_interval()) => {}
+            _ = tokio::time::sleep(rdm_transport::topology::gossip_interval()) => {}
         }
         // Held here while the admin is parked: its own wait, outside every lock.
         turn = Some(w.gate.turn("seat-watch").await);
@@ -337,13 +337,13 @@ pub async fn run(w: Watch) {
 /// step 1: the mark "ends when a digest of the exact birth arrives after it, when the birth answers its
 /// tickle, or when the view no longer holds that birth"). A birth heard again is reached (step 3): it
 /// is commanded back, and its old verdict is never submitted again.
-pub async fn submit_recovery<S, F>(node: &Node, mut submit: S, topology: &tokio::sync::RwLock<Topology>, book: &rdm_transport::membership::DigestBook, me_id: &NodeId, since: std::time::Instant)
+pub async fn submit_recovery<S, F>(node: &Node, mut submit: S, topology: &tokio::sync::RwLock<Topology>, book: &rdm_transport::topology::DigestBook, me_id: &NodeId, since: std::time::Instant)
 where
     S: FnMut() -> F,
     F: std::future::Future<Output = Result<(), String>>,
 {
-    let mut backoff = rdm_transport::membership::gossip_interval();
-    let ceiling = rdm_transport::membership::staleness_floor() * 4;
+    let mut backoff = rdm_transport::topology::gossip_interval();
+    let ceiling = rdm_transport::topology::staleness_floor() * 4;
     loop {
         match submit().await {
             Ok(()) => break,
@@ -361,7 +361,7 @@ where
 
 /// Whether the book has heard `node`'s exact birth after `since`: a digest of it arrived after that
 /// instant, as `heard_again` reads a birth heard since its command.
-fn heard_since(book: &rdm_transport::membership::DigestBook, node: &Node, since: std::time::Instant) -> bool {
+fn heard_since(book: &rdm_transport::topology::DigestBook, node: &Node, since: std::time::Instant) -> bool {
     let now = std::time::Instant::now();
     book.get_at(node.node_id.as_str(), now).is_some_and(|(d, unheard)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && now.checked_sub(unheard).is_some_and(|heard_at| heard_at > since))
 }
@@ -523,7 +523,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_recovery_is_not_submitted_again_once_the_birth_is_heard_again() {
         let (fp, peer, t) = unheard_peer_primary();
-        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::membership::DigestBook::default());
+        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestBook::default());
         let since = std::time::Instant::now();
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let (calls_ref, book_ref, heard) = (&calls, &book, digest_of(&peer));
@@ -538,7 +538,7 @@ mod tests {
                 Err("build-in-progress: BuildInProgress { mesh: Some(\"mesh2\") }".to_string())
             }
         };
-        let ended = tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, since)).await;
+        let ended = tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, since)).await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth heard again after its refused submit is never submitted again (no recovery, no TerminateRuntime of the rejoined birth)");
         assert!(ended.is_ok(), "the owed submit ends with the silence");
     }
@@ -550,7 +550,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_recovery_is_not_submitted_again_once_the_view_holds_the_birth_off_its_mark() {
         let (fp, peer, t) = unheard_peer_primary();
-        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::membership::DigestBook::default());
+        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestBook::default());
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let (calls_ref, topology_ref, peer_id) = (&calls, &topology, peer.node_id.clone());
         let submit = || {
@@ -562,7 +562,7 @@ mod tests {
                 Err("build-in-progress".to_string())
             }
         };
-        let ended = tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await;
+        let ended = tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a birth the view holds stopping is never submitted again");
         assert!(ended.is_ok(), "the owed submit ends with the mark");
     }
@@ -572,7 +572,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_recovery_of_a_birth_still_unheard_is_submitted_until_opened() {
         let (fp, peer, t) = unheard_peer_primary();
-        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::membership::DigestBook::default());
+        let (topology, book) = (tokio::sync::RwLock::new(t), rdm_transport::topology::DigestBook::default());
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let calls_ref = &calls;
         let submit = || async move {
@@ -581,7 +581,7 @@ mod tests {
                 _ => Ok(()),
             }
         };
-        tokio::time::timeout(rdm_transport::membership::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await.expect("the submit that opens the recovery ends the loop");
+        tokio::time::timeout(rdm_transport::topology::staleness_floor() * 20, submit_recovery(&peer, submit, &topology, &book, &fp.node_id, std::time::Instant::now())).await.expect("the submit that opens the recovery ends the loop");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3, "submitted until a submit opens it");
     }
 

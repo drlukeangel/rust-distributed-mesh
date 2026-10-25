@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -67,7 +67,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-heartbeat").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let (a, b) = (node().await, node().await);
-        rdm_transport::membership::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
+        rdm_transport::topology::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
         let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
         let ma = Membership::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
@@ -77,7 +77,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());
 
         // Past one heartbeat period, so each loop has marked twice; then B falls silent past the floor.
-        tokio::time::sleep(rdm_transport::membership::HEARTBEAT_EVERY + Duration::from_millis(1500)).await;
+        tokio::time::sleep(rdm_transport::topology::HEARTBEAT_EVERY + Duration::from_millis(1500)).await;
         pb.abort();
         tokio::time::sleep(Duration::from_millis(3500)).await;
         pa.abort();

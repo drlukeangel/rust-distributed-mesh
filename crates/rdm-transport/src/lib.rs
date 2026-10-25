@@ -12,7 +12,7 @@ pub mod clock;
 pub(crate) mod discipline;
 pub mod iroh_obs;
 pub mod load;
-pub mod membership;
+pub mod topology;
 pub(crate) mod receive_order;
 pub mod snapshot;
 #[cfg(test)]

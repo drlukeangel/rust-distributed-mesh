@@ -1,6 +1,6 @@
 //! Digest replacement: exact birth, digest_seq, and the heartbeat's wire content (never status).
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{learn_addresses, mesh_channel, Frame, Membership};
+use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, Membership};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {

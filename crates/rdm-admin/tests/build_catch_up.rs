@@ -29,7 +29,7 @@ async fn admin(peers: Vec<EndpointAddr>) -> (Endpoint, Router, Arc<FabricBuildSt
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()), Arc::new(AcceptedStore::new(Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "test-admin")), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::topology::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()), Arc::new(AcceptedStore::new(Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "test-admin")), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
     (endpoint, router, builds)
 }
 

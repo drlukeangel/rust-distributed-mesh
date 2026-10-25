@@ -22,7 +22,7 @@ use crate::election::Incumbency;
 use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::Primary;
-use rdm_transport::membership::DigestBook;
+use rdm_transport::topology::DigestBook;
 use std::sync::{Arc, Mutex};
 use tracing::Instrument as _;
 
@@ -328,8 +328,8 @@ impl FabricRecoveryDoor {
         // without the node is made again after a delay that doubles, never on every pass.
         let mut done = false;
         let mut next_submit = std::time::Instant::now();
-        let mut backoff = rdm_transport::membership::gossip_interval();
-        let ceiling = rdm_transport::membership::staleness_floor() * 4;
+        let mut backoff = rdm_transport::topology::gossip_interval();
+        let ceiling = rdm_transport::topology::staleness_floor() * 4;
         loop {
             let me = self.held_name();
             let Some(fr) = self.read().await.filter(|fr| fr.target == *target) else {
@@ -351,13 +351,13 @@ impl FabricRecoveryDoor {
                     if let Some(end) = self.hold_under_delete(span, target, &fr, &delete).await {
                         return end;
                     }
-                    tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+                    tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
                     continue;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     tracing::info!(error = %e, "the Build log could not be read for a fabric.delete in force: nothing is re-created on this pass");
-                    tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+                    tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
                     continue;
                 }
             }
@@ -390,7 +390,7 @@ impl FabricRecoveryDoor {
                                 heard_again.command(&held, inc).await;
                             }
                             investigated = false;
-                            next_look = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
+                            next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
                         }
                         // From the backbone, `running`: the investigation's report stands and the executor
                         // writes nothing, no row, no name release, no mark against the birth in its own book,
@@ -400,7 +400,7 @@ impl FabricRecoveryDoor {
                         (crate::node_investigation::Finding::Running, _) if !fr.own_mesh && fr.executor.is_some() => {
                             tracing::info!(subject = %node.name, verdict = finding.name(), "the backbone arm read the fabric-primary's runtime running: the report stands and nothing is written");
                             investigated = false;
-                            next_look = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
+                            next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
                         }
                         (_, Some(inspected)) => {
                             submitted = true;
@@ -426,7 +426,7 @@ impl FabricRecoveryDoor {
                 }
                 _ => {}
             }
-            tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+            tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
         }
     }
 

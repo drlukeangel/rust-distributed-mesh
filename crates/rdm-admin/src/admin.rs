@@ -37,7 +37,7 @@ use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rdm_core::launch::Launch;
 use rdm_core::{MemberStatus, MeshDigest, MeshNode};
-use rdm_transport::membership::{gossip_interval, Backbone, DigestBook, Membership};
+use rdm_transport::topology::{gossip_interval, Backbone, DigestBook, Membership};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tracing::Instrument;
 use std::net::SocketAddr;
@@ -280,7 +280,7 @@ mod tests {
             let election = DigestBook::default();
             let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &election.seats).await.unwrap();
             assert!((3..=4).contains(&taken), "{backend}: the mesh-primary's, the fabric-primary's and the rpc type's primary, the Deleted record's superseded: {taken}");
-            let held = |role, revision, d: &MeshDigest| matches!(election.seats.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_transport::membership::SeatTaken::Same);
+            let held = |role, revision, d: &MeshDigest| matches!(election.seats.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_transport::topology::SeatTaken::Same);
             assert!(held(rdm_core::Seat::of_node_type(NodeKind::NodeAdmin), 3, &admin) && held(rdm_core::Seat::FabricPrimary, 1, &admin) && held(rdm_core::Seat::of_node_type(NodeKind::RpcNode), 2, &rpc), "{backend}: each recorded primary is held at its revision");
         }
     }
@@ -1149,12 +1149,12 @@ mod tests {
         let (h_birth, o_birth) = (birth(1), birth(2));
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let h_seats = rdm_transport::membership::SeatBook::default();
+        let h_seats = rdm_transport::topology::SeatBook::default();
         h_seats.take(rdm_core::Seat::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
         hw.sweep(&h_seats).await;
         assert_eq!(storage.fabric().await.unwrap().map(|r| r.identity()), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
-        let o_seats = rdm_transport::membership::SeatBook::default();
+        let o_seats = rdm_transport::topology::SeatBook::default();
         o_seats.take(rdm_core::Seat::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
         for _sweep in 0..2 {
@@ -1681,7 +1681,7 @@ mod tests {
             for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
                 book.record(d);
             }
-            book.statuses.take(&rdm_transport::membership::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
+            book.statuses.take(&rdm_transport::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
             crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
@@ -2987,7 +2987,7 @@ mod tests {
     /// ready-for-traffic, or a mesh not held ready-for-traffic, answering routable.
     #[test]
     fn the_view_routes_a_birth_only_while_it_and_its_mesh_are_ready_for_traffic() {
-        use rdm_transport::membership::Frame;
+        use rdm_transport::topology::Frame;
         let book = DigestBook::default();
         let held = |mesh: &str, status: &str| {
             let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.admin.1"), forwarded_by: None, changed_at_rafka_ms: 10 };
@@ -3074,7 +3074,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_view_rebuild_is_due_on_receipt_of_a_routing_fact_not_on_the_poll() {
         use futures_util::FutureExt;
-        use rdm_transport::membership::Frame;
+        use rdm_transport::topology::Frame;
         let book = DigestBook::default();
         let rpc = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         assert!(book.record(rpc.clone()));
@@ -3110,7 +3110,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_stopped_admins_view_rebuild_is_held_at_its_own_wait_and_resumes_when_the_gate_opens() {
         use futures_util::FutureExt;
-        use rdm_transport::membership::Frame;
+        use rdm_transport::topology::Frame;
         let book = DigestBook::default();
         let mut facts = book.routing_watch();
         let gate = crate::stop_gate::StopGate::new();
@@ -3557,7 +3557,7 @@ mod tests {
     }
 
     /// An entry answer from `served_by` holding `frames`.
-    fn entry_answer(frames: Vec<rdm_transport::membership::Frame>) -> crate::wire::JoinAnswer {
+    fn entry_answer(frames: Vec<rdm_transport::topology::Frame>) -> crate::wire::JoinAnswer {
         crate::wire::JoinAnswer {
             served_by: "mesh1.admin.1".into(),
             control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
@@ -3565,8 +3565,8 @@ mod tests {
         }
     }
 
-    fn mesh_status(mesh: &str, status: &str) -> rdm_transport::membership::Frame {
-        rdm_transport::membership::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
+    fn mesh_status(mesh: &str, status: &str) -> rdm_transport::topology::Frame {
+        rdm_transport::topology::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
     }
 
     /// CONTRACT (i144 Q56; mesh-investigation.md "A node-admin joins the live mesh" step 2: the joining

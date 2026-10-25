@@ -5,7 +5,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{learn_addresses, Backbone, Membership, StatusEvent};
+use rdm_transport::topology::{learn_addresses, Backbone, Membership, StatusEvent};
 use serde_json::Value;
 use std::time::Duration;
 

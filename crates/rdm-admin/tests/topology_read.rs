@@ -5,7 +5,7 @@ use rdm_core::topology::PrimaryKind;
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::snapshot::{Chunk, SourceSnapshot, Taken};
 use rdm_admin::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyDoor, TopologyFailure, TopologySlot};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -171,7 +171,7 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_book_h
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
-    let backbone = rdm_transport::membership::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", rdm_core::PublisherId { node: "mesh1.rpc.1".to_string(), incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
+    let backbone = rdm_transport::topology::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", rdm_core::PublisherId { node: "mesh1.rpc.1".to_string(), incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     server.membership.book.record(member_of(&fabric, "mesh1", "rpc", 2));
     let t = target_of(&caller, &server);
@@ -245,7 +245,7 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     for c in &chunks {
         let len = Topology::encode_reply(c).unwrap().len();
         assert!(len <= Topology::MAX_REPLY_FRAME_BYTES, "a chunk of {len} bytes is over the ceiling");
-        assert!(len <= rdm_transport::membership::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
+        assert!(len <= rdm_transport::topology::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
     }
     hold(&server.membership, &source);
     let t = target_of(&caller, &server);

@@ -121,7 +121,7 @@ pub struct GossipLifecycle {
 pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, op: &rdm_core::LifecycleOp) {
     let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
     async {
-        backbone.publish_status_event(rdm_transport::membership::StatusEvent::Stopped, op).await;
+        backbone.publish_status_event(rdm_transport::topology::StatusEvent::Stopped, op).await;
         if let Some(project) = project {
             project().await;
         }
@@ -175,7 +175,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn deleting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            self.backbone.publish_status_event(rdm_transport::membership::StatusEvent::Deleting, op).await;
+            self.backbone.publish_status_event(rdm_transport::topology::StatusEvent::Deleting, op).await;
             tracing::info!("the node is being removed: every mesh hears it is not routable");
         }
         .instrument(span)
@@ -184,7 +184,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn restarting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            self.backbone.publish_status_event(rdm_transport::membership::StatusEvent::Restarting, op).await;
+            self.backbone.publish_status_event(rdm_transport::topology::StatusEvent::Restarting, op).await;
             tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
         }
         .instrument(span)
@@ -209,7 +209,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         });
     }
     async fn deleted(&self, op: &rdm_core::LifecycleOp) {
-        let f = rdm_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
+        let f = rdm_transport::topology::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {

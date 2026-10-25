@@ -24,7 +24,7 @@
 use crate::admin::Records;
 use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use crate::offline::{tickle, PeerProbe, ProbeEnd, Tickle, TickleCalls, Unreached, VIA_PEER_TICKLE_FANOUT};
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
@@ -1081,7 +1081,7 @@ mod tests {
         };
         let floor = Duration::from_secs(30);
         for every in [Duration::from_millis(500), Duration::from_secs(2)] {
-            let book = rdm_transport::membership::DigestBook::default();
+            let book = rdm_transport::topology::DigestBook::default();
             let (admin, rpc) = (digest("mesh2.admin.1"), digest("mesh2.rpc.1"));
             let t0 = Instant::now();
             assert!(book.record_forwarded_at(admin.clone(), t0), "the direct backbone receipt");

@@ -2243,8 +2243,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // it onto the backbone when it holds the command (gossip.md, node-connections-deleted, node-left).
                                     {
                                         let (commands, backbone, fabric_states) = (commands.clone(), backbone.clone(), states_slot.get().cloned().expect("the fabric states are built before the carrier"));
-                                        membership.set_completion_carrier(Arc::new(move |f: &rdm_transport::membership::Frame| {
-                                            use rdm_transport::membership::{CompletionCarry, Frame};
+                                        membership.set_completion_carrier(Arc::new(move |f: &rdm_transport::topology::Frame| {
+                                            use rdm_transport::topology::{CompletionCarry, Frame};
                                             if matches!(f.data(), Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
                                                 return fabric_states.mesh_book.carry_check_in(f, |f| {
                                                     let (backbone, f) = (backbone.clone(), f.clone());
@@ -2401,7 +2401,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             // on it.
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
                                             let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
-                                            let floor = rdm_transport::membership::staleness_floor();
+                                            let floor = rdm_transport::topology::staleness_floor();
                                             let mut written: WrittenSilence = HashMap::new();
                                             let mut heard_changes = recovery.book.heard_changes();
                                             loop {
@@ -2757,7 +2757,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if let Some(Some(b)) = &current {
                                                     records.set_planned(&b.topology);
                                                 }
-                                                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == rdm_transport::membership::MESH_READY_FOR_TRAFFIC)).cloned().collect());
+                                                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY_FOR_TRAFFIC)).cloned().collect());
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
                                                     membership.book.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
@@ -2876,7 +2876,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_checklist);
                                                 // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
                                                 fabric_states.address_changed_mesh_primaries(&t, fabric_primary);
-                                                let addr = rdm_transport::membership::gossip_addr;
+                                                let addr = rdm_transport::topology::gossip_addr;
                                                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                                                 builds.join_admins(admins.clone()).await;
                                                 backbone.join_admins(admins).await;
@@ -2929,7 +2929,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 drop(turn);
                                                 tokio::select! {
-                                                    _ = backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::membership::backbone_gossip_interval()) => {}
+                                                    _ = backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::topology::backbone_gossip_interval()) => {}
                                                     _ = roles_moved.notified() => {}
                                                 }
                                             }
@@ -2983,7 +2983,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             gate: park_gate.clone(),
                                             me: name.clone(),
                                             me_id: node_id.clone(),
-                                            interval: rdm_transport::membership::backbone_gossip_interval(),
+                                            interval: rdm_transport::topology::backbone_gossip_interval(),
                                             membership: membership.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),

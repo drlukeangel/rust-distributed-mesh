@@ -40,7 +40,7 @@ pub(crate) struct SilentNode {
 /// first held it, and is tickled only once the view holds it off ready-for-traffic (its caller's
 /// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the book holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
-pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rdm_transport::membership::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
+pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rdm_transport::topology::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
     watched
         .into_iter()
         .map(|n| {
@@ -87,7 +87,7 @@ pub type UnreachableMarks = std::sync::Arc<std::sync::Mutex<std::collections::Ha
 /// The marks of `mesh`'s births that stand at `now`: a mark ends when the view no longer holds that
 /// exact birth of `mesh`, or when `book` heard the birth after the mark. The ended ones are dropped
 /// from `marks`.
-pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, mesh: &str, book: &rdm_transport::membership::DigestBook, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
+pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, mesh: &str, book: &rdm_transport::topology::DigestBook, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
     let mut marks = marks.lock().unwrap();
     marks.retain(|id, m| {
         let held = view.births().any(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && n.mesh == mesh);
@@ -1637,7 +1637,7 @@ pub(crate) mod tests {
             n.incarnation_id = Some(d.node.incarnation.clone());
             n
         };
-        let book = rdm_transport::membership::DigestBook::default();
+        let book = rdm_transport::topology::DigestBook::default();
         let t0 = std::time::Instant::now();
         let (silent, fresh, reborn, unheld) = (digest("mesh1.rpc.1"), digest("mesh1.rpc.2"), digest("mesh1.rpc.3"), digest("mesh1.rpc.4"));
         book.record_at(silent.clone(), t0);

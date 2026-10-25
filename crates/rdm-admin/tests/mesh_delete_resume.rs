@@ -1494,7 +1494,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
     let lost = node(FINAL);
     let h = handle(FINAL, 49_001);
     let fleet = Fleet { pids: [(49_001, FINAL.to_string())].into_iter().collect(), ..Default::default() };
-    let book = rdm_transport::membership::DigestBook::default();
+    let book = rdm_transport::topology::DigestBook::default();
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
         let without_row = inspect_birth(&fleet, &book, Some(&nodes), &lost).await;

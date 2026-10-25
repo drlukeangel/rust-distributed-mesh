@@ -545,7 +545,7 @@ Departure removes a node from the ROUTING view. It does not release anything the
 node keeps its identity, its replica-set membership and its data across every class below. Only
 node.delete releases its identity and name; its storage stays with the spec (§7.3).
 
-All removal from the view is the membership book's (`rdm-transport/src/membership.rs`): a member
+All removal from the view is the membership book's (`rdm-transport/src/topology.rs`): a member
 unheard past the staleness floor is held, not current (`rdm.mesh.membership.update.via-member-stale`);
 a stopped birth leaves the book at `NodeStopped` (`rdm.mesh.membership.remove.via-node-stopped`); a
 deleted birth leaves at `NodeDeleted` and its id is held deleted for the retention

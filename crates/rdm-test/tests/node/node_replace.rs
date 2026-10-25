@@ -1862,7 +1862,7 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery() {
     let (estate, birth_build) = fabric_of("a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
@@ -2782,7 +2782,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     let after = until_new_birth(&estate, NODE, &before, SETTLE).await;
     let resumed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let cont = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let mut samples = Vec::new();
     let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(30);
     while std::time::Instant::now() < until && alive(pid as u64) {

@@ -54,7 +54,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let fp = "mesh1.admin.1";
     let standby = "mesh1.admin.2";
     let before = estate.node_view(fp).await;

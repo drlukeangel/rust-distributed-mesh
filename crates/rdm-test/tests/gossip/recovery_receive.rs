@@ -2,7 +2,7 @@
 use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, Primary};
-use rdm_transport::membership::{learn_addresses, mesh_channel, Frame, Membership, StatusEvent};
+use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, Membership, StatusEvent};
 use rdm_transport::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use std::{sync::{Arc, OnceLock}, time::Duration};

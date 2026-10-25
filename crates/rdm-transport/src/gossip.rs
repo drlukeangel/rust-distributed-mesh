@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, watch, Notify};
 
 const QUEUE: usize = 1024;
 const PARTS: usize = 16;
-const MAX: usize = crate::membership::MAX_FRAME;
+const MAX: usize = crate::topology::MAX_FRAME;
 const CHUNK: &str = crate::envelope::CHUNK_TYPE;
 
 /// X1 of docs/plans/proposal/gossip-neighbour-drop-at-join.md: RDM hands `peers` to iroh-gossip on

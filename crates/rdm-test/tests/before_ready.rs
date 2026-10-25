@@ -96,7 +96,7 @@ fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<MemberStatus>>> {
 }
 
 /// Resolves once `pred` holds of `book`, re-checked on every change the book hears.
-async fn until(book: &rdm_transport::membership::DigestBook, what: &str, pred: impl Fn(&rdm_transport::membership::DigestBook) -> bool) {
+async fn until(book: &rdm_transport::topology::DigestBook, what: &str, pred: impl Fn(&rdm_transport::topology::DigestBook) -> bool) {
     let waited = async {
         let mut heard = book.heard_changes();
         loop {

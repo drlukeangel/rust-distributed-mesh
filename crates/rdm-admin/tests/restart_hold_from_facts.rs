@@ -53,7 +53,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// CONTRACT (node-restart.md "Completion"; membership.rs `restarts_from_facts`: "each is open here
+/// CONTRACT (node-restart.md "Completion"; topology.rs `restarts_from_facts`: "each is open here
 /// until its operation's `Complete` is receipted"): a restart's `NodeRestarting` receipt entering an
 /// admin's Build log opens the hold on that birth in the admin's book, and the restart's
 /// `node.restart:<path>` `Complete` receipt entering the log closes it, each with no hierarchy checklist
@@ -129,7 +129,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
 }
 
 /// CONTRACT (node-restart.md: "node.restarted after the whole start completes; no event is inferred
-/// from gossip"; membership.rs `restarts_from_facts`: "each is open here until its operation's
+/// from gossip"; topology.rs `restarts_from_facts`: "each is open here until its operation's
 /// `Complete` is receipted"): a restart hold the `NodeRestarting` frame opened before any of its
 /// receipts reached this admin's Build log stays open while an unrelated fact enters the log (here a
 /// `retire-node` pre-event of another node, which ticks the overlay watch as its own hold opens), and

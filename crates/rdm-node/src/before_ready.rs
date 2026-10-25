@@ -23,7 +23,7 @@
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
-use rdm_transport::membership::{DigestBook, Membership};
+use rdm_transport::topology::{DigestBook, Membership};
 use rdm_transport::{CancelToken, BeforeReadyGate, NodeRpcClient};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};

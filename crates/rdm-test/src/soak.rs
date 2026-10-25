@@ -108,7 +108,7 @@ pub struct Config {
     /// process provider when the host drops UDP between loopback ports (`netfault`).
     pub network_faults: bool,
     /// The membership staleness floor and the backbone gossip interval the estate runs at
-    /// (`rdm_transport::membership`): the windows a silence is observed within.
+    /// (`rdm_transport::topology`): the windows a silence is observed within.
     pub floor: Duration,
     pub backbone: Duration,
     /// The longest one offline-tickle ladder takes: the direct connect, then every via-peer carrier at

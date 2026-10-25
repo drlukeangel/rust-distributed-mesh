@@ -863,7 +863,7 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     })
     .await;
     // Ten backbone publications of the new primary held: its republish would have gone out by then.
-    tokio::time::sleep(rdm_transport::membership::backbone_gossip_interval() * 10).await;
+    tokio::time::sleep(rdm_transport::topology::backbone_gossip_interval() * 10).await;
     let held_status = f.fabric_status().await;
     let held_spans = f.estate.spans();
     let sent_while_held = mesh_sends_after(&held_spans, &f.lost, admin_created_at(&held_spans, &f.lost));

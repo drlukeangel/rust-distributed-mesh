@@ -322,9 +322,9 @@ fn emit() { tracing::info_span!(target: "rafka.customer-target", "rdm.node_rpc.r
 #[test]
 fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-transport/src/membership.rs", "crate::envelope::encode(context, frame)", "serde_json::to_vec(self)");
+    t.edit("crates/rdm-transport/src/topology.rs", "crate::envelope::encode(context, frame)", "serde_json::to_vec(self)");
     let v = only(check(t.root()), Ratchet::NoJsonOnTheWire);
-    assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("membership.rs") && token == "serde_json::to_vec")), "{v:?}");
+    assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("topology.rs") && token == "serde_json::to_vec")), "{v:?}");
 
     let envelope = Planted::of_tree();
     envelope.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "serde_json::to_vec(&(context.attributes(dataschema)?, data))");

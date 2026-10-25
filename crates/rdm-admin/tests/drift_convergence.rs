@@ -23,7 +23,7 @@
 //! lane, a drift repair's in the fabric lane).
 
 use rdm_core::{MeshDigest, MeshNode, MemberStatus, RuntimeFact, RuntimeLocator, RuntimeProvider};
-use rdm_transport::membership::DigestBook;
+use rdm_transport::topology::DigestBook;
 use rdm_admin::accepted::{AcceptedStore, FabricTopology, MeshTopology};
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_state::{BuildState, BuildStateAdapter as _, MemoryBuildStateAdapter};

@@ -10,7 +10,7 @@
 
 use rdm_core::{FabricId, IncarnationId, MeshId};
 use rdm_transport::snapshot::PublisherId;
-use rdm_transport::membership::{
+use rdm_transport::topology::{
     forward_of, Backbone, Frame, Membership, StatusBook, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,
 };
 use serde_json::{json, Value};
@@ -116,7 +116,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // is sent until its checklist completes; then the adopted fact is sent, the old instant, five sends.
         let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         successor.set_role(true);
-        let heard = rdm_transport::membership::StatusFact { status: "ready-for-traffic".into(), changed_at_rafka_ms: 2 };
+        let heard = rdm_transport::topology::StatusFact { status: "ready-for-traffic".into(), changed_at_rafka_ms: 2 };
         assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
         assert!(successor.awaiting_checklist(), "the adopted status waits for its checklist");
         assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "no timer republishes an adopted status");

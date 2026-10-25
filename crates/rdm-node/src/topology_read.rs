@@ -11,7 +11,7 @@
 
 use rdm_core::wire::ProjectionEntry;
 use rdm_core::{MeshDigest, PublisherId};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
@@ -375,11 +375,11 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// between its pulls a node keeps its rafka-time disciplined from its own authority's heartbeats only
 /// (origin-ordering.md, rafka-time), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
-pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::membership::TopUpFetch {
+pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopUpFetch {
     Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
-            let mut done = rdm_transport::membership::TopUpDone::default();
+            let mut done = rdm_transport::topology::TopUpDone::default();
             for mesh in meshes {
                 let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));

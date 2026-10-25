@@ -1,6 +1,6 @@
 //! Snapshot/delta receiver contracts, through the live channel and real topology-read door.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{learn_addresses, mesh_channel, backbone_channel, Backbone, Frame, Membership};
+use rdm_transport::topology::{learn_addresses, mesh_channel, backbone_channel, Backbone, Frame, Membership};
 use rdm_transport::snapshot::{Chunk, PublisherId, Taken};
 use std::time::Duration;
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {

@@ -6,7 +6,7 @@
 use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
 use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-use rdm_transport::membership::{Frame, SeatBook, SeatTaken};
+use rdm_transport::topology::{Frame, SeatBook, SeatTaken};
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();

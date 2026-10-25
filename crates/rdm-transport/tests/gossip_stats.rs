@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use std::time::{Duration, Instant};
 
 fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {

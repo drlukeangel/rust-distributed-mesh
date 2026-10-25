@@ -30,7 +30,7 @@ pub(crate) fn evidence_dir() -> std::path::PathBuf {
 }
 
 // gossip & membership cells
-mod members_snapshot;
+mod nodes_snapshot;
 mod status_reinforcement;
 mod refeed_scheduler;
 mod channel_stopped;

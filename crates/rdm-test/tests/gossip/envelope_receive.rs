@@ -1,6 +1,6 @@
 //! Live context refusals precede opaque data, and cannot alter installed state.
 use rdm_core::{FabricId, MeshId};
-use rdm_transport::membership::{Frame, Membership, mesh_channel, learn_addresses};
+use rdm_transport::topology::{Frame, Membership, mesh_channel, learn_addresses};
 use std::time::Duration;
 
 #[test]

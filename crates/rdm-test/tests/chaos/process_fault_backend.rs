@@ -150,7 +150,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // Three node-admins: the bootstrap admin is the harness's own control address and is never signalled,
     // and a launched admin that is neither primary is always left to kill.
     let mut estate = estate(KILL_CELL, 3, 3).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let build_id = estate.accepted_build_id().await;
     let nodes0 = estate.node_values().await;
     let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();

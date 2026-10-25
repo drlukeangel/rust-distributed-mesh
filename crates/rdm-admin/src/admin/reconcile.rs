@@ -659,7 +659,7 @@ pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepte
 /// refused by name and adopts nothing.
 pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &Records, mesh: &str, mesh_id: &MeshId) {
     let held = answer.statuses.iter().find_map(|f| match f.data() {
-        rdm_transport::membership::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
+        rdm_transport::topology::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
         _ => None,
     });
     let Some((status, publisher)) = held else { return };

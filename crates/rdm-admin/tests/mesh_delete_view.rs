@@ -12,7 +12,7 @@
 use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{Backbone, Membership};
+use rdm_transport::topology::{Backbone, Membership};
 use rdm_admin::admin::{project, project_with, GossipLifecycle, Records, ViewReads};
 use rdm_admin::deployment::pipeline::LifecycleEvents;
 use rdm_admin::model::{PathName, ProviderKind, ScopeStatus};

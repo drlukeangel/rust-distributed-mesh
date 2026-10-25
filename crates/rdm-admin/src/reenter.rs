@@ -15,7 +15,7 @@
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRow;
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::{Budget, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
 use std::sync::Arc;

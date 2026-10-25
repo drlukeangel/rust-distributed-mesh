@@ -47,7 +47,7 @@ pub async fn run_seat_move_pull(
     me: crate::model::PathName,
     me_id: NodeId,
     client: Arc<rdm_transport::NodeRpcClient>,
-    membership: rdm_transport::membership::Membership,
+    membership: rdm_transport::topology::Membership,
 ) {
     let seats = membership.primaries().clone();
     let mut changed = seats.subscribe();
@@ -88,7 +88,7 @@ async fn pull_from_fabric_primary(
     me: &crate::model::PathName,
     me_id: &NodeId,
     client: &rdm_transport::NodeRpcClient,
-    membership: &rdm_transport::membership::Membership,
+    membership: &rdm_transport::topology::Membership,
     moved_to: rdm_core::Primary,
 ) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
@@ -135,7 +135,7 @@ pub(crate) async fn adopt_from_reachable(
     me: &crate::model::PathName,
     client: &rdm_transport::NodeRpcClient,
     resolver: &rdm_transport::LiveNodeResolver,
-    membership: &rdm_transport::membership::Membership,
+    membership: &rdm_transport::topology::Membership,
     contacts: Vec<crate::reenter::MapNode>,
     parent: &tracing::Span,
 ) -> Result<String, String> {

@@ -102,7 +102,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     lose_mesh1_unproven(&estate, &nodes).await;
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let decision = floor * 2;
     estate
         .until_view(&format!("the node re-created at {fp} is restored as mesh-primary and fabric-primary"), decision + floor * 20 + Duration::from_secs(120), |views| {
@@ -146,7 +146,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
     let backbone = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").expect("mesh2's admin")["name"]);
     lose_mesh1(&estate, &nodes, "-KILL").await;
     estate.enter(&Estate::path(&backbone)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let deleted = wait_for("the lost mesh1.admin.1's row is written Deleted", floor * 12 + Duration::from_secs(60), || async {
         let rows = spans_where(&estate.spans(), "rdm.node_admin.node.delete.via-node-row", "subject", "mesh1.admin.1");
         rows.into_iter().find(|r| r.contains(&old_id) && r.contains("row-deleted"))
@@ -208,7 +208,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     let backbone = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").expect("mesh2's admin")["name"]);
     lose_mesh1_unproven(&estate, &nodes).await;
     estate.enter(&Estate::path(&backbone)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let recreated = new_birth_within(&estate, "mesh1.admin.1", &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
         Some(_) => inherited_env(estate.pid_of("mesh1.admin.1").await),
@@ -274,7 +274,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     }
     estate.kill_bootstrap();
     estate.enter(&Estate::path(&winner_name)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let recreated = new_birth_within(&estate, "mesh1.admin.1", &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
         Some(_) => inherited_env(estate.pid_of("mesh1.admin.1").await),
@@ -348,8 +348,8 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     };
     intact();
 
-    let floor = rdm_transport::membership::staleness_floor();
-    let gossip = rdm_transport::membership::gossip_interval();
+    let floor = rdm_transport::topology::staleness_floor();
+    let gossip = rdm_transport::topology::gossip_interval();
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);

@@ -190,7 +190,7 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Coho
     // Another admin may announce first: `admin`'s own view holds the killed birth dead before
     // anything is read from it.
     estate
-        .until_view_at(admin, &format!("{admin} no longer hears {gone_id}"), rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
+        .until_view_at(admin, &format!("{admin} no longer hears {gone_id}"), rdm_transport::topology::staleness_floor() + Duration::from_secs(30), |views| {
             (!views.iter().any(|n| n.node_id.to_string() == gone_id && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect))).then_some(())
         })
         .await;
@@ -275,7 +275,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     // The rebirth is drift recovery's, once the killed runtime is proven exited: wait for the
     // count, then for the seats.
     estate
-        .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rdm_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), |views| {
+        .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
             (views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).count() == 3).then_some(())
         })
         .await;
@@ -313,7 +313,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let side_a = vec![admin_p.clone(), lone_rpc.clone()];
     let side_b: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| !side_a.contains(n)).collect();
     let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     match Partition::start(&udp_ports(&nodes, &side_a), &udp_ports(&nodes, &side_b)) {
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() == Ok("1") => {
             panic!("RDM_REQUIRE_NETFAULT=1 but this host cannot partition: {why}")
@@ -458,7 +458,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     estate
-        .until_view_at(&admin1, "drift recovery restores two live mesh2 admins", rdm_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), |views| {
+        .until_view_at(&admin1, "drift recovery restores two live mesh2 admins", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
             (views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic).count() == 2).then_some(())
         })
         .await;

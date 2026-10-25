@@ -235,7 +235,7 @@ pub struct TestBeforeReady {
     pub pulls_dropped: AtomicU32,
     /// Side effects emitted: one per row version applied, never per arrival.
     pub effects: AtomicU32,
-    book: std::sync::OnceLock<rdm_transport::membership::DigestBook>,
+    book: std::sync::OnceLock<rdm_transport::topology::DigestBook>,
 }
 
 /// Counts a pull dropped before it finished.
@@ -289,7 +289,7 @@ impl TestBeforeReady {
 
     /// The membership book the first attempt was handed: what the app subscribes to before it
     /// takes its snapshot.
-    pub fn book(&self) -> Option<rdm_transport::membership::DigestBook> {
+    pub fn book(&self) -> Option<rdm_transport::topology::DigestBook> {
         self.book.get().cloned()
     }
 

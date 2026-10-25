@@ -277,7 +277,7 @@ impl SeatFold {
     /// it is adopted there ([`DigestBook::adopt_status`]), before the view naming this admin primary is
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
     /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
-    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rdm_transport::membership::DigestBook>) {
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rdm_transport::topology::DigestBook>) {
         let holds = now.is_mesh_primary(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
@@ -337,7 +337,7 @@ impl SeatFold {
 impl SeatFold {
     /// Adopt into `book` every birth of this admin's mesh that `declared` holds a state for ahead of
     /// what `book` holds for that exact birth: the status its predecessor set, held by the successor.
-    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rdm_transport::membership::DigestBook, me_name: &crate::model::PathName) {
+    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rdm_transport::topology::DigestBook, me_name: &crate::model::PathName) {
         let held: Vec<(NodeId, IncarnationId, crate::model::PathName, NodeState)> = {
             let declared = declared.lock().unwrap();
             declared
@@ -428,7 +428,7 @@ pub enum MemberStatusReceipt<'a> {
 /// authority, writes a member's status. `Ok(true)` when the book holds the status for the birth;
 /// `Ok(false)` when it sets nothing (a birth of another mesh, or one the book holds nothing of);
 /// `Err` naming why a seat fold adopts nothing. The book's own span of each cause is its record.
-pub fn set_member_status(book: &rdm_transport::membership::DigestBook, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
+pub fn set_member_status(book: &rdm_transport::topology::DigestBook, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
     use rdm_core::MemberStatus as M;
     match receipt {
         MemberStatusReceipt::Declared(row) => Ok(match row.state {
@@ -447,7 +447,7 @@ pub fn set_member_status(book: &rdm_transport::membership::DigestBook, receipt: 
 /// and the rows it writes.
 pub struct StatusAuthority {
     /// This admin's own declaration and the application channels it holds.
-    pub app_channels: Option<rdm_transport::membership::Membership>,
+    pub app_channels: Option<rdm_transport::topology::Membership>,
     /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
@@ -537,7 +537,7 @@ pub struct StatusAuthority {
     /// This admin's digest book: as its mesh's primary it sets each member's status there through
     /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
     /// owns a digest book.
-    pub book: Option<rdm_transport::membership::DigestBook>,
+    pub book: Option<rdm_transport::topology::DigestBook>,
     /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
     /// property command is refused `RejectedFabricNotReady` and nothing is written.
     pub first_ready: crate::fabric_state::FirstReady,
@@ -1270,7 +1270,7 @@ impl StatusAuthority {
     /// A birth the book holds at the same incarnation keeps its rows, however long it is silent, and
     /// so does a birth the book does not hold at all whose path no other node holds (nothing is
     /// proven of it).
-    pub async fn drop_superseded(&self, book: &rdm_transport::membership::DigestBook) {
+    pub async fn drop_superseded(&self, book: &rdm_transport::topology::DigestBook) {
         let me_name = book.held_path_name().unwrap_or_else(|| self.me.clone());
         // The births held and their paths, read under the lock and the lock released before any await.
         let held: Vec<((NodeId, IncarnationId), Option<crate::model::PathName>)> = {
@@ -3087,7 +3087,7 @@ mod tests {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
             assert_eq!(authority.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
         }
-        let book = rdm_transport::membership::DigestBook::default();
+        let book = rdm_transport::topology::DigestBook::default();
         // rpc.1 restarted: the book holds its next incarnation.
         book.record(digest_of(&restarted, IncarnationId::mint()));
         // rpc.2 deleted: its exact birth departed.
@@ -3189,7 +3189,7 @@ mod tests {
         let mut recovered = exited.clone();
         recovered.node_id = NodeId::mint();
         recovered.incarnation_id = Some(IncarnationId::mint());
-        let book = rdm_transport::membership::DigestBook::default();
+        let book = rdm_transport::topology::DigestBook::default();
         book.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
         {

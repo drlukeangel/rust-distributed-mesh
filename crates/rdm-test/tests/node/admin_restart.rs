@@ -138,7 +138,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         let carrier = peers.carrier_at(home_view.name.clone());
         let rpc = rdm_client::NodeRpc::new(carrier.client());
         let at = rdm_transport::NodeTarget::ExactNode(home_view.node_id.clone());
-        wait_for(&format!("{home_primary} holds {away}'s aggregate past v{frame_version} with nothing in flight"), rdm_transport::membership::staleness_floor(), || async {
+        wait_for(&format!("{home_primary} holds {away}'s aggregate past v{frame_version} with nothing in flight"), rdm_transport::topology::staleness_floor(), || async {
             let frames = rpc.topology_get(&at, Some(away.to_string()), None, &rdm_transport::CallOptions::default()).await.ok()?;
             frames
                 .iter()
@@ -182,7 +182,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     assert_eq!(frames.len(), 1, "{away_primary} publishes the NodeRestarting frame of {operation} once: {frames:?}");
     let version = s(&frames[0]["attributes"]["topology_version"]);
     assert!(!version.is_empty(), "the NodeRestarting frame carries the version of {away}'s aggregate at which {target} changed: {}", frames[0]);
-    // The frame's version is taken by the publish itself, under the version lock (membership.rs `publish_status_event`), which
+    // The frame's version is taken by the publish itself, under the version lock (topology.rs `publish_status_event`), which
     // emits no `via-topology-version` span; that span belongs to the checklist path. So the proof that the frame's version is
     // the aggregate's is the other primary installing and forwarding the aggregate at exactly that version, below.
     // The other mesh's primary installs that mesh's aggregate from the backbone and forwards it onto its own mesh at a

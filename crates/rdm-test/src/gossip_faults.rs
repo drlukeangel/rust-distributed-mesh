@@ -2,7 +2,7 @@
 /// Drop one incoming chunk at `index` on the held app channel, then remove the cut.
 /// The remaining chunks exercise the ordinary assembly expiry and loss watch.
 pub async fn drop_chunk_once(
-    membership: &rdm_transport::membership::Membership,
+    membership: &rdm_transport::topology::Membership,
     kind: &str,
     index: usize,
 ) -> anyhow::Result<()> {

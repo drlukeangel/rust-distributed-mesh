@@ -8,7 +8,7 @@
 use crate::gossip_wire::{WireGolden, golden};
 
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, PublisherId};
-use rdm_transport::membership::Frame;
+use rdm_transport::topology::Frame;
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
@@ -96,7 +96,7 @@ fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
     assert_eq!(attributes.iter().find(|(name, _)| name == "specversion").map(|(_, v)| v.as_str()), Some("1.0"));
     assert_eq!(attributes.iter().find(|(name, _)| name == "type").map(|(_, v)| v.as_str()), Some("rdm.mesh.digest"));
     assert!(!body.is_empty());
-    assert!(encoded.len() <= rdm_transport::membership::MAX_FRAME);
+    assert!(encoded.len() <= rdm_transport::topology::MAX_FRAME);
 }
 
 /// The largest fixed byte golden includes the complete metadata and both vector prefixes.
@@ -114,10 +114,10 @@ fn the_largest_complete_message_golden_fits_max_frame() {
     let expected = golden(&frame, &data);
     let actual = frame.golden_encode();
     assert_eq!(actual, expected, "the complete near-ceiling golden is independent of the serializer");
-    assert!(expected.len() <= rdm_transport::membership::MAX_FRAME);
+    assert!(expected.len() <= rdm_transport::topology::MAX_FRAME);
     assert!(expected.len() > 3900);
     crate::gossip_wire::assert_roundtrip(&frame, &expected);
-    println!("largest complete message golden: {} B; MAX_FRAME {} B", expected.len(), rdm_transport::membership::MAX_FRAME);
+    println!("largest complete message golden: {} B; MAX_FRAME {} B", expected.len(), rdm_transport::topology::MAX_FRAME);
 }
 
 /// A body that fits by itself can overflow once its metadata and both prefixes are counted.
@@ -157,10 +157,10 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     context.traceparent = Some(PARENT.into()); context.tracestate = Some(STATE.into());
     assert_eq!(traced.encode(), expected);
     assert_eq!(expected[0], 10, "the complete metadata count is written by hand");
-    assert!(expected.len() <= rdm_transport::membership::MAX_FRAME);
+    assert!(expected.len() <= rdm_transport::topology::MAX_FRAME);
     assert!(expected.len() > 3900);
     assert_eq!(Frame::decode(&expected).unwrap().encode(), expected);
-    println!("traced complete message golden: {} B / {} B", expected.len(), rdm_transport::membership::MAX_FRAME);
+    println!("traced complete message golden: {} B / {} B", expected.len(), rdm_transport::topology::MAX_FRAME);
 }
 
 /// The full permitted trace state rides every chunk; packing counts its exact metadata bytes.
@@ -180,9 +180,9 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     };
     let full = rdm_transport::snapshot::Full::new(vec![d, other], vec![], vec![]);
     let oversized = shape(full.digests(), vec![], vec![], 0, 1).encode();
-    assert!(oversized.len() > rdm_transport::membership::MAX_FRAME);
+    assert!(oversized.len() > rdm_transport::topology::MAX_FRAME);
     let chunks = rdm_transport::snapshot::chunks_of(&full, shape);
     assert_eq!(chunks.len(), 2);
-    assert!(chunks.iter().all(|f| f.encode().len() <= rdm_transport::membership::MAX_FRAME));
+    assert!(chunks.iter().all(|f| f.encode().len() <= rdm_transport::topology::MAX_FRAME));
     assert!(chunks.iter().all(|f| f.context().unwrap().tracestate.as_ref() == Some(&state)));
 }

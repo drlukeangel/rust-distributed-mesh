@@ -135,7 +135,7 @@ fn refeed(
     known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
     neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>>,
 ) {
-    use rdm_transport::membership::backbone_gossip_interval;
+    use rdm_transport::topology::backbone_gossip_interval;
     tokio::spawn(async move {
         // As the membership channels (PRD §6.2): a bounded join attempt one gossip interval after
         // the topic was left alone, backed off (doubling, at most one floor apart) while it holds.
@@ -152,7 +152,7 @@ fn refeed(
             if since.elapsed() < backoff {
                 continue;
             }
-            backoff = rdm_transport::membership::refeed_backoff(backoff);
+            backoff = rdm_transport::topology::refeed_backoff(backoff);
             let mut peers = known.lock().unwrap().clone();
             peers.sort();
             peers.dedup();
@@ -188,7 +188,7 @@ pub struct FabricBuildStateAdapter {
     /// mesh this admin holds, never the fabric-primary's, so an admin that is fabric-primary no more
     /// still opens and claims its own mesh's drift attempts while it is its mesh's primary.
     mesh_seat_gate: Authority,
-    book: rdm_transport::membership::LocationBook,
+    book: rdm_transport::topology::LocationBook,
 }
 
 /// What the fabric-primary record this admin holds says of this birth's Build log.
@@ -298,7 +298,7 @@ impl FabricBuildStateAdapter {
     /// this admin reads. `node` names this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
-        book: &rdm_transport::membership::LocationBook,
+        book: &rdm_transport::topology::LocationBook,
         fabric: &rdm_core::FabricId,
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
@@ -428,7 +428,7 @@ impl FabricBuildStateAdapter {
                     Ok(t) => t,
                     Err(e) => {
                         span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; the Build topic ends"));
-                        rdm_transport::membership::mark_transport_stopped(format!("gossip refused to re-open the Build topic: {e}"));
+                        rdm_transport::topology::mark_transport_stopped(format!("gossip refused to re-open the Build topic: {e}"));
                         return;
                     }
                 };
@@ -449,7 +449,7 @@ impl FabricBuildStateAdapter {
     /// HyParView's shuffle (a minute per peer). Returns how many were joined.
     pub async fn join_admins(&self, admins: Vec<EndpointAddr>) -> usize {
         let live: Vec<iroh::EndpointId> = admins.iter().map(|a| a.id).collect();
-        let fresh = rdm_transport::membership::rejoin(&self.joined, &live);
+        let fresh = rdm_transport::topology::rejoin(&self.joined, &live);
         if fresh.is_empty() {
             return 0;
         }
@@ -775,7 +775,7 @@ mod tests {
     async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
         use futures_util::FutureExt as _;
         use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-        let seats = rdm_transport::membership::SeatBook::default();
+        let seats = rdm_transport::topology::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let next = Primary { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
@@ -810,7 +810,7 @@ mod tests {
     #[tokio::test]
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
         use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-        let seats = rdm_transport::membership::SeatBook::default();
+        let seats = rdm_transport::topology::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(seats.subscribe());

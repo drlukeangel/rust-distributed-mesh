@@ -44,7 +44,7 @@ pub struct ControlPlane {
     pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
     /// This admin's seat book: a node-admin it holds as its mesh's primary replaced by the election is
     /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
-    pub seats: std::sync::OnceLock<rdm_transport::membership::SeatBook>,
+    pub seats: std::sync::OnceLock<rdm_transport::topology::SeatBook>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.

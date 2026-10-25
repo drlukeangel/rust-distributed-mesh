@@ -6513,7 +6513,7 @@ mod tests {
         assert!(receiver.same_topology(&started), "the restart ends at the receiver");
     }
 
-    /// CONTRACT (membership.rs `restarts_from_facts`; node-restart.md: no event is inferred from
+    /// CONTRACT (topology.rs `restarts_from_facts`; node-restart.md: no event is inferred from
     /// gossip): the facts end a restart hold only by its own operation's `Complete` in its own Build,
     /// by its own attempt's `Converged` verdict in its own Build, or by its Build being forgotten.
     /// Must NOT happen: a hold the facts do not name yet closed by a recomputation, or closed by the

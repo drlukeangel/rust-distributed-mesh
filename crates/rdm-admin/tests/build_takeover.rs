@@ -178,7 +178,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     rdm_admin::fabric_storage::claim_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let local = Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new());
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::topology::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
     Admin { endpoint, router, builds, local, accepted }
 }
 

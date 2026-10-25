@@ -27,7 +27,7 @@ use crate::checklist::{fabric_missing, missing_members, reports_of, Missing};
 use crate::status_declare::{Authority, DeclareWake, Declarer, Key};
 use crate::topology::Topology;
 use crate::wiring::{FabricHooks, StateSyncHandoff, SyncState};
-use rdm_transport::membership::{Announced, DigestBook};
+use rdm_transport::topology::{Announced, DigestBook};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
@@ -256,8 +256,8 @@ struct Change {
 
 /// The gossip a checklist's hooks go out on: this admin's mesh channel and the backbone.
 struct HookGossip {
-    backbone: rdm_transport::membership::Backbone,
-    membership: rdm_transport::membership::Membership,
+    backbone: rdm_transport::topology::Backbone,
+    membership: rdm_transport::topology::Membership,
 }
 
 /// One admin's checklists: as the fabric-primary the change, as a mesh primary the commands to its
@@ -321,7 +321,7 @@ impl FabricStates {
     }
 
     /// Where this admin's state hooks are published, once it has joined the backbone.
-    pub fn set_gossip(&self, backbone: rdm_transport::membership::Backbone, membership: rdm_transport::membership::Membership) {
+    pub fn set_gossip(&self, backbone: rdm_transport::topology::Backbone, membership: rdm_transport::topology::Membership) {
         let _ = self.gossip.set(HookGossip { backbone, membership });
     }
 
@@ -2061,7 +2061,7 @@ mod tests {
     }
 
     use crate::model::{MeshId, NodeStatus as NS};
-    use rdm_transport::membership::DigestBook;
+    use rdm_transport::topology::DigestBook;
 
     fn member(name: &str, primary: bool, fabric_primary: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());

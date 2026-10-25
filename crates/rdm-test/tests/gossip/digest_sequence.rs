@@ -16,7 +16,7 @@
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_transport::clock::Clock;
-use rdm_transport::membership::{DigestBook, Membership};
+use rdm_transport::topology::{DigestBook, Membership};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

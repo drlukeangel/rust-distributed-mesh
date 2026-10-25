@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rdm_transport::membership::{Backbone, Frame, Membership};
+use rdm_transport::topology::{Backbone, Frame, Membership};
 use rdm_core::StateHook;
 use rdm_core::status::StatusRequest;
 use tracing::Instrument;

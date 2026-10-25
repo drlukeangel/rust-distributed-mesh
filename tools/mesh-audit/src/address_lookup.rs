@@ -36,7 +36,7 @@ pub const CANONICAL: &[&str] = &[
     "crates/rdm-admin/src",
     "crates/rafka-node-admin-core/src",
     "crates/rdm-client/src",
-    "crates/rafka-mesh-transport/src/membership.rs",
+    "crates/rafka-mesh-transport/src/topology.rs",
     "crates/rafka-mesh-transport/src/entry.rs",
 ];
 

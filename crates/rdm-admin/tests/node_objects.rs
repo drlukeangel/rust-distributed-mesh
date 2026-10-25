@@ -247,7 +247,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -283,7 +283,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -325,7 +325,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: fp }),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.

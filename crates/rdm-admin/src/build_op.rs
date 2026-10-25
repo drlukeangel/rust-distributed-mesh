@@ -22,7 +22,7 @@ use crate::control_plane::{ActionKind, ControlPlane, Refusal};
 use crate::model::PathName;
 use crate::topology::Topology;
 use rdm_core::IncarnationId;
-use rdm_transport::membership::SeatBook;
+use rdm_transport::topology::SeatBook;
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
 use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};

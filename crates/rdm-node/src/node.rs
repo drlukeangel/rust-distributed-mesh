@@ -6,7 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::{NodeRpcServer, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use std::path::Path;
@@ -319,7 +319,7 @@ pub async fn stop_requested() {
 /// fabric recovers from). `binary` names the process in the exit line.
 pub async fn wait_for_signal(binary: &str) {
     let stopped = async {
-        let reason = rdm_transport::membership::until_transport_stopped().await;
+        let reason = rdm_transport::topology::until_transport_stopped().await;
         tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
             .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
         eprintln!("{binary}: the mesh transport stopped: {reason}");
@@ -849,7 +849,7 @@ fn set_own_status(status: &Mutex<MemberStatus>, digest: &MeshDigest, to: MemberS
 /// The digest cadence of a node: its digest as it stands, its status and its in-flight count.
 fn spawn_publisher(membership: &Membership, digest: &MeshDigest, status: &Arc<Mutex<MemberStatus>>, server: &NodeRpcServer) -> tokio::task::JoinHandle<()> {
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
-    membership.publish_every(rdm_transport::membership::gossip_interval(), move || {
+    membership.publish_every(rdm_transport::topology::gossip_interval(), move || {
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
         d.in_flight = Some(rdm_transport::ServerStats::get(&stats.in_flight));
@@ -1126,7 +1126,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
             .iter()
             .flat_map(|m| m.members.iter())
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
-            .filter_map(rdm_transport::membership::gossip_addr)
+            .filter_map(rdm_transport::topology::gossip_addr)
             .collect();
         let _ = membership.join_peers_as("node.mesh_join", mesh_peers).await;
     }

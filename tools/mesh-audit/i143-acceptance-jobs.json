@@ -599,8 +599,8 @@
       "cells": [
         {
           "name": "members_receiver_commits_complete_snapshot_before_advancing_version",
-          "source": "crates/rdm-transport/tests/members_snapshot.rs",
-          "command": "cargo test -p rdm-transport --test main members_snapshot::members_receiver_commits_complete_snapshot_before_advancing_version -- --exact",
+          "source": "crates/rdm-transport/tests/nodes_snapshot.rs",
+          "command": "cargo test -p rdm-transport --test main nodes_snapshot::members_receiver_commits_complete_snapshot_before_advancing_version -- --exact",
           "dir": "target/i143-acceptance/2900/unit/members_receiver_commits_complete_snapshot_before_advancing_version"
         }
       ]

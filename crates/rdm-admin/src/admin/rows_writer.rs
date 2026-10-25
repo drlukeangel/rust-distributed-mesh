@@ -188,16 +188,16 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
 /// record's included: an election input (elections §3), each
 /// held only when it supersedes the record held. The records record the role; the election decides it.
 /// The store root is the fabric's own, so every record on it is of this fabric.
-pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, seats: &rdm_transport::membership::SeatBook) -> Result<usize, crate::storage_error::StorageError> {
+pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, seats: &rdm_transport::topology::SeatBook) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
         let Some(b) = r.newest_birth() else { continue };
         let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
         if let Some(revision) = b.is_primary {
-            taken += usize::from(matches!(seats.take(rdm_core::Seat::of_node_type(r.name.kind), &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
+            taken += usize::from(matches!(seats.take(rdm_core::Seat::of_node_type(r.name.kind), &record(revision)), rdm_transport::topology::SeatTaken::Held { .. }));
         }
         if let Some(revision) = b.is_fabric_primary {
-            taken += usize::from(matches!(seats.take(rdm_core::Seat::FabricPrimary, &record(revision)), rdm_transport::membership::SeatTaken::Held { .. }));
+            taken += usize::from(matches!(seats.take(rdm_core::Seat::FabricPrimary, &record(revision)), rdm_transport::topology::SeatTaken::Held { .. }));
         }
     }
     Ok(taken)
@@ -460,7 +460,7 @@ impl FabricRowsWriter {
 
     /// One sweep on the seat records `seats` holds: while the fabric seat names this birth, the claim
     /// of the fabric's name (which writes the identity row) until the store answers it.
-    pub(crate) async fn sweep(&mut self, seats: &rdm_transport::membership::SeatBook) {
+    pub(crate) async fn sweep(&mut self, seats: &rdm_transport::topology::SeatBook) {
         if !seats.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
             return;
         }

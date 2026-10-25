@@ -82,7 +82,7 @@ async fn roles_are_born_by_build_under_their_kind() {
 
     // Every node, whatever its kind, publishes its own CPU and RAM in its mesh digest, and the
     // node-admin's view serves it. The load travels on the node's own digest only (the primary's
-    // aggregate omits loads, rafka-mesh-transport membership.rs `publish`), so the view serves it once
+    // aggregate omits loads, rafka-mesh-transport topology.rs `publish`), so the view serves it once
     // this admin has heard that digest, which can follow the status the aggregate carried.
     let names: BTreeSet<String> = nodes.iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
     let loaded: Vec<Value> = wait_for("every node's own digest, with its load, in the admin's view", Duration::from_secs(15), || async {

@@ -55,7 +55,7 @@ fn dns_and_pkarr_lookups_are_refused_anywhere() {
 fn a_canonical_source_never_uses_the_legacy_plane_and_a_legacy_one_may() {
     let t = Tree::new(&[
         ("crates/rafka-node-admin-core/src/admin.rs", "let t = rafka_mesh_transport::IrohMeshTransport::new(k, a, true);\n"),
-        ("crates/rafka-mesh-transport/src/membership.rs", "use iroh_mdns_address_lookup::MdnsAddressLookup;\n"),
+        ("crates/rafka-mesh-transport/src/topology.rs", "use iroh_mdns_address_lookup::MdnsAddressLookup;\n"),
         ("crates/rafka-node-base/src/lib.rs", "let t = IrohMeshTransport::new(k, a, true);\n"),
     ]);
     let v = check(t.root());

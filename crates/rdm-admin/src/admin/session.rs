@@ -589,7 +589,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             .iter()
             .flat_map(|m| m.members.iter())
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
-            .filter_map(rdm_transport::membership::gossip_addr)
+            .filter_map(rdm_transport::topology::gossip_addr)
             .collect();
         let _ = membership.join_peers_as("admin.session.mesh", mesh_peers).await;
     }
@@ -722,7 +722,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();
         for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.name != self.me) {
-            if let Some(a) = rdm_transport::membership::gossip_addr(d) {
+            if let Some(a) = rdm_transport::topology::gossip_addr(d) {
                 if d.node.name.mesh == self.mesh {
                     mesh_peers.push(a.clone());
                 }

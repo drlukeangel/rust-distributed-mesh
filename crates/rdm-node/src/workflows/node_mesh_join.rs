@@ -9,7 +9,7 @@ use crate::model::{NodeId, PathName};
 use crate::node_self::StartFailed;
 use crate::wire::JoinAnswer;
 use rdm_core::{MemberStatus, MeshDigest};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::{NodeRpcClient, NodeTarget};
 use tracing::Instrument as _;
 

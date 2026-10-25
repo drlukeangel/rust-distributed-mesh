@@ -133,7 +133,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     rig_with_book(None).await
 }
 
-async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (Rig, BTreeMap<&'static str, Birth>) {
+async fn rig_with_book(book: Option<rdm_transport::topology::DigestBook>) -> (Rig, BTreeMap<&'static str, Birth>) {
     let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let mut others = BTreeMap::new();
     others.insert("admin2", birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false));
@@ -2322,7 +2322,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let membership = rdm_transport::topology::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         membership.set_mesh_primary(true);
         let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
         let rpc = &b["rpc2"];
@@ -2475,7 +2475,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let membership = rdm_transport::topology::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         membership.set_mesh_primary(true);
         let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
         let rpc = &b["rpc2"];
@@ -2533,7 +2533,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
 /// the start's `NodeJoined` frame; otherwise after it. What the mesh-primary holds of the birth once
 /// it took `NodeJoined` is checked by `joined`, before `NodeStarted` is sent; the spans the run
 /// exported are returned.
-fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_transport::membership::DigestBook) + Send + Sync + 'static) -> Capture {
+fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_transport::topology::DigestBook) + Send + Sync + 'static) -> Capture {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
     let cap = capture();
     cap.run(async move {
@@ -2543,7 +2543,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let membership = rdm_transport::topology::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         membership.set_mesh_primary(true);
         let book = membership.book.clone();
         let (rig, b) = rig_with_book(Some(book.clone())).await;
@@ -2614,7 +2614,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
 
 /// What the mesh-primary holds of mesh1.rpc.2's birth once it took the start's `NodeJoined`: the
 /// declared `state`, the member status `status`, its stop over and the birth held again.
-fn held_after_node_joined(rig: &Rig, rpc: &Birth, book: &rdm_transport::membership::DigestBook, state: NodeState, status: rdm_core::MemberStatus) {
+fn held_after_node_joined(rig: &Rig, rpc: &Birth, book: &rdm_transport::topology::DigestBook, state: NodeState, status: rdm_core::MemberStatus) {
     let incarnation = rpc.node.incarnation_id.clone().unwrap();
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(state), "the start's NodeJoined belongs to the Pending its join report recorded: it applies as already applied and the birth stays declared {state:?}");
     assert_eq!(book.member_status(&rpc.node.node_id, &incarnation), Some(status), "the book holds the birth {status:?}: NodeJoined sets nothing back");

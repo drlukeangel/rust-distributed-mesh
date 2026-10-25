@@ -171,7 +171,7 @@ pub enum Hit {
     Announcement {
         /// The announcing node.
         node: String,
-        /// The announcement (`rdm_transport::membership::Withhold`).
+        /// The announcement (`rdm_transport::topology::Withhold`).
         announcement: String,
         /// The channel it is sent on.
         channel: String,

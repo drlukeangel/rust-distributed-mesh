@@ -13,7 +13,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary};
-use rdm_transport::membership::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
+use rdm_transport::topology::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
 use rdm_transport::snapshot::PublisherId;
 use serde_json::Value;
 use std::time::Duration;
@@ -269,7 +269,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let fwd_bb = Backbone::join(&forwarder.gossip, &forwarder.ep, &fwd, "mesh1", PublisherId::from(&forwarder_birth.node), vec![source_addr]).await.unwrap();
         source_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
-        let mut linked = source.gossip.subscribe(rdm_transport::membership::backbone_channel(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
+        let mut linked = source.gossip.subscribe(rdm_transport::topology::backbone_channel(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(20), linked.joined()).await.unwrap().unwrap();
         assert!(source_bb.publish(&src, vec![]).await);
         until("the forwarder to install the empty source", || fwd_bb.held_source("mesh2").is_some()).await;
@@ -312,8 +312,8 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         let membership = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&source.gossip, &source.ep, &membership, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
-        let mut local = probe.gossip.subscribe(rdm_transport::membership::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
-        let mut remote = probe.gossip.subscribe(rdm_transport::membership::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
+        let mut local = probe.gossip.subscribe(rdm_transport::topology::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
+        let mut remote = probe.gossip.subscribe(rdm_transport::topology::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), local.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), remote.joined()).await.unwrap().unwrap();
         let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();

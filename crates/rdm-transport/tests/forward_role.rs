@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{learn_addresses, Backbone, Membership};
+use rdm_transport::topology::{learn_addresses, Backbone, Membership};
 use serde_json::Value;
 use std::time::Duration;
 

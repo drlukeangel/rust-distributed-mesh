@@ -322,7 +322,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
         (side(true), side(false))
     };
     let other_primary = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).expect("the other mesh's primary")["name"]);
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     // The ladder's decision step stands at twice the floor (mesh-investigation.md; rungs 20/30/40/60 s by default).
     let decision = floor * 2;
     let cut = match Partition::start(&udp_ports(&nodes, &mine), &udp_ports(&nodes, &theirs)) {

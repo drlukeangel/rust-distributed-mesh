@@ -133,7 +133,7 @@ fn the_channel_id_differs_across_fabrics_for_one_type() {
 async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked() {
     let (_a, _b, mut receiver, sender, _raw, mut events) = pair().await;
     let data = vec![0x5a; 3900];
-    assert!(data.len() < rdm_transport::membership::MAX_FRAME);
+    assert!(data.len() < rdm_transport::topology::MAX_FRAME);
     sender.publish(event(1, data.clone())).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), data.as_slice());
     loop {
@@ -144,7 +144,7 @@ async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked()
             .unwrap();
         if let iroh_gossip::api::Event::Received(message) = ev {
             assert!(
-                message.content.len() <= rdm_transport::membership::MAX_FRAME,
+                message.content.len() <= rdm_transport::topology::MAX_FRAME,
                 "every complete chunk includes metadata and both vector prefixes"
             );
             let (attributes, _): (Vec<(String, String)>, Vec<u8>) =

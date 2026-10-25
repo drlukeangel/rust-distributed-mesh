@@ -4,7 +4,7 @@
 //! `DEPARTED_RETENTION` while keeping the final aggregate in `SnapshotReceiver` and `Forwarder`.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rdm_transport::membership::Frame;
+use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::SnapshotReceiver;
 
 fn fabric() -> FabricId {

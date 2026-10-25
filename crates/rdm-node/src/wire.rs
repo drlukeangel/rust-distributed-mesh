@@ -22,7 +22,7 @@ pub struct JoinAnswer {
     /// The control facts the answer carries.
     pub control: JoinControl,
     /// The statuses the admin holds (original publisher and instant kept).
-    pub statuses: Vec<rdm_transport::membership::Frame>,
+    pub statuses: Vec<rdm_transport::topology::Frame>,
 }
 
 /// The fabric control state an admin hands a joiner.
@@ -69,7 +69,7 @@ struct WireJoinAnswer {
     served_by: String,
     control: WireControl,
     #[serde(with = "rdm_transport::envelope::frames")]
-    statuses: Vec<rdm_transport::membership::Frame>,
+    statuses: Vec<rdm_transport::topology::Frame>,
 }
 
 #[derive(Serialize, Deserialize)]

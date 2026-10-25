@@ -5501,7 +5501,7 @@ async fn mock_partition_heal_recovers_coverage_and_routes() {
 struct Observer {
     _endpoint: iroh::Endpoint,
     _router: iroh::protocol::Router,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, rdm_transport::membership::Frame)>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, rdm_transport::topology::Frame)>>>,
 }
 
 impl Observer {
@@ -5513,7 +5513,7 @@ impl Observer {
 
     async fn join(fabric: &rdm_core::FabricId, mesh: &rdm_core::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
         use futures_lite::StreamExt as _;
-        use rdm_transport::membership::{backbone_channel, learn_addresses, mesh_channel, Frame};
+        use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
         let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
         // The local address the host routes to the seeds: loopback for the process provider, the host's
         // bridge address for the container provider, whose nodes a loopback socket cannot reach.
@@ -5547,7 +5547,7 @@ async fn control_run(cell: &str, shape: Shape) {
     if !cuts_here(cell) {
         return;
     }
-    use rdm_transport::membership::Frame;
+    use rdm_transport::topology::Frame;
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -5607,7 +5607,7 @@ async fn control_run(cell: &str, shape: Shape) {
     // (`investigate.rs` rungs: `decide: floor * 2`), counted from its last backbone frame, at most one
     // backbone interval before the cut, so the cut is dropped below it and the victim never decides on a
     // fabric that is alive.
-    let backbone = rdm_transport::membership::backbone_gossip_interval();
+    let backbone = rdm_transport::topology::backbone_gossip_interval();
     let release_at = cut_started + window * 2 - backbone;
     // A role node restarts while the victim's coverage is stale (unheard for a floor): its request is made one
     // backbone interval past the floor, and its attempt runs on past the drop of the cut.
@@ -6677,7 +6677,7 @@ async fn soak_run(cell: &str, story: Story) {
     let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
     let day0 = estate.node_values().await;
     let per_mesh = [(NodeClass::NodeAdmin, shape.node_admin), (NodeClass::Compute, shape.compute), (NodeClass::Gateway, shape.gateway), (NodeClass::Broker, shape.broker)];
-    let mut cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_ladder());
+    let mut cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::topology::staleness_floor(), rdm_transport::topology::backbone_gossip_interval(), tickle_ladder());
     if story.profile == SoakProfile::Floors {
         // Past the hung-hold floors (`RDM_HUNG_HOLD_FLOORS` staleness floors, node-recovery.md R-FM1) by two.
         let floors: u32 = std::env::var("RDM_HUNG_HOLD_FLOORS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);

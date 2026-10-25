@@ -20,7 +20,7 @@ use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rdm_core::{FabricId, MeshDigest, MeshId, NodeState};
-use rdm_transport::membership::{backbone_channel, learn_addresses, mesh_channel, Frame};
+use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::typed::until_arrival;

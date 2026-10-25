@@ -1,7 +1,7 @@
 //! Live receive-path cells for operation facts: exact identity, independent of unrelated traffic.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{learn_addresses, Frame, Membership};
+use rdm_transport::topology::{learn_addresses, Frame, Membership};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -110,7 +110,7 @@ enum HookStory { AfterUnrelated, Repeat, ForwardedRepeat, Closed, AdminAuthor }
 fn state_hook_story(kind: &'static str, story: HookStory) {
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     use rdm_admin::fabric_state::{Checklists, StateKey, StateCommand};
-    use rdm_transport::membership::Backbone;
+    use rdm_transport::topology::Backbone;
     let suffix = match story { HookStory::AfterUnrelated => "control", HookStory::Repeat => "repeat", HookStory::ForwardedRepeat => "forwarded-repeat", HookStory::Closed => "closed", HookStory::AdminAuthor => "admin-author" };
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");
     std::fs::create_dir_all(&dir).unwrap();

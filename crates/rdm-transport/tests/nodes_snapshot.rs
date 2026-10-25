@@ -18,7 +18,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{backbone_channel, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
+use rdm_transport::topology::{backbone_channel, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
 use rdm_transport::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use serde_json::{json, Value};
 use std::time::Duration;

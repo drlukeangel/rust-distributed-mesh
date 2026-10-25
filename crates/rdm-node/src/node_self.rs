@@ -28,7 +28,7 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
-use rdm_transport::membership::Membership;
+use rdm_transport::topology::Membership;
 use rdm_transport::{NodeRpcClient, NodeRpcServer, NodeTarget};
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
@@ -290,7 +290,7 @@ pub struct NodeSelf {
     /// The backbone, for a node-admin: its state hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
-    pub backbone: Option<rdm_transport::membership::Backbone>,
+    pub backbone: Option<rdm_transport::topology::Backbone>,
     /// The bound of this birth's `node.connections.delete { All }`, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch or its
     /// admin config): the eligible work in flight is let finish until it passes. Strictly shorter
@@ -347,7 +347,7 @@ impl NodeSelf {
     }
 
     /// This surface, publishing its state hooks on `backbone` as well as its mesh channel.
-    pub fn with_backbone(mut self, backbone: rdm_transport::membership::Backbone) -> Self {
+    pub fn with_backbone(mut self, backbone: rdm_transport::topology::Backbone) -> Self {
         self.backbone = Some(backbone);
         self
     }
@@ -1438,7 +1438,7 @@ impl NodeSelf {
 /// when it is a node-admin's, each left emitting `rdm.node.mesh.update.via-left`. The one place the
 /// channel leave is written: each session's `leave_channels`, a birth that holds no session, and a
 /// commanded `node.mesh.join` whose start failed at a step call it.
-pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_transport::membership::Backbone>, node_id: &NodeId) {
+pub async fn leave_channels(membership: &Membership, backbone: Option<&rdm_transport::topology::Backbone>, node_id: &NodeId) {
     membership.stop().await;
     tracing::info_span!(
         "rdm.node.mesh.update.via-left",

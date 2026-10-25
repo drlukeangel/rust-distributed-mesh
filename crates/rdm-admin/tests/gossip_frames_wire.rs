@@ -13,7 +13,7 @@
 use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
-use rdm_transport::membership::Frame;
+use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
 use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
 use rdm_admin::build::{BuildId, FabricDesired, MeshDesired};
@@ -402,7 +402,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
         }
     }
     assert_eq!(heard, members.len(), "the chunks carry every member");
-    result.insert("members_snapshot".into(), json!({ "members": members.len(), "chunks": chunks.len(), "largest_bytes": chunks.iter().map(|c| c.encode().len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
+    result.insert("nodes_snapshot".into(), json!({ "members": members.len(), "chunks": chunks.len(), "largest_bytes": chunks.iter().map(|c| c.encode().len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
 
     // ---- sizes: one digest, postcard against the JSON-shaped MeshDigest ----
     let one = digest(1, Some(process_runtime()), true);

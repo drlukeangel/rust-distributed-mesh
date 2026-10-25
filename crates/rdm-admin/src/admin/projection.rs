@@ -565,7 +565,7 @@ pub(crate) const VIEW_POLL: Duration = Duration::from_millis(200);
 /// applied on receipt), else after `poll`; and only while the admin's gate is open. A parked admin's
 /// rebuild is held here, holding nothing, and is due the moment the gate opens. Answers the
 /// rebuild's turn: the caller ends it before it waits here again.
-pub(crate) async fn view_rebuild_due(facts: &mut rdm_transport::membership::RoutingWatch, poll: Duration, gate: &crate::stop_gate::StopGate) -> crate::stop_gate::Turn {
+pub(crate) async fn view_rebuild_due(facts: &mut rdm_transport::topology::RoutingWatch, poll: Duration, gate: &crate::stop_gate::StopGate) -> crate::stop_gate::Turn {
     tokio::select! {
         _ = tokio::time::sleep(poll) => {}
         _ = facts.moved() => {}

@@ -1,7 +1,7 @@
 //! A live mesh-channel probe of the replacement-state receive contract.
 
 use rdm_core::{FabricId, MeshId};
-use rdm_transport::membership::{learn_addresses, Frame, Membership};
+use rdm_transport::topology::{learn_addresses, Frame, Membership};
 use std::time::Duration;
 
 pub(super) async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {

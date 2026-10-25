@@ -17,7 +17,7 @@ use iroh::protocol::Router;
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
-use rdm_transport::membership::{gossip_addr, learn_addresses, Frame, Membership};
+use rdm_transport::topology::{gossip_addr, learn_addresses, Frame, Membership};
 use rdm_transport::snapshot::PublisherId;
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};

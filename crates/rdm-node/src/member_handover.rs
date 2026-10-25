@@ -15,7 +15,7 @@ use rdm_core::framing::Birth;
 use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, FABRIC};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::{NodeKind, Seat};
-use rdm_transport::membership::{Membership, SeatBook, SeatTaken};
+use rdm_transport::topology::{Membership, SeatBook, SeatTaken};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use tracing::Instrument as _;
 

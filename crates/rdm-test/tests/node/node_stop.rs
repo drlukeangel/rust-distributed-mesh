@@ -341,7 +341,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
     // The config the join handed rides the started node's digests (R-JN1): the view carries it once the
     // first of them is heard, within a gossip interval of the start's completion.
-    let until = std::time::Instant::now() + rdm_transport::membership::staleness_floor();
+    let until = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
     let after = loop {
         let v = view_of(&nodes, &path).await;
         if v.config == told || std::time::Instant::now() >= until {

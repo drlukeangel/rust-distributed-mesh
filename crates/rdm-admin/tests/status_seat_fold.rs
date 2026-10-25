@@ -189,7 +189,7 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 #[test]
 fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_book_and_projection() {
     use rdm_core::MemberStatus;
-    use rdm_transport::membership::{Backbone, Membership};
+    use rdm_transport::topology::{Backbone, Membership};
     use rdm_core::status::{StatusReply, StatusRequest};
     let cap = crate::mesh_delete_resume::capture();
     let (trace_id, after_take, rpc2_heard, projected, declared, after_declare) = cap.run(async {
@@ -347,7 +347,7 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
 fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() {
     use rdm_core::status::{StatusReply, StatusRequest};
     use rdm_core::MemberStatus;
-    use rdm_transport::membership::{Backbone, Membership};
+    use rdm_transport::topology::{Backbone, Membership};
     let cap = crate::mesh_delete_resume::capture();
     let observed = cap.run(async {
         let mut observed = Vec::new();

@@ -221,8 +221,8 @@ impl Checklists {
     /// Carry an ordinary node's state check-in only while this mesh-admin holds the checklist open.
     /// Receipt never drives this checklist. The caller supplies the existing backbone publication;
     /// its named outcome is returned to the hook's receive span (Q21: x).
-    pub fn carry_check_in(&self, frame: &rdm_transport::membership::Frame, carry: impl FnOnce(&rdm_transport::membership::Frame)) -> rdm_transport::membership::CompletionCarry {
-        use rdm_transport::membership::{CompletionCarry, Frame};
+    pub fn carry_check_in(&self, frame: &rdm_transport::topology::Frame, carry: impl FnOnce(&rdm_transport::topology::Frame)) -> rdm_transport::topology::CompletionCarry {
+        use rdm_transport::topology::{CompletionCarry, Frame};
         let (hook, kind) = match frame.data() {
             Frame::StateCommitted { hook, .. } => (hook, StateCommand::StateCommit),
             Frame::TrafficOpened { hook, .. } => (hook, StateCommand::OpenTraffic),

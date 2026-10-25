@@ -1,6 +1,6 @@
 //! Reserved positions are refused before any fact, status, seat or carrier path runs.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary, LifecycleOp};
-use rdm_transport::membership::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, Membership};
+use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, Membership};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
@@ -57,7 +57,7 @@ fn reserved(kind: Kind) {
         receiver.set_completion_carrier(std::sync::Arc::new(move |_| {
             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tracing::info_span!("cell.reserved.update.via-carrier").in_scope(|| tracing::info!("a reserved receipt invoked the completion carrier"));
-            rdm_transport::membership::CompletionCarry::Carried
+            rdm_transport::topology::CompletionCarry::Carried
         }));
         let op = LifecycleOp { build_id: "reserved-receive".into(), attempt: 1, operation: "node.delete:mesh1.admin.2".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.admin.2".parse().unwrap(), event_at_rafka_ms: 1 };
         let unknown = iroh::SecretKey::generate().public();

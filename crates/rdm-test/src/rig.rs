@@ -6,7 +6,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_transport::membership::{Backbone, Membership};
+use rdm_transport::topology::{Backbone, Membership};
 use rdm_admin::deployment::pipeline::NodeObserver;
 use rdm_admin::model::Node;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -338,7 +338,7 @@ impl AdminSide {
                 digest.digest_seq += 1;
                 digest.emitted_at_rafka_ms += 1;
                 book.record(digest.clone());
-                tokio::time::sleep(rdm_transport::membership::gossip_interval()).await;
+                tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
             }
         })))
     }
@@ -429,7 +429,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let seeds = match &seat {
         SideSeat::Primary => vec![],
         SideSeat::Silent { seed } => {
-            rdm_transport::membership::learn_addresses(&admin_ep, std::slice::from_ref(seed)).unwrap();
+            rdm_transport::topology::learn_addresses(&admin_ep, std::slice::from_ref(seed)).unwrap();
             vec![seed.clone()]
         }
     };
@@ -611,12 +611,12 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             AbortOnDrop(tokio::spawn(async move {
                 loop {
                     backbone.publish(&membership, backbone.own_members(&membership)).await;
-                    backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::membership::gossip_interval()).await;
+                    backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::topology::gossip_interval()).await;
                 }
             }))
         };
         let cell = digest_cell.clone();
-        (Some(publications), Some(AbortOnDrop(membership.publish_every(rdm_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))))
+        (Some(publications), Some(AbortOnDrop(membership.publish_every(rdm_transport::topology::gossip_interval(), move || cell.lock().unwrap().clone()))))
     } else {
         (None, None)
     };

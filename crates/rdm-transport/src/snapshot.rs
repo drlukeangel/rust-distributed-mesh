@@ -4,7 +4,7 @@
 //! baseline an entry top-up hands a node.
 //!
 //! Everything here is a pure state machine over values: no socket, no clock, no timer. The
-//! gossip wiring in [`crate::membership`] feeds it frames and sends what it returns.
+//! gossip wiring in [`crate::topology`] feeds it frames and sends what it returns.
 //!
 //! ```text
 //! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> Members on the backbone
@@ -13,7 +13,7 @@
 //! RECEIVER         MembersDelta -> applied only at exactly base_version, else the source desyncs
 //! ```
 
-use crate::membership::{Frame, MAX_FRAME};
+use crate::topology::{Frame, MAX_FRAME};
 use rdm_core::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

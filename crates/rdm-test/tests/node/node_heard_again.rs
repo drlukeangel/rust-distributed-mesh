@@ -123,7 +123,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
 
     // An rpc node, then the node-admin that is not the mesh-primary: every node follows the path.
     let rpc_node_id = estate.node_view("mesh1.rpc.2").await.node_id.to_string();
@@ -225,7 +225,7 @@ async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let first = hold_past_the_floor_then_release(&estate, "mesh1.rpc.2", floor).await;
     let second = hold_past_the_floor_then_release(&estate, "mesh1.rpc.2", floor).await;
     estate.stop().await;
@@ -252,7 +252,7 @@ async fn a_birth_restarted_by_a_build_and_held_later_is_still_commanded_back() {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let node = "mesh1.rpc.2";
     let before = estate.node_view(node).await;
     let mut stream = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));

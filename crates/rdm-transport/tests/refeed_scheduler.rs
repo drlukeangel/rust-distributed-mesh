@@ -2,7 +2,7 @@
 //! `scripts/i143-acceptance-gate.sh i143-2902-unit`, which exports `I143_ACCEPTANCE_DIR`; the cell
 //! leaves `result.json` (the schedule it observed) and `spans.json` there.
 
-use rdm_transport::membership::{RepairSchedule, RepairTarget};
+use rdm_transport::topology::{RepairSchedule, RepairTarget};
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

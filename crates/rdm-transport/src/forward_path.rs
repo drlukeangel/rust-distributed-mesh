@@ -20,7 +20,7 @@
 //! refuses, or a queue whose task is gone, sets `owes_full`: the next publication of the primary
 //! puts the full of every source into the mesh (the seat's mechanism), with no timer and no retry.
 
-use crate::membership::Frame;
+use crate::topology::Frame;
 use crate::snapshot::{Forward, Forwarder, Full, PublisherId};
 use std::collections::BTreeSet;
 use std::future::Future;

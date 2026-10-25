@@ -27,7 +27,7 @@ use rdm_core::outcome::RpcOutcome;
 use rdm_core::Seat;
 use rdm_core::catalog::OpOwner;
 use rdm_node::member_handover::{call_successor, entries_named, install, Answered, Entry, STEP};
-use rdm_transport::membership::{Backbone, DigestBook, Membership};
+use rdm_transport::topology::{Backbone, DigestBook, Membership};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
@@ -496,7 +496,7 @@ impl HandoverDoor {
             self.membership.primaries().take_together(&records)
         };
         (self.project_view)().await;
-        if let Some(rdm_transport::membership::SeatTaken::Refused { held }) = taken.iter().find(|t| matches!(t, rdm_transport::membership::SeatTaken::Refused { .. })) {
+        if let Some(rdm_transport::topology::SeatTaken::Refused { held }) = taken.iter().find(|t| matches!(t, rdm_transport::topology::SeatTaken::Refused { .. })) {
             return Err(rdm_core::reply::handover::not_ready(format!("{}: a record held here is newer than the transition's: {held:?}", to.name)));
         }
         let to_birth = Birth { node_id: to.node_id.clone(), incarnation };

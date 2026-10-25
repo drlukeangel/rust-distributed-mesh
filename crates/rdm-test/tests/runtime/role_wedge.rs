@@ -42,7 +42,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
     estate.until_node(&path, &format!("{path}'s own ReadyForTraffic declared at the authority"), Duration::from_secs(20), |n| n.filter(|n| n.declared.as_deref() == Some("ReadyForTraffic")).map(|_| ())).await;
 
     // Frozen: pending-reconnect at the floor, then re-created at its path.name.
-    let floor = rdm_transport::membership::staleness_floor();
+    let floor = rdm_transport::topology::staleness_floor();
     let primary_before = nodes.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("a broker primary");
     let pid = estate.pid_of(&path).await;
     assert!(std::process::Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success(), "SIGSTOP {pid} ({path})");

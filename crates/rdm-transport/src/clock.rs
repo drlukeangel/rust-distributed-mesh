@@ -2,7 +2,7 @@
 //!
 //! Every gossip timestamp (`emitted_at_rafka_ms`, `published_at_rafka_ms`, `event_at_rafka_ms`,
 //! `changed_at_rafka_ms`) is Rafka-time. The substrate invents no wall clock of its own: the
-//! binary that composes a [`Membership`](crate::membership::Membership) supplies the clock, and
+//! binary that composes a [`Membership`](crate::topology::Membership) supplies the clock, and
 //! every stamp on the gossip path reads it. Every RDM process composes one [`RafkaTime`]: the
 //! authority's time, adopted once at its join (or its own OS clock, once, by the fabric's Day-0
 //! root), then read as that reference plus monotonic elapsed time, kept on the authority's time by
