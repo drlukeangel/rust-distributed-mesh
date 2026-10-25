@@ -353,14 +353,14 @@ pub enum BuildReject {
         /// The fabric's provider.
         fabric_provider: crate::model::ProviderKind,
     },
-    /// A mesh's paths and its per-path config disagree: a materialized path with no path config, or a path
-    /// config for a path the mesh does not hold.
-    PathConfigMismatch {
+    /// A mesh's paths and its create specs disagree: a materialized path with no create spec, or a
+    /// create spec for a path the mesh does not hold.
+    NodeSpecMismatch {
         /// The mesh.
         mesh: String,
-        /// The paths with no path config.
+        /// The paths with no create spec.
         missing: Vec<String>,
-        /// The path config for paths the mesh does not hold.
+        /// The create specs of paths the mesh does not hold.
         extra: Vec<String>,
     },
     /// The node belongs to a peer mesh this fabric-primary holds unheard: loss of that mesh's
@@ -496,6 +496,14 @@ pub enum BuildReject {
         /// Why.
         detail: String,
     },
+    /// The config a request's create spec names for a path, over the cap `node.config.update` holds a
+    /// map to (Q166; [`rdm_core::check_config`]), refused at acceptance before anything is accepted.
+    ConfigOverCap {
+        /// The path.
+        node: String,
+        /// The map's keys and bytes, and the cap.
+        over: rdm_core::ConfigOverCap,
+    },
 }
 
 impl BuildReject {
@@ -514,7 +522,7 @@ impl BuildReject {
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",
             Self::ProviderInBuild { .. } => "provider-mismatch",
-            Self::PathConfigMismatch { .. } => "path-config-mismatch",
+            Self::NodeSpecMismatch { .. } => "node-spec-mismatch",
             Self::UnheardMesh { .. } => "unheard-mesh",
             Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
             Self::LastAdmin { .. } => "last-admin",
@@ -531,6 +539,7 @@ impl BuildReject {
             Self::ExecutableMissing { .. } => "executable-missing",
             Self::ExecutableRefused { .. } => "executable-refused",
             Self::TagsRefused { .. } => "tags-refused",
+            Self::ConfigOverCap { .. } => "config-over-cap",
         }
     }
 }
@@ -571,12 +580,13 @@ impl fmt::Display for BuildReject {
             Self::BasedOnNotCurrent { based_on, current } => write!(f, "the request is based on Build {based_on}, and the current Build is {current}: nothing is accepted; read the topology again and submit from it"),
             Self::NoNodeListed => write!(f, "the request lists no node: a fabric with no mesh is fabric.delete, never a topology request; nothing is accepted"),
             Self::NodeNamedTwice { node } => write!(f, "the request names `{node}` twice: each node is listed once"),
-            Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its config names no executable: every created node names the executable it runs; nothing is accepted"),
+            Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its create spec names no executable: every created node names the executable it runs; nothing is accepted"),
             Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for `{node}` is refused: {detail}; nothing is accepted"),
             Self::TagsRefused { node, detail } => write!(f, "the tags the request names for `{node}` are refused: {detail}; nothing is accepted"),
-            Self::PathConfigMismatch { mesh, missing, extra } => write!(
+            Self::ConfigOverCap { node, over } => write!(f, "the config the request names for `{node}` is refused: {over}; nothing is accepted"),
+            Self::NodeSpecMismatch { mesh, missing, extra } => write!(
                 f,
-                "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",
+                "mesh `{mesh}`: every materialized path carries exactly one create spec; missing [{}], without a node [{}]",
                 missing.join(", "),
                 extra.join(", ")
             ),

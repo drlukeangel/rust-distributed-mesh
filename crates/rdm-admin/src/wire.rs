@@ -23,7 +23,7 @@ use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::FabricIdentity;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rdm_core::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -114,11 +114,14 @@ struct WireMesh {
     name: String,
     mesh_id: MeshId,
     nodes: BTreeSet<PathName>,
-    path_config_by_path: BTreeMap<PathName, WirePathConfig>,
+    spec_by_path: BTreeMap<PathName, WireSpec>,
 }
 
+/// A create spec as the Build topic carries it: storage and placement, positional. The executable, the
+/// tags and the config never ride gossip (proposal executable-bindings-at-create.md rule 7; Q166): the
+/// store root's record of the accepted Build carries them.
 #[derive(Serialize, Deserialize)]
-struct WirePathConfig {
+struct WireSpec {
     storage: WireStorage,
     placement: PlacementMeta,
 }
@@ -159,9 +162,10 @@ enum WireChange {
     /// ([`TopologyChange::Reserved`]); kept so `Reconcile` keeps its position.
     Reserved7,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1), appended last. Each
-    /// entry's config travels as the topology's do, with no executable and no tags (rule 7: nothing
-    /// about executables rides gossip); the stored accepted Build keeps them.
-    Reconcile { based_on: BuildId, nodes: Vec<(PathName, WirePathConfig)> },
+    /// node's create spec travels as the topology's do, by its path.name with its storage and placement,
+    /// no executable, no tags and no config (rule 7: nothing about executables rides gossip); the stored
+    /// accepted Build keeps them.
+    Reconcile { based_on: BuildId, nodes: Vec<(PathName, WireSpec)> },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -210,7 +214,7 @@ impl From<&TopologyChange> for WireChange {
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
             TopologyChange::DeleteFabric => Self::DeleteFabric,
             TopologyChange::Reserved {} => Self::Reserved7,
-            TopologyChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|(p, c)| (p.clone(), c.into())).collect() },
+            TopologyChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on: based_on.clone(), nodes: nodes.iter().map(|s| (s.path.clone(), s.into())).collect() },
         }
     }
 }
@@ -225,7 +229,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
             WireChange::DeleteFabric => Self::DeleteFabric,
             WireChange::Reserved7 => Self::Reserved {},
-            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, c)| (p, c.into())).collect() },
+            WireChange::Reconcile { based_on, nodes } => Self::Reconcile { based_on, nodes: nodes.into_iter().map(|(p, w)| w.at(p)).collect() },
         }
     }
 }
@@ -267,8 +271,8 @@ pub(crate) fn action_round_trip(a: &AttemptAction) -> AttemptAction {
     rdm_transport::wire::decode::<WireAction>(&bytes).expect("an action decodes").into()
 }
 
-impl From<&PathConfig> for WirePathConfig {
-    fn from(m: &PathConfig) -> Self {
+impl From<&NodeSpec> for WireSpec {
+    fn from(m: &NodeSpec) -> Self {
         let storage = match m.storage {
             StorageMeta::Ephemeral => WireStorage::Ephemeral,
             StorageMeta::Persistent { on_retire } => WireStorage::Persistent { on_retire },
@@ -276,16 +280,16 @@ impl From<&PathConfig> for WirePathConfig {
         Self { storage, placement: m.placement }
     }
 }
-/// An entry heard on the Build topic names no executable and no tags (proposal
-/// executable-bindings-at-create.md rule 7): the store root's record of the accepted Build is the one
-/// that does.
-impl From<WirePathConfig> for PathConfig {
-    fn from(m: WirePathConfig) -> Self {
-        let storage = match m.storage {
+impl WireSpec {
+    /// The create spec at `path` heard on the Build topic: it names no executable, no tags and no config
+    /// (proposal executable-bindings-at-create.md rule 7; Q166): the store root's record of the accepted
+    /// Build is the one that does.
+    fn at(self, path: PathName) -> NodeSpec {
+        let storage = match self.storage {
             WireStorage::Ephemeral => StorageMeta::Ephemeral,
             WireStorage::Persistent { on_retire } => StorageMeta::Persistent { on_retire },
         };
-        Self { storage, placement: m.placement, executable: None, tags: Default::default() }
+        NodeSpec { path, storage, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
 impl From<&FabricTopology> for WireTopology {
@@ -298,7 +302,7 @@ impl From<&FabricTopology> for WireTopology {
                     name: m.name.clone(),
                     mesh_id: m.mesh_id.clone(),
                     nodes: m.nodes.clone(),
-                    path_config_by_path: m.path_config_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
+                    spec_by_path: m.spec_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
                 };
                 (k.clone(), mesh)
             })
@@ -312,7 +316,7 @@ impl From<WireTopology> for FabricTopology {
             .meshes
             .into_iter()
             .map(|(k, m)| {
-                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, path_config_by_path: m.path_config_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
+                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, spec_by_path: m.spec_by_path.into_iter().map(|(p, w)| (p.clone(), w.at(p))).collect() };
                 (k, mesh)
             })
             .collect();

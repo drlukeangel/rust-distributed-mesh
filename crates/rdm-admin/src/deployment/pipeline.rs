@@ -1670,7 +1670,7 @@ impl DeploymentPipeline<'_> {
                         step_span.record("awaiting", "entry-tags");
                         let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the path's tags; nothing is launched: {e}", req.node, req.build_id))?;
                         done_awaits.push("entry-tags");
-                        stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.path_config(&req.node)).map(|c| c.tags.clone())).unwrap_or_default()
+                        stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|c| c.tags.clone())).unwrap_or_default()
                     }
                     _ => Default::default(),
                 };

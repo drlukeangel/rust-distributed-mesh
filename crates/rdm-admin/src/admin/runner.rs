@@ -283,14 +283,14 @@ impl AdminRunner {
     /// records it ([`BuildStateAdapter::stored_accepted`]), when it names one.
     async fn entry_executable(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
         let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's executable: {e}"))?;
-        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.path_config(node)).and_then(|c| c.executable.clone())))
+        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).and_then(|c| c.executable.clone())))
     }
 
     /// The storage `node`'s entry names in Build `build_id`'s accepted topology as builds.storage records
     /// it ([`BuildStateAdapter::stored_accepted`]), when the topology holds the path.
     async fn entry_storage(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::meta::StorageMeta>, String> {
         let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's storage: {e}"))?;
-        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.path_config(node)).map(|c| c.storage)))
+        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(|c| c.storage)))
     }
 
     /// The executable binding the row a create of `node` is seeded from records (the claim's seed,

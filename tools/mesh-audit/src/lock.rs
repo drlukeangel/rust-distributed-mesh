@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 pub enum Ratchet {
     TagIsDescriptiveOnly,
     ResourceBehaviorIsTypedMeta,
-    AcceptedBuildHasExplicitPathConfig,
+    AcceptedBuildHasExplicitNodeSpec,
     LegacyDefaultsAreIngressOnly,
     ProviderInterpretsNeitherMetaNorTags,
     NoTransportTagVocabulary,
@@ -49,7 +49,7 @@ impl Ratchet {
     pub const ALL: [Ratchet; 28] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
-        Self::AcceptedBuildHasExplicitPathConfig,
+        Self::AcceptedBuildHasExplicitNodeSpec,
         Self::LegacyDefaultsAreIngressOnly,
         Self::ProviderInterpretsNeitherMetaNorTags,
         Self::NoTransportTagVocabulary,
@@ -82,7 +82,7 @@ impl Ratchet {
         match self {
             Self::TagIsDescriptiveOnly => "tag_is_descriptive_only",
             Self::ResourceBehaviorIsTypedMeta => "resource_behavior_is_typed_meta",
-            Self::AcceptedBuildHasExplicitPathConfig => "accepted_build_has_explicit_path_config",
+            Self::AcceptedBuildHasExplicitNodeSpec => "accepted_build_has_explicit_node_spec",
             Self::LegacyDefaultsAreIngressOnly => "legacy_defaults_are_ingress_only",
             Self::ProviderInterpretsNeitherMetaNorTags => "provider_interprets_neither_meta_nor_tags",
             Self::NoTransportTagVocabulary => "no_transport_tag_vocabulary",
@@ -199,7 +199,7 @@ pub const INGRESS_SOURCES: &[&str] = &[
     "crates/rdm-admin/src/accepted.rs",
     "crates/rdm-admin/src/build.rs",
 ];
-pub const DEFAULT_TOKENS: &[&str] = &["default_for(", "normalize_path_config("];
+pub const DEFAULT_TOKENS: &[&str] = &["default_for("];
 
 /// The provider implementations: concrete actions on exact locators, policy-blind.
 pub const PROVIDER_SOURCES: &[&str] = &[
@@ -207,7 +207,7 @@ pub const PROVIDER_SOURCES: &[&str] = &[
     "crates/rdm-admin/src/deployment/process.rs",
     "crates/rdm-admin/src/deployment/container.rs",
 ];
-pub const PROVIDER_BANNED_TOKENS: &[&str] = &["PathConfig", "StorageMeta", "PlacementMeta", ".extra", ".tags", "stateful"];
+pub const PROVIDER_BANNED_TOKENS: &[&str] = &["NodeSpec", "StorageMeta", "PlacementMeta", ".extra", ".tags", "stateful"];
 
 /// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
 /// postcard. These sources carry no JSON codec in their non-test code.
@@ -535,11 +535,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| rel(root, f) != INGRESS_META).collect();
             scan_tokens(root, &files, UNTYPED_BEHAVIOR_TOKENS, ratchet, &mut out);
         }
-        Ratchet::AcceptedBuildHasExplicitPathConfig => {
+        Ratchet::AcceptedBuildHasExplicitNodeSpec => {
             require(
                 root,
                 ACCEPTED,
-                &["path_config_by_path", "PathConfigMismatch", "fn every_materialized_path_carries_exactly_one_path_config"],
+                &["spec_by_path", "NodeSpecMismatch", "fn every_materialized_path_carries_exactly_one_create_spec"],
                 ratchet,
                 &mut out,
             );

@@ -237,11 +237,10 @@ impl Nodes {
     }
 
     /// `node.create` of the paths `nodes` adds to the topology Build `based_on` accepted, each named by
-    /// its `path.name` with its config, the executable included (proposal executable-bindings-at-create.md
-    /// rule 1): `nodes` is the complete topology, `build.create { Change(Reconcile { based_on, nodes }) }`.
+    /// its create spec, the node's properties flat, the executable included (Q166; build.md §1): `nodes` is the complete topology, `build.create { Change(Reconcile { based_on, nodes }) }`.
     /// The stream is `Started`, then the step events of the create, ending `Complete` or
     /// `Failed { step, reason }`.
-    pub async fn create_named(&self, based_on: BuildId, nodes: Vec<(PathName, rdm_core::meta::PathConfig)>) -> Result<WorkflowStream, CallEnd> {
+    pub async fn create_named(&self, based_on: BuildId, nodes: Vec<rdm_core::meta::NodeSpec>) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Create, BuildChange::Reconcile { based_on, nodes }).await
     }
 

@@ -132,13 +132,11 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         // terminates the runtime and keeps the data dir and its key (node-delete.md: "It releases
         // node.id and name, not storage"; deployment-provider.md: "Delete releases no storage").
         let mut release = common::add_node();
-        let released = rdm_core::meta::PathConfig {
+        let released = rdm_core::meta::NodeSpec {
             storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Release },
-            placement: Default::default(),
-            executable: None,
-            tags: Default::default(),
+            ..rdm_core::meta::NodeSpec::default_for(again.node.name.clone())
         };
-        release.meshes.get_mut("mesh1").unwrap().set_path_config(&again.node.name, released).unwrap();
+        release.meshes.get_mut("mesh1").unwrap().set_spec(released).unwrap();
         let again_build = publish_build(&builds, release).await;
         pipeline
             .delete_node(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), unreached: false })

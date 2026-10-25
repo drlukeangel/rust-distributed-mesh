@@ -128,7 +128,8 @@ pub enum BuildChange {
     /// [`Self::Reconcile`] naming it for its path. Kept so every later change keeps its position.
     Reserved14,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the
-    /// fabric, each by its `path.name` with its config, the executable included. A node left out is
+    /// fabric, each by its create spec ([`crate::meta::NodeSpec`]: its `path.name` and its properties,
+    /// flat, Q166), the executable included. A node left out is
     /// removed, one added is created, one whose executable differs from what its row records is
     /// replaced (node.delete then node.create at the path, in RDM's order). A mesh named for the
     /// first time is created with its first node-admin; a mesh left out is mesh.delete. Refused by
@@ -138,8 +139,8 @@ pub enum BuildChange {
     Reconcile {
         /// The build_id of the current Build the caller read.
         based_on: crate::BuildId,
-        /// Every node of the fabric, by `path.name`, with its config.
-        nodes: Vec<(PathName, crate::meta::PathConfig)>,
+        /// Every node of the fabric, each by its create spec.
+        nodes: Vec<crate::meta::NodeSpec>,
     },
 }
 

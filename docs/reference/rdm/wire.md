@@ -1696,7 +1696,7 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 14 | **`Reserved14`** |  |  | Reserved position: the removed per-kind executable-set change (proposal |
 | 15 | **`Reconcile`** |  |  | The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the |
 | 15.0 | `based_on` | `crate::BuildId` → [`BuildId`](#t-rdm_core-ids-BuildId) |  | The build_id of the current Build the caller read. |
-| 15.1 | `nodes` | `Vec<(PathName, crate::meta::PathConfig)>` → [`PathName`](#t-rdm_core-path-PathName), [`PathConfig`](#t-rdm_core-meta-PathConfig) |  | Every node of the fabric, by `path.name`, with its config. |
+| 15.1 | `nodes` | `Vec<crate::meta::NodeSpec>` → [`NodeSpec`](#t-rdm_core-meta-NodeSpec) |  | Every node of the fabric, each by its create spec. |
 
 <a id="t-rdm_core-ids-BuildId"></a>
 
@@ -2411,6 +2411,25 @@ Which nodes a `GetNodes` selects (Q165). Positional order is part of the wire sc
 | 4.0 | `0` | `String` |  |  |  |
 | 4.1 | `1` | `TagFilter` → [`TagFilter`](#t-rdm_core-status-TagFilter) |  |  |  |
 
+<a id="t-rdm_core-meta-NodeSpec"></a>
+
+### `NodeSpec`
+
+`crates/rdm-core/src/meta.rs` · struct · 6 fields · rdm-core
+
+The create spec of one node (build.md §1, Q166): its `path.name` and the node's own properties under
+
+serde: `deny_unknown_fields`
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `path` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
+| 1 | `storage` | `StorageMeta` → [`StorageMeta`](#t-rdm_core-meta-StorageMeta) |  | What survives a restart or a retirement. |
+| 2 | `placement` | `PlacementMeta` → [`PlacementMeta`](#t-rdm_core-meta-PlacementMeta) |  | Placement constraints. |
+| 3 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable the node runs (path, sha256 and, under the container provider, the image): |
+| 4 | `tags` | `BTreeSet<String>` | `default` | The tag labels the node carries from its name claim; a node recovered or replaced at the path |
+| 5 | `config` | `BTreeMap<String, String>` | `default` | The application's config, the node's map (node-rpc-envelope.md "Node properties"): written to |
+
 <a id="t-rdm_core-digest-NodeState"></a>
 
 ### `NodeState`
@@ -2557,23 +2576,6 @@ The delivery identity an Owed request keeps on every leg: each carried attempt i
 |---|---|---|---|---|
 | 0 | `delivery_seq` | `u64` |  | The request's `delivery_seq` in its origin birth's window. |
 | 1 | `forget_below` | `u64` |  | The origin's `forget_below` toward the target. |
-
-<a id="t-rdm_core-meta-PathConfig"></a>
-
-### `PathConfig`
-
-`crates/rdm-core/src/meta.rs` · struct · 4 fields · rdm-core
-
-The defaults set at a path that every node created there inherits (here storage and
-
-serde: `deny_unknown_fields`
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `storage` | `StorageMeta` → [`StorageMeta`](#t-rdm_core-meta-StorageMeta) |  | What survives a restart or a retirement. |
-| 1 | `placement` | `PlacementMeta` → [`PlacementMeta`](#t-rdm_core-meta-PlacementMeta) |  | Placement constraints. |
-| 2 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable a node created at the path runs (path, sha256 and, under the container |
-| 3 | `tags` | `std::collections::BTreeSet<String>` | `default` | The tag labels a node created at the path carries from its name claim (the request's node entry, |
 
 <a id="t-rdm_core-path-PathName"></a>
 

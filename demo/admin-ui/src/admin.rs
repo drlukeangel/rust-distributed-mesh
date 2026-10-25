@@ -16,7 +16,7 @@ use rdm_client::{
     MeshDesired, MeshNode, Meshes, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -77,7 +77,10 @@ impl Admin {
                 Some(b) => b,
                 None => self.binding(row.kind, &current.image)?,
             };
-            current.paths.insert(row.name, config(row.kind, executable));
+            // The node's own tags and config, as its row holds them: the Build applies every property of
+            // the spec that differs from the row (build.md §1), so the request names what the row holds.
+            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), executable) };
+            current.paths.insert(row.name, spec);
         }
         Ok(current)
     }
@@ -101,7 +104,7 @@ impl Admin {
 
     /// The complete topology with each of `meshes` resized to its counts; a mesh it leaves out is left
     /// out (its mesh.delete) when `whole`, kept otherwise.
-    fn resized(&self, current: &Current, meshes: &[MeshDesired], whole: bool) -> Result<Vec<(PathName, PathConfig)>, CallEnd> {
+    fn resized(&self, current: &Current, meshes: &[MeshDesired], whole: bool) -> Result<Vec<NodeSpec>, CallEnd> {
         let mut paths = current.paths.clone();
         if whole {
             paths.retain(|p, _| meshes.iter().any(|m| m.name == p.mesh));
@@ -115,7 +118,8 @@ impl Admin {
                     let ordinal = (1..).find(|o| !have.contains(o)).expect("a free ordinal");
                     have.push(ordinal);
                     have.sort_unstable();
-                    paths.insert(PathName::new(&m.name, kind, ordinal), config(kind, self.binding(kind, &current.image)?));
+                    let path = PathName::new(&m.name, kind, ordinal);
+                    paths.insert(path.clone(), spec(path, self.binding(kind, &current.image)?));
                 }
                 while (have.len() as u32) > want {
                     let drop = have.iter().rev().copied().find(|o| Some(*o) != keep).or_else(|| have.last().copied()).expect("a member to drop");
@@ -124,7 +128,7 @@ impl Admin {
                 }
             }
         }
-        Ok(paths.into_iter().collect())
+        Ok(paths.into_values().collect())
     }
 
     /// The counts `current` holds of `mesh`.
@@ -260,20 +264,20 @@ fn missing(detail: String) -> CallEnd {
 /// The container provider's runtime image every node container runs from.
 const CONTAINER_IMAGE: &str = "rafka-node-runtime:empty";
 
-/// What a request is built from: the current Build, every live path with its config, and the primaries.
+/// What a request is built from: the current Build, every live path with its create spec, and the primaries.
 struct Current {
     based_on: BuildId,
-    paths: BTreeMap<PathName, PathConfig>,
+    paths: BTreeMap<PathName, NodeSpec>,
     primaries: BTreeSet<PathName>,
     image: Option<String>,
 }
 
-/// The config of a path of `kind` on `executable`: its storage by kind, written out (node-admins and
-/// brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement, no tags.
-fn config(kind: NodeKind, executable: Binding) -> PathConfig {
-    let storage = match kind {
+/// The create spec of `path` on `executable`: its storage by kind, written out (node-admins and
+/// brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement, no tags, no config.
+fn spec(path: PathName, executable: Binding) -> NodeSpec {
+    let storage = match path.kind {
         NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
         NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
     };
-    PathConfig { storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default() }
+    NodeSpec { path, storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }

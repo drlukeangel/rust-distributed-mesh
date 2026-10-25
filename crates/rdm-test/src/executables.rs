@@ -14,7 +14,7 @@
 use rdm_admin::accepted::FabricTopology;
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
 use rdm_client::{BuildCarrier, BuildId, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus, NodeView, PathName};
-use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rdm_transport::NodeTarget;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,15 +72,15 @@ fn sha256_once(path: &Path) -> Result<String, String> {
     cell.get_or_init(|| sha256_file(path).map_err(|e| format!("{} could not be hashed: {e}", path.display()))).clone()
 }
 
-/// The config a path the request creates carries: its storage by kind, written out (brokers and
+/// The create spec of `path`, a path the request creates: its storage by kind, written out (brokers and
 /// node-admins keep theirs across a restart and a delete; gateways, compute and proof rpc nodes are
-/// ephemeral), no placement, no tags, and `executable`.
-pub fn created_config(kind: NodeKind, executable: Binding) -> PathConfig {
-    let storage = match kind {
+/// ephemeral), no placement, no tags, no config, and `executable`.
+pub fn created_spec(path: PathName, executable: Binding) -> NodeSpec {
+    let storage = match path.kind {
         NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
         NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
     };
-    PathConfig { storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default() }
+    NodeSpec { path, storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }
 
 /// The counts of `mesh`, by kind, in the compiler's order.
@@ -128,24 +128,24 @@ impl Current {
         executables.binding(kind)
     }
 
-    /// Every path the topology holds, with its config: its entry's, the executable its entry names,
+    /// Every path the topology holds, with its create spec: its entry's, the executable its entry names,
     /// else the one its row records, else `executables`' for its kind (a path no birth was claimed at).
-    pub fn held(&self, executables: &Executables) -> Result<BTreeMap<String, BTreeMap<PathName, PathConfig>>, String> {
-        let mut out: BTreeMap<String, BTreeMap<PathName, PathConfig>> = BTreeMap::new();
+    pub fn held(&self, executables: &Executables) -> Result<BTreeMap<String, BTreeMap<PathName, NodeSpec>>, String> {
+        let mut out: BTreeMap<String, BTreeMap<PathName, NodeSpec>> = BTreeMap::new();
         for (name, mesh) in &self.topology.meshes {
             let paths = out.entry(name.clone()).or_default();
             for path in &mesh.nodes {
-                let mut config = match mesh.path_config(path) {
-                    Some(c) => c.clone(),
-                    None => created_config(path.kind, self.created_executable(path.kind, executables)?),
+                let mut spec = match mesh.spec(path) {
+                    Some(s) => s.clone(),
+                    None => created_spec(path.clone(), self.created_executable(path.kind, executables)?),
                 };
-                if config.executable.is_none() {
-                    config.executable = Some(match self.row_executable(path) {
+                if spec.executable.is_none() {
+                    spec.executable = Some(match self.row_executable(path) {
                         Some(b) => b,
                         None => self.created_executable(path.kind, executables)?,
                     });
                 }
-                paths.insert(path.clone(), config);
+                paths.insert(path.clone(), spec);
             }
         }
         Ok(out)
@@ -153,16 +153,16 @@ impl Current {
 
     /// The complete request that resizes each of `meshes` to its counts, as the compiler's count form
     /// resized it: a grow takes the lowest free ordinal of the kind, a shrink drops the highest ordinal
-    /// that is not the kind's primary (else the highest). Every path the topology holds keeps its config
+    /// that is not the kind's primary (else the highest). Every path the topology holds keeps its spec
     /// ([`Self::held`]); every created path is named on its executable. A mesh the topology holds that
     /// `meshes` leaves out is left out of the request (its mesh.delete) when `whole`, the fabric's
     /// complete shape, and kept as it is otherwise.
-    pub fn resized(&self, meshes: &[MeshDesired], whole: bool, executables: &Executables) -> Vec<(PathName, PathConfig)> {
+    pub fn resized(&self, meshes: &[MeshDesired], whole: bool, executables: &Executables) -> Vec<NodeSpec> {
         self.try_resized(meshes, whole, executables).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// [`Self::resized`], a path that cannot be named (its kind unbound) named in the error.
-    pub fn try_resized(&self, meshes: &[MeshDesired], whole: bool, executables: &Executables) -> Result<Vec<(PathName, PathConfig)>, String> {
+    pub fn try_resized(&self, meshes: &[MeshDesired], whole: bool, executables: &Executables) -> Result<Vec<NodeSpec>, String> {
         let mut by_mesh = self.held(executables)?;
         if whole {
             by_mesh.retain(|name, _| meshes.iter().any(|m| &m.name == name));
@@ -177,7 +177,8 @@ impl Current {
                     let ordinal = (1..).find(|o| !have.contains(o)).expect("a free ordinal");
                     have.push(ordinal);
                     have.sort_unstable();
-                    paths.insert(PathName::new(&desired.name, kind, ordinal), created_config(kind, self.created_executable(kind, executables)?));
+                    let path = PathName::new(&desired.name, kind, ordinal);
+                    paths.insert(path.clone(), created_spec(path, self.created_executable(kind, executables)?));
                 }
                 while (have.len() as u32) > want {
                     let drop = have.iter().rev().copied().find(|o| Some(*o) != keep).or_else(|| have.last().copied()).expect("a member to drop");
@@ -186,7 +187,7 @@ impl Current {
                 }
             }
         }
-        Ok(by_mesh.into_values().flatten().collect())
+        Ok(by_mesh.into_values().flat_map(BTreeMap::into_values).collect())
     }
 
     /// The counts the topology holds of `mesh` (zero for a mesh it does not hold).
@@ -197,12 +198,12 @@ impl Current {
 
     /// The complete request that adds one node of `kind` to `mesh` (`node.create`), at the lowest free
     /// ordinal, as the count form's `AddNode` did.
-    pub fn with_one_more(&self, mesh: &str, kind: NodeKind, executables: &Executables) -> Vec<(PathName, PathConfig)> {
+    pub fn with_one_more(&self, mesh: &str, kind: NodeKind, executables: &Executables) -> Vec<NodeSpec> {
         self.try_with_one_more(mesh, kind, executables).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// [`Self::with_one_more`], a path that cannot be named named in the error.
-    pub fn try_with_one_more(&self, mesh: &str, kind: NodeKind, executables: &Executables) -> Result<Vec<(PathName, PathConfig)>, String> {
+    pub fn try_with_one_more(&self, mesh: &str, kind: NodeKind, executables: &Executables) -> Result<Vec<NodeSpec>, String> {
         let mut grown = self.counts_of(mesh);
         match kind {
             NodeKind::NodeAdmin => grown.node_admin += 1,
@@ -242,23 +243,23 @@ mod tests {
 
     /// A topology holding `mesh1.admin.1` (entry naming none) and `mesh1.rpc.1..=3` (entries naming `r0`).
     fn current() -> Current {
-        let mut mesh = MeshTopology { name: "mesh1".into(), mesh_id: rdm_core::MeshId::mint(), nodes: Default::default(), path_config_by_path: Default::default() };
+        let mut mesh = MeshTopology { name: "mesh1".into(), mesh_id: rdm_core::MeshId::mint(), nodes: Default::default(), spec_by_path: Default::default() };
         let admin: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin_config = created_config(NodeKind::NodeAdmin, binding("node_admin", "x"));
-        admin_config.executable = None;
+        let mut admin_spec = created_spec(admin.clone(), binding("node_admin", "x"));
+        admin_spec.executable = None;
         mesh.nodes.insert(admin.clone());
-        mesh.path_config_by_path.insert(admin, admin_config);
+        mesh.spec_by_path.insert(admin, admin_spec);
         for o in 1..=3 {
             let p = PathName::new("mesh1", NodeKind::RpcNode, o);
             mesh.nodes.insert(p.clone());
-            mesh.path_config_by_path.insert(p, created_config(NodeKind::RpcNode, binding("rpc_node", "r0")));
+            mesh.spec_by_path.insert(p.clone(), created_spec(p, binding("rpc_node", "r0")));
         }
         let topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), mesh)].into_iter().collect() };
         Current { based_on: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row("mesh1.admin.1", true, "a0"), row("mesh1.rpc.3", true, "r0")] }
     }
 
-    fn names(request: &[(PathName, PathConfig)]) -> Vec<String> {
-        request.iter().map(|(p, _)| p.to_string()).collect()
+    fn names(request: &[NodeSpec]) -> Vec<String> {
+        request.iter().map(|s| s.path.to_string()).collect()
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1, "the door expands a count into named
@@ -272,7 +273,7 @@ mod tests {
         let c = current();
         let grown = c.resized(&[MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])], true, &set());
         assert_eq!(names(&grown), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3", "mesh2.admin.1", "mesh2.rpc.1"]);
-        let sha = |p: &str| grown.iter().find(|(q, _)| q.to_string() == p).and_then(|(_, c)| c.executable.clone()).map(|b| b.sha256).unwrap();
+        let sha = |p: &str| grown.iter().find(|s| s.path.to_string() == p).and_then(|s| s.executable.clone()).map(|b| b.sha256).unwrap();
         assert_eq!((sha("mesh1.admin.1"), sha("mesh1.admin.2"), sha("mesh1.rpc.2"), sha("mesh2.rpc.1")), ("a0".into(), "a".into(), "r0".into(), "r".into()));
         let shrunk = c.resized(&[MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])], true, &set());
         assert_eq!(names(&shrunk), ["mesh1.admin.1", "mesh1.rpc.3"], "the primary mesh1.rpc.3 is kept");

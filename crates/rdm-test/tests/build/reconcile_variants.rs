@@ -28,7 +28,7 @@
 
 use rdm_client::{BuildFrame, Change, LaunchKind as NodeKind, NodeView, PathName, ScopeStatus};
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
 use rdm_test::estate::{Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -48,16 +48,16 @@ enum Back {
 }
 
 /// The request a caller builds from the current read: every path of the current Build's accepted
-/// topology with its entry's config, each held path naming no executable (the read's topology carries
+/// topology with its entry's create spec, each held path naming no executable (the read's topology carries
 /// none; the compiler keeps each held entry's), so the request is the accepted topology unchanged.
-async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<(PathName, PathConfig)>, Vec<NodeView>) {
+async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<NodeSpec>, Vec<NodeView>) {
     let current = estate.current().await;
-    let nodes = current.topology.meshes.values().flat_map(|m| m.path_config_by_path.iter().map(|(p, c)| (p.clone(), PathConfig { executable: None, ..c.clone() }))).collect();
+    let nodes = current.topology.meshes.values().flat_map(|m| m.spec_by_path.values().map(|s| NodeSpec { executable: None, ..s.clone() })).collect();
     (current.based_on, nodes, current.rows)
 }
 
-fn at<'a>(request: &'a mut [(PathName, PathConfig)], path: &str) -> &'a mut PathConfig {
-    &mut request.iter_mut().find(|(p, _)| p.to_string() == path).unwrap_or_else(|| panic!("the request lists {path}")).1
+fn at<'a>(request: &'a mut [NodeSpec], path: &str) -> &'a mut NodeSpec {
+    request.iter_mut().find(|s| s.path.to_string() == path).unwrap_or_else(|| panic!("the request lists {path}"))
 }
 
 /// The executable the live row at `path` records.
@@ -84,7 +84,7 @@ fn another_build(estate: &Estate, b: &Binding, tag: &str) -> Binding {
 /// One Build of the matrix: `request` submitted on `based_on`, Complete within [`BOUND`], and the fabric
 /// ready-for-traffic after it. A Build with no terminal frame within the bound is the defect, named with
 /// what `build.get` and `fabric.get` say of it then.
-async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request: Vec<(PathName, PathConfig)>, back: Back, rows: &mut Vec<(String, String, Back)>) {
+async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request: Vec<NodeSpec>, back: Back, rows: &mut Vec<(String, String, Back)>) {
     let stream = estate.submit_change(Change::Reconcile { based_on, nodes: request }).await;
     let id = stream.build_id().clone();
     let done = match tokio::time::timeout(BOUND, estate.follow(stream)).await {
@@ -134,7 +134,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Stays, rows).await;
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.push((rpc2.parse().unwrap(), rdm_test::executables::created_config(NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode))));
+    r.push(rdm_test::executables::created_spec(rpc2.parse().unwrap(), estate.executables.of(NodeKind::RpcNode)));
     row(estate, &format!("{mesh}: a new path"), based_on, r, Back::ToPending, rows).await;
     estate.until_node(&rpc2, &format!("{rpc2} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).map(|_| ())).await;
 
@@ -146,7 +146,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     assert_eq!(replaced.executable.as_ref(), Some(&next), "{rpc2} runs the executable its request named");
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.retain(|(p, _)| p.to_string() != rpc2);
+    r.retain(|s| s.path.to_string() != rpc2);
     row(estate, &format!("{mesh}: a removed path"), based_on, r, Back::ToPending, rows).await;
 }
 
@@ -163,7 +163,7 @@ async fn day0_variants(estate: &Estate, rows: &mut Vec<(String, String, Back)>) 
     // Every entry names what its row records now (the Day-0 admin's from the row above, every created
     // path's from its create): the harness's own request, each path on the executable its row records.
     let current = estate.current().await;
-    let r = current.held(&estate.executables).expect("every path is named").into_values().flatten().collect();
+    let r = current.held(&estate.executables).expect("every path is named").into_values().flat_map(|m| m.into_values()).collect();
     row(estate, "every path named on the executable its entry names", current.based_on, r, Back::Stays, rows).await;
 }
 
@@ -182,7 +182,7 @@ async fn every_reconcile_variant_on_a_day0_fabric_completes_with_the_fabric_read
     day0_variants(&estate, &mut rows).await;
     // mesh1.rpc.1, so the rpc variants have a held path to act on.
     let (based_on, mut r, _) = verbatim(&estate).await;
-    r.push(("mesh1.rpc.1".parse().unwrap(), rdm_test::executables::created_config(NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode))));
+    r.push(rdm_test::executables::created_spec("mesh1.rpc.1".parse().unwrap(), estate.executables.of(NodeKind::RpcNode)));
     row(&estate, "mesh1: a new path, mesh1.rpc.1", based_on, r, Back::ToPending, &mut rows).await;
     rpc_variants(&estate, "mesh1", &mut rows).await;
     estate.stop().await;
@@ -202,7 +202,7 @@ async fn every_reconcile_variant_on_a_two_mesh_fabric_completes_with_the_fabric_
     let mut rows = Vec::new();
     let (based_on, mut r, _) = verbatim(&estate).await;
     for (p, kind) in [("mesh2.admin.1", NodeKind::NodeAdmin), ("mesh2.rpc.1", NodeKind::RpcNode)] {
-        r.push((p.parse().unwrap(), rdm_test::executables::created_config(kind, estate.executables.of(kind))));
+        r.push(rdm_test::executables::created_spec(p.parse().unwrap(), estate.executables.of(kind)));
     }
     row(&estate, "mesh2 created, the Day-0 admin's entry kept naming none", based_on, r, Back::ToPending, &mut rows).await;
     estate.settles_to(&[("mesh1", 1, 0), ("mesh2", 1, 1)], BOUND).await;

@@ -64,7 +64,7 @@ use rdm_admin::model::*;
 use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::topology::Topology;
 use rdm_core::build::BuildReply;
-use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -116,33 +116,33 @@ enum Variant {
 
 impl Variant {
     /// The request, from the accepted topology's entries.
-    fn request(self, held: &FabricTopology) -> Vec<(PathName, PathConfig)> {
-        let mut r: Vec<(PathName, PathConfig)> = held.meshes.values().flat_map(|m| m.path_config_by_path.iter().map(|(p, c)| (p.clone(), c.clone()))).collect();
-        let at = |r: &mut Vec<(PathName, PathConfig)>, p: &str| -> usize { r.iter().position(|(q, _)| q.to_string() == p).expect("the request lists the path") };
+    fn request(self, held: &FabricTopology) -> Vec<NodeSpec> {
+        let mut r: Vec<NodeSpec> = held.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
+        let at = |r: &mut Vec<NodeSpec>, p: &str| -> usize { r.iter().position(|s| s.path.to_string() == p).expect("the request lists the path") };
         match self {
             Self::Day0AdminNamedOnItsRecordedExecutable => {
                 let i = at(&mut r, "mesh1.admin.1");
-                r[i].1.executable = Some(recorded_binding(NodeKind::NodeAdmin, "a1"));
+                r[i].executable = Some(recorded_binding(NodeKind::NodeAdmin, "a1"));
             }
             Self::EveryPathNamedOnItsEntrysExecutable => {}
-            Self::Unchanged => r.iter_mut().for_each(|(_, c)| c.executable = None),
+            Self::Unchanged => r.iter_mut().for_each(|s| s.executable = None),
             Self::TagsOnly => {
                 let i = at(&mut r, "mesh1.rpc.1");
-                r[i].1.tags = ["zone_a".to_string()].into();
+                r[i].tags = ["zone_a".to_string()].into();
             }
             Self::StorageOnly => {
                 let i = at(&mut r, "mesh1.rpc.1");
-                r[i].1.storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
+                r[i].storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
             }
             Self::NewPath => {
-                let mut c = PathConfig::default_for(NodeKind::RpcNode);
-                c.executable = Some(crate::test_executable(NodeKind::RpcNode));
-                r.push((path("mesh1.rpc.2"), c));
+                let mut s = NodeSpec::default_for(path("mesh1.rpc.2"));
+                s.executable = Some(crate::test_executable(NodeKind::RpcNode));
+                r.push(s);
             }
-            Self::RemovedPath => r.retain(|(p, _)| p.to_string() != "mesh1.rpc.1"),
+            Self::RemovedPath => r.retain(|s| s.path.to_string() != "mesh1.rpc.1"),
             Self::AnotherExecutable => {
                 let i = at(&mut r, "mesh1.rpc.1");
-                r[i].1.executable = Some(crate::test_executable(NodeKind::RpcNode));
+                r[i].executable = Some(crate::test_executable(NodeKind::RpcNode));
             }
         }
         r
@@ -259,9 +259,9 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     for (p, sha) in ROWS.iter().skip(1) {
         let p = path(p);
         let mesh = held.meshes.get_mut("mesh1").unwrap();
-        let mut c = mesh.path_config(&p).cloned().unwrap();
+        let mut c = mesh.spec(&p).cloned().unwrap();
         c.executable = Some(recorded_binding(p.kind, sha));
-        mesh.set_path_config(&p, c).unwrap();
+        mesh.set_spec(c).unwrap();
     }
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), "mesh1.admin.1").await.unwrap();

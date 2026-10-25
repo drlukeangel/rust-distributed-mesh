@@ -10,7 +10,7 @@
 //! JSON frame included; a step output that has no wire shape is refused naming its Build,
 //! attempt and step while the facts around it still travel.
 
-use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_transport::topology::Frame;
@@ -165,8 +165,8 @@ fn topology() -> FabricTopology {
     let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
     let broker: PathName = "mesh2.broker.1".parse().unwrap();
     let rpc: PathName = "mesh2.rpc.1".parse().unwrap();
-    m2.set_path_config(&broker, PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default(), executable: None, tags: Default::default() }).unwrap();
-    m2.set_path_config(&rpc, PathConfig { storage: StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() }).unwrap();
+    m2.set_spec(NodeSpec { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, ..NodeSpec::default_for(broker) }).unwrap();
+    m2.set_spec(NodeSpec { storage: StorageMeta::Ephemeral, ..NodeSpec::default_for(rpc) }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
     t
 }
@@ -460,7 +460,8 @@ fn every_kind_declares_its_ruled_type_string() {
 }
 
 /// A twelve-node fabric whose every entry names its executable, as a complete-topology request
-/// compiles it: three meshes of four, each path on its own launch id's binding, each with a tag.
+/// compiles it: three meshes of four, each path on its own launch id's binding, each with a tag and a
+/// config.
 fn twelve_node_topology() -> FabricTopology {
     let mut t = FabricTopology::root("fabric-1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
     t.meshes.clear();
@@ -469,20 +470,22 @@ fn twelve_node_topology() -> FabricTopology {
         for p in m.nodes.clone() {
             let id = p.kind.name().replace('-', "_");
             let executable = rdm_core::binding::Binding { launch_id: id.clone(), executable: format!("/opt/rafka/candidates/0123456789abcdef/{id}").into(), sha256: "ab".repeat(32), image: Some("rafka-node-runtime:0123456789abcdef".into()) };
-            m.set_path_config(&p, PathConfig { storage: StorageMeta::Ephemeral, placement: Default::default(), executable: Some(executable), tags: ["zone_a".to_string()].into() }).unwrap();
+            let config = [("zone".to_string(), "a".to_string())].into();
+            m.set_spec(NodeSpec { storage: StorageMeta::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p) }).unwrap();
         }
         t.meshes.insert(mesh.into(), m);
     }
     t
 }
 
-/// `t` with no entry naming an executable or tags: what the Build topic carries of it.
+/// `t` with no entry naming an executable, tags or a config: what the Build topic carries of it.
 fn without_executables(t: &FabricTopology) -> FabricTopology {
     let mut t = t.clone();
     for m in t.meshes.values_mut() {
-        for c in m.path_config_by_path.values_mut() {
+        for c in m.spec_by_path.values_mut() {
             c.executable = None;
             c.tags.clear();
+            c.config.clear();
         }
     }
     t
@@ -490,7 +493,7 @@ fn without_executables(t: &FabricTopology) -> FabricTopology {
 
 /// CONTRACT (proposal executable-bindings-at-create.md rule 7: "Nothing about executables rides gossip or
 /// `node.topology.get`"; Luke 2026-10-24: "the executable is not gossiped, it's only in the node storage"):
-/// the accepted fact on the Build topic carries no executable (nor an entry's tags), of its topology's
+/// the accepted fact on the Build topic carries no executable (nor an entry's tags or config, Q166), of its topology's
 /// entries or of the complete-topology change it was submitted with; its bytes are those of the same fact
 /// naming none, so
 /// a twelve-node fabric's accepted fact fits one gossip message, as it did before the field. The stored
@@ -500,9 +503,9 @@ fn without_executables(t: &FabricTopology) -> FabricTopology {
 fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
     let named = twelve_node_topology();
     assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
-    let nodes: Vec<(PathName, PathConfig)> = named.meshes.values().flat_map(|m| m.path_config_by_path.iter().map(|(p, c)| (p.clone(), c.clone()))).collect();
-    let fact = |t: FabricTopology, nodes: Vec<(PathName, PathConfig)>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), submitted_at_ms: 1_700_000_000_000 });
-    let stripped_nodes: Vec<(PathName, PathConfig)> = nodes.iter().map(|(p, c)| (p.clone(), PathConfig { executable: None, tags: Default::default(), ..c.clone() })).collect();
+    let nodes: Vec<NodeSpec> = named.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
+    let fact = |t: FabricTopology, nodes: Vec<NodeSpec>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), submitted_at_ms: 1_700_000_000_000 });
+    let stripped_nodes: Vec<NodeSpec> = nodes.iter().map(|s| NodeSpec { executable: None, tags: Default::default(), config: Default::default(), ..s.clone() }).collect();
     let with = fact(named.clone(), nodes);
     let without = fact(without_executables(&named), stripped_nodes);
 

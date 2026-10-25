@@ -18,7 +18,7 @@
 use crate::build_log;
 use rdm_client::{BuildFrame, CallEnd, Change, FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::PathConfig;
+use rdm_core::meta::NodeSpec;
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};
 use serde_json::{json, Value};
@@ -37,8 +37,8 @@ fn s(v: &Value) -> String {
 
 /// The complete-topology request a caller builds from what it reads now: `based_on` the current Build
 /// (`fabric.get` at the fabric-primary), and every path of that Build's accepted topology with its
-/// config, the executable its entry names, else the one `fabric.nodes.get` reads from the path's row.
-pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName, PathConfig)>) {
+/// create spec, the executable its entry names, else the one `fabric.nodes.get` reads from the path's row.
+pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>) {
     let based_on = estate.accepted_build_id().await;
     let carrier = estate.carrier().await;
     let facts = build_log::log_read(&carrier, &based_on).await.unwrap_or_else(|e| panic!("the Build log of the fabric-primary holds no Build {based_on}: {e}"));
@@ -47,25 +47,25 @@ pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName,
     let mut out = Vec::new();
     for m in build.topology.meshes.values() {
         for p in &m.nodes {
-            let mut c = m.path_config(p).cloned().unwrap_or_else(|| panic!("{p} carries its config"));
-            if c.executable.is_none() {
-                c.executable = nodes.iter().find(|n| &n.name == p).and_then(|n| n.executable.clone());
+            let mut spec = m.spec(p).cloned().unwrap_or_else(|| panic!("{p} carries its create spec"));
+            if spec.executable.is_none() {
+                spec.executable = nodes.iter().find(|n| &n.name == p).and_then(|n| n.executable.clone());
             }
-            out.push((p.clone(), c));
+            out.push(spec);
         }
     }
     (rdm_core::BuildId::parse(&based_on).expect("a Build id"), out)
 }
 
 /// `request` with the entry at `path` (added when it lists none) on `executable`.
-fn naming(mut request: Vec<(PathName, PathConfig)>, path: &str, executable: Option<&Binding>) -> Vec<(PathName, PathConfig)> {
+fn naming(mut request: Vec<NodeSpec>, path: &str, executable: Option<&Binding>) -> Vec<NodeSpec> {
     let p: PathName = path.parse().unwrap();
-    match request.iter_mut().find(|(q, _)| *q == p) {
-        Some((_, c)) => c.executable = executable.cloned(),
+    match request.iter_mut().find(|s| s.path == p) {
+        Some(s) => s.executable = executable.cloned(),
         None => {
-            let mut c = PathConfig::default_for(p.kind);
-            c.executable = executable.cloned();
-            request.push((p, c));
+            let mut s = NodeSpec::default_for(p);
+            s.executable = executable.cloned();
+            request.push(s);
         }
     }
     request
@@ -160,12 +160,12 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let (a_based_on, a_request) = read_request(&estate).await;
     let (b_based_on, b_request) = read_request(&estate).await;
     assert_eq!(a_based_on, b_based_on);
-    let rpc = b_request.iter().find(|(p, _)| p.to_string() == "mesh1.rpc.1").and_then(|(_, c)| c.executable.clone()).expect("mesh1.rpc.1's row records its executable");
+    let rpc = b_request.iter().find(|s| s.path.to_string() == "mesh1.rpc.1").and_then(|s| s.executable.clone()).expect("mesh1.rpc.1's row records its executable");
     let next = another_build(&estate, &rpc, "next");
 
     // B: mesh1.rpc.2, named on the new executable with its tags.
     let mut b_nodes = naming(b_request, "mesh1.rpc.2", Some(&next));
-    b_nodes.iter_mut().find(|(p, _)| p.to_string() == "mesh1.rpc.2").expect("the entry named").1.tags = ["zone_a".to_string()].into();
+    b_nodes.iter_mut().find(|s| s.path.to_string() == "mesh1.rpc.2").expect("the entry named").tags = ["zone_a".to_string()].into();
     let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
     let created = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
     assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, next.executable, "the created node runs the executable its request named");
@@ -186,7 +186,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     // A re-reads.
     let (based_on, request) = read_request(&estate).await;
     assert_eq!(based_on.to_string(), b);
-    assert!(request.iter().any(|(p, _)| p.to_string() == "mesh1.rpc.2"), "the read holds what B added");
+    assert!(request.iter().any(|s| s.path.to_string() == "mesh1.rpc.2"), "the read holds what B added");
     let (reason, detail) = rejected("a request listing no node", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: vec![] }).await);
     assert_eq!(reason, "no-node-listed", "{detail}");
     assert!(detail.contains("fabric.delete"), "the refusal names fabric.delete: {detail}");
@@ -225,11 +225,11 @@ async fn role_fabric(test: &str) -> Estate {
 }
 
 /// The request that names `next` for every gateway and leaves every other entry as read.
-async fn gateways_on(estate: &Estate, next: &Binding) -> (rdm_core::BuildId, Vec<(PathName, PathConfig)>) {
+async fn gateways_on(estate: &Estate, next: &Binding) -> (rdm_core::BuildId, Vec<NodeSpec>) {
     let (based_on, mut request) = read_request(estate).await;
-    for (p, c) in request.iter_mut().filter(|(p, _)| p.kind == NodeKind::Gateway) {
-        assert!(c.executable.is_some(), "{p}'s row records its executable");
-        c.executable = Some(next.clone());
+    for s in request.iter_mut().filter(|s| s.path.kind == NodeKind::Gateway) {
+        assert!(s.executable.is_some(), "{}'s row records its executable", s.path);
+        s.executable = Some(next.clone());
     }
     (based_on, request)
 }
@@ -379,7 +379,7 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
 
     // The next request, built from the read, lists the added admin and leaves it as it is.
     let (current, again) = read_request(&estate).await;
-    assert!(again.iter().any(|(p, c)| p.to_string() == "mesh2.admin.2" && c.executable.as_ref() == Some(&next)), "the read lists the node RDM created");
+    assert!(again.iter().any(|s| s.path.to_string() == "mesh2.admin.2" && s.executable.as_ref() == Some(&next)), "the read lists the node RDM created");
     let (reason, detail) = rejected("a request without the added admin, under the stale based_on", estate.carrier().await.create(Change::Reconcile { based_on, nodes: stale }).await);
     assert_eq!(reason, "based-on-not-current", "{detail}");
     followed(&estate, estate.submit_change(Change::Reconcile { based_on: current, nodes: again }).await).await;
@@ -408,7 +408,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     estate.settles_to(&[("mesh1", 2, 1)], SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let (based_on, request) = read_request(&estate).await;
-    let of = |name: &str| request.iter().find(|(p, _)| p.to_string() == name).and_then(|(_, c)| c.executable.clone()).expect("the row records its executable");
+    let of = |name: &str| request.iter().find(|s| s.path.to_string() == name).and_then(|s| s.executable.clone()).expect("the row records its executable");
     let (admin, rpc) = (of("mesh1.admin.1"), of("mesh1.rpc.1"));
     let mut grown = request.clone();
     for (p, b) in [("mesh2.admin.1", &admin), ("mesh2.admin.2", &admin), ("mesh2.rpc.1", &rpc), ("mesh3.admin.1", &admin), ("mesh3.rpc.1", &rpc)] {
@@ -427,7 +427,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     let (fp, _, _) = fabric_at_its_primary(&estate).await;
     assert!(fp.starts_with("mesh1."), "the fabric-primary is mesh1's: {fp}");
     let (based_on, request) = read_request(&estate).await;
-    let without3: Vec<_> = request.into_iter().filter(|(p, _)| p.mesh != "mesh3").collect();
+    let without3: Vec<_> = request.into_iter().filter(|s| s.path.mesh != "mesh3").collect();
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: without3 }).await).await;
     rdm_client::Fabrics::new(estate.carrier().await)
         .fact("mesh3 deleted", SETTLE, |f| f.meshes.iter().any(|m| m.name == "mesh3" && m.status == ScopeStatus::Dead))
@@ -440,7 +440,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     let mesh2_admin = estate.mesh_node_views("mesh2").await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.status == rdm_client::NodeStatus::ReadyForTraffic).map(|n| n.name).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let (based_on, request) = read_request(&estate).await;
-    let without1: Vec<_> = request.into_iter().filter(|(p, _)| p.mesh != "mesh1").collect();
+    let without1: Vec<_> = request.into_iter().filter(|s| s.path.mesh != "mesh1").collect();
     let done = followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: without1 }).await).await;
     let build = done.build_id.to_string();
     let moved = done.frames.iter().position(|f| matches!(f, BuildFrame::FabricPrimaryMoved { .. })).unwrap_or_else(|| panic!("the caller's stream ended FabricPrimaryMoved and the same build_id completed: {:?}", done.frames));
@@ -476,13 +476,13 @@ async fn members(estate: &Estate) -> BTreeMap<String, Member> {
 
 /// The request that names, for every path the read lists, `next` of its kind, and the executables it
 /// names: each kind's current executable copied with one byte appended.
-async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName, PathConfig)>, BTreeMap<NodeKind, Binding>) {
+async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>, BTreeMap<NodeKind, Binding>) {
     let (based_on, mut request) = read_request(estate).await;
     let mut next: BTreeMap<NodeKind, Binding> = BTreeMap::new();
-    for (p, c) in request.iter_mut() {
-        let current = c.executable.clone().unwrap_or_else(|| panic!("{p}'s row records its executable"));
-        let to = next.entry(p.kind).or_insert_with(|| another_build(estate, &current, "next")).clone();
-        c.executable = Some(to);
+    for s in request.iter_mut() {
+        let current = s.executable.clone().unwrap_or_else(|| panic!("{}'s row records its executable", s.path));
+        let to = next.entry(s.path.kind).or_insert_with(|| another_build(estate, &current, "next")).clone();
+        s.executable = Some(to);
     }
     (based_on, request, next)
 }
@@ -495,7 +495,7 @@ async fn replaced(estate: &Estate, name: &str, was: &Member, next: &Binding) {
     let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name} runs the executable its entry names");
-    if matches!(PathConfig::default_for(was.view.kind).storage, rdm_core::meta::StorageMeta::Persistent { .. }) {
+    if matches!(NodeSpec::default_for(was.view.name.clone()).storage, rdm_core::meta::StorageMeta::Persistent { .. }) {
         assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name}: its endpoint key kept, loaded from its kept data dir");
         assert_eq!(estate.data_dir(name).await, was.data_dir, "{name}: created over its kept data dir");
     } else {
@@ -520,7 +520,7 @@ async fn an_ephemeral_paths_replacement_is_created_over_a_newly_allocated_data_d
     estate.until_fabric_ready(SETTLE).await;
     let before = members(&estate).await;
     let (based_on, request) = read_request(&estate).await;
-    assert_eq!(request.iter().find(|(p, _)| p.to_string() == "mesh1.rpc.1").map(|(_, c)| c.storage), Some(rdm_core::meta::StorageMeta::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
+    assert_eq!(request.iter().find(|s| s.path.to_string() == "mesh1.rpc.1").map(|s| s.storage), Some(rdm_core::meta::StorageMeta::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
     let current = before["mesh1.rpc.1"].view.executable.clone().expect("mesh1.rpc.1's row records its executable");
     let next = another_build(&estate, &current, "next");
     followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: naming(request, "mesh1.rpc.1", Some(&next)) }).await).await;
@@ -637,9 +637,9 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
 
 /// The two-mesh fabric of `role_fabric` and the request that names another build for mesh2's broker,
 /// its only broker, every other entry as read; the broker's executable it names.
-async fn broker_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<(PathName, PathConfig)>, Binding) {
+async fn broker_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>, Binding) {
     let (based_on, request) = read_request(estate).await;
-    let current = request.iter().find(|(p, _)| p.to_string() == BROKER).and_then(|(_, c)| c.executable.clone()).expect("the broker's row records its executable");
+    let current = request.iter().find(|s| s.path.to_string() == BROKER).and_then(|s| s.executable.clone()).expect("the broker's row records its executable");
     let next = another_build(estate, &current, "next");
     (based_on, naming(request, BROKER, Some(&next)), next)
 }

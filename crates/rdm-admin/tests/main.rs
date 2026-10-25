@@ -72,13 +72,13 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
     let nodes = next
         .meshes
         .values()
-        .flat_map(|m| m.path_config_by_path.iter())
-        .map(|(p, c)| {
-            let mut c = c.clone();
-            if !current.topology.contains(p) && c.executable.is_none() {
-                c.executable = Some(test_executable(p.kind));
+        .flat_map(|m| m.spec_by_path.values())
+        .map(|s| {
+            let mut s = s.clone();
+            if !current.topology.contains(&s.path) && s.executable.is_none() {
+                s.executable = Some(test_executable(s.path.kind));
             }
-            (p.clone(), c)
+            s
         })
         .collect();
     rdm_admin::accepted::TopologyChange::Reconcile { based_on: current.build_id, nodes }

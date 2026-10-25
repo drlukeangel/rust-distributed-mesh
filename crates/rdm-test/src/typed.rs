@@ -608,7 +608,7 @@ impl Estate {
     /// read, accepted. A request built from a read another Build overtook is refused
     /// `based-on-not-current` and read again (the caller re-reads, proposal executable-bindings-at-create.md
     /// rule 1); any other refusal is a defect of the cell, named with `what`.
-    pub async fn submit_named(&self, what: &str, nodes: impl Fn(&crate::executables::Current, &crate::executables::Executables) -> Vec<(PathName, rdm_core::meta::PathConfig)>) -> BuildStream {
+    pub async fn submit_named(&self, what: &str, nodes: impl Fn(&crate::executables::Current, &crate::executables::Executables) -> Vec<rdm_core::meta::NodeSpec>) -> BuildStream {
         let mut tries = 0;
         loop {
             let current = self.current().await;
@@ -644,7 +644,7 @@ impl Estate {
     }
 
     /// The `based_on` and complete topology of [`Self::create_node`], for a cell that submits it itself.
-    pub async fn create_node_request(&self, mesh: &str, kind: NodeKind) -> (BuildId, Vec<(PathName, rdm_core::meta::PathConfig)>) {
+    pub async fn create_node_request(&self, mesh: &str, kind: NodeKind) -> (BuildId, Vec<rdm_core::meta::NodeSpec>) {
         let current = self.current().await;
         let nodes = current.with_one_more(mesh, kind, &self.executables);
         (current.based_on, nodes)

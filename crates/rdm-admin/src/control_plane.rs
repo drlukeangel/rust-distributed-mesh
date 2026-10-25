@@ -1195,8 +1195,8 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
 /// checks it (launch id, image, hash), each file hashed once.
 async fn named_executable_refusal(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, recorded: &crate::accepted::Recorded, provider: crate::model::ProviderKind, executable_dirs: &[std::path::PathBuf]) -> Option<BuildReject> {
     let mut checked: std::collections::BTreeSet<(std::path::PathBuf, String, String)> = std::collections::BTreeSet::new();
-    for (path, config) in next.meshes.values().flat_map(|m| m.path_config_by_path.iter()) {
-        let Some(binding) = config.executable.as_ref() else { continue };
+    for (path, spec) in next.meshes.values().flat_map(|m| m.spec_by_path.iter()) {
+        let Some(binding) = spec.executable.as_ref() else { continue };
         let created = !current.contains(path);
         let replaced = recorded.get(path).is_some_and(|r| r.sha256.as_deref() != Some(binding.sha256.as_str()));
         if !(created || replaced) || !checked.insert((binding.executable.clone(), binding.sha256.clone(), path.kind.name().to_string())) {
@@ -1215,13 +1215,13 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
 }
 
 /// The first path `next` creates that names no executable (proposal executable-bindings-at-create.md
-/// rule 1: "a created path whose config names no executable is refused by name at acceptance, nothing
-/// runs"), whatever change compiled it: a count form creates paths with none.
+/// rule 1: "a created path whose create spec names no executable is refused by name at acceptance,
+/// nothing runs"), whatever change compiled it: a count form creates paths with none.
 fn created_without_executable(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology) -> Option<BuildReject> {
     next.meshes
         .values()
-        .flat_map(|m| m.path_config_by_path.iter())
-        .find(|(path, config)| !current.contains(path) && config.executable.is_none())
+        .flat_map(|m| m.spec_by_path.iter())
+        .find(|(path, spec)| !current.contains(path) && spec.executable.is_none())
         .map(|(path, _)| BuildReject::ExecutableMissing { node: path.to_string() })
 }
 
@@ -1656,9 +1656,9 @@ mod tests {
             let p: PathName = path.parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut c = current.meshes["mesh1"].path_config_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() });
-            c.executable = Some(b);
-            m.path_config_by_path.insert(p, c);
+            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { path: p.clone(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
+            spec.executable = Some(b);
+            m.spec_by_path.insert(p, spec);
             next
         };
         let rows = crate::accepted::Recorded::new();
@@ -1712,7 +1712,7 @@ mod tests {
             let p: PathName = "mesh1.rpc.1".parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            m.path_config_by_path.insert(p, rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { path: p, storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
             next
         };
         let rows = crate::accepted::Recorded::new();
@@ -1752,7 +1752,7 @@ mod tests {
         assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: "mesh1.rpc.2".into() }));
         assert_eq!(created_without_executable(&current, &current), None, "held paths naming none are history");
         let mut named = grown.clone();
-        named.meshes.get_mut("mesh1").unwrap().path_config_by_path.get_mut(&"mesh1.rpc.2".parse().unwrap()).unwrap().executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/x/rpc".into(), sha256: "0".repeat(64), image: None });
+        named.meshes.get_mut("mesh1").unwrap().spec_by_path.get_mut(&"mesh1.rpc.2".parse().unwrap()).unwrap().executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/x/rpc".into(), sha256: "0".repeat(64), image: None });
         assert_eq!(created_without_executable(&current, &named), None);
         assert_eq!(BuildReject::ExecutableMissing { node: "x".into() }.reason(), "executable-missing");
     }

@@ -102,16 +102,16 @@ fn resource_behavior_is_typed_meta_fails_a_behavior_boolean_outside_ingress() {
 }
 
 #[test]
-fn accepted_build_has_explicit_path_config_fails_when_the_build_loses_its_path_config_or_its_proof() {
+fn accepted_build_has_explicit_node_spec_fails_when_the_build_loses_its_create_spec_or_its_proof() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-admin/src/accepted.rs", "fn every_materialized_path_carries_exactly_one_path_config", "fn every_materialized_path_carries_a_name");
-    only(check(t.root()), Ratchet::AcceptedBuildHasExplicitPathConfig);
+    t.edit("crates/rdm-admin/src/accepted.rs", "fn every_materialized_path_carries_exactly_one_create_spec", "fn every_materialized_path_carries_a_name");
+    only(check(t.root()), Ratchet::AcceptedBuildHasExplicitNodeSpec);
 }
 
 #[test]
 fn legacy_defaults_are_ingress_only_fails_a_default_applied_in_the_pipeline() {
     let t = Planted::of_tree();
-    t.write("crates/rdm-admin/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { PathConfig::default_for(kind).storage }\n");
+    t.write("crates/rdm-admin/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { NodeSpec::default_for(kind).storage }\n");
     only(check(t.root()), Ratchet::LegacyDefaultsAreIngressOnly);
 }
 

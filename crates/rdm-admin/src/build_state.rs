@@ -3342,7 +3342,7 @@ mod tests {
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "a Build decoded from the journal whose
     /// paths name none ... is valid history with its births' rows as the record, and an admin restarted over
     /// an old store reads its current Build as it is, never as malformed"; durable format moved): a store
-    /// whose current Build was written before `PathConfig.executable` (its records carry no such field) is
+    /// whose current Build was written before `NodeSpec.executable` (its records carry no such field) is
     /// read by a restarted admin as its current Build, complete, every entry naming none; the next
     /// complete-topology request compiles over it. Must NOT happen: the restart refusing the record as
     /// unrecognised, or the old Build read as anything but current.
@@ -3355,13 +3355,21 @@ mod tests {
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         }
-        // The records as a writer before the fields wrote them: no `executable` and no `tags` on any path config.
+        // The records as a writer before the fields wrote them: no `executable` and no `tags` on any entry,
+        // and, before Q166, the map named `path_config_by_path`, each entry without its `path` and its
+        // `config`.
         let mut rewritten = 0;
         for b in std::fs::read_dir(dir.join("fabric").join("builds")).unwrap().flatten() {
             for r in std::fs::read_dir(b.path()).unwrap().flatten() {
                 let text = std::fs::read_to_string(r.path()).unwrap();
                 if text.contains("\"executable\":null") {
-                    std::fs::write(r.path(), text.replace(",\"executable\":null", "").replace(",\"tags\":[]", "")).unwrap();
+                    let mut old = text.replace(",\"executable\":null", "").replace(",\"tags\":[]", "").replace(",\"config\":{}", "").replace("\"spec_by_path\"", "\"path_config_by_path\"");
+                    while let Some(at) = old.find("{\"path\":\"") {
+                        let end = old[at + 9..].find("\",").expect("the path's closing quote") + at + 9;
+                        old.replace_range(at + 1..end + 2, "");
+                    }
+                    assert!(!old.contains("\"path\"") && !old.contains("\"config\"") && old.contains("\"path_config_by_path\""), "{old}");
+                    std::fs::write(r.path(), old).unwrap();
                     rewritten += 1;
                 }
             }
@@ -3371,10 +3379,10 @@ mod tests {
         let current = j.current().await.unwrap().expect("the old Build is current");
         assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
-        let admin = rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Preserve }, placement: Default::default(), executable: None, tags: Default::default() };
-        let mut rpc = rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() };
+        let admin = rdm_core::meta::NodeSpec { path: "mesh1.admin.1".parse().unwrap(), storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Preserve }, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() };
+        let mut rpc = rdm_core::meta::NodeSpec { path: "mesh1.rpc.1".parse().unwrap(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() };
         rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
-        let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![("mesh1.admin.1".parse().unwrap(), admin), ("mesh1.rpc.1".parse().unwrap(), rpc)] };
+        let change = crate::accepted::TopologyChange::Reconcile { based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
         let observed = crate::topology::Topology {
             fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
             meshes: vec![],
@@ -3401,9 +3409,9 @@ mod tests {
         let rpc: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let m = stored.topology.meshes.get_mut("mesh1").unwrap();
         m.nodes.insert(rpc.clone());
-        let mut config = rdm_core::meta::PathConfig { storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() };
-        config.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
-        m.set_path_config(&rpc, config).unwrap();
+        let mut spec = rdm_core::meta::NodeSpec { path: rpc.clone(), storage: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() };
+        spec.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
+        m.set_spec(spec).unwrap();
         let writer = open_at(&dir).await.unwrap();
         writer.publish_accepted(&stored).await.unwrap();
         writer.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
@@ -3414,7 +3422,7 @@ mod tests {
         let is = primary.clone();
         successor.read_while_fabric_primary(Arc::new(move || is.load(std::sync::atomic::Ordering::SeqCst)));
         let mut heard = stored.clone();
-        for c in heard.topology.meshes.get_mut("mesh1").unwrap().path_config_by_path.values_mut() {
+        for c in heard.topology.meshes.get_mut("mesh1").unwrap().spec_by_path.values_mut() {
             c.executable = None;
         }
         successor.absorb_facts(&[BuildFact::Accepted(heard.clone()), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1"))]).await;

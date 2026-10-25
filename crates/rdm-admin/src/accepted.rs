@@ -12,7 +12,7 @@
 //! exact paths before anything is persisted, so the executor never decides which node a count
 //! means.
 
-use rdm_core::meta::PathConfig;
+use rdm_core::meta::NodeSpec;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired, PinnedBirth};
 use rdm_core::build::RecipeStep;
 use crate::build_state::{BuildStateAdapter, BuildStateError};
@@ -35,44 +35,99 @@ pub struct MeshTopology {
     pub mesh_id: MeshId,
     /// Every node the mesh should have, by `path.name`.
     pub nodes: BTreeSet<PathName>,
-    /// The typed desired-state config of every materialized path, explicit after ingress
-    /// normalization: one entry per node, no entry without a node (`validate`).
+    /// The create spec of every materialized path (Q166: the node's properties, flat), explicit after
+    /// ingress normalization: one entry per node, no entry without a node (`validate`). The journal
+    /// wrote this map as `path_config_by_path` before Q166, each entry without its `path` and its
+    /// `config`: such a record decodes, each spec's path its key and its config empty (durable format
+    /// moved).
+    #[serde(default, alias = "path_config_by_path", deserialize_with = "specs_by_path")]
+    pub spec_by_path: BTreeMap<PathName, NodeSpec>,
+}
+
+/// A create spec as the journal holds it: one written before Q166 carries no `path` (its key, or the
+/// first element of the pair it was written in, names it) and no `config`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSpec {
     #[serde(default)]
-    pub path_config_by_path: BTreeMap<PathName, PathConfig>,
+    path: Option<PathName>,
+    storage: rdm_core::meta::StorageMeta,
+    placement: rdm_core::meta::PlacementMeta,
+    #[serde(default)]
+    executable: Option<rdm_core::binding::Binding>,
+    #[serde(default)]
+    tags: BTreeSet<String>,
+    #[serde(default)]
+    config: BTreeMap<String, String>,
+}
+
+impl StoredSpec {
+    /// The spec at `path`, the path the record names it by.
+    fn at(self, path: PathName) -> NodeSpec {
+        NodeSpec { path: self.path.unwrap_or(path), storage: self.storage, placement: self.placement, executable: self.executable, tags: self.tags, config: self.config }
+    }
+}
+
+/// [`MeshTopology::spec_by_path`] from the journal, a spec written before Q166 named by its key.
+fn specs_by_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<PathName, NodeSpec>, D::Error> {
+    let stored = BTreeMap::<PathName, StoredSpec>::deserialize(d)?;
+    Ok(stored.into_iter().map(|(path, spec)| (path.clone(), spec.at(path))).collect())
+}
+
+/// One node of a stored [`TopologyChange::Reconcile`]: a create spec, or the `[path.name, entry]` pair
+/// the journal wrote before Q166.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredNode {
+    Spec(StoredSpec),
+    Pair(PathName, StoredSpec),
+}
+
+/// [`TopologyChange::Reconcile`]'s nodes from the journal, a pair written before Q166 read as the spec
+/// it names (durable format moved).
+fn stored_nodes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<NodeSpec>, D::Error> {
+    Vec::<StoredNode>::deserialize(d)?
+        .into_iter()
+        .map(|n| match n {
+            StoredNode::Pair(path, spec) => Ok(spec.at(path)),
+            StoredNode::Spec(StoredSpec { path: Some(path), storage, placement, executable, tags, config }) => Ok(NodeSpec { path, storage, placement, executable, tags, config }),
+            StoredNode::Spec(_) => Err(serde::de::Error::custom("a stored create spec names no path")),
+        })
+        .collect()
 }
 
 impl MeshTopology {
     /// A new mesh from its counts, entering the accepted topology: its id minted, and every path
-    /// minted with its kind's migration default path config (ingress normalization; the Build is
+    /// minted with its kind's migration default create spec (ingress normalization; the Build is
     /// explicit from here).
     pub fn of(desired: &MeshDesired) -> Self {
         Self::with_id(desired, MeshId::mint())
     }
 
-    /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default path config.
+    /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default create spec.
     fn with_id(desired: &MeshDesired, mesh_id: MeshId) -> Self {
         let mut nodes = BTreeSet::new();
-        let mut path_config_by_path = BTreeMap::new();
+        let mut spec_by_path = BTreeMap::new();
         for (kind, want) in desired.counts() {
             for ord in 1..=want {
                 let path = PathName::new(&desired.name, kind, ord);
-                path_config_by_path.insert(path.clone(), PathConfig::default_for(kind));
+                spec_by_path.insert(path.clone(), NodeSpec::default_for(path.clone()));
                 nodes.insert(path);
             }
         }
-        Self { name: desired.name.clone(), mesh_id, nodes, path_config_by_path }
+        Self { name: desired.name.clone(), mesh_id, nodes, spec_by_path }
     }
-    /// The path config of one of this mesh's paths; `None` for a path this mesh does not hold.
-    pub fn path_config(&self, path: &PathName) -> Option<&PathConfig> {
-        self.path_config_by_path.get(path)
+    /// The create spec of one of this mesh's paths; `None` for a path this mesh does not hold.
+    pub fn spec(&self, path: &PathName) -> Option<&NodeSpec> {
+        self.spec_by_path.get(path)
     }
-    /// Set one path's config explicitly (a build request that carries it); refused by name for a
-    /// path the mesh does not hold.
-    pub fn set_path_config(&mut self, path: &PathName, config: PathConfig) -> Result<(), BuildReject> {
-        if !self.nodes.contains(path) {
-            return Err(BuildReject::UnknownNode { node: path.to_string() });
+    /// Set the create spec of the path it names explicitly (a build request that carries it); refused by
+    /// name for a path the mesh does not hold.
+    pub fn set_spec(&mut self, spec: NodeSpec) -> Result<(), BuildReject> {
+        if !self.nodes.contains(&spec.path) {
+            return Err(BuildReject::UnknownNode { node: spec.path.to_string() });
         }
-        self.path_config_by_path.insert(path.clone(), config);
+        self.spec_by_path.insert(spec.path.clone(), spec);
         Ok(())
     }
 
@@ -93,7 +148,7 @@ impl MeshTopology {
 }
 
 /// The complete accepted Fabric topology. Each path's executable is its entry's
-/// ([`PathConfig::executable`]); the fabric holds no executable of its own (build-deployment.md §2).
+/// ([`NodeSpec::executable`]); the fabric holds no executable of its own (build-deployment.md §2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredTopology")]
 pub struct FabricTopology {
@@ -129,8 +184,8 @@ impl From<StoredTopology> for FabricTopology {
         let mut meshes = t.meshes;
         if let Some(set) = t.bindings {
             for m in meshes.values_mut() {
-                for (path, config) in m.path_config_by_path.iter_mut().filter(|(_, c)| c.executable.is_none()) {
-                    config.executable = set.bindings.iter().find(|b| b.launch_id == path.kind.name()).cloned();
+                for (path, spec) in m.spec_by_path.iter_mut().filter(|(_, s)| s.executable.is_none()) {
+                    spec.executable = set.bindings.iter().find(|b| b.launch_id == path.kind.name()).cloned();
                 }
             }
         }
@@ -175,10 +230,10 @@ impl FabricTopology {
             if m.nodes.iter().any(|p| p.mesh != *name) {
                 return Err(BuildReject::InvalidMeshName { mesh: name.clone() });
             }
-            let missing: Vec<String> = m.nodes.iter().filter(|p| !m.path_config_by_path.contains_key(p)).map(ToString::to_string).collect();
-            let extra: Vec<String> = m.path_config_by_path.keys().filter(|p| !m.nodes.contains(p)).map(ToString::to_string).collect();
+            let missing: Vec<String> = m.nodes.iter().filter(|p| !m.spec_by_path.contains_key(p)).map(ToString::to_string).collect();
+            let extra: Vec<String> = m.spec_by_path.keys().filter(|p| !m.nodes.contains(p)).map(ToString::to_string).collect();
             if !missing.is_empty() || !extra.is_empty() {
-                return Err(BuildReject::PathConfigMismatch { mesh: name.clone(), missing, extra });
+                return Err(BuildReject::NodeSpecMismatch { mesh: name.clone(), missing, extra });
             }
         }
         Ok(())
@@ -189,11 +244,11 @@ impl FabricTopology {
     /// fixtures and Day-0 adoption, never planning: a mesh whose id no member of the view has stated
     /// takes a fresh id, as a fixture's new mesh does.
     pub fn of_observed(observed: &Topology) -> Self {
-        let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), path_config_by_path: BTreeMap::new() };
+        let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
         let mut meshes: BTreeMap<String, MeshTopology> = observed.meshes.iter().map(|m| (m.name.clone(), empty(&m.name, m.id.clone()))).collect();
         for n in observed.members().filter(|n| n.status.is_live()) {
             let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| empty(&n.mesh, None));
-            mesh.path_config_by_path.insert(n.name.clone(), PathConfig::default_for(n.name.kind));
+            mesh.spec_by_path.insert(n.name.clone(), NodeSpec::default_for(n.name.clone()));
             mesh.nodes.insert(n.name.clone());
         }
         Self { fabric: observed.fabric.name.clone(), meshes }
@@ -254,13 +309,14 @@ pub enum TopologyChange {
     #[serde(rename = "roll")]
     Reserved {},
     /// `build.create { Change(Reconcile { based_on, nodes }) }` (proposal executable-bindings-at-create.md
-    /// rule 1): the complete topology, every node by its `path.name` with its config, the executable
-    /// included. `based_on` is checked against the current Build at the door, before this compiles.
+    /// rule 1): the complete topology, every node by its create spec (Q166), the executable included.
+    /// `based_on` is checked against the current Build at the door, before this compiles.
     Reconcile {
         /// The build_id of the current Build the caller read.
         based_on: BuildId,
-        /// Every node of the fabric, by `path.name`, with its config.
-        nodes: Vec<(PathName, PathConfig)>,
+        /// Every node of the fabric, each by its create spec.
+        #[serde(deserialize_with = "stored_nodes")]
+        nodes: Vec<NodeSpec>,
     },
 }
 
@@ -276,7 +332,7 @@ impl TopologyChange {
 /// The executable `topology` fixes for the node at `path`: its entry's (a request named it, proposal
 /// executable-bindings-at-create.md rule 2). `None` when it names none: no replacement is owed for it.
 pub fn target_executable<'a>(topology: &'a FabricTopology, path: &PathName) -> Option<&'a rdm_core::binding::Binding> {
-    topology.mesh(&path.mesh).and_then(|m| m.path_config(path)).and_then(|c| c.executable.as_ref())
+    topology.mesh(&path.mesh).and_then(|m| m.spec(path)).and_then(|s| s.executable.as_ref())
 }
 
 /// Whether the node at a path is replaced: its target names an executable and its live row records
@@ -461,14 +517,14 @@ fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
             have.push(ord);
             have.sort_unstable();
             let path = PathName::new(&mesh.name, kind, ord);
-            mesh.path_config_by_path.insert(path.clone(), PathConfig::default_for(kind));
+            mesh.spec_by_path.insert(path.clone(), NodeSpec::default_for(path.clone()));
             mesh.nodes.insert(path);
         }
         while (have.len() as u32) > want {
             let drop = have.iter().rev().copied().find(|o| Some(*o) != keep_ord).or_else(|| have.last().copied()).expect("a member to drop");
             have.retain(|o| *o != drop);
             let path = PathName::new(&mesh.name, kind, drop);
-            mesh.path_config_by_path.remove(&path);
+            mesh.spec_by_path.remove(&path);
             mesh.nodes.remove(&path);
         }
     }
@@ -503,7 +559,7 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
             next.meshes.retain(|name, _| names.contains(name));
             for m in &desired.meshes {
                 // A mesh the topology does not hold enters it here: its id is minted now, once.
-                let mesh = next.meshes.entry(m.name.clone()).or_insert_with(|| MeshTopology { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), path_config_by_path: BTreeMap::new() });
+                let mesh = next.meshes.entry(m.name.clone()).or_insert_with(|| MeshTopology { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() });
                 resize(mesh, m, observed);
             }
         }
@@ -534,7 +590,7 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
             }
             m.nodes.remove(node);
-            m.path_config_by_path.remove(node);
+            m.spec_by_path.remove(node);
         }
         TopologyChange::CreateMesh { desired } => {
             validate_counts(desired)?;
@@ -569,32 +625,36 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
 }
 
 /// The meshes a [`TopologyChange::Reconcile`] names (proposal executable-bindings-at-create.md rule 1):
-/// exactly the listed nodes, each with its config. A mesh the topology holds keeps its id; a mesh named
-/// for the first time enters under an id minted now. A path the request creates names its executable,
-/// else it is refused by name; a path the topology holds that the request lists with none keeps its
-/// entry's. A mesh whose only node-admin the request replaces (its entry names another executable than
-/// its row records) gains a second node-admin at the next free `path.name` of that type, on the new
-/// executable (R4): it is in the topology from acceptance, created first, and stays. A created path's
-/// entry carries the tag labels the request lists, which the node carries from its claim; a held path
-/// keeps its entry's. Refused by name: no node
-/// listed (that is fabric.delete), a path named twice, a `.old` path, a mesh name outside the grammar,
-/// tags outside the label grammar or over the cap.
-fn reconciled(current: &FabricTopology, nodes: &[(PathName, PathConfig)], recorded: &Recorded) -> Result<BTreeMap<String, MeshTopology>, BuildReject> {
+/// exactly the listed nodes, each by its create spec (Q166). A mesh the topology holds keeps its id; a
+/// mesh named for the first time enters under an id minted now. A path the request creates names its
+/// executable, else it is refused by name; a path the topology holds that the request lists with none
+/// keeps its entry's. A mesh whose only node-admin the request replaces (its entry names another
+/// executable than its row records) gains a second node-admin at the next free `path.name` of that
+/// type, on the new executable (R4): it is in the topology from acceptance, created first, and stays.
+/// A created path's entry carries the tag labels and the config the request names, which the node
+/// carries from its claim; a held path keeps its entry's. Refused by name: no node listed (that is
+/// fabric.delete), a path named twice, a `.old` path, a mesh name outside the grammar, tags outside the
+/// label grammar or over the cap, a config over the cap `node.config.update` holds a map to.
+fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded) -> Result<BTreeMap<String, MeshTopology>, BuildReject> {
     if nodes.is_empty() {
         return Err(BuildReject::NoNodeListed);
     }
-    let mut by_mesh: BTreeMap<String, BTreeMap<PathName, PathConfig>> = BTreeMap::new();
-    for (path, config) in nodes {
+    let mut by_mesh: BTreeMap<String, BTreeMap<PathName, NodeSpec>> = BTreeMap::new();
+    for spec in nodes {
+        let path = &spec.path;
         if path.old {
             return Err(BuildReject::UnknownNode { node: path.to_string() });
         }
         if !is_valid_mesh_name(&path.mesh) {
             return Err(BuildReject::InvalidMeshName { mesh: path.mesh.clone() });
         }
-        if let Some(detail) = rdm_core::status::tags_refusal(&config.tags) {
+        if let Some(detail) = rdm_core::status::tags_refusal(&spec.tags) {
             return Err(BuildReject::TagsRefused { node: path.to_string(), detail });
         }
-        if by_mesh.entry(path.mesh.clone()).or_default().insert(path.clone(), config.clone()).is_some() {
+        if let Err(over) = rdm_core::check_config(&spec.config) {
+            return Err(BuildReject::ConfigOverCap { node: path.to_string(), over });
+        }
+        if by_mesh.entry(path.mesh.clone()).or_default().insert(path.clone(), spec.clone()).is_some() {
             return Err(BuildReject::NodeNamedTwice { node: path.to_string() });
         }
     }
@@ -602,32 +662,33 @@ fn reconciled(current: &FabricTopology, nodes: &[(PathName, PathConfig)], record
     for (name, paths) in by_mesh {
         let held = current.meshes.get(&name);
         let mesh_id = held.map(|m| m.mesh_id.clone()).unwrap_or_else(MeshId::mint);
-        let mut mesh = MeshTopology { name: name.clone(), mesh_id, nodes: BTreeSet::new(), path_config_by_path: BTreeMap::new() };
-        for (path, mut config) in paths {
-            match held.and_then(|m| m.path_config(&path)) {
-                // A held path keeps its entry's tags: a request's tags are a create's input (rule 1), a
+        let mut mesh = MeshTopology { name: name.clone(), mesh_id, nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
+        for (path, mut spec) in paths {
+            match held.and_then(|m| m.spec(&path)) {
+                // A held path keeps its entry's tags and config: a request's are a create's input (rule 1), a
                 // replacement inherits its predecessor's (rule 5: "its config and tags are inherited from
-                // the Deleted row"), and a live node's labels are node.tags.create's and node.tags.delete's.
+                // the Deleted row"), and a live node's are node.tags.*'s and node.config.update's.
                 Some(entry) => {
-                    if config.executable.is_none() {
-                        config.executable = entry.executable.clone();
+                    if spec.executable.is_none() {
+                        spec.executable = entry.executable.clone();
                     }
-                    config.tags = entry.tags.clone();
+                    spec.tags = entry.tags.clone();
+                    spec.config = entry.config.clone();
                 }
-                None if config.executable.is_none() => return Err(BuildReject::ExecutableMissing { node: path.to_string() }),
+                None if spec.executable.is_none() => return Err(BuildReject::ExecutableMissing { node: path.to_string() }),
                 None => {}
             }
             mesh.nodes.insert(path.clone());
-            mesh.path_config_by_path.insert(path, config);
+            mesh.spec_by_path.insert(path, spec);
         }
         let admins: Vec<PathName> = mesh.nodes_of_type(NodeKind::NodeAdmin).cloned().collect();
         if let [admin] = admins.as_slice() {
-            let entry = mesh.path_config(admin).cloned().expect("a listed path carries its config");
+            let entry = mesh.spec(admin).cloned().expect("a listed path carries its create spec");
             if held.is_some_and(|m| m.nodes.contains(admin)) && replaced_by_target(entry.executable.as_ref(), recorded.get(admin)) {
                 let ordinal = (1..).find(|o| !mesh.nodes.contains(&PathName::new(&name, NodeKind::NodeAdmin, *o))).expect("a free ordinal");
                 let added = PathName::new(&name, NodeKind::NodeAdmin, ordinal);
                 mesh.nodes.insert(added.clone());
-                mesh.path_config_by_path.insert(added, entry);
+                mesh.spec_by_path.insert(added.clone(), NodeSpec { path: added, ..entry });
             }
         }
         meshes.insert(name, mesh);
@@ -2065,16 +2126,16 @@ mod tests {
     /// path without a path config, or a path config without a path, is refused by name; a path
     /// config set explicitly stands.
     #[test]
-    fn every_materialized_path_carries_exactly_one_path_config() {
-        use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
+    fn every_materialized_path_carries_exactly_one_create_spec() {
+        use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
         let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::RpcNode, 1)]));
         assert_eq!(m.nodes.len(), 5);
-        assert_eq!(m.path_config_by_path.len(), 5);
+        assert_eq!(m.spec_by_path.len(), 5);
         let preserve = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
-        assert_eq!(m.path_config(&"mesh1.broker.2".parse().unwrap()).unwrap().storage, preserve);
-        assert_eq!(m.path_config(&"mesh1.admin.1".parse().unwrap()).unwrap().storage, preserve);
-        assert_eq!(m.path_config(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
-        assert_eq!(m.path_config(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
+        assert_eq!(m.spec(&"mesh1.broker.2".parse().unwrap()).unwrap().storage, preserve);
+        assert_eq!(m.spec(&"mesh1.admin.1".parse().unwrap()).unwrap().storage, preserve);
+        assert_eq!(m.spec(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
+        assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
         let mut topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the path configs in step with the paths.
@@ -2085,21 +2146,21 @@ mod tests {
         };
         resize(&mut m, &MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 0), (NodeKind::RpcNode, 1)]), &observed);
         assert_eq!(m.nodes.len(), 5);
-        assert_eq!(m.path_config_by_path.len(), 5);
-        assert_eq!(m.path_config(&"mesh1.broker.3".parse().unwrap()).unwrap().storage, preserve, "the grown path carries its default");
-        assert!(m.path_config(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's config goes with it");
+        assert_eq!(m.spec_by_path.len(), 5);
+        assert_eq!(m.spec(&"mesh1.broker.3".parse().unwrap()).unwrap().storage, preserve, "the grown path carries its default");
+        assert!(m.spec(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's config goes with it");
         // An explicit path config stands; a path the mesh does not hold is refused.
-        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default(), executable: None, tags: Default::default() };
-        assert_eq!(m.set_path_config(&"mesh1.rpc.1".parse().unwrap(), release.clone()), Ok(()));
-        assert_eq!(m.path_config(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
-        assert!(matches!(m.set_path_config(&"mesh1.rpc.9".parse().unwrap(), release.clone()), Err(BuildReject::UnknownNode { .. })));
+        let release = NodeSpec { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, ..NodeSpec::default_for("mesh1.rpc.1".parse().unwrap()) };
+        assert_eq!(m.set_spec(release.clone()), Ok(()));
+        assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
+        assert!(matches!(m.set_spec(NodeSpec { path: "mesh1.rpc.9".parse().unwrap(), ..release.clone() }), Err(BuildReject::UnknownNode { .. })));
         // The consistency ratchet.
-        m.path_config_by_path.remove(&"mesh1.rpc.1".parse().unwrap());
-        m.path_config_by_path.insert("mesh1.compute.7".parse().unwrap(), release);
+        m.spec_by_path.remove(&"mesh1.rpc.1".parse().unwrap());
+        m.spec_by_path.insert("mesh1.compute.7".parse().unwrap(), NodeSpec { path: "mesh1.compute.7".parse().unwrap(), ..release });
         topology.meshes.insert("mesh1".into(), m);
         assert_eq!(
             topology.validate(),
-            Err(BuildReject::PathConfigMismatch { mesh: "mesh1".into(), missing: vec!["mesh1.rpc.1".into()], extra: vec!["mesh1.compute.7".into()] })
+            Err(BuildReject::NodeSpecMismatch { mesh: "mesh1".into(), missing: vec!["mesh1.rpc.1".into()], extra: vec!["mesh1.compute.7".into()] })
         );
     }
 
@@ -2109,7 +2170,7 @@ mod tests {
     fn on_entries(topology: &FabricTopology, tag: &str) -> FabricTopology {
         let mut next = topology.clone();
         for m in next.meshes.values_mut() {
-            for (p, c) in m.path_config_by_path.iter_mut() {
+            for (p, c) in m.spec_by_path.iter_mut() {
                 c.executable = Some(exe(tag, p.kind));
             }
         }
@@ -2271,15 +2332,14 @@ mod tests {
         rdm_core::binding::Binding { launch_id: kind.name().into(), executable: format!("/{tag}/{}", kind.name()).into(), sha256: format!("{tag}-{}", kind.name()), image: None }
     }
 
-    /// `path`'s entry in a complete-topology request: its kind's default config on `tag`'s executable.
-    fn entry(path: &str, tag: Option<&str>) -> (PathName, PathConfig) {
+    /// `path`'s entry in a complete-topology request: its kind's default create spec on `tag`'s executable.
+    fn entry(path: &str, tag: Option<&str>) -> NodeSpec {
         let p: PathName = path.parse().unwrap();
-        let mut c = PathConfig::default_for(p.kind);
-        c.executable = tag.map(|t| exe(t, p.kind));
-        (p, c)
+        let executable = tag.map(|t| exe(t, p.kind));
+        NodeSpec { executable, ..NodeSpec::default_for(p) }
     }
 
-    fn reconcile(nodes: Vec<(PathName, PathConfig)>) -> TopologyChange {
+    fn reconcile(nodes: Vec<NodeSpec>) -> TopologyChange {
         TopologyChange::Reconcile { based_on: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b0")).unwrap(), nodes }
     }
 
@@ -2303,7 +2363,7 @@ mod tests {
     fn a_complete_topology_request_compiles_to_exactly_its_listed_paths_and_refuses_by_name() {
         let mut cur = t(&[("mesh1", 2, 3), ("mesh3", 1, 0)]);
         let held: PathName = "mesh1.rpc.1".parse().unwrap();
-        cur.meshes.get_mut("mesh1").unwrap().path_config_by_path.get_mut(&held).unwrap().executable = Some(exe("a", NodeKind::RpcNode));
+        cur.meshes.get_mut("mesh1").unwrap().spec_by_path.get_mut(&held).unwrap().executable = Some(exe("a", NodeKind::RpcNode));
         let request = vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), entry("mesh1.rpc.1", None), entry("mesh1.rpc.2", Some("b")), entry("mesh2.admin.1", Some("b")), entry("mesh2.rpc.1", Some("b"))];
         let next = compile(&cur, &reconcile(request), &mn()).unwrap();
         assert_eq!(next.meshes.keys().collect::<Vec<_>>(), ["mesh1", "mesh2"], "mesh3, left out, is gone (its mesh.delete)");
@@ -2311,7 +2371,7 @@ mod tests {
         assert_eq!(next.mesh("mesh1").unwrap().mesh_id, cur.mesh("mesh1").unwrap().mesh_id, "a kept mesh keeps its id");
         assert!(next.meshes.values().all(|m| m.mesh_id != next.mesh("mesh2").unwrap().mesh_id || m.name == "mesh2") && cur.meshes.values().all(|m| m.mesh_id != next.mesh("mesh2").unwrap().mesh_id), "mesh2 enters under an id of its own");
         assert_eq!(paths(next.mesh("mesh2").unwrap()), ["mesh2.admin.1", "mesh2.rpc.1"], "a mesh named for the first time, with its first node-admin");
-        let config = |p: &str| next.mesh(&p.parse::<PathName>().unwrap().mesh).unwrap().path_config(&p.parse().unwrap()).unwrap().executable.clone();
+        let config = |p: &str| next.mesh(&p.parse::<PathName>().unwrap().mesh).unwrap().spec(&p.parse().unwrap()).unwrap().executable.clone();
         assert_eq!(config("mesh1.rpc.1"), Some(exe("a", NodeKind::RpcNode)), "a held path listed with none keeps its entry's");
         assert_eq!(config("mesh1.rpc.2"), Some(exe("b", NodeKind::RpcNode)), "a held path's entry takes the executable the request names");
         assert_eq!(config("mesh1.admin.1"), None, "a held path whose entry named none and that the request names none for stays as it was: nothing to replace");
@@ -2343,14 +2403,10 @@ mod tests {
     #[test]
     fn a_request_entrys_tags_are_kept_on_the_entry_and_a_label_outside_the_grammar_is_refused_by_name() {
         let cur = t(&[("mesh1", 2, 3)]);
-        let tagged = |path: &str, tags: &[&str]| {
-            let (p, mut c) = entry(path, Some("b"));
-            c.tags = tags.iter().map(|t| t.to_string()).collect();
-            (p, c)
-        };
+        let tagged = |path: &str, tags: &[&str]| NodeSpec { tags: tags.iter().map(|t| t.to_string()).collect(), ..entry(path, Some("b")) };
         let next = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
         let p: PathName = "mesh1.rpc.4".parse().unwrap();
-        assert_eq!(next.mesh("mesh1").unwrap().path_config(&p).unwrap().tags, ["v1.2~rc".to_string(), "zone_a".to_string()].into(), "the created path's entry keeps its tags");
+        assert_eq!(next.mesh("mesh1").unwrap().spec(&p).unwrap().tags, ["v1.2~rc".to_string(), "zone_a".to_string()].into(), "the created path's entry keeps its tags");
         let again = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &[])]), &mn()).unwrap();
         assert_eq!(again, next, "a held path keeps its entry's tags: the same request with none changes nothing");
         let other = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_b"])]), &mn()).unwrap();
@@ -2377,7 +2433,7 @@ mod tests {
         let request = |admin: &str| reconcile(vec![entry("mesh1.admin.1", Some(admin)), entry("mesh1.rpc.1", Some("a")), entry("mesh2.admin.1", Some("b")), entry("mesh2.admin.2", Some("b"))]);
         let next = compile_against(&cur, &request("b"), &o, &rows).unwrap();
         assert_eq!(paths(next.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"], "mesh1 gains its second node-admin at acceptance");
-        assert_eq!(next.mesh("mesh1").unwrap().path_config(&"mesh1.admin.2".parse().unwrap()).unwrap().executable, Some(exe("b", NodeKind::NodeAdmin)), "on the new executable");
+        assert_eq!(next.mesh("mesh1").unwrap().spec(&"mesh1.admin.2".parse().unwrap()).unwrap().executable, Some(exe("b", NodeKind::NodeAdmin)), "on the new executable");
         assert_eq!(paths(next.mesh("mesh2").unwrap()), ["mesh2.admin.1", "mesh2.admin.2"], "a mesh with two admins gains none");
         let same = compile_against(&cur, &request("a"), &o, &rows).unwrap();
         assert_eq!(paths(same.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.rpc.1"], "an admin on the executable its row records is not replaced: no second admin");
@@ -2458,7 +2514,7 @@ mod tests {
         }
         let o = observed(nodes, &["mesh1", "mesh2"]);
         let rows = rows_on(&o, "a");
-        let request: Vec<(PathName, PathConfig)> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
+        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
         let next = compile_against(&cur, &reconcile(request), &o, &rows).unwrap();
         assert_eq!(next.meshes.iter().map(|(k, m)| (k.clone(), paths(m))).collect::<Vec<_>>(), cur.meshes.iter().map(|(k, m)| (k.clone(), paths(m))).collect::<Vec<_>>(), "the paths are the same");
         let birth = |name: &str| o.node(&name.parse().unwrap()).map(|x| crate::build::ExitedBirth { node_id: x.node_id.clone(), incarnation: x.incarnation_id.clone().unwrap() }).unwrap();
@@ -2500,7 +2556,7 @@ mod tests {
         let cur = t(&[("mesh1", 2, 2)]);
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, false), n("mesh1.rpc.2", R, true)], &["mesh1"]);
         let rows = rows_on(&o, "a");
-        let request: Vec<(PathName, PathConfig)> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.to_string() == "mesh1.rpc.1" { "b" } else { "a" }))).collect();
+        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.to_string() == "mesh1.rpc.1" { "b" } else { "a" }))).collect();
         let next = compile_against(&cur, &reconcile(request), &o, &rows).unwrap();
         let path: PathName = "mesh1.rpc.1".parse().unwrap();
         let exited = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
@@ -2526,7 +2582,7 @@ mod tests {
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "a Build decoded from the journal whose
     /// paths name none ... is valid history with its births' rows as the record, and an admin restarted over
     /// an old store reads its current Build as it is, never as malformed"; durable format moved): a topology
-    /// written before `PathConfig.executable` (its path configs carrying no such field) decodes with none,
+    /// written before `NodeSpec.executable` (its path configs carrying no such field) decodes with none,
     /// validates, and plans no replacement; a complete-topology request compiles over it. The new field
     /// crosses, unchanged, through the journal's JSON (the Build topic carries no executable, rule 7:
     /// `gossip_frames_wire`).
@@ -2540,7 +2596,7 @@ mod tests {
             }}}
         });
         let decoded: FabricTopology = serde_json::from_value(old).expect("a topology written before the field decodes");
-        assert!(decoded.meshes["mesh1"].path_config_by_path.values().all(|c| c.executable.is_none()), "with none");
+        assert!(decoded.meshes["mesh1"].spec_by_path.values().all(|c| c.executable.is_none()), "with none");
         assert_eq!(decoded.validate(), Ok(()));
         assert_eq!(paths_owed_replacement(&decoded, &Recorded::new()), Vec::<PathName>::new(), "no replacement is owed from it");
         let next = compile(&decoded, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.rpc.1", None), entry("mesh1.rpc.2", Some("b"))]), &mn()).unwrap();
@@ -2577,7 +2633,7 @@ mod tests {
             "bindings": {"candidate": {"sha": "c", "build": "b"}, "launch_ids": ["node_admin", "rpc_node"], "bindings": [bound("node_admin", "set-admin"), bound("rpc_node", "set-rpc")]}
         });
         let decoded: FabricTopology = serde_json::from_value(old).expect("a topology stored with the old set decodes");
-        let exe = |p: &str| decoded.meshes["mesh1"].path_config(&p.parse().unwrap()).unwrap().executable.as_ref().map(|b| (b.executable.display().to_string(), b.sha256.clone()));
+        let exe = |p: &str| decoded.meshes["mesh1"].spec(&p.parse().unwrap()).unwrap().executable.as_ref().map(|b| (b.executable.display().to_string(), b.sha256.clone()));
         assert_eq!(exe("mesh1.admin.1"), Some(("/set/node_admin".into(), "set-admin".into())), "filled from the set by its kind");
         assert_eq!(exe("mesh1.rpc.1"), Some(("/set/rpc_node".into(), "set-rpc".into())));
         assert_eq!(exe("mesh1.rpc.2"), Some(("/named/rpc".into(), "named".into())), "an entry that names one keeps it");
