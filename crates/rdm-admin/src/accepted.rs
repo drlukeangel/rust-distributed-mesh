@@ -96,6 +96,13 @@ fn stored_nodes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<NodeSpec>,
         .collect()
 }
 
+/// The storage and placement of `name` as the Day-0 topology's entry names them ([`FabricTopology::root`]:
+/// its kind's migration default), written on the Day-0 admin's row at its claim.
+pub fn root_placed(name: &PathName) -> (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta) {
+    let spec = NodeSpec::default_for(name.clone());
+    (spec.storage, spec.placement)
+}
+
 impl MeshTopology {
     /// A new mesh from its counts, entering the accepted topology: its id minted, and every path
     /// minted with its kind's migration default create spec (ingress normalization; the Build is
@@ -631,8 +638,9 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
 /// keeps its entry's. A mesh whose only node-admin the request replaces (its entry names another
 /// executable than its row records) gains a second node-admin at the next free `path.name` of that
 /// type, on the new executable (R4): it is in the topology from acceptance, created first, and stays.
-/// A created path's entry carries the tag labels and the config the request names, which the node
-/// carries from its claim; a held path keeps its entry's. Refused by name: no node listed (that is
+/// Every listed path's entry carries the tag labels and the config the request names: a created node
+/// carries them from its claim, a held one has them applied as the Build applies every property that
+/// differs from its row (build.md §1). Refused by name: no node listed (that is
 /// fabric.delete), a path named twice, a `.old` path, a mesh name outside the grammar, tags outside the
 /// label grammar or over the cap, a config over the cap `node.config.update` holds a map to.
 fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded) -> Result<BTreeMap<String, MeshTopology>, BuildReject> {
@@ -665,15 +673,13 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
         let mut mesh = MeshTopology { name: name.clone(), mesh_id, nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
         for (path, mut spec) in paths {
             match held.and_then(|m| m.spec(&path)) {
-                // A held path keeps its entry's tags and config: a request's are a create's input (rule 1), a
-                // replacement inherits its predecessor's (rule 5: "its config and tags are inherited from
-                // the Deleted row"), and a live node's are node.tags.*'s and node.config.update's.
+                // A held path takes the request's properties (build.md §1: the Build applies every property
+                // of the entry that differs from the node's row); only an executable the request lists none
+                // for keeps its entry's (rule 2).
                 Some(entry) => {
                     if spec.executable.is_none() {
                         spec.executable = entry.executable.clone();
                     }
-                    spec.tags = entry.tags.clone();
-                    spec.config = entry.config.clone();
                 }
                 None if spec.executable.is_none() => return Err(BuildReject::ExecutableMissing { node: path.to_string() }),
                 None => {}
@@ -852,15 +858,65 @@ pub(crate) fn replacement_operations(topology: &FabricTopology, observed: &Topol
     replacements_owed(topology, observed, recorded, &[])
 }
 
-/// What the node rows record of one member, for a replacement's plan: the node the row at its `path.name`
+/// The properties a Reconcile applies in place on the members it neither creates nor replaces (build.md
+/// §1, "The Build applies the diff": "compares each node's entry with what the node's row records and
+/// applies every property that differs, each by its own operation"), in path order: `node.config.update`
+/// where the entry's `config` differs from the row's, or its `storage` or `placement` from what the row
+/// records (a row written before those fields records none and is not compared); `node.tags.create` of
+/// the labels the entry names and the row does not carry, `node.tags.delete` of those the row carries
+/// and the entry does not. An operation this Build's receipts name `Complete` is not planned again: a
+/// command a caller sends after it is the last write. A path `planned` creates, or whose executable the
+/// row does not record, is the create's or the replacement's, whose claim writes its properties.
+fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
+    let done = |op: &BuildOperation| {
+        let key = op.key();
+        steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete)
+    };
+    let replacing = paths_owed_replacement(topology, recorded);
+    let mut ops = Vec::new();
+    for (path, spec) in topology.meshes.values().flat_map(|m| m.spec_by_path.iter()) {
+        let Some(row) = recorded.get(path) else { continue };
+        if replacing.contains(path) || planned.iter().any(|op| op.node() == Some(path)) {
+            continue;
+        }
+        let config = row.config.as_ref().is_some_and(|c| *c != spec.config) || row.storage.is_some_and(|s| s != spec.storage) || row.placement.is_some_and(|p| p != spec.placement);
+        let mut owed = Vec::new();
+        if config {
+            owed.push(BuildOperation::UpdateConfig { node: path.clone() });
+        }
+        if let Some(tags) = &row.tags {
+            let added: BTreeSet<String> = spec.tags.difference(tags).cloned().collect();
+            let removed: BTreeSet<String> = tags.difference(&spec.tags).cloned().collect();
+            if !added.is_empty() {
+                owed.push(BuildOperation::CreateTags { node: path.clone(), labels: added });
+            }
+            if !removed.is_empty() {
+                owed.push(BuildOperation::DeleteTags { node: path.clone(), labels: removed });
+            }
+        }
+        ops.extend(owed.into_iter().filter(|op| !done(op)));
+    }
+    ops
+}
+
+/// What the node rows record of one member, for a Reconcile's plan: the node the row at its `path.name`
 /// names and the sha256 of the executable it records (`NodeRow::executable`), none for a row written
-/// before the field.
+/// before the field; and the node's own properties the Build compares with its entry (build.md §1, "The
+/// Build applies the diff"), each `None` where the row was not read for it or records none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedRow {
     /// The node the row names.
     pub node_id: NodeId,
     /// The sha256 its executable binding records.
     pub sha256: Option<String>,
+    /// The application's config the row carries.
+    pub config: Option<BTreeMap<String, String>>,
+    /// The tag labels the row carries.
+    pub tags: Option<BTreeSet<String>>,
+    /// The storage the row records.
+    pub storage: Option<rdm_core::meta::StorageMeta>,
+    /// The placement the row records.
+    pub placement: Option<rdm_core::meta::PlacementMeta>,
 }
 
 /// [`RecordedRow`] of each path of a topology that a live row is written at.
@@ -875,7 +931,7 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, topol
     for p in topology.meshes.values().flat_map(|m| m.nodes.iter()) {
         let row = crate::node_rows::record_at(rows, p).await.map_err(|e| format!("the row at {p} could not be read for its executable: {e}"))?;
         if let Some(row) = row.filter(|r| r.status != NodeStatus::Deleted) {
-            out.insert(p.clone(), RecordedRow { node_id: row.node_id, sha256: row.executable.map(|b| b.sha256) });
+            out.insert(p.clone(), RecordedRow { node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config: Some(row.config), tags: Some(row.tags), storage: row.storage, placement: row.placement });
         }
     }
     Ok(out)
@@ -887,9 +943,11 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, topol
 /// The two hold the same meshes (by name and id) with the same paths, and at every path the same
 /// executable (by sha256, as a replacement is planned: [`paths_owed_replacement`]). An entry that names
 /// the executable its row already records is no executable replacement; an entry naming another one is,
-/// and a path or mesh added or removed is a resize. A path's storage, placement and tags are neither: a
-/// storage or placement change re-births a path only with its executable (proposal
-/// executable-bindings-at-create.md rule 5), so a request changing only those leaves the fabric where it is.
+/// and a path or mesh added or removed is a resize. A path's config, tags, storage and placement are
+/// neither: the Build applies them in place (build.md §1; [`properties_owed`]), and a storage or placement
+/// change re-births a path only with its executable (proposal executable-bindings-at-create.md rule 5), so
+/// a request changing only those leaves the fabric where it is (states.md "Resize and executable
+/// replacement").
 pub fn same_on_the_rows(held: &FabricTopology, next: &FabricTopology, recorded: &Recorded) -> bool {
     fn paths(t: &FabricTopology) -> Vec<(&str, &MeshId, &BTreeSet<PathName>)> {
         t.meshes.iter().map(|(name, m)| (name.as_str(), &m.mesh_id, &m.nodes)).collect()
@@ -1269,6 +1327,8 @@ fn plan_with(
     }
     if let Some((recorded, steps)) = replacements {
         ops.extend(replacements_owed(topology, observed, recorded, steps));
+        let applied = properties_owed(topology, recorded, steps, &ops);
+        ops.extend(applied);
     }
     // A live or stopped node of a kept mesh that the topology no longer names is retired
     // (a node.delete of a stopped node retires it: lifecycles/node-delete.md), and so is one its
@@ -2121,10 +2181,10 @@ mod tests {
         }
     }
 
-    /// CONTRACT (lock D): a mesh from its counts carries an explicit path config for every path, the
-    /// kind's migration default; a grow mints a path config with the path and a shrink drops it; a
-    /// path without a path config, or a path config without a path, is refused by name; a path
-    /// config set explicitly stands.
+    /// CONTRACT (lock D): a mesh from its counts carries an explicit create spec for every path, the
+    /// kind's migration default; a grow mints a create spec with the path and a shrink drops it; a
+    /// path without a create spec, or a create spec without a path, is refused by name; a create spec
+    /// set explicitly stands.
     #[test]
     fn every_materialized_path_carries_exactly_one_create_spec() {
         use rdm_core::meta::{NodeSpec, PersistentRetireDisposition, StorageMeta};
@@ -2138,7 +2198,7 @@ mod tests {
         assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
         let mut topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
-        // Grow and shrink keep the path configs in step with the paths.
+        // Grow and shrink keep the create specs in step with the paths.
         let observed = Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
             meshes: vec![],
@@ -2148,8 +2208,8 @@ mod tests {
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
         assert_eq!(m.spec(&"mesh1.broker.3".parse().unwrap()).unwrap().storage, preserve, "the grown path carries its default");
-        assert!(m.spec(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's config goes with it");
-        // An explicit path config stands; a path the mesh does not hold is refused.
+        assert!(m.spec(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's create spec goes with it");
+        // An explicit create spec stands; a path the mesh does not hold is refused.
         let release = NodeSpec { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, ..NodeSpec::default_for("mesh1.rpc.1".parse().unwrap()) };
         assert_eq!(m.set_spec(release.clone()), Ok(()));
         assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
@@ -2204,7 +2264,7 @@ mod tests {
         let birth = |name: &str, o: &Topology| o.node(&name.parse().unwrap()).map(|n| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).unwrap();
         let on = |name: &str, tag: Option<&str>, o: &Topology| {
             let node = o.node(&name.parse().unwrap()).unwrap();
-            (node.name.clone(), RecordedRow { node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.name.kind.name())) })
+            (node.name.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.name.kind.name())) })
         };
         // Every member on "a", but mesh1.rpc.1 on "b" already and mesh2.admin.2 a row with no executable.
         let mut recorded: Recorded = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|p| on(p, Some("a"), &o)).collect();
@@ -2249,7 +2309,7 @@ mod tests {
         let mut live_again = after_delete.clone();
         live_again.nodes.push(successor.clone());
         let mut on_entry = recorded.clone();
-        on_entry.insert("mesh1.admin.2".parse().unwrap(), RecordedRow { node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
+        on_entry.insert("mesh1.admin.2".parse().unwrap(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
         assert_eq!(replacement_plan(&next, &live_again, &on_entry, receipts.clone()), all[2..].to_vec(), "a live successor on its entry is the member");
         // Its create receipted: never replaced again, whatever its row reads.
         let mut done = receipts;
@@ -2259,8 +2319,8 @@ mod tests {
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 2: "Each attempt then computes remaining
     /// work from the accepted topology, the current node rows, observed state and its receipts"; rule 5:
-    /// "node.delete then node.create at the path ... The successor's storage follows the path's config:
-    /// `Persistent` inherits the predecessor's data dir"): mesh2.rpc.1's delete began
+    /// "node.delete then node.create at the path ... The successor's storage follows its create spec's
+    /// `storage`: `Persistent` inherits the predecessor's data dir"): mesh2.rpc.1's delete began
     /// (`NodeDeleting` of its birth, its `TerminateRuntime` receipted) and no `NodeDeleted` was receipted,
     /// and the view no longer holds the birth live. Its row Deleted: the create alone is owed, over that
     /// birth. Its row still live naming that birth: the delete of that exact birth is finished first
@@ -2278,7 +2338,7 @@ mod tests {
         let path: PathName = "mesh2.rpc.1".parse().unwrap();
         let node = o.node(&path).unwrap().clone();
         let birth = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() };
-        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.name.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.name.kind.name())) })).collect();
+        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.name.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.name.kind.name())) })).collect();
         let step = |s: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -2301,7 +2361,7 @@ mod tests {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![create.clone()], "the row Deleted: the remaining work is the create");
         }
         // The row still live, naming the birth on its old sha: the delete of that exact birth is finished, then the create.
-        recorded.insert(path.clone(), RecordedRow { node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
+        recorded.insert(path.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
         let finish = BuildOperation::DeleteNode { node: path.clone(), from_incarnation: birth.incarnation.clone() };
         for view in [&gone, &leaving] {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![finish.clone(), create.clone()], "the row live: the delete is finished, then the create");
@@ -2316,7 +2376,7 @@ mod tests {
     #[test]
     fn the_members_off_their_entries_are_named_until_each_row_records_its_sha() {
         let next = on_entries(&t(&[("mesh1", 2, 1)]), "b");
-        let row = |tag: Option<&str>, kind: &str| RecordedRow { node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
+        let row = |tag: Option<&str>, kind: &str| RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
         let mut recorded: Recorded = [("mesh1.admin.1".parse().unwrap(), row(Some("b"), "node_admin")), ("mesh1.admin.2".parse().unwrap(), row(None, "node_admin")), ("mesh1.rpc.1".parse().unwrap(), row(Some("a"), "rpc_node"))].into();
         assert_eq!(paths_owed_replacement(&next, &recorded).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.admin.2", "mesh1.rpc.1"]);
         recorded.insert("mesh1.admin.2".parse().unwrap(), row(Some("b"), "node_admin"));
@@ -2345,7 +2405,7 @@ mod tests {
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
     fn rows_on(o: &Topology, tag: &str) -> Recorded {
-        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.name.kind.name())) })).collect()
+        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.name.kind.name())) })).collect()
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "the complete topology, an array of nodes,
@@ -2393,27 +2453,73 @@ mod tests {
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: the request is "an array of nodes, each
     /// identified by its `path.name` ... with `tags`, `storage`, `placement` and `executable`";
     /// node-rpc-envelope.md node.tags: "A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading
-    /// '.'"; rule 5: a replacement's "config and tags are inherited from the Deleted row"): a created
-    /// path's entry keeps the tag labels the request lists for it, which the node carries from its claim; a
-    /// held path keeps its entry's whatever the request lists (a live node's labels are node.tags.create's
-    /// and node.tags.delete's), so a request built from a read that holds no tags changes nothing; a label
-    /// outside the grammar is refused by name, `tags-refused`, nothing compiled. Must NOT happen: a created
-    /// path's tags dropped, a held path's entry changed by a request's tags, or a label the tags index
-    /// cannot key accepted.
+    /// '.'"; build.md §1, Q166: "The reconciler compares each node's entry with what the node's row records
+    /// and applies every property that differs"): a created path's entry keeps the tag labels the request
+    /// lists for it, which the node carries from its claim; a held path's entry takes the labels the
+    /// request lists (applied to the node's tag rows by the Build, `properties_owed`), so the same request
+    /// changes nothing and another request's labels stand on the entry; a label outside the grammar is
+    /// refused by name, `tags-refused`, nothing compiled. Must NOT happen: a request's tags dropped from its
+    /// entry, or a label the tags index cannot key accepted.
     #[test]
-    fn a_request_entrys_tags_are_kept_on_the_entry_and_a_label_outside_the_grammar_is_refused_by_name() {
+    fn a_request_entrys_tags_stand_on_its_entry_and_a_label_outside_the_grammar_is_refused_by_name() {
         let cur = t(&[("mesh1", 2, 3)]);
         let tagged = |path: &str, tags: &[&str]| NodeSpec { tags: tags.iter().map(|t| t.to_string()).collect(), ..entry(path, Some("b")) };
         let next = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
         let p: PathName = "mesh1.rpc.4".parse().unwrap();
         assert_eq!(next.mesh("mesh1").unwrap().spec(&p).unwrap().tags, ["v1.2~rc".to_string(), "zone_a".to_string()].into(), "the created path's entry keeps its tags");
         let again = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &[])]), &mn()).unwrap();
-        assert_eq!(again, next, "a held path keeps its entry's tags: the same request with none changes nothing");
+        assert!(again.mesh("mesh1").unwrap().spec(&p).unwrap().tags.is_empty(), "a held path takes the request's tags: none");
+        let same = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
+        assert_eq!(same, next, "the same request changes nothing");
         let other = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_b"])]), &mn()).unwrap();
-        assert_eq!(other, next, "nor with others");
+        assert_eq!(other.mesh("mesh1").unwrap().spec(&p).unwrap().tags, ["zone_b".to_string()].into(), "another request's labels stand on the entry");
         let refused = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), tagged("mesh1.rpc.4", &["Zone A"])]), &mn());
         assert!(matches!(&refused, Err(BuildReject::TagsRefused { node, .. }) if node == "mesh1.rpc.4"), "{refused:?}");
         assert_eq!(refused.unwrap_err().reason(), "tags-refused");
+    }
+
+    /// CONTRACT (build.md §1, Q166, "The Build applies the diff": "The reconciler compares each node's
+    /// entry with what the node's row records and applies every property that differs, each by its own
+    /// operation"; `config` "in place, as node.config.update applies a map", `tags` "in place: the node's
+    /// tag rows", `storage`, `placement` "onto the row"): mesh1.rpc.1's entry names config {zone: b}, the
+    /// label x and Persistent storage, its row {zone: a}, the label y and Ephemeral: the plan is
+    /// `node.config.update`, `node.tags.create {x}` and `node.tags.delete {y}` of mesh1.rpc.1. mesh1.admin.1's
+    /// row, written before the storage field, records none, and its entry differs from nothing: no
+    /// operation. A storage-only difference is `node.config.update` alone (the storage rides its row
+    /// write). An operation this Build's receipts name Complete is not planned again (a later
+    /// node.config.update is the last write), and a path the plan creates is the create's. Must NOT
+    /// happen: an operation for a property that does not differ, one for a row that records none, or one
+    /// planned again after its Complete.
+    #[test]
+    fn a_reconcile_applies_each_property_that_differs_from_the_row_by_its_own_operation() {
+        use crate::build_state::{BuildStepReceipt, StepOutcome};
+        use rdm_core::meta::{PersistentRetireDisposition, StorageMeta};
+        let cur = t(&[("mesh1", 1, 1)]);
+        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let admin: PathName = "mesh1.admin.1".parse().unwrap();
+        let mut topology = cur.clone();
+        let persistent = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
+        let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
+        let zone = |z: &str| [("zone".to_string(), z.to_string())].into_iter().collect::<BTreeMap<String, String>>();
+        topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone("b"), tags: labels(&["x"]), storage: persistent, ..NodeSpec::default_for(rpc.clone()) }).unwrap();
+        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage: Some(storage), placement: Some(Default::default()) };
+        let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StorageMeta::Ephemeral))].into();
+        recorded.insert(admin.clone(), RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage: None, placement: None });
+        let all = vec![BuildOperation::UpdateConfig { node: rpc.clone() }, BuildOperation::CreateTags { node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
+        assert_eq!(properties_owed(&topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
+        assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), ["node.config.update:mesh1.rpc.1", "node.tags.create:mesh1.rpc.1", "node.tags.delete:mesh1.rpc.1"]);
+        let storage_only: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), StorageMeta::Ephemeral))].into();
+        assert_eq!(properties_owed(&topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node: rpc.clone() }], "a storage-only difference is the config op's row write");
+        let same: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), persistent))].into();
+        assert_eq!(properties_owed(&topology, &same, &[], &[]), vec![], "nothing differs");
+        let complete = BuildStepReceipt { mesh: None, build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), attempt: 1, operation: "node.config.update:mesh1.rpc.1".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+        assert_eq!(properties_owed(&topology, &recorded, &[complete], &[]), all[1..].to_vec(), "a Complete operation is not planned again");
+        let created = [BuildOperation::CreateNode { node: rpc.clone(), over: None, executable: None }];
+        assert_eq!(properties_owed(&topology, &recorded, &[], &created), vec![], "a path the plan creates is the create's");
+        // An attempt's plan through the journal and back: the operations keep their names.
+        let json = serde_json::to_value(&all).unwrap();
+        assert_eq!(json[0]["op"], "update_config");
+        assert_eq!(serde_json::from_value::<Vec<BuildOperation>>(json).unwrap(), all);
     }
 
     /// CONTRACT (Q166, build.md §1: "`config` is the application's map and nothing else (RDM never reads
@@ -2560,7 +2666,7 @@ mod tests {
         after.nodes.retain(|x| x.name.to_string() != "mesh2.gateway.2");
         after.nodes.push(successor.clone());
         let mut on = rows.clone();
-        on.insert("mesh2.gateway.2".parse().unwrap(), RecordedRow { node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
+        on.insert("mesh2.gateway.2".parse().unwrap(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
         let done = vec![deleted_receipt(1, "mesh2.gateway.2", &gone), receipt(1, "node.delete:mesh2.gateway.2", "Complete", None), receipt(1, "node.create:mesh2.gateway.2", "Complete", None)];
         let left: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
         assert_eq!(replacement_plan(&next, &after, &on, done.clone()), left, "the next attempt finishes the rest");

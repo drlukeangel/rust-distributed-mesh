@@ -818,6 +818,18 @@ impl StatusAuthority {
         crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, first_ready, req).await
     }
 
+    /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
+    /// (build.md §1, "The Build applies the diff"): the one config door, the spec's `storage` and
+    /// `placement` written onto the row with the map.
+    pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StorageMeta, placement: rdm_core::meta::PlacementMeta) -> StatusReply {
+        let me = self.held_name().await;
+        let view = self.topology.read().await.clone();
+        match self.configs.get() {
+            Some(configs) => configs.update_with(&me, &self.node_id, &view, &*self.nodes_storage, req, Some((storage, placement))).await,
+            None => rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet; {} is refused", req.op())),
+        }
+    }
+
     /// node.mesh.leave of the birth `(node_id, incarnation)` of this admin's mesh, its connections
     /// deleted (node-mesh-leave.md; node-replace.md step 1): this mesh-primary sends `LeaveMesh` on
     /// 0x1B to the exact birth and, on its `MeshLeft`, holds the birth's `node.mesh.left` for its

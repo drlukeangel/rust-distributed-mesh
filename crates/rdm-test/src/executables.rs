@@ -118,6 +118,11 @@ impl Current {
         at().find(|n| !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).and_then(|n| n.executable.clone())
     }
 
+    /// The live birth's row at `path`, if one stands.
+    fn live_row(&self, path: &PathName) -> Option<&NodeView> {
+        self.rows.iter().find(|n| &n.name == path && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead))
+    }
+
     /// The ordinal of `kind`'s primary in `mesh`, as the rows say.
     fn primary_ordinal(&self, mesh: &str, kind: NodeKind) -> Option<u32> {
         self.rows.iter().find(|n| n.mesh == mesh && n.kind == kind && n.is_primary && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).map(|n| n.name.ordinal)
@@ -129,7 +134,9 @@ impl Current {
     }
 
     /// Every path the topology holds, with its create spec: its entry's, the executable its entry names,
-    /// else the one its row records, else `executables`' for its kind (a path no birth was claimed at).
+    /// else the one its row records, else `executables`' for its kind (a path no birth was claimed at); the
+    /// tags and the config a live birth's row carries, so the request names what the node holds and the
+    /// Build, which applies every property that differs from the row (build.md §1), changes neither.
     pub fn held(&self, executables: &Executables) -> Result<BTreeMap<String, BTreeMap<PathName, NodeSpec>>, String> {
         let mut out: BTreeMap<String, BTreeMap<PathName, NodeSpec>> = BTreeMap::new();
         for (name, mesh) in &self.topology.meshes {
@@ -144,6 +151,9 @@ impl Current {
                         Some(b) => b,
                         None => self.created_executable(path.kind, executables)?,
                     });
+                }
+                if let Some(row) = self.live_row(path) {
+                    (spec.tags, spec.config) = (row.tags.clone(), row.config.clone());
                 }
                 paths.insert(path.clone(), spec);
             }

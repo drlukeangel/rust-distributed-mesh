@@ -65,7 +65,7 @@ async fn rows_of(topology: &rdm_admin::accepted::FabricTopology, view: &RwLock<T
         .filter(|n| n.status.is_live())
         .filter_map(|n| {
             let entry = rdm_admin::accepted::target_executable(topology, &n.name)?;
-            Some((n.name.clone(), rdm_admin::accepted::RecordedRow { node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
+            Some((n.name.clone(), rdm_admin::accepted::RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
         })
         .collect()
 }

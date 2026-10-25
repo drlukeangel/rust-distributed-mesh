@@ -209,7 +209,7 @@ impl OperationRunner for Runs {
             BuildOperation::CreateNode { node, .. } => {
                 let topology = self.builds.read_build(build).await.map_err(|e| e.to_string())?.topology;
                 let sha = rdm_admin::accepted::target_executable(&topology, node).map(|b| b.sha256.clone());
-                self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { node_id: NodeId::mint(), sha256: sha });
+                self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: NodeId::mint(), sha256: sha });
             }
             BuildOperation::DeleteNode { node, .. } | BuildOperation::RetireNode { node, .. } => {
                 self.recorded.lock().unwrap().remove(node);
@@ -273,7 +273,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
         let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), NodeStatus::ReadyForTraffic);
         row.executable = Some(recorded_binding(n.name.kind, sha));
         store.write_record(&row).await.unwrap();
-        recorded.insert(n.name.clone(), RecordedRow { node_id: n.node_id.clone(), sha256: Some(sha.into()) });
+        recorded.insert(n.name.clone(), RecordedRow { config: None, tags: None, storage: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
     }
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), path("mesh1.admin.1"), t.clone(), crate::adopted_time());
     cp.topology = topology.clone();

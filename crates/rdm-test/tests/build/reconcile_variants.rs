@@ -13,14 +13,16 @@
 //! A one-mesh fabric (the Day-0 admin alone, then grown) and a two-mesh fabric each take, one Build at
 //! a time, every variant of the complete-topology request: the unchanged request (each held path naming
 //! none), the Day-0 admin named on the executable its row records (its entry names none), every path
-//! named on the executable its entry names, tags only, storage only, a new path, another executable (a
-//! replacement), a removed path. A placement-only request is the unchanged one: `PlacementMeta`
-//! declares no constraint.
+//! named on the executable its entry names, tags only, config only, storage only, a new path, another
+//! executable (a replacement), a removed path. A placement-only request is the unchanged one:
+//! `PlacementMeta` declares no constraint. The tags, the config and the storage each reach the node's
+//! row, the Build applying every property that differs from it (build.md §1, Q166): the tags its tag rows,
+//! the config as `node.config.update` applies a map (the live node carries it), the storage onto the row.
 //!
 //! Every row (states.md "Resize and executable replacement"; Q154, Q158): the Build is Complete within
 //! the bound and the fabric holds ready-for-traffic after it; a resize or a replacement puts the fabric
 //! back to pending at its acceptance, and a request that is neither (the same executables, the unchanged
-//! request, tags only, storage only: proposal executable-bindings-at-create.md rule 5 re-births a path
+//! request, tags only, config only, storage only: proposal executable-bindings-at-create.md rule 5 re-births a path
 //! for a storage or placement change only "with its executable") leaves it ready-for-traffic, read from
 //! the `via-state-reset` spans. Must NOT happen: a
 //! Build never Complete (Pending at attempt 1 with no step) after a request that changed nothing the
@@ -49,10 +51,22 @@ enum Back {
 
 /// The request a caller builds from the current read: every path of the current Build's accepted
 /// topology with its entry's create spec, each held path naming no executable (the read's topology carries
-/// none; the compiler keeps each held entry's), so the request is the accepted topology unchanged.
+/// none; the compiler keeps each held entry's) and the tags and config its live row carries (the read's
+/// topology carries neither; the Build applies every property that differs from the row, build.md §1),
+/// so the request is the accepted topology unchanged.
 async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<NodeSpec>, Vec<NodeView>) {
     let current = estate.current().await;
-    let nodes = current.topology.meshes.values().flat_map(|m| m.spec_by_path.values().map(|s| NodeSpec { executable: None, ..s.clone() })).collect();
+    let live = |p: &PathName| current.rows.iter().find(|n| &n.name == p && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead));
+    let nodes = current
+        .topology
+        .meshes
+        .values()
+        .flat_map(|m| m.spec_by_path.values())
+        .map(|s| match live(&s.path) {
+            Some(row) => NodeSpec { executable: None, tags: row.tags.clone(), config: row.config.clone(), ..s.clone() },
+            None => NodeSpec { executable: None, ..s.clone() },
+        })
+        .collect();
     (current.based_on, nodes, current.rows)
 }
 
@@ -79,6 +93,14 @@ fn another_build(estate: &Estate, b: &Binding, tag: &str) -> Binding {
     std::fs::OpenOptions::new().append(true).open(&to).unwrap().write_all(&[0]).unwrap();
     std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755)).unwrap();
     Binding { sha256: sha256_file(&to).unwrap(), executable: to, ..b.clone() }
+}
+
+/// The record of the live node at `path` on the fabric's store root, and its view (`fabric.nodes.get`).
+async fn node_row(estate: &Estate, path: &str) -> (Value, NodeView) {
+    let node = estate.fabrics_obj().await.nodes(None).await.unwrap_or_else(|e| panic!("fabric.nodes.get: {e}")).into_iter().find(|n| n.name.to_string() == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path}"));
+    let file = estate.fabric_store_root().join(format!("nodes/{}/records/{}.json", node.mesh, node.node_id.as_str()));
+    let stored: Value = serde_json::from_slice(&std::fs::read(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))).unwrap();
+    (stored["record"].clone(), node)
 }
 
 /// One Build of the matrix: `request` submitted on `based_on`, Complete within [`BOUND`], and the fabric
@@ -128,10 +150,26 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     let (based_on, mut r, _) = verbatim(estate).await;
     at(&mut r, &rpc1).tags = ["zone_a".to_string()].into();
     row(estate, &format!("{mesh}: tags only"), based_on, r, Back::Stays, rows).await;
+    let (record, node) = node_row(estate, &rpc1).await;
+    assert_eq!(record["tags"], json!(["zone_a"]), "{mesh}: the tags reach {rpc1}'s row: {record}");
+    assert_eq!(node.tags, ["zone_a".to_string()].into(), "{mesh}: and fabric.nodes.get answers them");
+
+    let (based_on, mut r, _) = verbatim(estate).await;
+    let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+    at(&mut r, &rpc1).config = zone.clone();
+    row(estate, &format!("{mesh}: config only"), based_on, r, Back::Stays, rows).await;
+    let (record, _) = node_row(estate, &rpc1).await;
+    assert_eq!(record["config"], json!({"zone": "a"}), "{mesh}: the config reaches {rpc1}'s row: {record}");
+    // The node applied it before the Build's operation completed (row first, then the node); its digest
+    // carries it from its next gossip, which mesh.nodes.get answers a live node's config from.
+    estate.until_node(&rpc1, &format!("{rpc1} carries the config"), Duration::from_secs(30), |n| n.filter(|n| n.config == zone).map(|_| ())).await;
 
     let (based_on, mut r, _) = verbatim(estate).await;
     at(&mut r, &rpc1).storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
     row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Stays, rows).await;
+    let (record, node) = node_row(estate, &rpc1).await;
+    assert_eq!(record["storage"], json!({"persistence": "persistent", "on_retire": "preserve"}), "{mesh}: the storage reaches {rpc1}'s row: {record}");
+    assert_eq!((record["config"].clone(), node.config), (json!({"zone": "a"}), zone), "{mesh}: a storage-only change leaves the config as it is");
 
     let (based_on, mut r, _) = verbatim(estate).await;
     r.push(rdm_test::executables::created_spec(rpc2.parse().unwrap(), estate.executables.of(NodeKind::RpcNode)));

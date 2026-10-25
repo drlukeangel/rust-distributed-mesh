@@ -581,7 +581,7 @@ pub enum StorageDisposition {
     },
     /// `Persistent { on_retire: Preserve }`: left where it is.
     Preserved {},
-    /// The Build holds no path config for this path: left where it is, never destroyed on missing evidence.
+    /// The Build holds no create spec for this path: left where it is, never destroyed on missing evidence.
     PreservedNoMeta {},
 }
 
@@ -1666,17 +1666,19 @@ impl DeploymentPipeline<'_> {
                 // accepted Build as builds.storage records it (Q166; proposal executable-bindings-at-create.md
                 // rule 1; the Build topic carries no entry's tags, config or executable), so its first join
                 // hands it that config; a recovery's and a successor's carry their seed's.
-                let (tags, config) = match of {
-                    crate::node_rows::ClaimFor::Create => {
-                        step_span.record("awaiting", "entry-spec");
-                        let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
-                        done_awaits.push("entry-spec");
-                        stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|s| (s.tags.clone(), s.config.clone()))).unwrap_or_default()
-                    }
+                // Whatever the claim, its storage and placement are the create spec's (build-deployment.md §3:
+                // a successor's storage follows its create spec's), written onto the row (build.md §1).
+                step_span.record("awaiting", "entry-spec");
+                let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
+                done_awaits.push("entry-spec");
+                let spec = stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).cloned());
+                let placed = spec.as_ref().map(|s| (s.storage, s.placement));
+                let (tags, config) = match (of, spec) {
+                    (crate::node_rows::ClaimFor::Create, Some(s)) => (s.tags, s.config),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "claim");
-                rows.claim_spec(&req.node, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, of)
+                rows.claim_spec(&req.node, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, placed, of)
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 done_awaits.push("claim");
@@ -2668,6 +2670,25 @@ impl DeploymentPipeline<'_> {
         async {
             let mut run = self.begin(build_id, attempt, node, format!("node.update:{node}")).await?;
             self.step(&mut run, UpdateStep::UpdateNode.name(), put).await?;
+            self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// A property of `node` a Build applies in place (build.md §1, "The Build applies the diff") as the
+    /// Build operation `operation` (`node.config.update:<path>`, `node.tags.create:<path>`,
+    /// `node.tags.delete:<path>`): its one step `step`, the put at the node's mesh-primary, then
+    /// `Complete`. No runtime is touched.
+    pub async fn apply_in_place<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, operation: String, step: &'static str, put: F) -> Result<(), PipelineError>
+    where
+        F: std::future::Future<Output = Result<(), String>>,
+    {
+        use tracing::Instrument;
+        let span = self.pipeline_span("update", build_id, node, attempt);
+        async {
+            let mut run = self.begin(build_id, attempt, node, operation).await?;
+            self.step(&mut run, step, put).await?;
             self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
         }
         .instrument(span)

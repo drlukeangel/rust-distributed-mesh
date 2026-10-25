@@ -2,7 +2,7 @@
 //!
 //! The executable a node runs, named per node at create (proposal executable-bindings-at-create.md, Q157):
 //! `build.create { Change(Reconcile { based_on, nodes }) }` submits the complete topology, every node by
-//! its `path.name` with its config, the executable included. A node left out is removed, one added is
+//! its create spec (its `path.name` and its properties, flat: Q166), the executable included. A node left out is removed, one added is
 //! created on the executable its entry names (its row records it), one whose entry names another
 //! executable than its row records is replaced at its path (node.delete, then node.create) in RDM's order,
 //! and a mesh named for the first time is created with its first node-admin; a mesh left out is
@@ -37,7 +37,8 @@ fn s(v: &Value) -> String {
 
 /// The complete-topology request a caller builds from what it reads now: `based_on` the current Build
 /// (`fabric.get` at the fabric-primary), and every path of that Build's accepted topology with its
-/// create spec, the executable its entry names, else the one `fabric.nodes.get` reads from the path's row.
+/// create spec, the executable its entry names, else the one `fabric.nodes.get` reads from the path's row,
+/// and the tags and config that row carries.
 pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>) {
     let based_on = estate.accepted_build_id().await;
     let carrier = estate.carrier().await;
@@ -48,8 +49,14 @@ pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>)
     for m in build.topology.meshes.values() {
         for p in &m.nodes {
             let mut spec = m.spec(p).cloned().unwrap_or_else(|| panic!("{p} carries its create spec"));
+            let row = nodes.iter().find(|n| &n.name == p);
             if spec.executable.is_none() {
-                spec.executable = nodes.iter().find(|n| &n.name == p).and_then(|n| n.executable.clone());
+                spec.executable = row.and_then(|n| n.executable.clone());
+            }
+            // The node's own tags and config as its row holds them: the Build applies every property that
+            // differs from the row (build.md §1), so a request read now names what the node holds.
+            if let Some(n) = row {
+                (spec.tags, spec.config) = (n.tags.clone(), n.config.clone());
             }
             out.push(spec);
         }
@@ -523,7 +530,7 @@ async fn replaced(estate: &Estate, name: &str, was: &Member, next: &Binding) {
     }
 }
 
-/// CONTRACT (build-deployment.md §3: "The successor's storage follows the path's config: `Persistent`
+/// CONTRACT (build-deployment.md §3: "The successor's storage follows its create spec's `storage`: `Persistent`
 /// inherits the predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one"; proposal
 /// executable-bindings-at-create.md §4: "of an `Ephemeral` gateway: a fresh data dir"): a mesh of two
 /// node-admins and two rpc nodes (an rpc node's path `Ephemeral`, its kind's default) has one rpc node's

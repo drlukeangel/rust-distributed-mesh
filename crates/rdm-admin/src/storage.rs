@@ -706,6 +706,15 @@ pub struct NodeRow {
     /// `inherited_by` points the other way and is not followed backwards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predecessor: Option<BirthRef>,
+    /// The node's storage as its create spec names it (Q166, build.md §1: "onto the row, effective at
+    /// the node's next birth"): written at the claim and by a Build whose spec names another, inherited
+    /// with the config by a recovery and a replace's successor. A row written before the field carries
+    /// none, and no Build compares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<rdm_core::meta::StorageMeta>,
+    /// The node's placement as its create spec names it, beside `storage` and written as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<rdm_core::meta::PlacementMeta>,
 }
 
 /// The application's declaration held beside its node row.
@@ -737,7 +746,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }
+        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage: None, placement: None }
     }
 
     /// The facts of the node's newest birth, if the record keeps any.

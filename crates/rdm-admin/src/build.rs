@@ -205,6 +205,31 @@ pub enum BuildOperation {
         /// The birth.
         from_incarnation: rdm_core::IncarnationId,
     },
+    /// The node's create spec names another `config`, `storage` or `placement` than its row records
+    /// (build.md §1, "The Build applies the diff"): `node.config.update` of the entry's map at the
+    /// node's mesh-primary, row first, then the node (a live one sent `ApplyNodeConfig`, a stopped one
+    /// handed it at its next join), the entry's storage and placement written onto the row with it. No
+    /// re-birth: the fabric stays where it is. Appended, so every earlier variant keeps its name.
+    UpdateConfig {
+        /// The node.
+        node: PathName,
+    },
+    /// The node's create spec names tag labels its row does not carry: `node.tags.create` of them at
+    /// the node's mesh-primary, the node's tag rows (build.md §1).
+    CreateTags {
+        /// The node.
+        node: PathName,
+        /// The labels the row gains.
+        labels: std::collections::BTreeSet<String>,
+    },
+    /// The node's row carries tag labels its create spec does not name: `node.tags.delete` of them at
+    /// the node's mesh-primary (build.md §1).
+    DeleteTags {
+        /// The node.
+        node: PathName,
+        /// The labels the row loses.
+        labels: std::collections::BTreeSet<String>,
+    },
 }
 
 impl BuildOperation {
@@ -213,7 +238,7 @@ impl BuildOperation {
         match self {
             Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
-            Self::TerminateNode { node, .. } => Some(node),
+            Self::TerminateNode { node, .. } | Self::UpdateConfig { node } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
@@ -244,6 +269,9 @@ impl BuildOperation {
             Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
             // One key per birth: a birth heard again after another termination is a new run of it.
             Self::TerminateNode { node, from_incarnation, .. } => format!("node.terminate:{node}@{}", from_incarnation.as_str()),
+            Self::UpdateConfig { node } => format!("node.config.update:{node}"),
+            Self::CreateTags { node, .. } => format!("node.tags.create:{node}"),
+            Self::DeleteTags { node, .. } => format!("node.tags.delete:{node}"),
         }
     }
 }

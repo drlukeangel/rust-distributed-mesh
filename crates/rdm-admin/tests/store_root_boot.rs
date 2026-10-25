@@ -373,6 +373,8 @@ impl Prepared {
                 births: vec![birth],
                 predecessor: None,
                 mesh_id: Some(mesh_id.clone()),
+                storage: None,
+                placement: None,
             };
             nodes.write_record(&row).await.unwrap();
             if history == History::ReadyForTraffic {

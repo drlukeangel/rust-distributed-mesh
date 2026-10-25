@@ -1346,8 +1346,61 @@ impl AdminRunner {
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
             BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, &*self.fabric_storage, build_id, attempt, fabric_id, &self.me.to_string()).await.map_err(Into::into),
             BuildOperation::RecipeStep { step, birth } => return self.recipe_step(build_id, lane, attempt, step, birth.as_ref()).await,
+            BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, operation = %op.key());
+                self.apply_in_place(build_id, attempt, node, op).instrument(span).await
+            }
         };
         ended
+    }
+
+    /// A property the Build applies in place on `node` (build.md §1, "The Build applies the diff"): at
+    /// this admin, the node's mesh-primary, through the door a caller's command takes. `UpdateConfig`
+    /// puts the entry's config as `node.config.update` does (row first, then the node) and writes the
+    /// entry's storage and placement onto the row with it; `CreateTags` / `DeleteTags` put the labels as
+    /// `node.tags.create` / `node.tags.delete` do. The node is the birth this admin's view holds at the
+    /// path; one the view does not hold fails the operation by name, nothing written.
+    async fn apply_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
+        use rdm_core::status::{StatusReply, StatusRequest, TagScope};
+        let me = self.held_name();
+        let key = op.key();
+        let template = self.template_for(node.kind, &node.mesh).await?;
+        let step = match op {
+            BuildOperation::UpdateConfig { .. } => "UpdateConfig",
+            BuildOperation::CreateTags { .. } => "CreateTags",
+            _ => "DeleteTags",
+        };
+        let put = async {
+            let Some(authority) = self.observer.authority.get() else {
+                return Err(format!("{key}: {me} holds no status authority yet to write the row of {node}; nothing is written"));
+            };
+            let held = self.topology.read().await.node(node).and_then(|n| n.incarnation_id.clone().map(|incarnation| (n.node_id.clone(), incarnation)));
+            let Some((node_id, incarnation)) = held else {
+                return Err(format!("{key}: {me} holds no birth at {node}; nothing is written"));
+            };
+            let reply = match op {
+                BuildOperation::UpdateConfig { .. } => {
+                    let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("{key}: the accepted Build {build_id} could not be read for {node}'s create spec; nothing is written: {e}"))?;
+                    let spec = stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).cloned()).ok_or_else(|| format!("{key}: the accepted Build {build_id} names no create spec for {node}; nothing is written"))?;
+                    let req = StatusRequest::UpdateNodeConfig { node_id, incarnation, config: spec.config };
+                    match authority.update_config_from_spec(&req, spec.storage, spec.placement).await {
+                        StatusReply::ConfigUpdated { .. } => return Ok(()),
+                        refused => refused,
+                    }
+                }
+                BuildOperation::CreateTags { labels, .. } => match authority.apply(None, &StatusRequest::CreateTags { node_id, incarnation, labels: labels.clone() }).await {
+                    StatusReply::TagsCreated { .. } => return Ok(()),
+                    refused => refused,
+                },
+                BuildOperation::DeleteTags { labels, .. } => match authority.apply(None, &StatusRequest::DeleteTags { node_id, incarnation, scope: TagScope::Labels(labels.clone()) }).await {
+                    StatusReply::TagsDeleted { .. } => return Ok(()),
+                    refused => refused,
+                },
+                _ => unreachable!("apply_in_place is called for a property applied in place only"),
+            };
+            Err(format!("{key}: {node} answered {reply:?}"))
+        };
+        self.pipeline(&template).apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
     }
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a recipe's

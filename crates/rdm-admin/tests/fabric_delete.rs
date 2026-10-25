@@ -168,6 +168,8 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 births: Vec::new(),
                 predecessor: None,
                 mesh_id: None,
+                storage: None,
+                placement: None,
             })
             .await
             .unwrap();

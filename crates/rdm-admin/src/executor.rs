@@ -111,6 +111,9 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
         // The fabric-primary terminates a deleted birth heard again (node-investigation.md, Q128).
         BuildOperation::TerminateNode { .. } => fabric(),
+        // A property applied in place is written by the node's mesh-primary, the one writer of its
+        // mesh's rows (node-rpc-envelope.md "Node properties"; build.md §1), its own row included.
+        BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => mesh_executor(&node.mesh, None, t),
     }
 }
 
@@ -178,7 +181,10 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::StartNode { node, .. }
-        | BuildOperation::DeleteNode { node, .. } => node,
+        | BuildOperation::DeleteNode { node, .. }
+        | BuildOperation::UpdateConfig { node }
+        | BuildOperation::CreateTags { node, .. }
+        | BuildOperation::DeleteTags { node, .. } => node,
         BuildOperation::RecipeStep { step, .. } => step.node(),
         _ => return format!("{}: no admin holds the seat that executes it in this view", op.key()),
     };

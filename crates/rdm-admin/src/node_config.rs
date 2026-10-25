@@ -64,6 +64,13 @@ impl NodeConfigs {
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
     /// reply bound; the span carries it whole (`answered`, `detail`), so nothing of it is lost.
     pub async fn update(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
+        self.update_with(me, me_id, view, storage, req, None).await
+    }
+
+    /// [`Self::update`] of a Build's create spec (build.md §1, "The Build applies the diff"): the same
+    /// put, the spec's `storage` and `placement` (`onto_row`) written onto the row in the same write as
+    /// the map, effective at the node's next birth.
+    pub async fn update_with(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest, onto_row: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-config",
@@ -80,14 +87,14 @@ impl NodeConfigs {
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let reply = tracing::Instrument::instrument(self.put(me, me_id, view, storage, node_id, incarnation, config, &span), span.clone()).await;
+        let reply = tracing::Instrument::instrument(self.put(me, me_id, view, storage, node_id, incarnation, config, onto_row, &span), span.clone()).await;
         span.record("outcome", reply.name());
         span.in_scope(|| tracing::info!("node.config.update decided"));
         reply
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
+    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, onto_row: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>, span: &tracing::Span) -> StatusReply {
         if let Err(over) = rdm_core::check_config(config) {
             return rdm_core::reply::status::rejected_config(over);
         }
@@ -135,11 +142,15 @@ impl NodeConfigs {
                 return rdm_core::reply::status::bounded_config_row_refused(&subject.name.to_string(), &detail);
             }
         }
-        let base = NodeRow { config: config.clone(), ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
+        let (row_storage, row_placement) = onto_row.map_or((None, None), |(s, p)| (Some(s), Some(p)));
+        let base = NodeRow { config: config.clone(), storage: row_storage, placement: row_placement, ..NodeRow::new(subject.name.clone(), node_id.clone(), subject.status) };
         let status = subject.status;
         let refused = match self.written.update(storage, node_id, Some(base), |r| {
             r.status = status;
             r.config = config.clone();
+            if onto_row.is_some() {
+                (r.storage, r.placement) = (row_storage, row_placement);
+            }
         }).await {
             Ok(_) => None,
             Err(why) => Some(format!("{me}: {why}")),
