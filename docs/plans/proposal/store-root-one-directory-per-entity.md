@@ -64,55 +64,42 @@ line per fact, one appender.
   so the one place a record disappears today goes. Retention of a file's lines is nobody's until
   Luke rules it; this proposal introduces no compaction and assumes none.
 - **R-SR3, one append protocol for every file.** A line is `\n` + one JSON object + `\n`: JSONL,
-  readable by ordinary tooling. The object's first field is `len`, the line's byte count between its
-  newlines; then `op`, the writer's birth (node id, incarnation) and a sequence the writer increments
-  per append, which names this write and no other; then `format`, `key`, the whole record, and last a
-  `crc32` of the object's bytes before that field. A writer appends one line in one `write` on a
-  descriptor opened `O_APPEND`, then `fsync`s, and reports success only after the fsync succeeds. A
-  failed fsync is never reported as success: after it the page cache cannot be trusted, so the write
-  is indeterminate and reconciled as a short write is, below. A write that wrote zero bytes landed
-  nothing and is retried as a fresh append. Both
-  providers put the root on one host kernel (the process provider's directory, the container
-  provider's bind mount), where a single `write` on `O_APPEND` to a regular file lands whole and in
-  order; R14 item 5's filesystem contract is restated for it. A reader folds a file line by line: a
-  blank line is skipped. A line is skipped only when a later line attests it: a
-  `fragment/1` record naming the fragment's offset and byte count, itself a whole line with its own
-  `len` and `crc32`. Whoever discovers a fragment attests it, knowing its exact bytes: the opener of a
-  file whose tail is torn (shorter than its `len`, or without its closing newline) first appends a
-  newline and then the attestation; a writer whose short write it re-reads as cut short attests its
-  own fragment before appending the whole line again. Two openers attesting one tail write two
-  attestations of the same bytes, which is harmless. Every line not attested as a fragment must have
-  exactly `len` bytes, parse, and match its `crc32`; one that does not is corruption, and the open is
-  refused by name naming the file and the offset, never an older line shown as current. No field of a
-  damaged line, `len` included, authorizes skipping it: a `len` corrupted upward in an acknowledged
-  record is refused, not read as a short fragment (Architect 1, 2026-10-25). Fragments are counted in
-  the open's span. Because every line opens with its own newline, a fragment another writer appends
-  after is a line of its own and swallows nothing. A short write (fewer bytes written than the line)
-  is indeterminate, as a cut call is (Node RPC §34): the writer's object may already be complete but
-  for its newline, and any later opening newline completes it. Before its next append the writer
-  re-reads the tail from its consumed offset and finds one of three things: its object whole and
-  terminated (another writer's newline did it), so it fsyncs and proceeds, appending nothing; its
-  object whole without a newline at the end of the file, so it appends one newline alone, fsyncs and
-  proceeds, and if another writer's line landed in between the lone newline is a blank line, skipped;
-  or its object absent or cut short, so it attests the fragment and appends the whole line again. The writer knows its own
-  write by its `op`, never by its bytes: an idempotent rewrite of an unchanged record is a second
-  `op` with the same payload, so the re-read cannot mistake the earlier identical line for the write
-  it is reconciling (dev review, 2026-10-25). Under either schedule, the other writer first or the
-  retry first, the record is folded once (Architect 1, 2026-10-25). Corruption is refused rather
-  than skipped because a skipped whole record exposes the line before it as current; a fragment is
-  skipped because it never was a record. An unlanded commit on a lane (`df84386f1`) replaced the
-  attestation with a refusal of any torn tail, every open refused until a repair by hand. It is not
-  taken: R-SR3 acknowledges only after a full write and a successful fsync, so a torn or incomplete
-  line was never acknowledged wherever it sits, and refusing it trades the fabric's store for the
-  commonest failure an append log has. Kafka's log recovery, etcd's WAL repair and RocksDB's default
-  tail mode all drop the torn last record and refuse corruption in the middle; they truncate, and the
-  attestation is the append-only form of the same result (dev review, 2026-10-25).
+  readable by ordinary tooling. The object's first field is `len`, the object's byte count between
+  its newlines; then `op` (writer node id, incarnation and a sequence incremented for each new
+  write), `format`, `key`, the whole record, and last a `crc32` of the object's bytes
+  before that field. A writer appends one line in one `write` on a descriptor opened `O_APPEND`,
+  then `fsync`s, and reports success only after the fsync. The file backend requires a local
+  filesystem with serialized append writes on the shared host kernel; this orders the bytes actually
+  written, but does not guarantee a full write or durability before fsync. Short writes and fsync
+  failures are indeterminate, never success.
+  A fold skips blank lines only. Every nonblank line must have exactly `len` bytes, parse as its
+  declared record format, and match its `crc32`. A malformed line, including the last line, refuses
+  the open or tail read by name with the file and offset; no partial answer or older state is
+  returned as current. An absent newline alone does not make an otherwise valid object disposable.
+  At open, a complete object with valid length, format and checksum but no final newline is retained:
+  append one newline alone and fsync before completing the open. If another writer appended in
+  between, its opening newline already terminated the object and the added newline is merely blank.
+  An incomplete or invalid object is left untouched and refused. Neither a length mismatch nor its
+  position at EOF proves that bytes were never acknowledged. There are no fragment attestations.
+  After an indeterminate write, the writer reconciles its pending append before any later mutation
+  of that key. It finds that pending operation by its `op` from its pre-write consumed offset,
+  validating every intervening record. A complete, terminated object needs no payload retry: fsync
+  before accepting it. A complete valid object missing only its terminator is finished with one
+  newline and fsync, under either ordering with another writer. If the syscall reported zero bytes
+  written and the intervening bytes validate, the line may be retried. A partial malformed object,
+  or an outcome the writer cannot identify unambiguously, is refused without appending a replacement
+  or discarding any bytes. Retries retain the pending `op`; a separate write gets a new sequence even when its payload is
+  identical. Equal payloads never identify the pending operation. A writer must not reuse an `op`
+  after restart: it resumes its sequence from durable evidence or uses a new incarnation. A crash
+  that loses the pending operation context does not authorize guessing. Automatic recovery of malformed appends would require independently durable evidence
+  established before the append and is outside this proposal. This deliberately trades availability
+  after an ambiguous partial write for preserving acknowledged state and the append-only history.
 - **R-SR4, a reader of rows it does not write reads the tail first.** A writer's own objects live in
   its cache (storage-whole-records.md). Rows another writer appends (another mesh's node records,
   every node's connection facts, the Build facts a successor folds) are read by consuming the
   file's complete lines from the reader's consumed offset before the answer that needs them. The
   consumed offset is the fold's own: it advances only over bytes the fold has read whole, never to
-  an append position, and an incomplete tail stays unconsumed. A writer's own append does not move
+  an append position, and an incomplete tail stays unconsumed; R-SR3 applies before an answer is returned. A writer's own append does not move
   it, so after A consumes to 100, B appends and A appends, A's next fold starts at 100 and reads B's
   line and then its own (Architect 1, 2026-10-25). The shared file's view is not the writer's cache.
 - **R-SR5, one winner stays one winner.** The conditional operations keep their guarantees outside
@@ -207,7 +194,8 @@ record's size and count (142 nodes in the largest estate in the record) a long r
 thousands of lines and a few megabytes. `connections.jsonl` is the largest by far: every connect,
 disconnect and reconnect attempt of every node of the fabric, so a fresh open's time grows with the
 fabric's whole history. The open records one span per file, `rdm.store.open.via-fold`, with the
-file's bytes, lines, fragments, the latest `op` per writer and the fold's duration. The trigger for
+file's bytes, lines, the latest `op` per writer and the fold's duration; a refused fold names
+its invalid offset and cause. The trigger for
 the retention ruling, which is Luke's, is the first fold recorded over one second or the first file
 over 256 MiB on a real fabric, the same shape as the reads proposal's paging trigger (dev review,
 2026-10-25); the numbers are a line to strike.
@@ -292,8 +280,8 @@ connections.jsonl, the view the fold's latest line per key.`
   code has made it for both names (storage.rs:356, :1303), the lock being the claim; the attempt in
   flight is the other, under locks/in-flight/.` Its `claim_against` sentence stands: the decision over
   a Deleted or Withdrawn line is the claimant's, before the take. Item 5: `relies on hard-link insertion, atomic rename,
-  file and directory fsync, and coherent reads and listings` → `relies on one-line O_APPEND writes
-  landing whole and in order, file fsync, create-exclusive insertion under locks/, and coherent reads
+  file and directory fsync, and coherent reads and listings` → `relies on serialized O_APPEND writes on the local filesystem,
+  checked write results and file fsync, create-exclusive insertion under locks/, and coherent reads
   on one backing namespace (R-SR3)`. Item 7: `reads nodes/<mesh>/ and meshes/<mesh>` → `folds
   meshes.jsonl and nodes.jsonl and keeps its mesh's records`.
 - R-ML2 item 4 gains: `Amended 2026-10-25 (R-SR1): the recreated mesh shares the name locks under
@@ -305,8 +293,8 @@ connections.jsonl, the view the fold's latest line per key.`
 ### 5.4 Cells
 
 - `StoreLog`, one cell set: two writers appending concurrently to one file, every line found whole
-  and in order; a torn tail followed by another writer's line, the fragment skipped and counted and
-  the line read; the short-write boundary, a record written whole but for its final newline and
+  and in order; a malformed partial tail followed by another writer's valid line refuses the
+  read without returning an older or partial view; the short-write boundary, a record written whole but for its final newline and
   reported short, under both schedules: another writer's newline completes it before the re-read,
   and the re-read comes first and appends one newline alone; in each the record is folded once and
   success is reported after the fsync; a line that parses with a wrong `crc32` refusing the open by
@@ -323,14 +311,15 @@ connections.jsonl, the view the fold's latest line per key.`
   intact; a holder's release delayed past a reclamation, taking the mutex, finding the reclaimer's
   lock and leaving it; a reclaimer dying inside the mutex and the next reclaimer proceeding; a
   previously acknowledged record damaged so its JSON no longer parses, and another with only its
-  `len` corrupted upward, each reopen refused by name and not its predecessor shown; a torn tail
-  attested at open and then skipped by every later fold while a later writer's lines are read; a
-  short write cut short by another writer's line, attested by its writer and the record appended once
-  more; an idempotent rewrite of an unchanged record whose write is cut short, the re-read finding
-  the earlier identical line but not its `op`, so the record is appended and both lines stand; a
-  failed fsync reported indeterminate and reconciled by `op`; a zero-byte write retried once; the
-  open span carrying each file's bytes, lines, fragments and duration; a lock naming a live claimant
-  never removed by another.
+  `len` corrupted upward, each tested as the last record and as an interior record: reopen refuses
+  by name without returning its predecessor, and the file bytes are unchanged; a complete valid
+  last object missing only its newline is retained and terminated at open, fsynced and folded once;
+  the same valid tail recovered by its writer has the same outcome; a malformed short write refuses
+  without retrying its payload, with and without a subsequent writer; two identical payloads with
+  distinct `op`s remain distinct, and reconciliation never mistakes the earlier write for the pending
+  one; a failed fsync reports indeterminate and reconciles by `op`; a zero-byte write retries with
+  the pending `op`; restart never reuses an earlier `op`; the open span carries each file's bytes,
+  lines and duration; a lock naming a live claimant is never removed by another.
 - The path-asserting tests move to §4: `store_root.rs` (9 assertions), `build_state.rs` (11),
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
