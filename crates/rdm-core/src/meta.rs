@@ -22,6 +22,12 @@ pub struct PathConfig {
     /// history, its births' rows the record of what they run.
     #[serde(default)]
     pub executable: Option<crate::binding::Binding>,
+    /// The tag labels a node created at the path carries from its name claim (the request's node entry,
+    /// proposal executable-bindings-at-create.md rule 1: "with `tags`, `storage`, `placement` and
+    /// `executable`"); a node recovered or replaced at the path takes its predecessor's row's
+    /// (node-replace.md "Inherited"). A Build accepted before the field decodes with none.
+    #[serde(default)]
+    pub tags: std::collections::BTreeSet<String>,
 }
 
 /// What survives a topology-preserving runtime loss or restart, and the declared disposition of
@@ -158,7 +164,7 @@ impl PathConfig {
             NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
             NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
         };
-        Self { storage, placement: PlacementMeta::default(), executable: None }
+        Self { storage, placement: PlacementMeta::default(), executable: None, tags: Default::default() }
     }
 }
 
@@ -181,8 +187,8 @@ pub fn normalize_path_config(kind: NodeKind, legacy: LegacyPathConfigInput) -> P
         return explicit;
     }
     match legacy.stateful {
-        Some(true) => PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, placement: PlacementMeta::default(), executable: None },
-        Some(false) => PathConfig { storage: StorageMeta::Ephemeral, placement: PlacementMeta::default(), executable: None },
+        Some(true) => PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, placement: PlacementMeta::default(), executable: None, tags: Default::default() },
+        Some(false) => PathConfig { storage: StorageMeta::Ephemeral, placement: PlacementMeta::default(), executable: None, tags: Default::default() },
         None => PathConfig::default_for(kind),
     }
 }
@@ -202,7 +208,7 @@ mod tests {
         assert_eq!(PathConfig::default_for(NodeKind::Gateway).storage, StorageMeta::Ephemeral);
         assert_eq!(PathConfig::default_for(NodeKind::Compute).storage, StorageMeta::Ephemeral);
         assert_eq!(PathConfig::default_for(NodeKind::RpcNode).storage, StorageMeta::Ephemeral);
-        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: PlacementMeta::default(), executable: None };
+        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: PlacementMeta::default(), executable: None, tags: Default::default() };
         assert_eq!(normalize_path_config(NodeKind::Gateway, LegacyPathConfigInput { explicit: Some(release.clone()), stateful: Some(false) }), release);
         assert_eq!(normalize_path_config(NodeKind::Gateway, LegacyPathConfigInput { explicit: None, stateful: Some(true) }).storage, preserve);
         assert_eq!(normalize_path_config(NodeKind::Broker, LegacyPathConfigInput { explicit: None, stateful: Some(false) }).storage, StorageMeta::Ephemeral);

@@ -404,6 +404,13 @@ impl NodeRows {
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
     /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
     pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor) -> Result<Claimed, RowRefused> {
+        self.claim_tagged(name, node_id, operation, allocated, executable, &std::collections::BTreeSet::new(), of).await
+    }
+
+    /// [`Self::claim`] of a create whose path's entry names `tags` (proposal executable-bindings-at-create.md
+    /// rule 1): a plain create's row carries them; a recovery's and a successor's carry their seed's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_tagged(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, of: ClaimFor) -> Result<Claimed, RowRefused> {
         let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
@@ -437,7 +444,7 @@ impl NodeRows {
                 };
                 span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
-                self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, executable, of, &span, "writer-check").await
+                self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, executable, tags, of, &span, "writer-check").await
             },
             span.clone(),
         )
@@ -566,7 +573,7 @@ impl NodeRows {
         let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
         let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
-        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, None, ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
+        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, None, &std::collections::BTreeSet::new(), ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => row,
         };
         if let Some(held) = &row.app_types {
@@ -697,10 +704,10 @@ impl NodeRows {
     /// ([`WrittenRows::known_row`]), so a node renamed while stopped (told nothing of it, R12) keeps
     /// its one row where the rename put it, whatever name a view still lists it at.
     #[allow(clippy::too_many_arguments)]
-    async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+    async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
         let claimed = match self.written.known_row(&*self.storage, node_id).await {
             Ok(Some(held)) => Claimed::HeldByNode(held),
-            Ok(None) => seeded_put(&*self.storage, &self.written, me, name, node_id, status, own, allocated, executable, of, span, prefix).await?,
+            Ok(None) => seeded_put(&*self.storage, &self.written, me, name, node_id, status, own, allocated, executable, tags, of, span, prefix).await?,
             Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the row {node_id} holds could not be read before its row at {name} was written: {e}"))),
         };
         if of == ClaimFor::Successor {
@@ -792,7 +799,7 @@ impl NodeRows {
             Some(row) => Claimed::HeldByNode(row),
             // A recovery's claim precedes its birth's arrival (the create claims before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, None, ClaimFor::Create, span, "").await?,
+            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, None, &std::collections::BTreeSet::new(), ClaimFor::Create, span, "").await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, &self.written, me, row, "rebuild").await {
@@ -988,7 +995,7 @@ pub async fn write_deleted(storage: &dyn NodesStorage, written: &WrittenRows, na
 /// A record the same node holds already is left as it is. A recovery's record names the birth it
 /// replaced, the newest birth of the `Deleted` record at the name (`predecessor`).
 #[allow(clippy::too_many_arguments)]
-async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, created_with: &std::collections::BTreeSet<String>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
     let _one = written.lock(node_id).await;
     let mut awaited = prefix.to_string();
     span.record("awaiting", "read-previous-row");
@@ -1013,7 +1020,8 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
         }
     };
     // The tags come with the config for a recovery's claim, from the Deleted record at this name, and
-    // for a replace's successor, from the predecessor's record that seeds it.
+    // for a replace's successor, from the predecessor's record that seeds it; a plain create's are its
+    // path's entry's (`created_with`).
     let tags = seed
         .as_ref()
         .filter(|p| match of {
@@ -1022,7 +1030,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
             ClaimFor::Successor => p.name != *name || p.status == NodeStatus::Deleted,
         })
         .map(|p| p.tags.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| if of == ClaimFor::Create { created_with.clone() } else { Default::default() });
     let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
     // The executable beside the config: the one the create launches (`executable`), else the seed's.
     let executable = executable.cloned().or_else(|| seed.as_ref().and_then(|p| p.executable.clone()));
@@ -1219,7 +1227,7 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, w
         ),
     };
     let mut guard = ClaimGuard { span: span.clone(), done: false };
-    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, executable, of, &span, ""), span.clone()).await;
+    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, executable, &std::collections::BTreeSet::new(), of, &span, ""), span.clone()).await;
     guard.done = true;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));

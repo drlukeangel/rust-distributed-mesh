@@ -518,6 +518,9 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
     }
+    async fn stored_accepted(&self, build_id: &rdm_admin::build::BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
+        self.inner.stored_accepted(build_id).await
+    }
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let outcome = self.inner.claim_attempt(claim).await?;
         if outcome == ClaimOutcome::Won {

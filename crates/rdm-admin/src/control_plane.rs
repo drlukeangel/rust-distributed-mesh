@@ -604,20 +604,6 @@ impl ControlPlane {
         .await
     }
 
-    /// Open the next attempt of `current` in the fabric lane with no action: the replacement its rows
-    /// still owe after an attempt that carried an action (a recovery) runs as that attempt's (proposal
-    /// executable-bindings-at-create.md rules 5 and 6: "a pending replacement follows as its own step").
-    pub(crate) async fn open_replacement_attempt(&self, current: &crate::build_state::BuildProjection) -> Result<u32, String> {
-        let me = self.held_name().await;
-        let opened = AttemptOpened { mesh: None, build_id: current.build_id.clone(), attempt: next_in_lane(current, None), reason: AttemptReason::ProvenDrift, action: None, opened_by: me.to_string(), opened_at_ms: self.time.now_ms() };
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-replacement-owed", build_id = %current.build_id.log(), attempt = opened.attempt, node = %me);
-        self.contexts.put(&opened.build_id, opened.attempt, &span.in_scope(crate::build_claim::current_context)).await.map_err(|e| format!("attempt-context: {e}"))?;
-        self.builds.open_attempt(&opened).await.map_err(|e| e.to_string())?;
-        span.in_scope(|| tracing::info!("the action's attempt left the Build's replacement owed: its next attempt, with no action, is open"));
-        self.build_submitted.notify_waiters();
-        Ok(opened.attempt)
-    }
-
     /// Open the next attempt of `current` in `lane` (`None` the fabric lane, `Some(mesh)` that mesh's
     /// drift lane) with `action`, putting its context first.
     #[allow(clippy::too_many_arguments)]
@@ -1190,8 +1176,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     } else {
         moving
     };
-    let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
-    let refusal = crate::election::commanded_successor(&nodes, &crate::election::Incumbency::default(), target, moving).err()?;
+    let refusal = crate::election::commanded_successor_in(t, &crate::election::Incumbency::default(), target, moving).err()?;
     Some(BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal })
 }
 

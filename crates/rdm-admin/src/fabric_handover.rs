@@ -375,7 +375,7 @@ impl HandoverDoor {
         };
         let chosen = match named {
             Some(name) => crate::election::named_fabric_successor(&nodes, &self.incumbency(), &me_node, name),
-            None => crate::election::commanded_successor(&nodes, &self.incumbency(), &me_node, moving),
+            None => crate::election::commanded_successor_in(&view, &self.incumbency(), &me_node, moving),
         };
         let successor = match chosen.map(|n| (birth_of(&n), n)) {
             Ok((Some(to), n)) => (to, n),

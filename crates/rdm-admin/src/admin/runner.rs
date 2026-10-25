@@ -308,6 +308,13 @@ impl AdminRunner {
         self.template_launching(node.kind, &node.mesh, executable, Some(binding)).await
     }
 
+    /// The executable `node`'s entry names in Build `build_id`'s accepted topology as builds.storage
+    /// records it ([`BuildStateAdapter::stored_accepted`]), when it names one.
+    async fn entry_executable(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
+        let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's executable: {e}"))?;
+        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.path_config(node)).and_then(|c| c.executable.clone())))
+    }
+
     /// The executable binding the row a create of `node` is seeded from records (the claim's seed,
     /// [`crate::node_rows::NodeRows::claim`]): the row at the path, else its `<name>.old` row.
     async fn recorded_executable(&self, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
@@ -504,9 +511,16 @@ impl AdminRunner {
     }
 
     /// node.create of `node`, its name claimed for `claim_for` (a plain create, or a replace
-    /// successor's at the name its predecessor released), launching `executable` when the Build fixed
-    /// one ([`Self::create_template`]).
+    /// successor's at the name its predecessor released), launching the executable the step names, else
+    /// the path's entry in the accepted Build as builds.storage records it ([`Self::entry_executable`];
+    /// proposal executable-bindings-at-create.md rules 1-2: the Build topic carries none, rule 7, so this
+    /// admin's own copy of the Build may name none), else the row's ([`Self::create_template`]).
     pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, before_ready: Option<crate::deployment::pipeline::BeforeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+        let stored = match executable {
+            Some(_) => None,
+            None => self.entry_executable(build_id, node).await?,
+        };
+        let executable = executable.or(stored.as_ref());
         match self.revise_predecessor(node).await {
             // The member answers: it is commanded back, never created over (node-recovery.md step 3).
             FenceOutcome::Alive => return Ok(()),
@@ -514,12 +528,15 @@ impl AdminRunner {
             // name, R-MN1): node.delete deletes it (`TerminateRuntime` first when its runtime runs), then
             // the create runs at the same path.name, over the inherited data dir when the delete read
             // the old runtime exited and over a newly allocated one otherwise (node-recovery.md
-            // "Retained", `R-FM2`).
+            // "Retained", `R-FM2`), launching this create's executable: the one its step names (a Build's
+            // create of a path its topology names, the path's entry), never the unreached birth's
+            // row's in its place (proposal executable-bindings-at-create.md rule 5: one whose entry
+            // differs from its row is replaced; rule 6 is a recovery's create, which names none).
             FenceOutcome::Clear { gone: Some(prev) } => {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
                     self.delete_unreached(&*self.builds, build_id, attempt, node, &from).await?;
-                    return self.create_over(&*self.builds, build_id, attempt, node, &from).await;
+                    return self.create_over(&*self.builds, build_id, attempt, node, &from, executable).await;
                 }
             }
             FenceOutcome::Clear { gone: None } => {}
@@ -696,7 +713,7 @@ impl AdminRunner {
     /// executor runs the create fences, so an executor lost after the delete's Complete leaves
     /// nothing unfenced; a rerun that reuses a runtime an earlier attempt launched (it was fenced
     /// before that launch) cuts none of that runtime's paths.
-    pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, executable: Option<&rdm_core::binding::Binding>) -> Result<(), crate::executor::RunEnd> {
         let (exited, _) = self.exited_birth("node.create", node, from).await?;
         // A node-admin created into a mesh with no other live node-admin is that mesh's first admin, as
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
@@ -707,11 +724,12 @@ impl AdminRunner {
             t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
         };
         let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
-        // The launch runs the executable the exited birth's row records, on both arms (node-recovery.md
-        // "Retained": never the recovering admin's): the new node's config and executable are seeded
-        // from that Deleted row by the create's name claim (`NodeRows::claim`), and the config is told
-        // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
-        let mut template = self.create_template(node, None).await?;
+        // A recovery's create names no executable: the launch runs the one the exited birth's row records,
+        // on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's config
+        // and executable are seeded from that Deleted row by the create's name claim (`NodeRows::claim`),
+        // and the config is told to it when its row is written at its arrival (`NodeRows::write_arrivals`).
+        // A Build's create over an unreached birth launches the executable its step names.
+        let mut template = self.create_template(node, executable).await?;
         if node.kind == NodeKind::NodeAdmin {
             template = self.with_issuing_material(template, &node.mesh).await?;
         }
@@ -1169,7 +1187,7 @@ impl AdminRunner {
             BuildOperation::CreateNode { node, over: Some(from), executable: None } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
-                self.create_over(&*builds, build_id, attempt, node, from).instrument(span).await
+                self.create_over(&*builds, build_id, attempt, node, from, None).instrument(span).await
             }
             BuildOperation::CreateNode { node, over: None, executable } => self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Create).await,
             BuildOperation::RestartNode { node } => {

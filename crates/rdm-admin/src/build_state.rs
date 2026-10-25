@@ -1154,6 +1154,13 @@ pub trait BuildStateAdapter: Send + Sync {
     }
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
+    /// The accepted Build `build_id` as builds.storage records it (the fabric's shared store root, build.md
+    /// §5.3), read there whoever reads it: the one record that carries each entry's executable, which the
+    /// Build topic does not (proposal executable-bindings-at-create.md rule 7). `Ok(None)`: no record of it
+    /// there, or a log kept in one process with no store root.
+    async fn stored_accepted(&self, _build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
+        Ok(None)
+    }
     /// Insert-and-fail on `(build_id, attempt)`. Only the fabric-primary calls this on its own
     /// log to decide a claim (`build_claim::ClaimDoor`); an executor never claims from its own.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError>;
@@ -1846,6 +1853,34 @@ fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<Build
     log.facts = next;
 }
 
+/// The accepted Builds `stored`, as the store root records them, in place of the copies `log` holds of
+/// them, each at its own position (build.md §5.3: the Build facts are "written by the fabric-primary,
+/// so a successor reads them there; they also reach every admin through the Build channel"). The Build
+/// topic's copy carries no executable (proposal executable-bindings-at-create.md rule 7): an admin that
+/// heard a Build there and reads the store root as the fabric-primary holds the Build as it was
+/// written. The derivation runs over the log as it will stand, as for any publication.
+#[cfg(feature = "file-backend")]
+fn take_stored_acceptances(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, stored: Vec<BuildAccepted>) {
+    if stored.is_empty() {
+        return;
+    }
+    let held = snapshot(log);
+    let next: Vec<BuildFact> = held
+        .iter()
+        .map(|f| match f {
+            BuildFact::Accepted(a) => stored.iter().find(|s| s.build_id == a.build_id).map(|s| BuildFact::Accepted(s.clone())).unwrap_or_else(|| f.clone()),
+            other => other.clone(),
+        })
+        .collect();
+    drop(held);
+    let next = Arc::new(next);
+    if let Some(derive) = derive {
+        let taken: Vec<BuildFact> = stored.into_iter().map(BuildFact::Accepted).collect();
+        derive.run(log, &next, &taken);
+    }
+    log.lock().unwrap().facts = next;
+}
+
 /// Whether `accepted` is held already (`Ok(true)`), free (`Ok(false)`), or held with another intent.
 fn accepted_conflict(facts: &[BuildFact], accepted: &BuildAccepted) -> Result<bool, BuildStateError> {
     for f in facts {
@@ -2528,6 +2563,7 @@ impl FileJournal {
         read.sort_by_key(|(_, s)| s.seq);
         let held = snapshot(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
+        let mut stored: Vec<BuildAccepted> = Vec::new();
         {
             let mut seen = self.seen.lock().unwrap();
             for (key, StoredFact { seq, fact }) in read {
@@ -2536,12 +2572,19 @@ impl FileJournal {
                 }
                 self.holder_facts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.next_seq.fetch_max(seq + 1, std::sync::atomic::Ordering::Relaxed);
+                if let BuildFact::Accepted(a) = &fact {
+                    if held.iter().any(|f| matches!(f, BuildFact::Accepted(h) if h.build_id == a.build_id && h != a)) {
+                        stored.push(a.clone());
+                        continue;
+                    }
+                }
                 if is_new(&held, &fact) && is_new(&new, &fact) {
                     new.push(fact);
                 }
             }
         }
         drop(held);
+        take_stored_acceptances(&self.log, w.0.as_ref(), stored);
         publish(&self.log, w.0.as_ref(), new);
     }
 
@@ -2672,6 +2715,18 @@ impl BuildStateAdapter for FileJournal {
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.sync_for_read("read_build").await?;
         read_own(&self.log, build_id)
+    }
+
+    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
+        if !self.builds_dir.join(build_id.to_string()).is_dir() {
+            return Ok(None);
+        }
+        let store = self.store_of(build_id).await?;
+        // The acceptance's own key ([`record_key`]).
+        match store.read::<StoredFact>("accepted", RECORD_FORMAT).await.map_err(store_io)? {
+            Some(StoredFact { fact: BuildFact::Accepted(a), .. }) => Ok(Some(a)),
+            _ => Ok(None),
+        }
     }
 
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
@@ -3300,13 +3355,13 @@ mod tests {
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         }
-        // The records as a writer before the field wrote them: no `executable` on any path config.
+        // The records as a writer before the fields wrote them: no `executable` and no `tags` on any path config.
         let mut rewritten = 0;
         for b in std::fs::read_dir(dir.join("fabric").join("builds")).unwrap().flatten() {
             for r in std::fs::read_dir(b.path()).unwrap().flatten() {
                 let text = std::fs::read_to_string(r.path()).unwrap();
                 if text.contains("\"executable\":null") {
-                    std::fs::write(r.path(), text.replace(",\"executable\":null", "")).unwrap();
+                    std::fs::write(r.path(), text.replace(",\"executable\":null", "").replace(",\"tags\":[]", "")).unwrap();
                     rewritten += 1;
                 }
             }
@@ -3327,6 +3382,51 @@ mod tests {
         };
         let next = crate::accepted::compile(&current.topology, &change, &observed).expect("the next request compiles over it");
         assert_eq!(next.meshes["mesh1"].nodes.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (build.md §5.3 l.390: "The Build facts are the Build journal on the fabric's shared store
+    /// root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them
+    /// there; they also reach every admin through the Build channel and FetchBuildFacts"; proposal
+    /// executable-bindings-at-create.md rule 7, Luke 2026-10-24: "the executable is not gossiped, it's only
+    /// in the node storage"): an admin that heard an accepted Build on the Build topic holds it with no
+    /// executable; once it is the fabric-primary and reads the store root, it holds the accepted Build as
+    /// the fabric-primary wrote it there, every entry's executable with it, at the same place in its log.
+    /// Must NOT happen: the Build-topic copy kept over the stored record (a successor planning a Build's
+    /// replacements against entries that name no executable).
+    #[tokio::test]
+    async fn a_successor_holds_the_accepted_build_as_the_store_root_records_it_not_as_the_build_topic_carried_it() {
+        let dir = tmp();
+        let mut stored = intent("b1");
+        let rpc: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
+        let m = stored.topology.meshes.get_mut("mesh1").unwrap();
+        m.nodes.insert(rpc.clone());
+        let mut config = rdm_core::meta::PathConfig::default_for(crate::model::NodeKind::RpcNode);
+        config.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
+        m.set_path_config(&rpc, config).unwrap();
+        let writer = open_at(&dir).await.unwrap();
+        writer.publish_accepted(&stored).await.unwrap();
+        writer.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+
+        // Another admin, not the fabric-primary: it holds what the Build topic carried.
+        let successor = open_at(&dir).await.unwrap();
+        let primary = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let is = primary.clone();
+        successor.read_while_fabric_primary(Arc::new(move || is.load(std::sync::atomic::Ordering::SeqCst)));
+        let mut heard = stored.clone();
+        for c in heard.topology.meshes.get_mut("mesh1").unwrap().path_config_by_path.values_mut() {
+            c.executable = None;
+        }
+        successor.absorb_facts(&[BuildFact::Accepted(heard.clone()), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1"))]).await;
+        let id = stored.build_id.clone();
+        assert_eq!(successor.read_build(&id).await.unwrap().topology, heard.topology, "the Build topic carries no executable");
+
+        // The fabric-primary now: it reads the store root.
+        primary.store(true, std::sync::atomic::Ordering::SeqCst);
+        let read = successor.read_build(&id).await.unwrap();
+        assert_eq!(read.topology, stored.topology, "the accepted Build as the store root records it, its entries' executables with it");
+        assert_eq!((read.attempt, read.executor.as_deref()), (1, Some("mesh1.admin.1")), "the rest of its log as it was");
+        assert_eq!(successor.current().await.unwrap().map(|c| c.topology), Some(stored.topology.clone()), "the current Build likewise");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

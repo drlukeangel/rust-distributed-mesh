@@ -577,6 +577,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.list_active().await
     }
 
+    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
+        self.local.stored_accepted(build_id).await
+    }
+
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let _gate = match claim.mesh {

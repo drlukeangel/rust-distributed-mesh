@@ -138,8 +138,8 @@ async fn fabric_at_its_primary(estate: &Estate) -> (String, ScopeStatus, Option<
 /// lists no nodes at all, is refused by name pointing to fabric.delete"; "a created path whose config names
 /// no executable is refused by name at acceptance, nothing runs"; rule 3, "Recorded on the row at the claim";
 /// rule 7, read from the records). Two callers read the same topology. B's request adds `mesh1.rpc.2` on a
-/// new executable and completes: the node runs that executable, its row records it and `fabric.nodes.get`
-/// returns it. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
+/// new executable with the tag `zone_a` and completes: the node runs that executable, its row records it
+/// and the tag, and `fabric.nodes.get` returns both. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
 /// accepted and `mesh1.rpc.2` untouched. A re-reads: a request listing no node is refused `no-node-listed`
 /// naming fabric.delete, one creating `mesh1.rpc.3` with no executable `executable-missing`, nothing
 /// accepted; the re-read request itself is accepted and completes, changing nothing.
@@ -157,14 +157,17 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let rpc = b_request.iter().find(|(p, _)| p.to_string() == "mesh1.rpc.1").and_then(|(_, c)| c.executable.clone()).expect("mesh1.rpc.1's row records its executable");
     let next = another_build(&estate, &rpc, "next");
 
-    // B: mesh1.rpc.2, named on the new executable.
-    let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: naming(b_request, "mesh1.rpc.2", Some(&next)) }).await).await.build_id.to_string();
+    // B: mesh1.rpc.2, named on the new executable with its tags.
+    let mut b_nodes = naming(b_request, "mesh1.rpc.2", Some(&next));
+    b_nodes.iter_mut().find(|(p, _)| p.to_string() == "mesh1.rpc.2").expect("the entry named").1.tags = ["zone_a".to_string()].into();
+    let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
     let created = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
     assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, next.executable, "the created node runs the executable its request named");
     let row = record_of(&estate, "mesh1", created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["sha256"], json!(next.sha256), "its row records it: {row}");
     let read = fabric_nodes(&estate).await;
     assert_eq!(read["mesh1.rpc.2"].executable.as_ref(), Some(&next), "fabric.nodes.get returns it from the row");
+    assert_eq!(read["mesh1.rpc.2"].tags, ["zone_a".to_string()].into(), "the node carries the tags its entry named, from its claim");
     assert_eq!(read["mesh1.rpc.1"].executable.as_ref(), Some(&rpc), "and every other node's");
 
     // A, from its earlier read: refused, nothing accepted, mesh1.rpc.2 untouched.
@@ -376,9 +379,12 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
 /// node-admin on the executables it names. A request leaving mesh1, the fabric-primary's own mesh, out
 /// moves the fabric-primary to another mesh's primary first (the caller's stream ends `FabricPrimaryMoved`
 /// before any step of mesh1's mesh.delete, and the same build_id completes at the new fabric-primary),
-/// then mesh1 is deleted. A request leaving out the new mesh that does not hold the fabric-primary deletes
-/// it: its row Dead. Must NOT happen: a mesh left out kept running, or the fabric-primary's mesh
-/// deleted with the fabric-primary in it.
+/// then mesh1 is deleted. In that order: a request leaving out mesh3, a mesh that does not hold the
+/// fabric-primary, deletes it, its row Dead; then a request leaving out mesh1 moves the fabric-primary to
+/// mesh2's primary, "the other ReadyForTraffic mesh-primaries" (node-primary-update.md), and the new
+/// fabric-primary does not plan mesh3's mesh.delete again. Must NOT happen: a mesh left out kept running,
+/// the fabric-primary's mesh deleted with the fabric-primary in it, the fabric-primary handed to the Dead
+/// mesh's final primary, or a deleted mesh planned again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_is_deleted() {
     let mut estate = Estate::bootstrap(owner("a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_is_deleted"), "fabric1", "mesh1").await;
@@ -399,10 +405,22 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
         assert!(view.id.is_some() && view.status == ScopeStatus::ReadyForTraffic, "{m} is created with its first node-admin: {view:?}");
     }
 
-    // mesh1, the fabric-primary's own mesh, left out: the fabric-primary moves to another mesh's primary
-    // first, inside mesh1's mesh.delete.
+    let mesh3_id = estate.mesh_view("mesh3").await.id.expect("mesh3 carries its id");
+    // mesh3, a mesh that does not hold the fabric-primary, left out: its mesh.delete, its row Dead. Its
+    // final primary stays alive until its own node.delete (mesh-delete.md step 7).
     let (fp, _, _) = fabric_at_its_primary(&estate).await;
     assert!(fp.starts_with("mesh1."), "the fabric-primary is mesh1's: {fp}");
+    let (based_on, request) = read_request(&estate).await;
+    let without3: Vec<_> = request.into_iter().filter(|(p, _)| p.mesh != "mesh3").collect();
+    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: without3 }).await).await;
+    rdm_client::Fabrics::new(estate.carrier().await)
+        .fact("mesh3 deleted", SETTLE, |f| f.meshes.iter().any(|m| m.name == "mesh3" && m.status == ScopeStatus::Dead))
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+
+    // mesh1, the fabric-primary's own mesh, left out: the fabric-primary moves first, inside mesh1's
+    // mesh.delete, to the other ReadyForTraffic mesh-primary, mesh2's (node-primary-update.md: "the lowest
+    // NodeId among the other ReadyForTraffic mesh-primaries"), never to the Dead mesh3's final primary.
     let mesh2_admin = estate.mesh_node_views("mesh2").await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.status == rdm_client::NodeStatus::ReadyForTraffic).map(|n| n.name).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let (based_on, request) = read_request(&estate).await;
@@ -413,22 +431,13 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     let first_step = done.frames.iter().position(|f| matches!(f, BuildFrame::Step { operation, .. } if operation.starts_with("mesh.delete:") || operation.starts_with("node.delete:mesh1."))).unwrap_or_else(|| panic!("the mesh.delete's steps: {:?}", done.frames));
     assert!(moved < first_step, "the hand-over comes first: the fabric-primary moved before any step of mesh1's mesh.delete: {:?}", done.frames);
     let (fp, _, _) = fabric_at_its_primary(&estate).await;
-    assert!(fp.starts_with("mesh2.") || fp.starts_with("mesh3."), "the fabric-primary is another mesh's primary now: {fp}");
+    assert!(fp.starts_with("mesh2."), "the fabric-primary is mesh2's primary now, never the Dead mesh3's: {fp}");
     rdm_client::Fabrics::new(estate.carrier().await)
         .fact("mesh1 deleted", SETTLE, |f| f.meshes.iter().any(|m| m.name == "mesh1" && m.status == ScopeStatus::Dead))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     let steps = receipts(&estate, &build).await;
     assert!(steps.iter().any(|r| r.operation.starts_with("mesh.delete:") && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED), "mesh1's mesh.deleted");
-
-    // The mesh that does not hold the fabric-primary left out: its mesh.delete, its row Dead.
-    let gone = if fp.starts_with("mesh2.") { "mesh3" } else { "mesh2" };
-    let (based_on, request) = read_request(&estate).await;
-    let kept: Vec<_> = request.into_iter().filter(|(p, _)| p.mesh != gone && p.mesh != "mesh1").collect();
-    followed(&estate, estate.submit_change(Change::Reconcile { based_on, nodes: kept }).await).await;
-    rdm_client::Fabrics::new(estate.carrier().await)
-        .fact(&format!("{gone} deleted"), SETTLE, |f| f.meshes.iter().any(|m| m.name == gone && m.status == ScopeStatus::Dead))
-        .await
-        .unwrap_or_else(|end| panic!("{end}"));
+    assert!(!steps.iter().any(|r| r.operation == format!("mesh.delete:{mesh3_id}")), "mesh3, deleted by the Build before, is not deleted again: {steps:?}");
     estate.shutdown().await;
 }

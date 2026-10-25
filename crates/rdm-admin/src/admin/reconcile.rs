@@ -20,6 +20,8 @@ pub(crate) struct SeatGate {
     /// inspected through them before its stop is taken into the book.
     pub(crate) provider: Arc<dyn DeploymentProvider>,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
+    /// The Mesh records (mesh.storage on the fabric's shared root): which meshes are Dead, for the plan.
+    pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
 }
 
 /// Whether a completed stop's receipt still describes its exact birth: node-stop.md's Status is
@@ -108,8 +110,16 @@ impl crate::build_drive::Gate for SeatGate {
         crate::accepted::recorded_executables(&*rows, topology).await
     }
 
-    async fn open_replacement_attempt(&self, p: &crate::build_state::BuildProjection) -> Result<bool, String> {
-        self.control.open_replacement_attempt(p).await.map(|_| true)
+    /// The meshes of `observed` whose Mesh record is Dead: one point read of each record the view does
+    /// not already hold Dead.
+    async fn dead_meshes(&self, observed: &crate::topology::Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
+        let mut dead = std::collections::HashSet::new();
+        for id in observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).filter_map(|m| m.id.as_ref()) {
+            if self.meshes.mesh(id).await.map_err(|e| format!("the Mesh record of {id} could not be read: {e}"))?.is_some_and(|r| r.dead) {
+                dead.insert(id.clone());
+            }
+        }
+        Ok(dead)
     }
 
     fn fabric_ready(&self) -> bool {

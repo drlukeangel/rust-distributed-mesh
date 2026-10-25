@@ -342,6 +342,17 @@ pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, movi
     }
 }
 
+/// [`commanded_successor`] over the members of the view `t`: the search a commanded transfer runs
+/// (node-primary-update.md "Successor search for the commanded transfer"). Another mesh's members are
+/// candidates only while that mesh is neither Dead nor Leaving (step 2: "the other ReadyForTraffic
+/// mesh-primaries"): a deleted mesh's final primary lives on until its own node.delete (mesh-delete.md
+/// step 7), and a mesh whose mesh.delete runs is leaving; neither mesh's primary takes a primary.
+pub fn commanded_successor_in(t: &Topology, inc: &Incumbency, primary: &Node, moving: Moving) -> Result<Node, String> {
+    let gone = |mesh: &str| t.meshes.iter().any(|m| m.name == mesh && matches!(m.status, crate::model::ScopeStatus::Dead | crate::model::ScopeStatus::Leaving));
+    let nodes: Vec<Node> = t.members().filter(|n| n.mesh == primary.mesh || !gone(&n.mesh)).cloned().collect();
+    commanded_successor(&nodes, inc, primary, moving)
+}
+
 /// A seat's holder as a span names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Seat {

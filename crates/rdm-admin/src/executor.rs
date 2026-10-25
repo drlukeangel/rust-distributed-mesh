@@ -896,6 +896,37 @@ mod tests {
         assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricSeatOutside)), "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
     }
 
+    /// CONTRACT (node-primary-update.md:159-160, "Successor search for the commanded transfer": "2. only
+    /// when that mesh has none, or it is the departing mesh under mesh.delete: the lowest NodeId among the
+    /// other ReadyForTraffic mesh-primaries"; mesh-delete.md step 7: a deleted mesh's final primary stays
+    /// alive until its own node.delete): the fabric-primary leaving its mesh under mesh.delete hands the
+    /// fabric-primary to mesh2's primary, the one other ReadyForTraffic mesh. mesh3 is Dead (its final
+    /// primary still a Ready member of the view, with the lowest NodeId) and mesh4's mesh.delete runs
+    /// (Leaving, the next lowest): neither is chosen; with mesh2 gone the transfer is refused by name.
+    /// Must NOT happen: the fabric-primary handed to the admin of a Dead or deleting mesh.
+    #[test]
+    fn the_fabric_primary_is_never_handed_to_the_admin_of_a_dead_or_deleting_mesh() {
+        use crate::election::{commanded_successor_in, Moving};
+        let with = |path: &str, id: &str, fabric: bool| {
+            let mut n = node(path, true, fabric);
+            n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
+            n
+        };
+        let mesh = |name: &str, status: ScopeStatus| Mesh { id: Some(MeshId::mint()), name: name.into(), status };
+        let mut t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![mesh("mesh1", ScopeStatus::Leaving), mesh("mesh2", ScopeStatus::ReadyForTraffic), mesh("mesh3", ScopeStatus::Dead), mesh("mesh4", ScopeStatus::Leaving)],
+            nodes: vec![with("mesh1.admin.1", "5000000000aa", true), with("mesh2.admin.1", "9000000000aa", false), with("mesh3.admin.1", "1000000000aa", false), with("mesh4.admin.1", "2000000000aa", false)],
+        };
+        let p = t.nodes[0].clone();
+        let inc = crate::election::Incumbency::default();
+        let name = |n: Result<crate::model::Node, String>| n.map(|n| n.name.to_string()).unwrap_or_else(|e| e);
+        assert_eq!(name(commanded_successor_in(&t, &inc, &p, Moving::FabricSeatOutside)), "mesh2.admin.1", "the other ReadyForTraffic mesh's primary, never the Dead mesh3's or the deleting mesh4's");
+        t.nodes.retain(|n| n.mesh != "mesh2");
+        t.meshes.retain(|m| m.name != "mesh2");
+        assert_eq!(name(commanded_successor_in(&t, &inc, &p, Moving::FabricSeatOutside)), "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
+    }
+
     #[test]
     fn a_mesh_without_an_admin_primary_has_its_members_run_by_the_fabric_primary() {
         let t = mm(false);

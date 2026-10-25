@@ -136,6 +136,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Release },
             placement: Default::default(),
             executable: None,
+            tags: Default::default(),
         };
         release.meshes.get_mut("mesh1").unwrap().set_path_config(&again.node.name, released).unwrap();
         let again_build = publish_build(&builds, release).await;

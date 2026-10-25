@@ -49,6 +49,8 @@ struct Switch {
     record_holder: Mutex<Option<String>>,
     /// What the peer-mesh investigation holds per mesh, when the cell sets it.
     peer: Mutex<std::collections::HashMap<String, rdm_admin::investigate::PeerMesh>>,
+    /// The meshes whose Mesh record is Dead, when the cell sets them.
+    dead: Mutex<std::collections::HashSet<MeshId>>,
 }
 
 impl Switch {
@@ -74,6 +76,9 @@ impl Gate for Switch {
     }
     fn peer_mesh(&self, mesh: &str) -> Option<rdm_admin::investigate::PeerMesh> {
         self.peer.lock().unwrap().get(mesh).copied()
+    }
+    async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<MeshId>, String> {
+        Ok(self.dead.lock().unwrap().clone())
     }
 }
 
@@ -118,7 +123,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
@@ -1681,7 +1686,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
         topology: e.topology.clone(),
@@ -1873,7 +1878,7 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
     assert_eq!((p.attempt, handed), (1, vec![rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }]), "the holder's attempt ended handed off to the successor before the successor's drive begins");
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
     // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
     // root (its mesh rows, `mesh_claims`, are the holder's).
     let successor = Arc::new(DriveEnv {
@@ -1980,7 +1985,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let n_switch = Arc::new(Switch { fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()) });
     let op = "node.delete:mesh1.admin.1";
     let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
     let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
@@ -2227,6 +2232,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             fence_tx: tokio::sync::watch::channel(false).0,
             record_holder: Mutex::new(None),
             peer: Mutex::new(Default::default()),
+            dead: Mutex::new(Default::default()),
         });
         let env = Arc::new(DriveEnv {
             me: boot.clone(),
@@ -2329,4 +2335,27 @@ fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit(
         assert_eq!(p.attempt, 2, "no attempt after the failed one is claimed without a resubmit; via-drive outcomes {:?}", drive_outcomes());
         assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "only attempt 1 was dispatched");
     });
+}
+
+/// CONTRACT (mesh-delete.md: the mesh row goes Dead at mesh.deleted and Dead is final; build.md §1: each
+/// attempt computes the remaining work from the accepted topology, the records and its receipts; Luke
+/// 2026-10-24: the plan reads mesh death from the Mesh record and the receipts, never from a view that has
+/// not caught up): mesh3 was deleted by an earlier Build, its Mesh record Dead, and this fabric-primary's
+/// view has not heard its Dead yet (it shows mesh3 ReadyForTraffic, its final primary still a member). A
+/// Build whose topology leaves mesh3 out plans nothing for it: no mesh.delete is dispatched, and the Build
+/// completes. Must NOT happen: a deleted mesh's mesh.delete planned again.
+#[tokio::test]
+async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view_still_shows_it_live() {
+    let mut t = view();
+    let mesh3 = MeshId::mint();
+    t.meshes.push(Mesh { id: Some(mesh3.clone()), name: "mesh3".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh3.admin.1", true, false));
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]);
+    let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 1)] } };
+    let r = rig_for(t, change, |ran, _| ran).await;
+    r.switch.dead.lock().unwrap().insert(mesh3.clone());
+    let drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(30), r.env.run(&drive)).await;
+    assert!(!r.ran.0.lock().unwrap().iter().any(|op| op == &format!("mesh.delete:{mesh3}")), "the Dead mesh is not deleted again: {:?}", r.ran.0.lock().unwrap());
+    assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the Build completes");
 }

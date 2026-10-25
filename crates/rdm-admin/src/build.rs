@@ -497,6 +497,14 @@ pub enum BuildReject {
         /// Why.
         detail: String,
     },
+    /// The tag labels a request names for a path, refused at acceptance before anything is accepted:
+    /// more than a node carries, or one outside the label grammar (node-rpc-envelope.md node.tags).
+    TagsRefused {
+        /// The path.
+        node: String,
+        /// Why.
+        detail: String,
+    },
 }
 
 impl BuildReject {
@@ -532,6 +540,7 @@ impl BuildReject {
             Self::NodeNamedTwice { .. } => "node-named-twice",
             Self::ExecutableMissing { .. } => "executable-missing",
             Self::ExecutableRefused { .. } => "executable-refused",
+            Self::TagsRefused { .. } => "tags-refused",
         }
     }
 }
@@ -575,6 +584,7 @@ impl fmt::Display for BuildReject {
             Self::NodeNamedTwice { node } => write!(f, "the request names `{node}` twice: each node is listed once"),
             Self::ExecutableMissing { node } => write!(f, "`{node}` is created by the request and its config names no executable: every created node names the executable it runs; nothing is accepted"),
             Self::ExecutableRefused { node, detail } => write!(f, "the executable the request names for `{node}` is refused: {detail}; nothing is accepted"),
+            Self::TagsRefused { node, detail } => write!(f, "the tags the request names for `{node}` are refused: {detail}; nothing is accepted"),
             Self::PathConfigMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",

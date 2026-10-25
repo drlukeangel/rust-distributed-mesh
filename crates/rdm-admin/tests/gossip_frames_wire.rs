@@ -165,8 +165,8 @@ fn topology() -> FabricTopology {
     let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
     let broker: PathName = "mesh2.broker.1".parse().unwrap();
     let rpc: PathName = "mesh2.rpc.1".parse().unwrap();
-    m2.set_path_config(&broker, PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default(), executable: None }).unwrap();
-    m2.set_path_config(&rpc, PathConfig { storage: StorageMeta::Ephemeral, placement: Default::default(), executable: None }).unwrap();
+    m2.set_path_config(&broker, PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default(), executable: None, tags: Default::default() }).unwrap();
+    m2.set_path_config(&rpc, PathConfig { storage: StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default() }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
     t
 }
@@ -466,4 +466,61 @@ fn every_kind_declares_its_ruled_type_string() {
         assert!(bytes.len() <= 4032);
     }
     assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 19);
+}
+
+/// A twelve-node fabric whose every entry names its executable, as a complete-topology request
+/// compiles it: three meshes of four, each path on its own launch id's binding, each with a tag.
+fn twelve_node_topology() -> FabricTopology {
+    let mut t = FabricTopology::root("fabric-1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
+    t.meshes.clear();
+    for (mesh, kind) in [("mesh1", NodeKind::RpcNode), ("mesh2", NodeKind::Broker), ("mesh3", NodeKind::Gateway)] {
+        let mut m = MeshTopology::of(&MeshDesired::of(mesh, [(NodeKind::NodeAdmin, 2), (kind, 2)]));
+        for p in m.nodes.clone() {
+            let id = p.kind.name().replace('-', "_");
+            let executable = rdm_core::binding::Binding { launch_id: id.clone(), executable: format!("/opt/rafka/candidates/0123456789abcdef/{id}").into(), sha256: "ab".repeat(32), image: Some("rafka-node-runtime:0123456789abcdef".into()) };
+            m.set_path_config(&p, PathConfig { storage: StorageMeta::Ephemeral, placement: Default::default(), executable: Some(executable), tags: ["zone_a".to_string()].into() }).unwrap();
+        }
+        t.meshes.insert(mesh.into(), m);
+    }
+    t
+}
+
+/// `t` with no entry naming an executable or tags: what the Build topic carries of it.
+fn without_executables(t: &FabricTopology) -> FabricTopology {
+    let mut t = t.clone();
+    for m in t.meshes.values_mut() {
+        for c in m.path_config_by_path.values_mut() {
+            c.executable = None;
+            c.tags.clear();
+        }
+    }
+    t
+}
+
+/// CONTRACT (proposal executable-bindings-at-create.md rule 7: "Nothing about executables rides gossip or
+/// `node.topology.get`"; Luke 2026-10-24: "the executable is not gossiped, it's only in the node storage"):
+/// the accepted fact on the Build topic carries no executable (nor an entry's tags), of its topology's
+/// entries or of the complete-topology change it was submitted with; its bytes are those of the same fact
+/// naming none, so
+/// a twelve-node fabric's accepted fact fits one gossip message, as it did before the field. The stored
+/// accepted Build (builds.storage) keeps them. Must NOT happen: an executable, or a table of them, in a
+/// Build-topic message.
+#[test]
+fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
+    let named = twelve_node_topology();
+    assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
+    let nodes: Vec<(PathName, PathConfig)> = named.meshes.values().flat_map(|m| m.path_config_by_path.iter().map(|(p, c)| (p.clone(), c.clone()))).collect();
+    let fact = |t: FabricTopology, nodes: Vec<(PathName, PathConfig)>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), submitted_at_ms: 1_700_000_000_000 });
+    let stripped_nodes: Vec<(PathName, PathConfig)> = nodes.iter().map(|(p, c)| (p.clone(), PathConfig { executable: None, tags: Default::default(), ..c.clone() })).collect();
+    let with = fact(named.clone(), nodes);
+    let without = fact(without_executables(&named), stripped_nodes);
+
+    let (messages, refused) = encode_chunks(vec![with.clone()]);
+    assert!(refused.is_empty(), "a twelve-node fabric's accepted fact fits one gossip message: {refused:?}");
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].len() <= MAX_MESSAGE_BYTES);
+    let back = BuildMessage::from_bytes(&messages[0]).unwrap();
+    assert_eq!(back.facts, vec![without.clone()], "the Build topic carries the fact with no executable");
+    let bytes = |f: &BuildFact| BuildMessage { nonce: 7, facts: vec![f.clone()], fabric: None }.to_bytes().unwrap();
+    assert_eq!(bytes(&with), bytes(&without), "the executables add no byte to the Build topic's frame");
 }

@@ -1507,7 +1507,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     builds: builds_dyn.clone(),
                                     door: claim_door.clone(),
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone() }),
+                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), meshes: mesh_storage.clone() }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
                                         topology: control.topology.clone(),

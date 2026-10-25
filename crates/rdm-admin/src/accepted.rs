@@ -564,8 +564,11 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
 /// else it is refused by name; a path the topology holds that the request lists with none keeps its
 /// entry's. A mesh whose only node-admin the request replaces (its entry names another executable than
 /// its row records) gains a second node-admin at the next free `path.name` of that type, on the new
-/// executable (R4): it is in the topology from acceptance, created first, and stays. Refused by name: no
-/// node listed (that is fabric.delete), a path named twice, a `.old` path, a mesh name outside the grammar.
+/// executable (R4): it is in the topology from acceptance, created first, and stays. A created path's
+/// entry carries the tag labels the request lists, which the node carries from its claim; a held path
+/// keeps its entry's. Refused by name: no node
+/// listed (that is fabric.delete), a path named twice, a `.old` path, a mesh name outside the grammar,
+/// tags outside the label grammar or over the cap.
 fn reconciled(current: &FabricTopology, nodes: &[(PathName, PathConfig)], recorded: &Recorded) -> Result<BTreeMap<String, MeshTopology>, BuildReject> {
     if nodes.is_empty() {
         return Err(BuildReject::NoNodeListed);
@@ -578,6 +581,9 @@ fn reconciled(current: &FabricTopology, nodes: &[(PathName, PathConfig)], record
         if !is_valid_mesh_name(&path.mesh) {
             return Err(BuildReject::InvalidMeshName { mesh: path.mesh.clone() });
         }
+        if let Some(detail) = rdm_core::status::tags_refusal(&config.tags) {
+            return Err(BuildReject::TagsRefused { node: path.to_string(), detail });
+        }
         if by_mesh.entry(path.mesh.clone()).or_default().insert(path.clone(), config.clone()).is_some() {
             return Err(BuildReject::NodeNamedTwice { node: path.to_string() });
         }
@@ -589,8 +595,15 @@ fn reconciled(current: &FabricTopology, nodes: &[(PathName, PathConfig)], record
         let mut mesh = MeshTopology { name: name.clone(), mesh_id, nodes: BTreeSet::new(), path_config_by_path: BTreeMap::new() };
         for (path, mut config) in paths {
             match held.and_then(|m| m.path_config(&path)) {
-                Some(entry) if config.executable.is_none() => config.executable = entry.executable.clone(),
-                Some(_) => {}
+                // A held path keeps its entry's tags: a request's tags are a create's input (rule 1), a
+                // replacement inherits its predecessor's (rule 5: "its config and tags are inherited from
+                // the Deleted row"), and a live node's labels are node.tags.create's and node.tags.delete's.
+                Some(entry) => {
+                    if config.executable.is_none() {
+                        config.executable = entry.executable.clone();
+                    }
+                    config.tags = entry.tags.clone();
+                }
                 None if config.executable.is_none() => return Err(BuildReject::ExecutableMissing { node: path.to_string() }),
                 None => {}
             }
@@ -914,10 +927,10 @@ fn roll_operations(topology: &FabricTopology, observed: &Topology, recorded: &Re
                     });
                     ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(birth), executable: Some(binding.clone()) });
                 }
-                // Replaced or created by this Build: never replaced again, unless the row names the
-                // birth that create made and records another executable than the target (a create
-                // that took the row's, a recovery's): its replacement is still owed.
-                (RollProgress::Created, held) if held.is_none_or(|n| on_set(n) || !recorded.get(p).is_some_and(|r| r.node_id == n.node_id)) => {}
+                // Replaced or created by this Build: never replaced again. Every create of a topology
+                // attempt launches the path's target (the step names it; the launching admin reads the
+                // stored entry otherwise); a recovery's create is an action attempt's, never counted here.
+                (RollProgress::Created, _) => {}
                 (_, Some(n)) if !on_set(n) => {
                     let incarnation = n.incarnation_id.clone().expect("a held birth names its incarnation");
                     ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None });
@@ -2023,7 +2036,7 @@ mod tests {
         assert_eq!(m.path_config(&"mesh1.broker.3".parse().unwrap()).unwrap().storage, preserve, "the grown path carries its default");
         assert!(m.path_config(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's config goes with it");
         // An explicit path config stands; a path the mesh does not hold is refused.
-        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default(), executable: None };
+        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default(), executable: None, tags: Default::default() };
         assert_eq!(m.set_path_config(&"mesh1.rpc.1".parse().unwrap(), release.clone()), Ok(()));
         assert_eq!(m.path_config(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
         assert!(matches!(m.set_path_config(&"mesh1.rpc.9".parse().unwrap(), release.clone()), Err(BuildReject::UnknownNode { .. })));
@@ -2344,6 +2357,36 @@ mod tests {
         assert!(BuildReject::NoNodeListed.to_string().contains("fabric.delete"), "the refusal names fabric.delete");
     }
 
+    /// CONTRACT (proposal executable-bindings-at-create.md rule 1: the request is "an array of nodes, each
+    /// identified by its `path.name` ... with `tags`, `storage`, `placement` and `executable`";
+    /// node-rpc-envelope.md node.tags: "A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading
+    /// '.'"; rule 5: a replacement's "config and tags are inherited from the Deleted row"): a created
+    /// path's entry keeps the tag labels the request lists for it, which the node carries from its claim; a
+    /// held path keeps its entry's whatever the request lists (a live node's labels are node.tags.create's
+    /// and node.tags.delete's), so a request built from a read that holds no tags changes nothing; a label
+    /// outside the grammar is refused by name, `tags-refused`, nothing compiled. Must NOT happen: a created
+    /// path's tags dropped, a held path's entry changed by a request's tags, or a label the tags index
+    /// cannot key accepted.
+    #[test]
+    fn a_request_entrys_tags_are_kept_on_the_entry_and_a_label_outside_the_grammar_is_refused_by_name() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let tagged = |path: &str, tags: &[&str]| {
+            let (p, mut c) = entry(path, Some("b"));
+            c.tags = tags.iter().map(|t| t.to_string()).collect();
+            (p, c)
+        };
+        let next = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
+        let p: PathName = "mesh1.rpc.4".parse().unwrap();
+        assert_eq!(next.mesh("mesh1").unwrap().path_config(&p).unwrap().tags, ["v1.2~rc".to_string(), "zone_a".to_string()].into(), "the created path's entry keeps its tags");
+        let again = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &[])]), &mn()).unwrap();
+        assert_eq!(again, next, "a held path keeps its entry's tags: the same request with none changes nothing");
+        let other = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_b"])]), &mn()).unwrap();
+        assert_eq!(other, next, "nor with others");
+        let refused = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), tagged("mesh1.rpc.4", &["Zone A"])]), &mn());
+        assert!(matches!(&refused, Err(BuildReject::TagsRefused { node, .. }) if node == "mesh1.rpc.4"), "{refused:?}");
+        assert_eq!(refused.unwrap_err().reason(), "tags-refused");
+    }
+
     /// CONTRACT (proposal executable-bindings-at-create.md rule 5, R4 arm A: "a mesh whose only node-admin is to
     /// be replaced first gets a second node-admin on the new executable at a new `path.name` of the
     /// node-admin type in that mesh (the next free one, `mesh1.admin.2`), whose entry the compiler adds to
@@ -2466,14 +2509,7 @@ mod tests {
         let done = vec![deleted_receipt(1, "mesh2.gateway.2", &gone), receipt(1, "node.delete:mesh2.gateway.2", "Complete", None), receipt(1, "node.create:mesh2.gateway.2", "Complete", None)];
         let left: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
         assert_eq!(replacement_plan(&next, &after, &on, done.clone()), left, "the next attempt finishes the rest");
-        assert_eq!(replacement_plan(&next, &after, &rows, done.clone()), left, "a gateway this Build created is never replaced again, whatever a stale row read says");
-        // A create of the path that took another executable (its row names the birth it made, on a):
-        // its replacement is still owed.
-        let mut off = rows.clone();
-        off.insert("mesh2.gateway.2".parse().unwrap(), RecordedRow { node_id: successor.node_id.clone(), sha256: Some("a-gateway".into()) });
-        let born = crate::build::ExitedBirth { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap() };
-        let owed = replacement_plan(&next, &after, &off, done);
-        assert!(owed.contains(&BuildOperation::CreateNode { node: "mesh2.gateway.2".parse().unwrap(), over: Some(born), executable: Some(exe("b", NodeKind::Gateway)) }), "{owed:?}");
+        assert_eq!(replacement_plan(&next, &after, &rows, done), left, "a gateway this Build created is never replaced again, whatever a stale row read says");
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 5: "A path whose birth is under node recovery
@@ -2519,7 +2555,8 @@ mod tests {
     /// an old store reads its current Build as it is, never as malformed"; durable format moved): a topology
     /// written before `PathConfig.executable` (its path configs carrying no such field) decodes with none,
     /// validates, and plans no replacement; a complete-topology request compiles over it. The new field
-    /// crosses, unchanged, through the journal's JSON and the Build topic's positional wire.
+    /// crosses, unchanged, through the journal's JSON (the Build topic carries no executable, rule 7:
+    /// `gossip_frames_wire`).
     #[test]
     fn a_topology_written_before_the_executable_field_is_valid_history() {
         let old = serde_json::json!({
@@ -2538,8 +2575,7 @@ mod tests {
         let json = serde_json::to_value(&next).unwrap();
         assert_eq!(serde_json::from_value::<FabricTopology>(json).unwrap(), next, "the journal's shape keeps it");
         let change = reconcile(vec![entry("mesh1.admin.1", Some("b")), entry("mesh1.rpc.1", None), entry("mesh1.rpc.2", Some("b"))]);
-        let (topology, submitted, table) = crate::wire::accepted_through_the_wire(&next, Some(&change));
-        assert_eq!((topology, submitted), (next.clone(), Some(change)), "the Build topic's positional wire keeps the entries and the change");
-        assert_eq!(table, 2, "each distinct executable crosses once: the rpc node's and the admin's");
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!(serde_json::from_value::<TopologyChange>(json).unwrap(), change, "the journal keeps the change's executables");
     }
 }

@@ -94,6 +94,12 @@ pub trait Gate: Send + Sync {
     async fn recorded_executables(&self, _topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
         Ok(crate::accepted::Recorded::new())
     }
+    /// The meshes of `observed` whose Mesh record holds them Dead (mesh-delete.md: the mesh row goes Dead
+    /// at mesh.deleted; a `dead` record is final), read from the Mesh records, never from the view: a view
+    /// that has not heard a mesh's Dead yet still shows it live. A gate with no Mesh records holds none.
+    async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
+        Ok(Default::default())
+    }
     /// Whether the fabric holds ready-for-traffic now: a Build that put the fabric back to pending is
     /// `Complete` only once the fabric's ready-for-traffic state is set from its change (Q154; states.md
     /// "Resize and roll"). A gate with no fabric change holds it.
@@ -104,14 +110,6 @@ pub trait Gate: Send + Sync {
     /// `build_id` (Q158): `(operation, reason)`. A gate with no fabric change holds none.
     fn state_sync_failed(&self, _build_id: &BuildId, _attempt: u32) -> Option<(String, String)> {
         None
-    }
-    /// Open the next attempt of `p` with no action: a Build that plans replacements whose run has nothing
-    /// left while its rows still owe a replacement (a path this run re-created on another executable, an
-    /// attempt that carried an action) runs that replacement as its next attempt's, a new run (proposal
-    /// executable-bindings-at-create.md rule 5: "never in the same attempt"). `Ok(false)`: a gate that
-    /// opens none.
-    async fn open_replacement_attempt(&self, _p: &BuildProjection) -> Result<bool, String> {
-        Ok(false)
     }
 }
 
@@ -312,6 +310,9 @@ pub struct Drive {
     /// What the node rows recorded of each member's executable when this drive's pass last read them:
     /// a roll's plan ([`crate::accepted::plan_for_roll`]); `None` until a pass of a roll read them.
     recorded: Mutex<Option<crate::accepted::Recorded>>,
+    /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::dead_meshes`]):
+    /// planned as Dead whatever the view shows.
+    dead: Mutex<std::collections::HashSet<crate::model::MeshId>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -331,7 +332,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -731,6 +732,19 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
 }
 
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
+    // A mesh the Mesh records hold Dead is planned as Dead, whatever the view shows ([`Gate::dead_meshes`]).
+    let dead = drive.dead.lock().unwrap().clone();
+    let with_dead;
+    let t = if t.meshes.iter().any(|m| m.status != crate::model::ScopeStatus::Dead && m.id.as_ref().is_some_and(|id| dead.contains(id))) {
+        let mut v = t.clone();
+        for m in v.meshes.iter_mut().filter(|m| m.id.as_ref().is_some_and(|id| dead.contains(id))) {
+            m.status = crate::model::ScopeStatus::Dead;
+        }
+        with_dead = v;
+        &with_dead
+    } else {
+        t
+    };
     // A roll plans from what the rows recorded at this pass ([`Gate::recorded_executables`]).
     let plan = match drive.recorded.lock().unwrap().as_ref() {
         Some(recorded) => crate::accepted::plan_for_roll(p, t, recorded),
@@ -1077,6 +1091,13 @@ impl DriveEnv {
                     Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} is a roll and the node rows could not be read for what each member runs: {e}")),
                 }
             }
+            // A mesh the Mesh records hold Dead is done whatever the view shows (a view that has not heard
+            // its Dead yet): the plan reads mesh death from the records at every pass, before it plans.
+            let observed = self.topology.read().await.clone();
+            match self.gate.dead_meshes(&observed).await {
+                Ok(dead) => *drive.dead.lock().unwrap() = dead,
+                Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id}: the Mesh records could not be read for which meshes are Dead: {e}")),
+            }
             let crashed = self.unanswered_meshes(&p);
             // The claim's holder was proven departed by this pass: the next attempt is claimed without
             // calling the lost holder again.
@@ -1093,26 +1114,6 @@ impl DriveEnv {
                 if p.deletes_fabric() {
                     if let Some(end) = self.interrupted_ended(&me, drive, &p).await {
                         return end;
-                    }
-                }
-                // A replacement the rows still owe once this run has nothing left: a path whose birth this
-                // run re-created on another executable than its target (a recovery's create, on the row's)
-                // keys the same operations this run already completed, and an attempt that carried an
-                // action leaves that action standing. Its replacement follows as the next attempt's, a new
-                // run with no action (proposal executable-bindings-at-create.md rules 5 and 6).
-                if is_roll(&p) {
-                    let view = self.topology.read().await.clone();
-                    let recorded = drive.recorded.lock().unwrap().clone();
-                    if let Some(recorded) = recorded.filter(|_| left(drive, &p, &view).is_empty()) {
-                        let mut next = p.clone();
-                        next.action = None;
-                        if !crate::accepted::plan_for_roll(&next, &view, &recorded).operations.is_empty() {
-                            match self.gate.open_replacement_attempt(&p).await {
-                                Ok(true) => continue,
-                                Ok(false) => {}
-                                Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id}'s replacement is owed after its action's attempt, and its next attempt could not be opened: {e}")),
-                            }
-                        }
                     }
                 }
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
