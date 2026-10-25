@@ -428,7 +428,9 @@ impl AdminRunner {
         let path: PathName = b.node.parse().map_err(|e| format!("the roster names a birth by `{}`, which is not a path.name: {e}", b.node))?;
         let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("the roster names {} by node id `{}`, which does not parse: {e}", b.node, b.node_id))?;
         let incarnation = b.birth().map_err(|e| format!("the roster names {} at birth `{}`, which does not parse: {e}", b.node, b.incarnation_id))?;
-        self.delete_unreached(&*self.builds, build_id, attempt, &path, &crate::build::ExitedBirth { node_id, incarnation }).await
+        // An explicit node.delete (fabric-delete.md "Receipts"; mesh-delete.md "Resume after the primary's
+        // loss"): an os-stopped runtime is terminated Immediate, never left as node recovery leaves it.
+        self.delete_unreached_as(&*self.builds, build_id, attempt, &path, &crate::build::ExitedBirth { node_id, incarnation }, true).await
     }
 
     /// Steps 2-5 of the owner's workflow, for the leave `key` opened at admission: `mesh.deleting`,

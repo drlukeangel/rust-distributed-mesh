@@ -651,13 +651,28 @@ impl AdminRunner {
     /// with its key is launched. Answers the delete's `TerminateRuntime` receipt: a mesh.delete takes
     /// it as the birth's roster receipt.
     pub(crate) async fn delete_unreached(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
+        self.delete_unreached_as(builds, build_id, attempt, node, from, false).await
+    }
+
+    /// [`Self::delete_unreached`], `explicit` for an explicit node.delete of a birth no call reaches (a
+    /// mesh.delete's lost or silent birth, a member of a mesh deleted in process under fabric.delete;
+    /// fabric-delete.md "Receipts"): an `os-stopped` runtime is terminated `Immediate`
+    /// (deployment-provider.md §2.5, node-runtime-inspect.md "What follows"), where node recovery's
+    /// delete leaves it as it is.
+    pub(crate) async fn delete_unreached_as(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, explicit: bool) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
         let (unreached, handle) = self.exited_birth("node.delete", node, from).await?;
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: unreached, handle, unreached: true };
         let pipeline = self.pipeline_with(&template, builds);
         // Fabric recovery's backbone arm terminates nothing in the mesh (fabric-recovery.md step 3, Q148;
         // node-delete.md): its delete reads the exact runtime, writes the row deleted and releases the name.
-        let terminal = if backbone_attempt(builds, build_id, attempt, node).await { pipeline.delete_from_backbone(&req).await } else { pipeline.delete_node(&req).await };
+        let terminal = if backbone_attempt(builds, build_id, attempt, node).await {
+            pipeline.delete_from_backbone(&req).await
+        } else if explicit {
+            pipeline.delete_explicit(&req).await
+        } else {
+            pipeline.delete_node(&req).await
+        };
         let terminal = terminal.map_err(crate::executor::RunEnd::from)?;
         let held = self.handles.lock().unwrap().get(node).is_some_and(|(n, _)| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         if held {

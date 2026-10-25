@@ -1013,6 +1013,11 @@ pub(crate) enum Terminate {
     /// node-runtime-inspect.md: "at the step's own instant, before it asks the provider to
     /// terminate"). Any other read terminates nothing and waits for nothing.
     Unreached,
+    /// As [`Self::Unreached`], for an explicit node.delete of a birth no call reaches: an `os-stopped`
+    /// runtime is terminated `Immediate` (deployment-provider.md §2.5: "An explicit `node.delete` of an
+    /// OS-stopped birth ... runs `TerminateRuntime` on the exact handle as `terminate(Immediate)`";
+    /// node-runtime-inspect.md "What follows"), where node recovery leaves it as it is.
+    Explicit,
     /// Never: fabric recovery's backbone arm terminates nothing in a mesh it is outside of
     /// (fabric-recovery.md step 3, Q148; node-delete.md). The step still reads the exact runtime at
     /// its instant, and the receipt names that read, so the create's data dir follows it (`R-FM2`).
@@ -2220,6 +2225,16 @@ impl DeploymentPipeline<'_> {
         self.delete_steps(req, Terminate::Unreached).instrument(span).await
     }
 
+    /// An explicit node.delete of an unreached birth (a mesh.delete's lost or silent birth, a member of a
+    /// mesh deleted in process under fabric.delete; fabric-delete.md "Receipts"): the unreached delete,
+    /// except that an `os-stopped` runtime is terminated `Immediate` (deployment-provider.md §2.5;
+    /// node-runtime-inspect.md "What follows"), never left as node recovery leaves it.
+    pub async fn delete_explicit(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        self.delete_steps(req, Terminate::Explicit).instrument(span).await
+    }
+
     /// Fabric recovery's backbone arm's node.delete of the exact lost birth (fabric-recovery.md step 3,
     /// Q148): the unreached delete, its runtime read and never terminated.
     pub async fn delete_from_backbone(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
@@ -2470,7 +2485,7 @@ impl DeploymentPipeline<'_> {
     /// [`Self::terminate_step`], firing as `when` says: an unreached birth's delete terminates only a
     /// runtime the provider reads `Running` at the step's instant, and on any other read terminates
     /// nothing and waits for nothing (node-recovery.md step 3); the receipt names what it read.
-    async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
+    async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mut mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
         self.step_with(run, RetireStep::TerminateRuntime.name(), async {
             let receipt = |exit_code: Option<i32>, verdict: Option<&str>| -> Result<TerminalReceipt, StepFailure> {
@@ -2486,10 +2501,10 @@ impl DeploymentPipeline<'_> {
             };
             let verdict = if when != Terminate::Always {
                 // node.runtime.inspect at the terminate's instant: its span is the evidence (node-runtime-inspect.md).
-                let why = if when == Terminate::Backbone {
-                    "fabric recovery's backbone arm reads the exact runtime at its instant and terminates nothing"
-                } else {
-                    "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates it on every read but os-stopped"
+                let why = match when {
+                    Terminate::Backbone => "fabric recovery's backbone arm reads the exact runtime at its instant and terminates nothing",
+                    Terminate::Explicit => "an explicit delete's TerminateRuntime inspects the exact runtime at its instant and terminates it, an os-stopped one Immediate",
+                    _ => "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates it on every read but os-stopped",
                 };
                 match self.inspected_at(node, handle, "terminate", why).await {
                     DeploymentStatus::Running if when == Terminate::Backbone => return receipt(None, Some("running")),
@@ -2498,6 +2513,12 @@ impl DeploymentPipeline<'_> {
                     // Never skipped for an exited runtime: the provider's terminate removes what it
                     // left (node-recovery.md step 3, Q145); the receipt still names the read.
                     DeploymentStatus::Exited { .. } => Some("exited"),
+                    // An explicit delete of an OS-suspended runtime terminates it at once: a suspended
+                    // runtime runs no handler, so nothing of it is resumed and nothing waits for grace.
+                    DeploymentStatus::OsStopped if when == Terminate::Explicit => {
+                        mode = TerminationMode::Immediate;
+                        Some("os-stopped")
+                    }
                     DeploymentStatus::OsStopped => return receipt(None, Some("os-stopped")),
                     DeploymentStatus::Unknown => return receipt(None, Some("unavailable")),
                 }
@@ -2833,6 +2854,7 @@ mod tests {
     /// `OsStopped` until then, `Exited` (SIGKILL's code) after.
     struct Suspended {
         terminated: std::sync::atomic::AtomicUsize,
+        modes: std::sync::Mutex<Vec<TerminationMode>>,
     }
 
     #[async_trait::async_trait]
@@ -2846,8 +2868,9 @@ mod tests {
         async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
             Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, mode: TerminationMode) -> Result<(), super::super::provider::DeployError> {
             self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.modes.lock().unwrap().push(mode);
             Ok(())
         }
         async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
@@ -2907,7 +2930,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn an_explicit_delete_of_an_os_stopped_birth_sends_no_stop_and_terminates_its_exact_runtime() {
-        let provider = Suspended { terminated: Default::default() };
+        let provider = Suspended { terminated: Default::default(), modes: Default::default() };
         let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into() , code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;
@@ -2931,6 +2954,40 @@ mod tests {
         assert_eq!(capture.named("rdm.node_admin.node.delete.via-os-stopped").len(), 1, "the skipped stop is named once");
         let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| r.step).collect();
         assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec(), "the delete begins at TerminateRuntime");
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5: "An explicit `node.delete` of an OS-stopped birth stays
+    /// available: it skips the Node RPC stop by name ..., runs `TerminateRuntime` on the exact handle as
+    /// `terminate(Immediate)` (no graceful wait; nothing of the runtime is resumed) and continues";
+    /// node-runtime-inspect.md "What follows": "On an explicit delete, an `os-stopped` result skips the
+    /// unexecutable Node RPC stop by name and proceeds to `TerminateRuntime` on the exact handle";
+    /// fabric-delete.md "Receipts": a fabric.delete's member deletes are node.deletes): the explicit delete of
+    /// a birth no call reaches (a member of a mesh deleted in process under fabric.delete, a mesh.delete's
+    /// lost or silent birth) whose provider reads its exact runtime `OsStopped` sends it no command and
+    /// terminates that runtime once, `Immediate`; the receipt names the `os-stopped` read and carries the
+    /// terminate's `Exited` code, and NodeDeleted follows that proof. Must NOT happen: the os-stopped birth
+    /// receipted and written deleted with nothing terminated (node recovery's rule, which leaves an
+    /// os-stopped runtime as it is), a graceful terminate of a suspended runtime, or a command sent to it.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_explicit_delete_of_an_unreached_os_stopped_birth_terminates_its_exact_runtime_immediately() {
+        let provider = Suspended { terminated: Default::default(), modes: Default::default() };
+        let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into(), code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        let template = cell_template("explicit-os-stopped-delete");
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let mut node = Node::allocated("mesh1.admin.1".parse().unwrap());
+        node.status = NodeStatus::PendingReconnect;
+        node.incarnation_id = Some(IncarnationId::mint());
+        let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: true };
+        let terminal = pipeline.delete_explicit(&req).await.expect("the explicit delete of an os-stopped birth completes");
+        assert_eq!(*provider.modes.lock().unwrap(), vec![TerminationMode::Immediate], "the suspended runtime is terminated once, Immediate");
+        assert_eq!((terminal.exit_code, terminal.verdict.as_deref()), (Some(137), Some("os-stopped")), "the receipt names the os-stopped read and the terminate's Exited: {terminal:?}");
+        assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the suspended birth: {:?}", observer.sent.lock().unwrap());
+        let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| r.step).collect();
+        assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec());
     }
 
     /// CONTRACT (node-recovery.md step 3; deployment-provider.md §2.7 "Signal stop and terminate"): a
@@ -2966,7 +3023,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn the_inspection_span_names_the_exact_handle_the_provider_was_asked_about() {
-        let provider = Suspended { terminated: Default::default() };
+        let provider = Suspended { terminated: Default::default(), modes: Default::default() };
         let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into(), code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;
