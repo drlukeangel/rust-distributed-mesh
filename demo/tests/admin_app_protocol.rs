@@ -82,7 +82,9 @@ async fn exchange(from: &Dialer, to: &rdm_core::digest::MeshNode, to_acceptor: &
         let bytes = recv.read_to_end(1 << 16).await.unwrap();
         send.write_all(format!("echo {answer_as}: {}", String::from_utf8_lossy(&bytes)).as_bytes()).await.unwrap();
         send.finish().unwrap();
-        let _ = conn.closed().await;
+        // The answer read whole by the opener ends the exchange; the connection itself is the
+        // dialler's to keep or close, so its close is not waited on.
+        let _ = send.stopped().await;
     };
     let opened = async {
         let conn = match tokio::time::timeout(BOUND, from.open(&birth(to))).await {
