@@ -455,6 +455,20 @@ impl Drive {
         self.callers.lock().unwrap().clone()
     }
 
+    /// Resolves once this drive has ended and no caller reads its frames: every caller took its
+    /// terminal.
+    pub async fn until_read(&self) {
+        loop {
+            let notified = self.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.ended() && self.callers.lock().unwrap().is_empty() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
 
     /// Whether a stall reason is new (the drive names a stall once, not on every pass).
     fn stall_is_new(&self, reason: &str) -> bool {
@@ -520,6 +534,8 @@ impl Drop for DriveReader {
             if let Some(i) = callers.iter().position(|k| *k == key) {
                 callers.remove(i);
             }
+            drop(callers);
+            self.drive.wake.notify_waiters();
         }
     }
 }
@@ -723,6 +739,13 @@ impl Drives {
     /// The endpoint keys of the callers reading `build_id`'s frames now ([`Drive::callers`]).
     pub fn callers_of(&self, build_id: &BuildId) -> Vec<iroh::PublicKey> {
         self.get(build_id).map(|d| d.callers()).unwrap_or_default()
+    }
+
+    /// [`Drive::until_read`] of `build_id`'s drive; at once when this admin holds none.
+    pub async fn until_read(&self, build_id: &BuildId) {
+        if let Some(d) = self.get(build_id) {
+            d.until_read().await;
+        }
     }
 }
 

@@ -2297,6 +2297,53 @@ impl DeploymentPipeline<'_> {
         Ok(terminal)
     }
 
+    /// node.delete of the executor's own live birth `req.node` (fabric-delete.md step 4 and "After
+    /// completion": the fabric-primary's own node.delete, called from outside the fabric), under
+    /// node.delete's one key:
+    ///
+    /// ```text
+    /// NodeDeleting -> StopNode -> AwaitNodeLeft -> NodeDeleted -> RemoveTopologyMembership -> Complete
+    /// ```
+    ///
+    /// The whole node.stop, the node stopped with its process alive; then its row Deleted and node.id and
+    /// name released, and node.deleted on the caller's stream as its last reply. No `TerminateRuntime`
+    /// runs here and no `Exited` of the runtime is receipted: the runtime is the executor's own, which cannot read its own `Exited`, and
+    /// nobody is left in the fabric to record it ("Receipts": the one exception). The executor ends its
+    /// runtime through the provider after the reply (`AdminRunner::delete_own`). Every other node.delete
+    /// is [`Self::delete_node`]: the provider's `Exited` before node.deleted.
+    pub async fn delete_own(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        async {
+            let name = &req.node.name;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
+            let mut node = req.node.clone();
+            let op = LifecycleOp {
+                build_id: req.build_id.to_string(),
+                attempt: req.attempt,
+                operation: run.operation.clone(),
+                node_id: node.node_id.clone(),
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?,
+                name: name.clone(),
+                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+            };
+            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleting(&op).await;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Park { publish_stopped: true }).await?;
+            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&node, op.clone(), false)).await?;
+            self.lifecycle.deleted(&op).await;
+            self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
+                self.sink.remove_birth(name, &op.node_id, &op.incarnation);
+                Ok(())
+            })
+            .await?;
+            self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await
+        }
+        .instrument(span)
+        .await
+    }
+
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
     /// operation (`node.connections.delete:<path>` / `node.stop:<path>`).
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {

@@ -1441,7 +1441,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                             });
                             let _ = handover_slot.set(handover.clone());
+                            // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
+                            // runtime only once its own node.delete's callers read their terminal.
+                            let drives = Arc::new(crate::build_drive::Drives::default());
                             let runner = Arc::new(AdminRunner {
+                                drives: drives.clone(),
                                 listeners: listener_names.clone(),
                                 mesh_deleter: mesh_deleter.clone(),
                                 connections: Some(connections_storage.clone()),
@@ -1489,7 +1493,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let _ = mesh_deleter.set(Arc::new(MeshDeleteDoor { runner: runner.clone() }));
                             // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
                             // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.
-                            let drives = Arc::new(crate::build_drive::Drives::default());
                             let drive_env = {
                                 let exec = Arc::new(BuildExecutor { executor: name.to_string(), builds: builds_dyn.clone(), topology: control.topology.clone(), runner: runner.clone() });
                                 let run_door = Arc::new(crate::build_run::RunDoor {

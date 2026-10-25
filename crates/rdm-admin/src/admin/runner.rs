@@ -95,6 +95,9 @@ pub struct AdminRunner {
     /// The app's listeners by kind (Q151), registered at this admin's start: what a create assigns and
     /// a join is verified against.
     pub listeners: crate::deployment::endpoint::ListenerNames,
+    /// The drives of the Builds this admin drives: the node.delete of this admin's own birth ends its
+    /// runtime once the callers of that Build read its terminal ([`Self::delete_own`]).
+    pub drives: Arc<crate::build_drive::Drives>,
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -1101,8 +1104,45 @@ impl AdminRunner {
             Some(n) => Node { parked: n.parked, ..record },
             None => record,
         };
+        if record.node_id == self.node_id {
+            self.delete_own(build_id, attempt, record.clone(), handle).await?;
+            return Ok(Some(record));
+        }
         self.delete_birth(build_id, attempt, record.clone(), handle).await?;
         Ok(Some(record))
+    }
+
+    /// node.delete of this admin's own birth, of which it is the executor (fabric-delete.md step 4 and
+    /// "After completion": the fabric-primary's own node.delete, called from outside the fabric; its
+    /// node.deleted is its last reply and the caller takes its word). Its stop, its row Deleted and
+    /// node.id and name released, node.deleted on the caller's stream
+    /// ([`crate::deployment::pipeline::DeploymentPipeline::delete_own`]); then, once every caller of
+    /// the Build reads its terminal, this admin ends its own runtime through the provider. No `Exited`
+    /// of the runtime is receipted: nobody is left to record it ("Receipts": the one exception).
+    async fn delete_own(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle) -> Result<(), crate::executor::RunEnd> {
+        use tracing::Instrument;
+        let template = self.template_for(record.kind, &record.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle: handle.clone(), unreached: false };
+        self.pipeline(&template).delete_own(&req).await.map_err(crate::executor::RunEnd::from)?;
+        self.handles.lock().unwrap().remove(&record.name);
+        let (drives, provider, id) = (self.drives.clone(), self.provider.clone(), build_id.clone());
+        let grace = crate::deployment::pipeline::Timeouts::default().stop_grace;
+        let span = tracing::info_span!("rdm.node_admin.node.delete.via-own-runtime", node = %record.name, node_id = %record.node_id, build_id = %build_id.log(), attempt, outcome = tracing::field::Empty);
+        // Its own task: the run, and the drive pass it runs under, end with the Build's terminal, and
+        // only after the callers read it does the runtime end.
+        tokio::spawn(
+            async move {
+                drives.until_read(&id).await;
+                // Said before the provider is asked: the runtime this admin runs in ends with it.
+                tracing::info!("node.deleted was this admin's last reply and its callers read the Build's terminal: its own runtime ends through the provider");
+                if let Err(e) = provider.terminate(&handle, crate::deployment::provider::TerminationMode::Graceful { grace }).await {
+                    tracing::Span::current().record("outcome", e.to_string().as_str());
+                    tracing::info!("the provider refused to end this admin's own runtime");
+                }
+            }
+            .instrument(span),
+        );
+        Ok(())
     }
 
     /// The exact birth whose `node.delete:<node>` this Build began: the one its `NodeDeleting` receipt
