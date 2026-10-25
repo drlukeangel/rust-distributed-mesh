@@ -69,10 +69,7 @@ pub struct Unplugged {
 pub async fn unplug(estate: &impl ContainerEstate, node: &str) -> Result<Unplugged, String> {
     let id = estate.container_of(node).await.ok_or_else(|| format!("{node}: no running container of fabric {}", estate.fabric_id()))?;
     let network = network_of(estate);
-    let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{network}\").IPAddress}}}}"), &id])?;
-    if ip.is_empty() {
-        return Err(format!("{node}: container {id} holds no address on {network}"));
-    }
+    let ip = address_of(estate, &id).map_err(|e| format!("{node}: {e}"))?;
     docker(&["network", "disconnect", "-f", &network, &id])?;
     Ok(Unplugged { node: node.into(), id, ip, network })
 }
@@ -88,25 +85,35 @@ pub fn gateway_of(estate: &impl ContainerEstate) -> Result<String, String> {
     docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", &network_of(estate)])
 }
 
-/// A container's address on its Fabric's network.
+/// A container's address on its Fabric's network. A container that no longer runs holds none.
 pub fn address_of(estate: &impl ContainerEstate, id: &str) -> Result<String, String> {
     let network = network_of(estate);
-    running_address(&network, id)?.ok_or_else(|| format!("container {id} holds no address on {network}"))
+    running_address(&network, id)?.ok_or_else(|| format!("container {id} no longer runs and holds no address on {network}"))
 }
 
-/// A container's address on `network`, read with its running state in one daemon read.
+/// A container's address on `network`, read with its running state in one daemon read: `None` when
+/// the container no longer runs (it exited or was removed after the daemon listed it). An exited
+/// container keeps its endpoint with the address released, which the daemon renders as
+/// `invalid IP` (Docker 29) or nothing: it holds no address. A running container whose read is not
+/// an address is refused by name, so a packet filter is only ever written with addresses.
 pub fn running_address(network: &str, id: &str) -> Result<Option<String>, String> {
     let format = format!("{{{{.State.Running}}}} {{{{with index .NetworkSettings.Networks \"{network}\"}}}}{{{{.IPAddress}}}}{{{{end}}}}");
-    running_address_in(network, id, &docker(&["inspect", "--type", "container", "--format", &format, id])?)
+    match docker(&["inspect", "--type", "container", "--format", &format, id]) {
+        Ok(read) => running_address_in(network, id, &read),
+        Err(e) if e.contains("No such container") => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 fn running_address_in(network: &str, id: &str, read: &str) -> Result<Option<String>, String> {
-    let (_running, ip) = read.trim().split_once(' ').unwrap_or((read.trim(), ""));
-    if ip.trim().is_empty() {
-        Err(format!("container {id} holds no address on {network}"))
-    } else {
-        Ok(Some(ip.trim().to_string()))
+    let (running, ip) = read.trim().split_once(' ').unwrap_or((read.trim(), ""));
+    if running != "true" {
+        return Ok(None);
     }
+    ip.trim()
+        .parse::<std::net::IpAddr>()
+        .map(|ip| Some(ip.to_string()))
+        .map_err(|_| format!("container {id} runs and holds no address on {network} (the daemon reads {:?})", ip.trim()))
 }
 
 /// The packet-filter chain a silence installs in each silenced container's own network namespace.
@@ -248,6 +255,8 @@ pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fa
         let id = estate.container_of(n).await.ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
         members.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
     }
+    // The rest of the estate as the daemon lists it running. One that exits before its address is
+    // read (a superseded birth's runtime being terminated) holds no address and hears no one: no rule.
     let network = network_of(estate);
     let mut unheard = Vec::new();
     for (n, id) in estate.live_containers().into_iter().filter(|(n, _)| !nodes.contains(n)) {
