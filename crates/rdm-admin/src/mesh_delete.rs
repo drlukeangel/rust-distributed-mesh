@@ -546,9 +546,13 @@ fn leave_receipts(facts: Vec<BuildFact>, operation: &str, me: &RosterBirth) -> R
 /// amendment that names `me` final primary, nor the lost primary's exit receipt recorded before it;
 /// gossip is never authority, so when the amendment chain `own` gives does not end at `me`, the
 /// owner's Build facts are read (`fetch_owner`, the same read `validate_handoff` makes of the
-/// sender's) and the amendments and exit receipts are taken from both. A chain that still does not
-/// end at `me` refuses the run by name. What is read from the owner is used for this run and
-/// written nowhere.
+/// sender's) and the amendments and exit receipts are taken from both. The owner is read too when
+/// the chain `own` gives ends at `me` but `own` does not hold the finished node.delete (its exact
+/// Exited receipt and every later step's) of every amendment's predecessor, which the fabric-primary
+/// recorded before the amendment (mesh-delete.md,
+/// "Resume after the primary's loss" step 3: "Completed member receipts stand"): gossip carries the
+/// two operations' facts apart. A chain that still does not end at `me` refuses the run by name.
+/// What is read from the owner is used for this run and written nowhere.
 pub async fn admission_roster<F, Fut>(roster: &[RosterBirth], own: &[BuildStepReceipt], operation: &str, me: &RosterBirth, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
     F: FnOnce() -> Fut,
@@ -557,8 +561,12 @@ where
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
     let first = accepted_row(own, operation, STEP_LEAVING_ROSTER).ok_or_else(|| format!("{operation}: no {STEP_LEAVING_ROSTER} receipt is recorded: the leave has no roster to run over"))??.final_primary;
     let last = |steps: &[BuildStepReceipt]| amendment_chain(&first, steps, operation).map(|c| c.last().map(|a| a.final_primary.clone()).unwrap_or_else(|| first.clone()));
-    if &last(own)? == me {
-        let amendments = amendment_chain(&first, own, operation)?.len();
+    let chain = amendment_chain(&first, own, operation)?;
+    // Kept as [`members_exited`] keeps a member: its exact Exited receipt and every later step's.
+    let proofs = exit_receipts(own, operation, &chain.iter().map(|a| a.predecessor.clone()).collect::<Vec<_>>());
+    let predecessors_deleted = chain.iter().try_fold(true, |all, a| finished_delete(own, &named(me), &a.predecessor).map(|d| all && d.is_some() && proofs.contains_key(&(a.predecessor.node_id.clone(), a.predecessor.incarnation_id.clone()))))?;
+    if &last(own)? == me && predecessors_deleted {
+        let amendments = chain.len();
         if amendments > 0 {
             tracing::info_span!("rdm.node_admin.mesh.resolve.via-own-build-facts", operation = %operation, me = %named(me), first_primary = %named(&first), amendments)
                 .in_scope(|| tracing::info!("this admin's own Build facts hold the amendment that names it final primary: it runs the roster captured once plus every amendment, reading the owner for nothing"));
@@ -570,7 +578,7 @@ where
     let final_primary = last(&all)?;
     let amendments = amendment_chain(&first, &all, operation)?.len();
     tracing::info_span!("rdm.node_admin.mesh.resolve.via-owner-build-facts", operation = %operation, me = %named(me), final_primary = %named(&final_primary), amendments, owner_receipts = known.len())
-        .in_scope(|| tracing::info!("this admin's own Build facts do not name it final primary: the owner's Build facts are read for the amendments"));
+        .in_scope(|| tracing::info!("this admin's own Build facts do not name it final primary, or do not hold every predecessor's finished delete: the owner's Build facts are read for the amendments and the receipts"));
     if &final_primary != me {
         return Err(format!("{operation}: {} is not the final primary: the owner's Build facts name {} after {amendments} amendment(s), so no member is stopped", named(me), named(&final_primary)));
     }

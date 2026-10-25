@@ -1266,6 +1266,91 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
     assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["remaining"] == "0"));
 }
 
+/// CONTRACT: the amended final primary whose own Build facts hold the amendment naming it, but not
+/// yet the lost primary's node.delete receipts the fabric-primary recorded before it (gossip carries
+/// the two operations' facts apart), reads the owner's Build facts at admission and keeps that
+/// finished delete: it never runs the lost primary's node.delete again (mesh-delete.md, "Resume after
+/// the primary's loss" step 3: the new mesh-primary "runs only the tiers without a terminal receipt.
+/// Completed member receipts stand"; build.md: "Completed step receipts prevent repeating
+/// already-satisfied work"). Must NOT happen: mesh_delete_resume on 52c177c10, the survivor's
+/// admission from its own facts (`via-own-build-facts`, amendments 1) naming the lost primary
+/// `delete_owed` and running its StopNode, TerminateRuntime and NodeDeleted a second time.
+#[test]
+fn an_amended_primary_whose_own_facts_lack_the_lost_primarys_delete_reads_the_owner_and_never_deletes_it_again() {
+    own_amendment_without_the_delete("own_amendment_without_the_delete", &[]);
+}
+
+/// CONTRACT: as above, when gossip brought the lost primary's node.delete receipts but its exact
+/// Exited (`TerminateRuntime`): its `NodeDeleted` and `Complete` alone do not keep the delete, the
+/// exit proof does (mesh-delete.md step 4: the manifest covers "the lost primary's Exited"), so the
+/// admission reads the owner. Must NOT happen: mesh_delete_resume with the first fix, the survivor's
+/// admission from its own facts (`via-own-build-facts`) and its second node.delete of the lost primary.
+#[test]
+fn an_amended_primary_whose_own_facts_lack_the_lost_primarys_exit_receipt_reads_the_owner_and_never_deletes_it_again() {
+    own_amendment_without_the_delete("own_amendment_without_the_exit_receipt", &["NodeDeleting", "NodeDeleted", "RemoveTopologyMembership", "Complete"]);
+}
+
+/// The amended primary `mesh2.admin.2` admits the leave from its own facts, which hold the
+/// fabric-primary's amendment and, of the lost primary's node.delete, only the steps
+/// `keep_of_lost_delete`; the owner holds them all.
+fn own_amendment_without_the_delete(case: &str, keep_of_lost_delete: &[&str]) {
+    let cap = capture();
+    let records: Vec<Node> = [OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 47_000 + i as u32))).collect();
+    let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
+    let (lost, survivor) = (birth(FINAL), birth(OTHER_ADMIN));
+    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[FINAL].fact().unwrap()), RuntimeProof::of(&handles[OTHER_ADMIN].fact().unwrap()));
+    let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let (out, read_owner, trace_id) = cap.run(async {
+        let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
+        let build_id = BuildId::mint();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
+        for b in [&owner, &own] {
+            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+            accepted_roster(b, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
+            accepted_roster(b, &key(1), STEP_LEAVING_ROSTER, FINAL, &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
+        }
+        let root = tracing::info_span!("cell.mesh-deleted-own-amendment-without-the-delete", build_id = %build_id.log(), operation = %outer);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        // The fabric-primary's resume: the lost primary's node.delete, then the amendment.
+        node_delete_receipts(&owner, &key(2), "mesh1.admin.1", &exited(&lost, &lost_runtime)).await;
+        amend_roster(&owner, &key(2), "mesh1.admin.1", &RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: survivor_runtime.clone() }).await.expect("the amendment is recorded");
+        // mesh2.admin.2's own facts: gossip delivered the amendment, not the lost primary's delete.
+        let lost_delete = format!("node.delete:{FINAL}");
+        let own_steps: Vec<BuildStepReceipt> = owner.read_build(&build_id).await.unwrap().steps.into_iter().filter(|r| r.operation != lost_delete || keep_of_lost_delete.contains(&r.step.as_str())).collect();
+        let leaving = accepted_row(&own_steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
+        let owner_facts = owner.facts().await.unwrap();
+        let read_owner = std::sync::atomic::AtomicBool::new(false);
+        let (roster, known) = admission_roster(&leaving, &own_steps, &outer, &survivor, || async {
+            read_owner.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(owner_facts)
+        })
+        .await
+        .expect("the admission reads");
+        let manifest = members_exited(&own, &key(3), OTHER_ADMIN, &roster, &survivor, survivor_runtime.clone(), &records, &known, |n: Node| {
+            let ran = &ran;
+            async move {
+                ran.lock().unwrap().push(n.name.to_string());
+                Err::<TerminalReceipt, String>(format!("{} is run again", n.name))
+            }
+        })
+        .await;
+        (manifest, read_owner.load(std::sync::atomic::Ordering::SeqCst), trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join(case);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    assert!(read_owner, "the admission reads the owner's Build facts: its own hold the amendment but not the lost primary's finished delete");
+    assert!(ran.lock().unwrap().is_empty(), "the lost primary's finished node.delete is kept, never run again: {:?}", ran.lock().unwrap());
+    let manifest = out.unwrap_or_else(|e| panic!("the amended primary admits the leave: {e}"));
+    assert_eq!(births(&manifest.receipts), BTreeSet::from([FINAL.to_string()]), "the lost primary's exit receipt is in the manifest");
+}
+
 /// CONTRACT: the fabric-primary's own resume branch reads the lost final primary's runtime from its
 /// durable runtime row, never from the view (R11 steps 2-3; mesh-delete.md, "Resume after the
 /// primary's loss", steps 1-2). No topology view is consulted: the lost `mesh2.admin.1` has left
