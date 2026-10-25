@@ -563,7 +563,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     assert!(spans_named(&spans, "rdm.node_admin.deployment.update.via-step").iter().all(|s| s["attributes"]["step"] != "WaitForMeshJoin"), "nothing after the bind wait ran: {spans:?}");
     let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
     assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
-    assert_eq!(prepare[0]["attributes"]["awaited"], "entry-tags,claim,transport-key", "PrepareStorage names every await it ran (a plain create reads its entry's tags first): {}", prepare[0]);
+    assert_eq!(prepare[0]["attributes"]["awaited"], "entry-spec,claim,transport-key", "PrepareStorage names every await it ran (a plain create reads its create spec first): {}", prepare[0]);
     assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
     let claim_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "claim").collect();
     assert_eq!(claim_row.len(), 1, "PrepareStorage opened the claim via-node-row span: {spans:?}");

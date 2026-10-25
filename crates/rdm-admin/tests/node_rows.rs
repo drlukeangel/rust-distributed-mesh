@@ -152,10 +152,10 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
 /// claim) and on replace"): a node whose row carries tags {rabbit, red} is deleted by its mesh's
 /// writer, which holds no record of the row yet: the `Deleted` row keeps the tags with the record and
 /// the config, and the tags index names the node under neither label. A plain `node.create` at that
-/// `path.name` (not a recovery: no exited birth taken over) is seeded the config and carries its
-/// create spec's tags, none: the labels index no node. What must NOT happen: a deleted node still
-/// selected by a label, the tags dropped from the `Deleted` row, or a plain create inheriting the
-/// deleted node's labels (only a recovery's claim inherits them).
+/// `path.name` (not a recovery: no exited birth taken over) carries its create spec's config and tags
+/// (Q166), none: the labels index no node. What must NOT happen: a deleted node still selected by a
+/// label, the tags dropped from the `Deleted` row, or a plain create inheriting the deleted node's
+/// labels or config (only a recovery's and a successor's claim inherit them).
 #[test]
 fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_none() {
     let cap = capture();
@@ -177,7 +177,7 @@ fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_no
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the Deleted row keeps the record, the config and the tags");
     assert!(rabbit.is_empty() && red.is_empty(), "the tags index names the deleted node under neither label: rabbit {rabbit:?}, red {red:?}");
     let born_row = born_row.expect("the new node's row");
-    assert_eq!((born_row.config, born_row.tags), (tier("gold"), Default::default()), "a plain create is seeded the config and carries its create spec's tags, none");
+    assert_eq!((born_row.config, born_row.tags), (Default::default(), Default::default()), "a plain create carries its create spec's config and tags, none");
     assert!(after.0.is_empty() && after.1.is_empty(), "the labels index no node after a plain create's claim: rabbit {:?}, red {:?}", after.0, after.1);
     let claims: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
     assert_eq!(claims.len(), 1, "{claims:#?}");
@@ -191,24 +191,37 @@ fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_no
     eprintln!("trace {}: rdm.node_admin.node.delete.via-node-row subject=mesh1.rpc.1 tags=rabbit,red outcome=row-deleted", spans[0]["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT: a node created at a `path.name` seeds its config from the previous row there (a
-/// `Deleted` row): config belongs to the role, not the process (ops-naming "Node data"). The
-/// mesh-primary's name claim writes the birth's row at the `path.name` before it is launched: the
-/// new node id, `Pending`, the config the `Deleted` row kept. One `via-node-row` span names it.
+/// CONTRACT (Q166; node-config-update.md: "A node's first config is its create spec's `config` in the
+/// Build, written to its row at the claim and carried in its first join"; node-recovery.md "Retained":
+/// config seeded from the Deleted row): a plain `node.create` at a `Deleted` row's `path.name` whose
+/// create spec names config {tier: gold} and the tag `blue` claims the row with its spec's config and
+/// tags, not the Deleted row's {tier: silver}: the new node id, `Pending`. A recovery's claim at the
+/// same `path.name`, whatever spec it is handed, inherits the Deleted row's config and tags. One
+/// `via-node-row` span per claim names it (keys 1). What must NOT happen: a plain create seeded with a
+/// previous node's config over its own spec's, or a recovery losing the config its predecessor held.
 #[test]
-fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
+fn a_plain_create_carries_its_create_specs_config_and_a_recovery_inherits_the_deleted_rows() {
     let cap = capture();
-    let (row, born, old) = cap.run(async {
+    let (row, recovered, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.write_record(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
+        let deleted = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: ["red".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None };
+        storage.write_record(&deleted).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "node.create:mesh1.rpc.2", None, None, ClaimFor::Create).await.expect("the name is free of live rows");
-        (storage.record_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
+        let blue: std::collections::BTreeSet<String> = ["blue".to_string()].into();
+        mp.rows.claim_spec(&"mesh1.rpc.2".parse().unwrap(), &born, "node.create:mesh1.rpc.2", None, None, &blue, &tier("gold"), ClaimFor::Create).await.expect("the name is free of live rows");
+        let row = storage.record_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
+        let other = Arc::new(MemoryNodesStorage::default());
+        other.write_record(&deleted).await.unwrap();
+        let mp = mesh_primary(&other);
+        mp.rows.claim_spec(&"mesh1.rpc.2".parse().unwrap(), &NodeId::mint(), "node.create:mesh1.rpc.2", None, None, &blue, &tier("gold"), ClaimFor::Recovery).await.expect("the Deleted row holds no name");
+        (row, other.record_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the new birth holds the row and the Deleted row's config");
-    let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }), "the new birth holds the row with its create spec's config and tags");
+    let recovered = recovered.expect("the recovered birth's row");
+    assert_eq!((recovered.config, recovered.tags), (tier("silver"), ["red".to_string()].into()), "a recovery inherits the Deleted row's config and tags");
+    let spans: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
     assert_eq!((a["moment"].as_str(), a["subject"].as_str(), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("claim"), Some("mesh1.rpc.2"), Some(born.as_str()), Some(old.as_str()), Some("1"), Some("row-seeded")), "{a:#?}");
@@ -216,10 +229,10 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
 
 /// CONTRACT: a rewrite is lossless for every field its writer knows (node-identity-and-state.md "A
 /// rewrite is lossless"; node-recovery.md "Retained: ... config (seeded from the Deleted row)"). The
-/// mesh-primary's claim seeds a birth's row with the config of the Deleted row at its `path.name`;
+/// mesh-primary's claim writes a birth's row with its create spec's config (Q166);
 /// the executor's record of that birth (the create's own record) carries no config. When the birth
 /// exits, its Deleted row carries the config the writer holds for it, never the record's empty
-/// default, and the next birth at the name is seeded with it. The `via-node-row` delete span names
+/// default, and the birth that recovers the name is seeded with it. The `via-node-row` delete span names
 /// `config_from` `writer-record` and one key.
 #[test]
 fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_record() {
@@ -230,7 +243,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         storage.write_record(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&name, &born, "node.create:mesh1.rpc.2", None, None, ClaimFor::Create).await.expect("the name is free of live rows");
+        mp.rows.claim_spec(&name, &born, "node.create:mesh1.rpc.2", None, None, &Default::default(), &tier("silver"), ClaimFor::Create).await.expect("the name is free of live rows");
         // The executor's record of the birth it created: no config on it.
         let mut record = Node::allocated(name.clone());
         record.node_id = born.clone();
@@ -238,11 +251,11 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         mp.rows.deleted(&record, "node.delete:mesh1.rpc.2").await.expect("the Deleted row is written");
         let deleted = storage.record_at(&name).await.unwrap();
         let next = NodeId::mint();
-        mp.rows.claim(&name, &next, "node.create:mesh1.rpc.2", None, None, ClaimFor::Create).await.expect("the Deleted row holds no name");
+        mp.rows.claim(&name, &next, "node.create:mesh1.rpc.2", None, None, ClaimFor::Recovery).await.expect("the Deleted row holds no name");
         (deleted, storage.record_at(&name).await.unwrap(), born)
     });
     assert_eq!(deleted.map(|r| (r.node_id, r.status, r.config)), Some((born.clone(), NodeStatus::Deleted, tier("silver"))), "the Deleted row keeps the config the writer holds for the birth");
-    assert_eq!(next_row.map(|r| r.config), Some(tier("silver")), "the next birth at the name is seeded with it");
+    assert_eq!(next_row.map(|r| r.config), Some(tier("silver")), "the birth that recovers the name is seeded with it");
     let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];

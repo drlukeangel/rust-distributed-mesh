@@ -1083,20 +1083,21 @@ fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_mesh
     }
 }
 
-/// CONTRACT (ops-naming "Node data": a node created at a path.name seeds its config from the
-/// previous row at that path.name, and the node applies it and carries it): a birth that enters the
-/// fabric-primary's view at a `Deleted` row's path.name claims its row seeded with that row's config,
-/// and the fabric-primary tells the birth that config through its config door (`ApplyNodeConfig`,
-/// the whole map, naming the exact birth), so the node holds it in its own answer.
+/// CONTRACT (Q166, node-config-update.md: "A node's first config is its create spec's `config` in the
+/// Build, written to its row at the claim and carried in its first join"; ops-naming "Node data": the
+/// node applies it and carries it): a birth whose claimed row carries its create spec's config enters
+/// the fabric-primary's view carrying none (it never heard its join answer's); the fabric-primary
+/// finds the row the birth holds and tells the birth that config through its config door
+/// (`ApplyNodeConfig`, the whole map, naming the exact birth), so the node holds it in its own answer.
 #[test]
-fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
+fn a_birth_whose_claimed_row_carries_its_create_specs_config_is_told_it() {
     let cap = capture();
     let trace = cap.run(async {
         let (rig, _b) = rig().await;
         let newcomer = birth("mesh1.rpc.3", NodeKind::RpcNode, "mesh1", false, false);
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tags".to_string(), "edge".to_string())].into();
         rig.nodes
-            .write_record(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None })
+            .write_record(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: newcomer.node.node_id.clone(), status: NodeStatus::Pending, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None })
             .await
             .unwrap();
         let node = serve_node(&newcomer).await;
@@ -1110,32 +1111,32 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
         records.install_projected(&rig.topology, || t.clone()).await;
-        tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("the fabric-primary told the birth its seeded config");
+        tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("the fabric-primary told the birth its create spec's config");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
             vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],
-            "the birth was told the Deleted row's whole config, once"
+            "the birth was told its row's whole config, once"
         );
         let row = rig.nodes.record_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
-        assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "the birth holds the row with the seeded config");
+        assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "the birth holds the row with its create spec's config");
     });
     let _ = trace;
     let spans = cap.spans("rdm.node_admin.node.create.via-node-row");
     let ours: Vec<_> = spans.iter().filter(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh1.rpc.3")).collect();
     assert_eq!(ours.len(), 1, "{spans:?}");
-    assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-seeded"), "{ours:?}");
-    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.3 outcome=row-seeded, then ApplyNodeConfig to the birth", ours[0].0);
+    assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-held-by-node"), "{ours:?}");
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.3 outcome=row-held-by-node, then ApplyNodeConfig to the birth", ours[0].0);
 }
 
-/// CONTRACT (ops-naming "Node data", node-recovery.md "Retained": config seeded from the Deleted
-/// row; R13: the mesh-primary of a node's mesh is the only writer of that mesh's rows): in a mesh
-/// whose primary does not hold the fabric seat, a birth entering mesh2's primary's view at a
-/// `Deleted` row's path.name claims its row seeded with that row's config, written by mesh2's
-/// primary, and mesh2's primary tells the birth that config through its own config door
-/// (`ApplyNodeConfig`, the whole map, the exact birth, once). Spans: `via-node-row` at
-/// mesh2.admin.1 `row-seeded`, then `via-config` at mesh2.admin.1 `config-updated` in its trace.
+/// CONTRACT (Q166, node-config-update.md: a node's first config is its create spec's, written to its
+/// row at the claim; R13: the mesh-primary of a node's mesh is the only writer of that mesh's rows): in
+/// a mesh whose primary does not hold the fabric seat, a birth whose claimed row carries its create
+/// spec's config enters mesh2's primary's view carrying none; mesh2's primary finds the row the birth
+/// holds and tells the birth that config through its own config door (`ApplyNodeConfig`, the whole
+/// map, the exact birth, once). Spans: `via-node-row` at mesh2.admin.1 `row-held-by-node`, then
+/// `via-config` at mesh2.admin.1 `config-updated` in its trace.
 #[test]
-fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabric_primary_is_told_its_seeded_config_by_that_primary() {
+fn a_birth_whose_claimed_row_carries_its_create_specs_config_in_a_mesh_whose_primary_is_not_the_fabric_primary_is_told_it_by_that_primary() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -1145,7 +1146,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "c".to_string()), ("tags".to_string(), "far".to_string())].into();
         let mp_rows = Arc::new(MemoryNodesStorage::default());
         mp_rows
-            .write_record(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None })
+            .write_record(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: newcomer.node.node_id.clone(), status: NodeStatus::Pending, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None })
             .await
             .unwrap();
         let node = serve_node(&newcomer).await;
@@ -1159,7 +1160,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
         records.install_projected(&rig.topology, || t.clone()).await;
-        tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("mesh2's primary told the birth its seeded config");
+        tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("mesh2's primary told the birth its create spec's config");
         // The birth hears the call before mesh2's primary reads its answer: the door's tell runs on
         // its own task, so the cell keeps its runtime until that door's span has ended with the
         // answer, or the runtime's end would cancel it mid-call.
@@ -1174,24 +1175,24 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         assert_eq!(
             node.seen.lock().unwrap().clone(),
             vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],
-            "the birth was told the Deleted row's whole config, once, by its mesh's primary"
+            "the birth was told its row's whole config, once, by its mesh's primary"
         );
         let row = mp_rows.record_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
-        assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "mesh2's primary wrote the birth's row with the seeded config");
+        assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "the birth's row keeps its create spec's config");
         assert!(rig.nodes.record_at(&newcomer.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
     });
     let rows = cap.spans("rdm.node_admin.node.create.via-node-row");
     let ours: Vec<_> = rows.iter().filter(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh2.rpc.2")).collect();
     assert_eq!(ours.len(), 1, "{rows:?}");
     assert_eq!(ours[0].1.get("node").map(String::as_str), Some("mesh2.admin.1"), "{ours:?}");
-    assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-seeded"), "{ours:?}");
+    assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-held-by-node"), "{ours:?}");
     let trace = &ours[0].0;
     let told = cap.spans("rdm.node_admin.node.update.via-config");
     let told: Vec<_> = told.iter().filter(|(t, _)| t == trace).collect();
     assert_eq!(told.len(), 1, "one via-config span in the row write's trace: {told:?}");
     assert_eq!(told[0].1.get("node").map(String::as_str), Some("mesh2.admin.1"), "{told:?}");
     assert_eq!(told[0].1.get("outcome").map(String::as_str), Some("config-updated"), "{told:?}");
-    eprintln!("trace {trace}: rdm.node_admin.node.create.via-node-row node=mesh2.admin.1 subject=mesh2.rpc.2 outcome=row-seeded > rdm.node_admin.node.update.via-config node=mesh2.admin.1 outcome=config-updated");
+    eprintln!("trace {trace}: rdm.node_admin.node.create.via-node-row node=mesh2.admin.1 subject=mesh2.rpc.2 outcome=row-held-by-node > rdm.node_admin.node.update.via-config node=mesh2.admin.1 outcome=config-updated");
 }
 
 /// A successor born `mesh1.rpc.8`, live in the mesh-primary's view, serving Status that answers

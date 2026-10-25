@@ -701,8 +701,9 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
 /// `mesh2.admin.1` is refused `name-held`; once it is stopped (its seat held) the
 /// fabric-primary writes its row Deleted, node id and config kept, as its node.delete's NodeDeleted
 /// step does; mesh-left puts the mesh row Dead as acting primary when no Dead row is held; and only
-/// then a new birth claims `mesh2.admin.1` `row-seeded` from the Deleted row (ops-naming "config
-/// belongs to the role").
+/// then a new birth claims `mesh2.admin.1` over the Deleted row (`row-seeded`, seeded from it), its
+/// row carrying its create spec's config, here none (Q166: a plain create's config is its spec's; only a
+/// recovery's and a successor's claim inherit).
 #[test]
 fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_only_then_the_name_is_claimed_again() {
     let cap = capture();
@@ -767,7 +768,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     match &again {
         Ok(Claimed::Written { row, seeded_from }) => {
             assert_eq!(seeded_from.as_ref(), Some(&last.node_id), "seeded from the Deleted row");
-            assert_eq!(row.config, last.config, "the role's config");
+            assert_eq!(row.config, Default::default(), "its create spec's config, none: a plain create inherits no config (Q166)");
         }
         other => panic!("the recreated mesh's admin claims mesh2.admin.1 over the Deleted row: {other:?}"),
     }

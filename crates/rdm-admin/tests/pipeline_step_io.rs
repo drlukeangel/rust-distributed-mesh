@@ -318,7 +318,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
         .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node").map(String::as_str) == Some("mesh1.rpc.4"))
         .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.rpc.4: {finished:?}"));
     assert_eq!(step2.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step2:?}");
-    assert_eq!(step2.get("awaited").map(String::as_str), Some("entry-tags,claim"), "PrepareStorage names the completed entry-tags read and claim awaits: {step2:?}");
+    assert_eq!(step2.get("awaited").map(String::as_str), Some("entry-spec,claim"), "PrepareStorage names the completed entry-spec read and claim awaits: {step2:?}");
     assert_eq!(step2.get("awaiting").map(String::as_str), Some("transport-key"), "PrepareStorage names transport-key as the await in flight: {step2:?}");
     assert_eq!(step2.get("io_calls").and_then(|v| v.parse::<u64>().ok()), Some(1), "in-flight blocking call is counted on cancellation: {step2:?}");
     assert!(step2.get("io_queued_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) >= 50, "in-flight queue wait is recorded on cancellation: {step2:?}");

@@ -581,6 +581,7 @@ impl AdminRunner {
             crate::node_rows::ClaimFor::Recovery => self.pipeline(&template).create_recovery_with(&req, before_ready, None).await,
             crate::node_rows::ClaimFor::Successor => self.pipeline(&template).create_successor_with(&req, before_ready).await,
             crate::node_rows::ClaimFor::Create => self.pipeline(&template).create_with(&req, before_ready, None).await,
+            crate::node_rows::ClaimFor::Arrival => unreachable!("a node.create claims its name; an arrival's row is the writer's, never a create's"),
         }
         .map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;

@@ -260,8 +260,14 @@ impl std::fmt::Display for RowRefused {
 /// claim)").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimFor {
-    /// A `node.create`: the row carries its create spec's tags (RDM's create spec names none).
+    /// A `node.create`: the row carries its create spec's tags and config (Q166), whatever row stood at
+    /// its `path.name` before.
     Create,
+    /// A birth no claim of this writer's wrote a row for, its row written from the birth's own record
+    /// as the writer meets it at its arrival or its declaration: the create spec is not known here, so
+    /// the row carries no tags and its config is seeded from the previous row at the `path.name` (else
+    /// the `<name>.old` row), else the birth's own.
+    Arrival,
     /// Node recovery's create over the exited birth's data dir (node-recovery.md step 4): the row
     /// takes the tags with the config from the `Deleted` row at the key, indexed under the new node's
     /// id in that one write (§8, recovery).
@@ -396,21 +402,23 @@ impl NodeRows {
     /// `node.create`'s name claim (lifecycles/node-create.md step 1): at the start of `PrepareStorage`,
     /// once the `AllocateIdentity` receipt names `node_id` and before anything is prepared or
     /// launched for the birth, the writer of the mesh's rows puts the birth's row at `name`, status
-    /// `Pending`, its config seeded from the previous row at the `path.name` (a `Deleted` row) or the
-    /// `<name>.old` row, and its tags from that `Deleted` row only for a recovery's claim (`of`,
-    /// [`ClaimFor`]). The claim ([`take_name`])
+    /// `Pending`, with no tags and no config: a recovery's claim (`of`, [`ClaimFor`]) inherits the
+    /// config and tags of the `Deleted` row at the `path.name`, a successor's those of the `<name>.old`
+    /// row ([`Self::claim_spec`] writes a plain create's from its create spec). The claim ([`take_name`])
     /// refuses a name another node's live row holds, `NameHeld { by }`, and nothing is written. A row
     /// the node holds already is left as it is. `allocated`: what the create allocated for the birth,
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
     /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
     pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, of: ClaimFor) -> Result<Claimed, RowRefused> {
-        self.claim_tagged(name, node_id, operation, allocated, executable, &std::collections::BTreeSet::new(), of).await
+        self.claim_spec(name, node_id, operation, allocated, executable, &std::collections::BTreeSet::new(), &BTreeMap::new(), of).await
     }
 
-    /// [`Self::claim`] of a create whose path's entry names `tags` (proposal executable-bindings-at-create.md
-    /// rule 1): a plain create's row carries them; a recovery's and a successor's carry their seed's.
+    /// [`Self::claim`] of a create whose create spec names `tags` and `config` (Q166, build.md §1; proposal
+    /// executable-bindings-at-create.md rule 1): a plain create's row carries them, written at the claim,
+    /// so its first join hands it the config (node-config-update.md); a recovery's and a successor's
+    /// carry their seed's (node-replace.md "Inherited", node-recovery.md "Retained").
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_tagged(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, of: ClaimFor) -> Result<Claimed, RowRefused> {
+    pub async fn claim_spec(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, config: &BTreeMap<String, String>, of: ClaimFor) -> Result<Claimed, RowRefused> {
         let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
@@ -444,7 +452,7 @@ impl NodeRows {
                 };
                 span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
-                self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, executable, tags, of, &span, "writer-check").await
+                self.put_seeded(&me, name, node_id, NodeStatus::Pending, config, allocated, executable, tags, of, &span, "writer-check").await
             },
             span.clone(),
         )
@@ -573,7 +581,7 @@ impl NodeRows {
         let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
         let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
-        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, None, &std::collections::BTreeSet::new(), ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
+        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, None, &std::collections::BTreeSet::new(), ClaimFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => row,
         };
         if let Some(held) = &row.app_types {
@@ -691,9 +699,10 @@ impl NodeRows {
         r
     }
 
-    /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
-    /// `path.name` (another node's row there: the claim refuses it unless it is `Deleted`),
-    /// else the `<name>.old` row, else `own`. Its tags: for a recovery's claim ([`ClaimFor::Recovery`])
+    /// The row of `node_id` at `name`, `status`: a plain create's config is `own`, its create spec's
+    /// (Q166); any other's is seeded from the previous row at the `path.name` (another node's row
+    /// there: the claim refuses it unless it is `Deleted`), else the `<name>.old` row, else `own`. Its
+    /// tags: for a recovery's claim ([`ClaimFor::Recovery`])
     /// those of that previous `Deleted` row (proposal node-properties-own-commands.md §8, recovery:
     /// "the successor's claim over it seeds config and tags from that Deleted row and writes the tags
     /// index entries under the successor's id, in the same write that seeds config"); for a plain
@@ -799,7 +808,7 @@ impl NodeRows {
             Some(row) => Claimed::HeldByNode(row),
             // A recovery's claim precedes its birth's arrival (the create claims before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, None, &std::collections::BTreeSet::new(), ClaimFor::Create, span, "").await?,
+            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, None, &std::collections::BTreeSet::new(), ClaimFor::Arrival, span, "").await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, &self.written, me, row, "rebuild").await {
@@ -1019,19 +1028,19 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
             old
         }
     };
-    // The tags come with the config for a recovery's claim, from the Deleted record at this name, and
-    // for a replace's successor, from the predecessor's record that seeds it; a plain create's are its
-    // path's entry's (`created_with`).
-    let tags = seed
-        .as_ref()
-        .filter(|p| match of {
-            ClaimFor::Create => false,
-            ClaimFor::Recovery => p.name == *name && p.status == NodeStatus::Deleted,
-            ClaimFor::Successor => p.name != *name || p.status == NodeStatus::Deleted,
-        })
-        .map(|p| p.tags.clone())
-        .unwrap_or_else(|| if of == ClaimFor::Create { created_with.clone() } else { Default::default() });
-    let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
+    // The config and the tags are inherited together (Q166): a recovery's claim takes the Deleted
+    // record's at this name, a replace's successor the predecessor's record that seeds it; a plain
+    // create's are its create spec's (`own`, `created_with`), whatever row stood at the name before.
+    let inherited = seed.as_ref().filter(|p| match of {
+        ClaimFor::Create | ClaimFor::Arrival => false,
+        ClaimFor::Recovery => p.name == *name && p.status == NodeStatus::Deleted,
+        ClaimFor::Successor => p.name != *name || p.status == NodeStatus::Deleted,
+    });
+    let tags = inherited.map(|p| p.tags.clone()).unwrap_or_else(|| if of == ClaimFor::Create { created_with.clone() } else { Default::default() });
+    let config = match of {
+        ClaimFor::Create => own.clone(),
+        ClaimFor::Arrival | ClaimFor::Recovery | ClaimFor::Successor => inherited.or(seed.as_ref()).map_or_else(|| own.clone(), |p| p.config.clone()),
+    };
     // The executable beside the config: the one the create launches (`executable`), else the seed's.
     let executable = executable.cloned().or_else(|| seed.as_ref().and_then(|p| p.executable.clone()));
     let predecessor = seed.as_ref().filter(|p| of == ClaimFor::Recovery && p.status == NodeStatus::Deleted).and_then(|p| p.births.last().map(|b| crate::storage::BirthRef { node_id: p.node_id.clone(), incarnation_id: b.incarnation_id.clone() }));

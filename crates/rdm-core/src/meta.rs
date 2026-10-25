@@ -183,9 +183,9 @@ mod tests {
     use super::*;
 
     /// CONTRACT: the storage state space is exactly three states; the per-kind defaults are the
-    /// versioned migration defaults; a spec round-trips its journaled form.
+    /// versioned migration defaults; a spec reads back from its journaled form as written.
     #[test]
-    fn the_kind_defaults_are_the_migration_defaults_and_a_spec_round_trips() {
+    fn the_kind_defaults_are_the_migration_defaults_and_a_spec_reads_back_as_written() {
         let preserve = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
         let at = |p: &str| NodeSpec::default_for(p.parse().unwrap()).storage;
         assert_eq!(at("m.broker.1"), preserve);

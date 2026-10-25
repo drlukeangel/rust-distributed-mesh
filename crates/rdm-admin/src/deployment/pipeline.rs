@@ -1662,20 +1662,21 @@ impl DeploymentPipeline<'_> {
                 // is node recovery's (node-recovery.md step 4), whose claim inherits the Deleted
                 // row's tags with its config.
                 let of = claim_for;
-                // A plain create's row carries the tag labels its path's entry names in the accepted Build as
-                // builds.storage records it (proposal executable-bindings-at-create.md rule 1; the Build topic
-                // carries no entry's tags or executable); a recovery's and a successor's carry their seed's.
-                let tags = match of {
+                // A plain create's row carries the tag labels and the config its create spec names in the
+                // accepted Build as builds.storage records it (Q166; proposal executable-bindings-at-create.md
+                // rule 1; the Build topic carries no entry's tags, config or executable), so its first join
+                // hands it that config; a recovery's and a successor's carry their seed's.
+                let (tags, config) = match of {
                     crate::node_rows::ClaimFor::Create => {
-                        step_span.record("awaiting", "entry-tags");
-                        let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the path's tags; nothing is launched: {e}", req.node, req.build_id))?;
-                        done_awaits.push("entry-tags");
-                        stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|c| c.tags.clone())).unwrap_or_default()
+                        step_span.record("awaiting", "entry-spec");
+                        let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
+                        done_awaits.push("entry-spec");
+                        stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|s| (s.tags.clone(), s.config.clone()))).unwrap_or_default()
                     }
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "claim");
-                rows.claim_tagged(&req.node, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, of)
+                rows.claim_spec(&req.node, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, of)
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 done_awaits.push("claim");

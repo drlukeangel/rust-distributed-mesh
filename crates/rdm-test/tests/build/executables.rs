@@ -138,12 +138,17 @@ async fn fabric_at_its_primary(estate: &Estate) -> (String, ScopeStatus, Option<
 /// lists no nodes at all, is refused by name pointing to fabric.delete"; "a created path whose config names
 /// no executable is refused by name at acceptance, nothing runs"; rule 3, "Recorded on the row at the claim";
 /// rule 7, read from the records). Two callers read the same topology. B's request adds `mesh1.rpc.2` on a
-/// new executable with the tag `zone_a` and completes: the node runs that executable, its row records it
-/// and the tag, and `fabric.nodes.get` returns both. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
+/// new executable with the tag `zone_a` and the config {zone: a} (Q166; node-config-update.md: "A node's
+/// first config is its create spec's `config` in the Build, written to its row at the claim and carried
+/// in its first join") and completes: the node runs that executable, its row records it, the tag and the
+/// config, its first join hands it the config (the join span's `config_keys` 1, never 0) and the node
+/// carries it (`fabric.nodes.get` answers a live node's config from its digest), and `fabric.nodes.get`
+/// returns them. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
 /// accepted and `mesh1.rpc.2` untouched. A re-reads: a request listing no node is refused `no-node-listed`
 /// naming fabric.delete, one creating `mesh1.rpc.3` with no executable `executable-missing`, one creating it
 /// on an executable whose bytes do not hash to the sha it names `executable-refused` (build-deployment.md
-/// §2.4, "a differing hash is refused by name"), and a request at the reserved position of the count
+/// §2.4, "a differing hash is refused by name"), one creating it with a config over node.config.update's
+/// cap `config-over-cap` (build.md §1), and a request at the reserved position of the count
 /// form that created a node (`AddNode`'s, proposal §3.10(a)) is an unknown variant
 /// (`Malformed(UnknownVariant)`, node-rpc.md §26), nothing accepted; the re-read request itself is accepted and
 /// completes, changing nothing. The bootstrap admin's row records the hash of the executable it runs
@@ -165,7 +170,10 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
 
     // B: mesh1.rpc.2, named on the new executable with its tags.
     let mut b_nodes = naming(b_request, "mesh1.rpc.2", Some(&next));
-    b_nodes.iter_mut().find(|s| s.path.to_string() == "mesh1.rpc.2").expect("the entry named").tags = ["zone_a".to_string()].into();
+    let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+    let entry = b_nodes.iter_mut().find(|s| s.path.to_string() == "mesh1.rpc.2").expect("the entry named");
+    entry.tags = ["zone_a".to_string()].into();
+    entry.config = zone.clone();
     let b = followed(&estate, estate.submit_change(Change::Reconcile { based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
     let created = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
     assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, next.executable, "the created node runs the executable its request named");
@@ -174,6 +182,11 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let read = fabric_nodes(&estate).await;
     assert_eq!(read["mesh1.rpc.2"].executable.as_ref(), Some(&next), "fabric.nodes.get returns it from the row");
     assert_eq!(read["mesh1.rpc.2"].tags, ["zone_a".to_string()].into(), "the node carries the tags its entry named, from its claim");
+    assert_eq!(row["record"]["config"], json!({"zone": "a"}), "its row records its create spec's config from the claim: {row}");
+    assert_eq!(read["mesh1.rpc.2"].config, zone, "the node carries the config its create spec named");
+    let joins: Vec<Value> = estate.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["node_id"] == json!(created.node_id.as_str())).collect();
+    let keys: Vec<&str> = joins.iter().filter_map(|j| j["attributes"]["config_keys"].as_str()).collect();
+    assert!(keys.contains(&"1") && !keys.contains(&"0"), "its first join hands it the config, never none: {joins:#?}");
     assert_eq!(read["mesh1.rpc.1"].executable.as_ref(), Some(&rpc), "and every other node's");
 
     // A, from its earlier read: refused, nothing accepted, mesh1.rpc.2 untouched.
@@ -196,6 +209,12 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let differing = Binding { sha256: "0".repeat(64), ..next.clone() };
     let (reason, detail) = rejected("a created path on an executable whose bytes hash otherwise", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: naming(request.clone(), "mesh1.rpc.3", Some(&differing)) }).await);
     assert_eq!(reason, "executable-refused", "{detail}");
+    assert!(detail.contains("mesh1.rpc.3"), "{detail}");
+    let over: std::collections::BTreeMap<String, String> = (0..=rdm_core::MAX_CONFIG_KEYS).map(|i| (format!("k{i}"), "v".into())).collect();
+    let mut over_cap = naming(request.clone(), "mesh1.rpc.3", Some(&next));
+    over_cap.iter_mut().find(|s| s.path.to_string() == "mesh1.rpc.3").expect("the entry named").config = over;
+    let (reason, detail) = rejected("a created path with a config over the cap", carrier.create(Change::Reconcile { based_on: based_on.clone(), nodes: over_cap }).await);
+    assert_eq!(reason, "config-over-cap", "{detail}");
     assert!(detail.contains("mesh1.rpc.3"), "{detail}");
     let (reason, detail) = rejected("a request at a count form's reserved position", carrier.create(Change::Reserved2).await);
     assert_eq!((reason.as_str(), detail.as_str()), ("malformed", "UnknownVariant"), "the count forms are reserved positions: a request at one is an unknown variant");

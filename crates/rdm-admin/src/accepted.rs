@@ -2416,6 +2416,32 @@ mod tests {
         assert_eq!(refused.unwrap_err().reason(), "tags-refused");
     }
 
+    /// CONTRACT (Q166, build.md §1: "`config` is the application's map and nothing else (RDM never reads
+    /// it; capped as node.config.update caps it, `ConfigOverCap` refused by name at acceptance)"): a
+    /// created path's create spec names config {zone: a}; the accepted entry carries it, and the journal's
+    /// form keeps it. A spec whose config is over the cap (33 keys, or 2049 bytes in one value) is refused
+    /// `config-over-cap` naming the path and the cap, nothing compiled. Must NOT happen: an over-cap
+    /// config accepted onto an entry, or a created path's config dropped.
+    #[test]
+    fn a_created_paths_config_is_on_its_entry_and_one_over_the_cap_is_refused_by_name() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let configured = |config: BTreeMap<String, String>| NodeSpec { config, ..entry("mesh1.rpc.4", Some("b")) };
+        let zone: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+        let next = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), configured(zone.clone())]), &mn()).unwrap();
+        let p: PathName = "mesh1.rpc.4".parse().unwrap();
+        assert_eq!(next.mesh("mesh1").unwrap().spec(&p).unwrap().config, zone, "the created path's entry carries its config");
+        assert_eq!(serde_json::from_value::<FabricTopology>(serde_json::to_value(&next).unwrap()).unwrap(), next, "the journal's form keeps it");
+        let keys: BTreeMap<String, String> = (0..=rdm_core::MAX_CONFIG_KEYS).map(|i| (format!("k{i}"), String::new())).collect();
+        let bytes: BTreeMap<String, String> = [("k".to_string(), "v".repeat(rdm_core::MAX_CONFIG_BYTES))].into();
+        for over in [keys, bytes] {
+            let refused = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), configured(over)]), &mn());
+            assert!(matches!(&refused, Err(BuildReject::ConfigOverCap { node, .. }) if node == "mesh1.rpc.4"), "{refused:?}");
+            let refused = refused.unwrap_err();
+            assert_eq!(refused.reason(), "config-over-cap");
+            assert!(refused.to_string().contains("mesh1.rpc.4") && refused.to_string().contains("over its cap"), "{refused}");
+        }
+    }
+
     /// CONTRACT (proposal executable-bindings-at-create.md rule 5, R4 arm A: "a mesh whose only node-admin is to
     /// be replaced first gets a second node-admin on the new executable at a new `path.name` of the
     /// node-admin type in that mesh (the next free one, `mesh1.admin.2`), whose entry the compiler adds to
