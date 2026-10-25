@@ -679,6 +679,7 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     assert_eq!(fp, "mesh2.admin.2", "the next executor is the fabric-primary that finishes the delete");
     let receipts = receipts_at(&estate, &fp, &id).await;
     assert_eq!(count(&receipts, |o| o == "node.delete:mesh1.rpc.1", "Complete"), 1, "mesh1.rpc.1's delete is finished once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| o == "node.delete:mesh2.admin.1", "Complete"), 1, "the dead executor mesh2.admin.1, a member of mesh2 not yet Deleted, has its delete receipted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o == format!("mesh.delete:{mesh1_id}"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o == format!("mesh.delete:{mesh2_id}"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh2 is deleted once: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
@@ -703,7 +704,6 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
 /// yet deleted, a mesh deleted twice, a create after the acceptance other than each launch's claim of its
 /// own path.name, a second fabric, or a member's runtime left running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Q163, asked: how a later launch proves the exit of a person-launched adopter no live node heard; until ruled the delete fails its step by name (Q160)"]
 async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it() {
     let shape = [("mesh1", 1, 2)];
     let mut estate = ready_fabric("an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it", &shape).await;

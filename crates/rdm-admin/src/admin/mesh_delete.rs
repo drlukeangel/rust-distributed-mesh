@@ -174,7 +174,11 @@ impl AdminRunner {
                 adm
             }
             None => {
-                let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.held_name().to_string(), &final_primary, &final_runtime, || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
+                // Captured from the mesh's node rows on the store, never from the view, which drops a birth
+                // once it is gone: a member not yet Deleted is a birth of the roster and gets its node.delete
+                // receipt (fabric-delete.md "Failure").
+                let stored = self.stored_roster(mesh, mesh_id, &steps).await.map_err(|e| format!("{outer}: {e}"))?;
+                let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.held_name().to_string(), &final_primary, &final_runtime, || Ok(stored)).await?;
                 Admitted { roster, final_primary, final_runtime, amendments: Vec::new() }
             }
         };
@@ -862,7 +866,8 @@ impl AdminRunner {
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
         let me_birth = RosterBirth::of(&me)?;
         let my_runtime = RuntimeProof::of(&my_fact);
-        // The roster captured once, or, when this admin holds none, what the owner admitted: the
+        // The roster the owner captured once, as its LeavingRoster receipt here, or, when this admin holds
+        // none, what the owner admitted: the
         // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
         // owner's Build facts when this admin has not yet heard them ([`crate::mesh_delete::leaving_roster`]).
         let build_id = key.build_id.clone();
@@ -874,12 +879,7 @@ impl AdminRunner {
             };
             read.map_err(|e| format!("{me_name_ref}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}"))
         };
-        let capture = || {
-            let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
-            roster.push(me_birth.clone());
-            Ok(roster)
-        };
-        let (roster, known) = crate::mesh_delete::leaving_roster(&*self.builds, &*self.local, key, &me_name, &me_birth, &my_runtime, capture, fetch_owner).await?;
+        let (roster, known) = crate::mesh_delete::leaving_roster(&*self.builds, &*self.local, key, &me_name, &me_birth, &my_runtime, fetch_owner).await?;
         let mesh: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
         let records = crate::mesh_delete::roster_records(&mesh, &roster, |b| self.held_record(b));
         crate::mesh_delete::roster_rows_read(self.records.node_rows().as_deref(), &me_name, &key.operation, &roster, &records).await;
@@ -893,7 +893,19 @@ impl AdminRunner {
     async fn shutdown_one(&self, key: &MeshDeleteKey, n: &Node) -> Result<TerminalReceipt, String> {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node = %n.name, node_id = %n.node_id, operation = %key.operation, build_id = %key.build_id.log(), attempt = key.attempt, outcome = tracing::field::Empty);
         let result = async {
-            let (record, handle) = self.handle_for(n).await?;
+            // A member whose delete already holds its TerminateRuntime receipt runs on from its receipts
+            // when its runtime is no longer resolved here (no digest, no runtime row), as an unreached
+            // birth's delete does (`delete_unreached_as`): the exit proof is a step already taken.
+            let (record, handle) = match self.handle_for(n).await {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    let from = n.incarnation_id.clone().map(|incarnation| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation });
+                    match from {
+                        Some(from) => super::runner::receipted_exit(&*self.builds, &key.build_id, &n.name, &from).await.ok_or(e)?,
+                        None => return Err(e),
+                    }
+                }
+            };
             // Whether the birth is stopped is the record's the leave works from (a stopped member's
             // delete goes straight to its exit proof), as `retire` takes it from the view.
             let record = Node { parked: n.parked, ..record };

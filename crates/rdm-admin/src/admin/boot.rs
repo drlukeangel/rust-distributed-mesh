@@ -380,7 +380,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         _ => cfg.mesh.clone(),
     };
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
-    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, connections: open_connections, builds: journal, state_actions, finish_writes, writes_to } = storage.open(&scope, embedding_state_actions).await?;
+    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, root_runtimes, connections: open_connections, builds: journal, state_actions, finish_writes, writes_to } = storage.open(&scope, embedding_state_actions).await?;
     storage_step.record("writes_to", writes_to.as_str());
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
@@ -487,6 +487,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // its own Mesh first: hints, any one of which answering is enough.
     // The fabric-recovery attempt an adoption launch claimed, held until it completes or fails.
     let mut adoption_claim: Option<Arc<super::adoption::Claimed>> = None;
+    // The adoption launch's own runtime, adopted at its claim (deployment-provider.md §3, the externally
+    // started Day-0 adoption): its last step, the publication, runs with the bootstrap's digest below.
+    let mut adopted_at_claim: Option<CurrentRuntimeAdoption> = None;
     let (name, node_id, incarnation, supersedes, mesh_addr, seeds) = match (&cfg.launch, &inherited) {
         (Some(l), _) => (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
         (None, Some(lost)) if adoption.is_some() => {
@@ -505,6 +508,24 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 .await
                 .map_err(|e| format!("refusing to start: {e}"))?;
             adoption_claim = Some(Arc::new(claimed));
+            // An adoption launch is the externally started Day-0 adoption (deployment-provider.md §3), and no
+            // launcher records its runtime: right after its claim it adopts its current runtime and keeps its
+            // runtime row on the fabric's store root as well as in its data dir, so a later adoption launch
+            // resolves it from the store when no live node holds its digest. It starts holding every runtime
+            // row the store root keeps, as a launched admin starts holding its launcher's: a lost Day-0 admin's
+            // or earlier adoption launch's runtime is resolved here as any birth's is, its digest first, then
+            // its row.
+            if let Some(root_runtimes) = &root_runtimes {
+                for row in root_runtimes.runtimes().await.map_err(storage_err)? {
+                    nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
+                }
+                let in_container = early.as_ref().and_then(|(p, _)| (p.provider.kind() == ProviderKind::Container && rdm_core::runtime::this_container_id().is_some()).then(|| p.provider.control_domain()));
+                let a = CurrentRuntimeAdoption::begin_in(&at, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).instrument(boot.clone()).await.map_err(|e| format!("refusing to start: {e}"))?;
+                let row = crate::storage::RuntimeRow { node_id: node_id.clone(), name: at.clone(), incarnation_id: incarnation.clone(), runtime: a.fact().clone(), data_dir: Some(cfg.data_dir.display().to_string()) };
+                root_runtimes.put_runtime(&row).await.map_err(storage_err)?;
+                nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
+                adopted_at_claim = Some(a);
+            }
             // Its contacts are the births the store records, its own mesh first, the lost birth not among them.
             let mut contacts = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &lost.name.mesh).await.map_err(storage_err)?;
             contacts.retain(|c| c.node_id != lost.node_id);
@@ -1530,7 +1551,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // a host process stays a process (it then cannot be failed over by a container admin,
                                     // which refuses Ready by name).
                                     let in_container = (prepared.provider.kind() == ProviderKind::Container && rdm_core::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
-                                    let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).await.map_err(|e| e.to_string())?;
+                                    let a = match adopted_at_claim.take() {
+                                        Some(a) => a,
+                                        None => CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).await.map_err(|e| e.to_string())?,
+                                    };
                                     let f = a.fact().clone();
                                     adoption = Some(a);
                                     f
@@ -1547,10 +1571,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // an admin started on this data dir after this birth exits proves this birth's exit from it
                             // before deleting its row, and every node-admin this one launches is handed it with the
                             // other runtime rows it holds.
-                            nodes_storage
-                                .put_runtime(&crate::storage::RuntimeRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation.clone(), runtime: runtime.clone(), data_dir: Some(cfg.data_dir.display().to_string()) })
-                                .await
-                                .map_err(storage_err)?;
+                            let own_runtime_row = crate::storage::RuntimeRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation.clone(), runtime: runtime.clone(), data_dir: Some(cfg.data_dir.display().to_string()) };
+                            nodes_storage.put_runtime(&own_runtime_row).await.map_err(storage_err)?;
+                            // An externally started admin (Day 0, an adoption launch) adopted its own runtime and no
+                            // launcher recorded it: its row is kept on the fabric's store root too, where a later
+                            // adoption launch reads it once no live node holds its digest (deployment-provider.md §3).
+                            if let (Some(_), Some(root_runtimes)) = (&adoption, &root_runtimes) {
+                                root_runtimes.put_runtime(&own_runtime_row).await.map_err(storage_err)?;
+                            }
                             // Own digest, published on the membership cadence.
                             let digest = Arc::new(Mutex::new(MeshDigest { held_hash: membership.held_hash(),
                                 fabric_id: cfg.fabric_id.clone(),

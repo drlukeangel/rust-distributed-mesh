@@ -604,7 +604,8 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// held, this admin does not know from its own facts whether it is admitted at all: the owner's
 /// Build facts are read (`fetch_owner`, the sender of `DeleteMesh`; gossip is never authority) and
 /// what the owner admitted decides. Admitted as the final primary at admission: the first run of the
-/// leave, and `capture()` is recorded as the `LeavingRoster`. Admitted by a `RosterAmended` (the admin
+/// leave, and the owner's accepted roster is recorded as the `LeavingRoster`: the roster is captured
+/// once, by the owner (mesh-delete.md step 1), never again from this admin's view. Admitted by a `RosterAmended` (the admin
 /// the election seated, or the one node-admin the fabric-primary created when none survived): the
 /// roster is the owner's accepted roster plus every amendment, used for this run and written
 /// nowhere, so the accepted roster is never recaptured. Any other final primary refuses the run by
@@ -617,9 +618,8 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// no Build gossip is authored for them, and that one read is what the rest of the admission uses.
 /// A Build log that could not be read refuses the run by name.
 #[allow(clippy::too_many_arguments)]
-pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &MeshDeleteKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+pub async fn leaving_roster<F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &MeshDeleteKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
-    C: FnOnce() -> Result<Vec<RosterBirth>, String>,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Vec<BuildFact>, String>>,
 {
@@ -651,7 +651,7 @@ where
         }
     };
     if accepted_row(&own, operation, STEP_LEAVING_ROSTER).is_some() {
-        let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
+        let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, || Err(format!("{executor}: the {STEP_LEAVING_ROSTER} receipt of {operation} it holds is not read back"))).await?;
         return admission_roster(&roster, &own, operation, me, fetch_owner).await;
     }
     let known = leave_receipts(fetch_owner().await?, operation, me)?;
@@ -661,7 +661,7 @@ where
         return Err(format!("{operation}: {executor} ({}) is not the final primary: the owner admitted {} after {} amendment(s), so no member is stopped", named(me), named(&admitted.final_primary), admitted.amendments.len()));
     }
     if admitted.amendments.is_empty() {
-        let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
+        let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, || Ok(admitted.roster.clone())).await?;
         return Ok((roster, known));
     }
     tracing::info_span!("rdm.node_admin.mesh.resolve.via-owner-admitted-roster", operation = %operation, me = %named(me), amendments = admitted.amendments.len(), roster = admitted.roster.len(), owner_receipts = known.len())

@@ -1570,7 +1570,7 @@ async fn hashed_binding(kind: NodeKind, executable: &std::path::Path, provider: 
 /// "Completed member receipts stand"; `DeploymentPipeline::begin` reuses every step an earlier attempt
 /// receipted), so the reused `TerminateRuntime` touches no runtime and the steps after it run. `None` when
 /// no such receipt is held.
-async fn receipted_exit(builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, node: &PathName, from: &crate::build::ExitedBirth) -> Option<(Node, DeploymentHandle)> {
+pub(super) async fn receipted_exit(builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, node: &PathName, from: &crate::build::ExitedBirth) -> Option<(Node, DeploymentHandle)> {
     let operation = format!("node.delete:{node}");
     let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
     let p = builds.read_build(build_id).await.ok()?;

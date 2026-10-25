@@ -45,6 +45,12 @@ pub struct StorageBoundaries {
     /// `nodes.storage`: the runtimes the admin started, every mesh's Node rows and the facts on each
     /// birth, its address and primaries included.
     pub nodes: Arc<dyn NodesStorage>,
+    /// `nodes.storage`'s runtime rows on the fabric's shared store root, in no admin's data dir: where an
+    /// externally started node-admin (the Day-0 admin, an adoption launch), whose runtime no launcher
+    /// recorded, keeps its own runtime row, and where a later adoption launch on the same store root
+    /// reads it (deployment-provider.md §3, the externally started Day-0 adoption and the successor's
+    /// management cut). `None` on a backend whose rows no other process reads.
+    pub root_runtimes: Option<Arc<dyn NodesStorage>>,
     /// `connections.storage`: the admin's own connections rows, by its `path.name`.
     pub connections: OpenConnections,
     /// The Build journal: the Build facts, and each attempt's context.
@@ -119,6 +125,7 @@ impl StorageBackend for FileBackend {
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
+        let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(Arc::new(crate::storage::FileNodesStorage::open_with_root_runtimes(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?));
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.writer).await.map_err(|e| e.to_string())?);
         let finish_writes: FinishWrites = {
             let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
@@ -138,7 +145,7 @@ impl StorageBackend for FileBackend {
                 Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
-        Ok(StorageBoundaries { fabric, meshes, nodes, connections, builds, state_actions, finish_writes, writes_to })
+        Ok(StorageBoundaries { fabric, meshes, nodes, root_runtimes, connections, builds, state_actions, finish_writes, writes_to })
     }
 }
 
@@ -181,6 +188,7 @@ impl StorageBackend for MemoryBackend {
             fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             meshes: Arc::new(crate::storage::MemoryMeshStorage::default()),
             nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            root_runtimes: None,
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             // Nothing is held for a later publication: the embedding's actions alone, or none.

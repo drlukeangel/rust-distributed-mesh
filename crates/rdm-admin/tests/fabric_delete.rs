@@ -655,7 +655,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             .expect("RosterAmended admits the created mesh2.admin.2");
 
         let owner_facts = builds.facts().await.unwrap();
-        let (leaving, known) = leaving_roster(&builds, &builds, &key_m2, "mesh2.admin.2", &me_a2, &rt_a2, || unreachable!("amended primary uses owner's accepted roster"), || async { Ok(owner_facts) })
+        let (leaving, known) = leaving_roster(&builds, &builds, &key_m2, "mesh2.admin.2", &me_a2, &rt_a2, || async { Ok(owner_facts) })
             .await
             .unwrap();
         let current_nodes = view.read().await.nodes.clone();

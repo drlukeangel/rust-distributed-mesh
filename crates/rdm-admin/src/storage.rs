@@ -1127,6 +1127,11 @@ impl MeshNodes {
     }
 }
 
+/// The fabric store root's directory of the externally started node-admins' runtime rows
+/// ([`FileNodesStorage::open_with_root_runtimes`]).
+#[cfg(feature = "file-backend")]
+pub const ROOT_RUNTIMES: &str = "runtimes";
+
 #[cfg(feature = "file-backend")]
 /// The runtimes the admin started in its data dir (`nodes/runtimes/`), beside its own row
 /// (`nodes/self.json`, [`Self::own_in`]), and every mesh's node records, their indexes and claims under
@@ -1150,6 +1155,20 @@ impl FileNodesStorage {
     pub async fn open(own_data_dir: &Path, root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         Ok(Self {
             runtimes: FileRecords::open(own_data_dir, "nodes/runtimes", writer).await?,
+            root: root.clone(),
+            writer: writer.clone(),
+            mine: (own_mesh.to_string(), std::sync::Arc::new(MeshNodes::open(root, own_mesh, writer).await?)),
+            others: Mutex::new(BTreeMap::new()),
+        })
+    }
+
+    /// The store whose runtime rows are on the fabric's store `root` itself (`runtimes/`, held in the
+    /// root's scratchpad until it is published, as every store on it), in no admin's data dir: the
+    /// runtime rows of the externally started node-admins, which no launcher recorded
+    /// (`StorageBoundaries::root_runtimes`). Its node rows are the mesh `own_mesh`'s, as [`Self::open`]'s.
+    pub async fn open_with_root_runtimes(root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
+        Ok(Self {
+            runtimes: root.records(root.dir(), ROOT_RUNTIMES, writer).await?,
             root: root.clone(),
             writer: writer.clone(),
             mine: (own_mesh.to_string(), std::sync::Arc::new(MeshNodes::open(root, own_mesh, writer).await?)),

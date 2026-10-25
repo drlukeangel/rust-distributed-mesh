@@ -1445,10 +1445,9 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         let _in_root = root.enter();
         node_delete_receipts(&owner, &key(2), "mesh1.admin.1", &exited(&lost, &runtime(FINAL))).await;
         amend_roster(&owner, &key(2), "mesh1.admin.1", &RosterAmended { predecessor: lost.clone(), final_primary: created.clone(), final_runtime: runtime(NEW_ADMIN) }).await.expect("the amendment admits the created admin");
-        // mesh2.admin.3 admits DeleteMesh; its capture would be the live members it sees now.
+        // mesh2.admin.3 admits DeleteMesh: an amendment admits it, so it runs the owner's roster and captures none.
         let owner_facts = owner.facts().await.unwrap();
-        let live_now: Vec<Node> = records.iter().filter(|n| [FAILING, NEW_ADMIN].contains(&n.name.to_string().as_str())).cloned().collect();
-        let roster = rdm_admin::mesh_delete::leaving_roster(&own, &own.0, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || live_roster(&live_now), || async { Ok(owner_facts) }).await;
+        let roster = rdm_admin::mesh_delete::leaving_roster(&own, &own.0, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || async { Ok(owner_facts) }).await;
         let out = match roster {
             Ok((roster, known)) => members_exited(&own, &key(2), NEW_ADMIN, &roster, &created, runtime(NEW_ADMIN), &records, &known, |n: Node| {
                 let (ran, t) = (&ran, exited(&RosterBirth::of(&n).unwrap(), &runtime(&n.name.to_string())));
@@ -1667,7 +1666,7 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let reads = std::sync::atomic::AtomicUsize::new(0);
-        let roster = rdm_admin::mesh_delete::leaving_roster(&own, &own.0, &key, FINAL, &me, &my_runtime, || live_roster(&records), || async {
+        let roster = rdm_admin::mesh_delete::leaving_roster(&own, &own.0, &key, FINAL, &me, &my_runtime, || async {
             reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(owner_facts)
         })
