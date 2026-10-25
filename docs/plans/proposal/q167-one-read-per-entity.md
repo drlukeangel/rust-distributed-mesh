@@ -81,14 +81,16 @@ because the Build topic does not. It is not a caller read and this proposal does
   never clears a field and a failed Build's evidence stays readable. The current Build is selected
   once per read (Q98's rule) and marked.
 - **R-RD5, the row keeps its content.** `FabricView` carries its meshes and `MeshView` names its
-  nodes as today: a row's content is not a second read, and the view types do not change (the
-  durable format).
+  nodes as today, because a row's content is not a second read. No store persists a view, so the
+  durable-format rule has no say here (dev review, 2026-10-25).
 - **R-RD6, no paging until telemetry shows the bound hit.** The 64 KiB reply bound holds about 150
   node rows at the test fixture's size and about 12 at the maximal row (2 KiB config, 32 labels of
   64 bytes, listeners, executable path and sha, cert); the largest estates in the record are 141 and
-  142 nodes. A whole-fabric `nodes.get` past the bound is refused `ReadOverBound` by name and the
-  caller reads by mesh, which is how a fabric is organized. Builds stream in chunks and never meet
-  the bound. The trigger for paging is a `ReadOverBound` span on a real fabric that no mesh or tag
+  142 nodes. Since Q166 a node's config is set at its birth, so maximal rows are the common case and
+  one mesh of them passes the bound well before 150 nodes. A `nodes.get` past the bound is refused
+  `ReadOverBound` by name and the caller narrows: by mesh, which is how a fabric is organized, and
+  when a mesh alone is past the bound, by `ids` in batches, which always gets under it. Builds stream
+  in chunks and never meet the bound. The trigger for paging is a `ReadOverBound` span on a real fabric that no mesh or tag
   filter brings under the bound; the shape when it comes is Kubernetes' `limit` and `continue`, one
   appended request variant carrying them and one appended reply carrying the token, the mechanism
   Q98 used. Nothing is reserved for it now.
@@ -109,7 +111,7 @@ connections log holds it (connections.md, "the data plane is the connections log
 
 ## 5. Delta
 
-### 5.1 Wire (the commit carries the durable-format marker)
+### 5.1 Wire (appended variants only; no row or field moves, so no `durable format moved` marker)
 
 - **Status 0x1B.** One request variant appended, `Get { filter: ReadFilter }`, with
   `ReadFilter::Fabrics { ids } | Meshes { names } | Nodes { ids, mesh, tags } | Connections { node_id, incarnation, ids }`;
@@ -212,7 +214,7 @@ the Members projection and node.topology.get carry no executable.`
 consumer-guide.md: line 31 → `The read calls follow one rule: one read per entity, optional filters
 combined with AND, a list in a stable order, empty when nothing matches.`; the table at lines 33 to
 39 becomes §4's table, followed by two lines: `A read past the 64 KiB reply bound is refused
-ReadOverBound (RESOURCE_EXHAUSTED); read by mesh.` and `Filters combine with AND, so { ids: [x],
+ReadOverBound (RESOURCE_EXHAUSTED); read by mesh, and a mesh past the bound by ids in batches.` and `Filters combine with AND, so { ids: [x],
 mesh: m } answers empty when x is absent or when x is in another mesh; to tell them apart, read
 { ids: [x] } and look at the row's mesh.`; line 69 `node.tags.get, or the tags field of its node
 row` → `the tags field of its node row (nodes.get)`; line 70 `fabric.nodes.get { tags } or
