@@ -3,7 +3,9 @@
 **Status:** proposal, 2026-10-25. Asks Luke's yes on one rule for RDM's file backend's layout of the
 fabric's shared store root, and on the amendment of R14 item 1 and R-ML2 item 4 that it needs.
 Storage layout only: no read, no wire frame and no trait changes. Rafka binds the same traits to its
-own topics and is untouched.
+own topics and is untouched. It proves nothing about `connections.get`: a store read's contract,
+which facts are retained against live and how complete the by-destination index is at the instant
+of a read, is the reads proposal's (Q167, R-RD7), not a consequence of where the directory sits.
 
 ## 1. The question
 
@@ -65,8 +67,8 @@ the fabric, sit on disk under it.
   fabric/record                                            the Fabric record
   fabric/seat-moves/<T>--<node id>--<incarnation>          the one fabric-wide sequence of primary moves (Q35, Q109)
   meshes/<mesh id>/record                                  the Mesh record
-  meshes/<mesh id>/in-flight                               the mesh's one attempt in flight (its key is the mesh)
-  meshes/by-name/<name>                                    the mesh's name claim → mesh id
+  meshes/by-name/<name>/claim                              the mesh's name claim → mesh id
+  meshes/by-name/<name>/in-flight                          the one attempt in flight on that mesh name
   nodes/<node id>/record                                   the node record (its row and its births' facts)
   nodes/by-name/<path.name>                                the node's name claim → node id
   nodes/by-tag/<label>/<node id>                           the tags index (R-TG1)
@@ -83,8 +85,8 @@ One writer per key, directory by directory:
 |---|---|---|
 | `fabric/` | the fabric; `T` of a primary move | the fabric-primary; the primary move's writer at the next `T` |
 | `meshes/<mesh id>/` | the mesh id | that mesh's primary (the fabric-primary for a mesh with none) |
-| `meshes/<mesh id>/in-flight` | the mesh | its claimant, insert-and-fail (build.md:405): one attempt in flight per mesh, so the row's key is the mesh and it stays with the mesh, not the Build |
-| `meshes/by-name/<name>` | the name | the claiming mesh's primary, a conditional write over a Dead row (R14 item 3, R-ML2 item 3) |
+| `meshes/by-name/<name>/claim` | the name | the claiming mesh's primary, a conditional write over a Dead row (R14 item 3, R-ML2 item 3) |
+| `meshes/by-name/<name>/in-flight` | the mesh name | its claimant, insert-and-fail (build.md:405, `mesh_claims.rs`): one attempt in flight per mesh name. The key is the name, not the id, because the row exists before the mesh does (a mesh.create's topology attempt inserts it) and across a re-creation, and `take_in_flight`, `release_in_flight` and `in_flight` take the name today; a fact keyed by a name sits under the name's index entry (Architect 1, 2026-10-25) |
 | `nodes/<node id>/` | the node id | the mesh-primary of the node's mesh |
 | `nodes/by-name/<path.name>` | the path.name | the claiming mesh-primary, over a Deleted row only |
 | `nodes/by-tag/<label>/<node id>` | (label, node id) | the node's mesh-primary |
@@ -120,18 +122,22 @@ directory instead of `fabric/builds/<id>/` plus every `meshes/<mesh>/builds/<id>
   `connections/by-destination/`; `status(mesh)` deleted.
 - `rdm-admin/src/storage.rs`: `FileNodesStorage` records at `nodes/<id>/`, the name claim at
   `nodes/by-name/`, the tags index at `nodes/by-tag/`; `FileMeshStorage` at `meshes/<id>/`, the claim
-  at `meshes/by-name/`, `in-flight` beside the record; `nodes_answer` and the rebuild read by the
+  and the in-flight row at `meshes/by-name/<name>/`, the `MeshStorage` trait unchanged (its name-keyed
+  `take_in_flight`, `release_in_flight` and `in_flight` stay); `nodes_answer` and the rebuild read by the
   record's `mesh` field.
 - `rdm-admin/src/build_state.rs`: `FileJournal` at `builds/<build id>/`, one directory per Build;
   `refused_journal_files` and the revision walk read `builds/` only.
 - `rdm-node/src/storage.rs`: `FileConnectionsStorage` keyed by node id; the by-destination index rows
   under `connections/by-destination/`.
 - `rdm-admin/src/status_rpc.rs:2361`: the comment names the node record, not `status/<mesh>/`.
-- **An old root is refused by name, no migration.** At open, a root holding `status/`,
-  `connections-by-destination/`, `fabric/builds/`, a `meshes/` or `nodes/` entry that is not a
-  canonical Crockford60 id, or a `connections/` entry that is not one, is refused naming the path
-  and the layout rule, in the shape `fabric_storage.rs` uses for `fabric/pointers/`, `fabric/seats/`
-  and `fabric/handovers/` today. A fabric born before the landing is a new fabric. The gate's and the
+- **An old root is refused by name, no migration.** The reserved names under an entity's directory
+  are its indexes, `by-name`, `by-tag` and `by-destination`; every other entry is an id. At open, a
+  root holding `status/`, `connections-by-destination/`, `fabric/builds/`, a `meshes/<x>/builds/` or
+  `meshes/<x>/claims/` or `nodes/<x>/records/` directory, or an entry under `meshes/`, `nodes/` or
+  `connections/` that is neither a reserved index name nor a canonical Crockford60 id, is refused
+  naming the path and the layout rule, in the shape `fabric_storage.rs` uses for `fabric/pointers/`,
+  `fabric/seats/` and `fabric/handovers/` today. A root in the new layout, populated, reopens
+  (Architect 1, 2026-10-25). A fabric born before the landing is a new fabric. The gate's and the
   demo's estates are born fresh on every run.
 
 ### 5.2 Pages (old → new)
@@ -148,7 +154,9 @@ directory per storage boundary, a record at its entity's id, an index under its 
 by-<property> (meshes/by-name, nodes/by-name, nodes/by-tag, connections/by-destination), and one
 writer per key (R-SR1). The fabric-primary writes fabric/ (the fabric's identity, immutable) and
 every topology attempt's Build records under builds/<build_id>/, … each mesh-primary its mesh's
-record and in-flight row at meshes/<mesh_id>/, its mesh's node records at nodes/<node_id>/ (where
+record at meshes/<mesh_id>/ and its name claim at meshes/by-name/<name>/claim, beside which the one
+attempt in flight on that name sits as meshes/by-name/<name>/in-flight, inserted by its claimant; its
+mesh's node records at nodes/<node_id>/ (where
 is_primary and is_fabric_primary record the election's result) and its drift attempts' Build
 records under the same builds/<build_id>/, the mesh in the key; each node its own
 connections/<node_id>/.` The Q122 exception and the sentence from `The Build journal holds one
@@ -177,13 +185,16 @@ node-primary-update.md line 52: `(its own connections/<node>/ rows are its own, 
   (11), `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
   `fabric/named_listeners.rs`, `mesh/fabric_primary_handover.rs` (1 each); `mesh_claims.rs:114`
-  (`meshes/<mesh_id>/in-flight`); `demo/tests/connections.rs:86` asserts `fabric/record.json`,
+  (`meshes/by-name/mesh2/in-flight`); `demo/tests/connections.rs:86` asserts `fabric/record.json`,
   unchanged.
-- New: a root holding each old directory in turn is refused by name at open, naming the path; a
-  recreated mesh's `mesh2.admin.1` claim wins over the Deleted row at `nodes/by-name/` and its
-  records sit at the new MeshId; a new mesh-primary's rebuild reads its mesh's records by the `mesh`
-  field; a Build with a topology attempt and a drift attempt folds from one `builds/<id>/`
-  directory.
+- New: a root holding each old directory in turn is refused by name at open, naming the path, and a
+  populated root in the new layout, every index directory present, reopens; a recreated mesh's
+  `mesh2.admin.1` claim wins over the Deleted row at `nodes/by-name/` and its records sit at the new
+  MeshId; a delayed release of an attempt on the old mesh against the re-created mesh's name finds
+  the in-flight row naming another attempt and removes nothing (the release takes the row only while
+  it still names its attempt, `mesh_claims.rs`); a new mesh-primary's rebuild reads its mesh's
+  records by the `mesh` field; a Build with a topology attempt and a drift attempt folds from one
+  `builds/<id>/` directory.
 
 ## 6. Arms
 
