@@ -98,7 +98,7 @@ life; a new executable is a new birth at the same `path.name`.**
    `fabric.nodes.get` gets its wire mapping as the mesh selector's answer over every mesh, from the
    rows, no filter. Nothing about executables rides gossip or `node.topology.get`.
 
-Every Build that puts the fabric to pending completes only after its own ready-for-traffic round
+Every Build that puts the fabric to pending completes only after its own ready-for-traffic state is set
 (Q154); a replacement Build is one of them.
 
 ### 1. Removed, kept, corrected
@@ -217,7 +217,7 @@ predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; conf
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
 same re-birth with the new config. The row then records the new executable. node.restart keeps the executable
 (node-restart.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
-back to pending completes only after its own ready-for-traffic round (states.md).
+back to pending completes only after its own ready-for-traffic state is set (states.md).
 
 ## 4. Recovery
 
@@ -326,7 +326,7 @@ New:
 ```
 ## Resize and executable replacement
 
-A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a round or hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in.
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in or a hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready-for-traffic, and the fabric cannot change, until the replacement's last planned birth checks in.
 ```
 (The rest of the paragraph, on Rafka's state-sync answer, stands. This folds Q154's states.md sentence
 in, so Q154's own sentence is not added twice.)
@@ -381,7 +381,7 @@ i141 B3 packet and `needs-ownership-under-rdm.md` §2.4, for the lead.
   broker, compute and admin untouched, same node.id and incarnation before and after, no stop, no restart;
 - the executor killed halfway through that replacement: the next attempt finishes the remaining gateways
   from the rows and the receipts, no gateway replaced twice, every broker, compute and admin still untouched;
-- a request replacing every node of a two-mesh fabric: Complete only after the ready-for-traffic round
+- a request replacing every node of a two-mesh fabric: Complete only after the ready-for-traffic state is set
   (Q154), Blocked naming the change meanwhile;
 - a one-broker mesh's broker replaced: one `node.delete` then the create, no refusal at any step;
 - a one-admin mesh whose admin's executable changes: a second admin created first on the new executable,
