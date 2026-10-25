@@ -2353,8 +2353,7 @@ mod tests {
             ("another executable for mesh1.rpc.1 (a replacement)", None, |r| at(r, "mesh1.rpc.1").executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc_node-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
             ("another executable for the Day-0 admin (a replacement)", None, |r| at(r, "mesh1.admin.1").executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
             ("a new path (a resize)", None, |r| {
-                let mut c = PathConfig::default_for(NodeKind::RpcNode);
-                c.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc_node-rr".into(), sha256: "rr".into(), image: None });
+                let c = at(r, "mesh1.rpc.1").clone();
                 r.push(("mesh1.rpc.2".parse().unwrap(), c));
             }, Back::ToPending),
             ("a removed path (a resize)", None, |r| r.retain(|(p, _)| p.to_string() != "mesh1.rpc.1"), Back::ToPending),
