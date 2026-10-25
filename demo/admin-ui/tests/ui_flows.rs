@@ -137,3 +137,187 @@ async fn topology_labels_mesh_primary_on_node_admins_only_and_serves_node_admins
     assert_eq!(t["edge_errors"], json!([]), "the node-admin answers its connection facts, an empty list here: {t}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// How long a Build the UI submitted may take to be Complete: its births' launches and check-ins, and the
+/// fabric's change to ready-for-traffic.
+const BOUND: Duration = Duration::from_secs(180);
+
+/// Poll `build.get` of `id` until it is Complete within [`BOUND`]; a Failed Build, or one not Complete in
+/// time, is the defect, named with what `build.get` and `fabric.get` say then.
+async fn until_complete(admin: &Admin, what: &str, id: &BuildId) {
+    let until = std::time::Instant::now() + BOUND;
+    loop {
+        let got = admin.build(id).await;
+        match &got {
+            Ok(b) if b.phase == rdm_core::build::BuildPhase::Complete => return,
+            Ok(b) if b.phase == rdm_core::build::BuildPhase::Failed => panic!("{what}: Build {id} failed: {b:?}"),
+            _ => {}
+        }
+        if std::time::Instant::now() >= until {
+            panic!("{what}: Build {id} is not Complete within {BOUND:?}: build.get {got:?}; fabric.get {:?}", admin.fabric().await);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// `POST uri` on the UI, accepted: the Build it answered.
+async fn accepted(ui: &axum::Router, uri: &str, body: Option<Value>) -> BuildId {
+    let (status, v) = call(ui, "POST", uri, body).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "POST {uri}: {v}");
+    BuildId::parse(v["build_id"].as_str().expect("build_id")).expect("a Build id")
+}
+
+/// The fabric is ready-for-traffic, as `fabric.get` at the UI's admin says.
+async fn ready(admin: &Admin, what: &str) {
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match admin.fabric().await {
+            Ok(f) if f.status == rdm_client::ScopeStatus::ReadyForTraffic => return,
+            other => assert!(std::time::Instant::now() < until, "{what}: the fabric is not ready-for-traffic: {other:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// CONTRACT (states.md "Resize and executable replacement": only a resize or an executable replacement puts
+/// the fabric back to pending, and a Build that did is Complete once its own ready-for-traffic state is set;
+/// Q154, never blocked for ever): the UI's resubmit of the current topology, the Day-0 admin named on the
+/// executable its row records (day 0's entry names none), is one Build with nothing to execute, Complete
+/// within the bound with the fabric ready-for-traffic. Must NOT happen: that Build Pending at attempt 1
+/// with no step for ever (Rafka 141).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resubmitting_the_current_topology_on_the_day0_admin_completes_with_the_fabric_ready() {
+    let d = dir("resubmit");
+    let (_running, admin) = node_admin(&d).await;
+    let timeline = Arc::new(Timeline::default());
+    let ui = router(Some(admin.clone()), timeline.clone());
+    let id = accepted(&ui, "/api/builds/resubmit", None).await;
+    until_complete(&admin, "the resubmitted topology", &id).await;
+    ready(&admin, "after the resubmitted topology").await;
+    let id = accepted(&ui, "/api/builds/resubmit", None).await;
+    until_complete(&admin, "the topology resubmitted again", &id).await;
+    ready(&admin, "after the topology resubmitted again").await;
+    let whats: Vec<String> = timeline.0.lock().unwrap().iter().map(|(w, _)| w.clone()).collect();
+    assert_eq!(whats, ["resubmit topology", "resubmit topology"], "both Builds are on the UI's timeline");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The consumer's Day-0 node-admin (`rshape-node-admin`) as its own process, started as
+/// scripts/demo-estate.sh starts it, from a copy of the consumer's executables under `root/bin`: every node
+/// it launches runs from there, so dropping this stops exactly the estate's processes.
+struct ConsumerEstate {
+    root: std::path::PathBuf,
+    bin: std::path::PathBuf,
+}
+
+impl ConsumerEstate {
+    /// The consumer's executables, beside this test's own (`<target>/debug/deps/..`), copied under a new
+    /// root, and the Day-0 admin started from there; the UI's admin entered at the birth it printed once
+    /// it names itself the fabric-primary of a ready-for-traffic fabric.
+    async fn start(test: &str) -> (ConsumerEstate, Arc<Admin>) {
+        let built = std::env::current_exe().unwrap().parent().and_then(|deps| deps.parent()).map(std::path::Path::to_path_buf).expect("the test's target directory");
+        let root = dir(test);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(root.join("store")).unwrap();
+        for exe in ["rshape-node-admin", "rshape-gateway"] {
+            let from = built.join(exe);
+            std::fs::copy(&from, bin.join(exe)).unwrap_or_else(|e| panic!("the consumer's {exe} is built beside this test ({}): {e}", from.display()));
+        }
+        let estate = ConsumerEstate { root: root.clone(), bin: bin.clone() };
+        let log = root.join("admin1.log");
+        let mut day0 = std::process::Command::new(bin.join("rshape-node-admin"))
+            .envs([
+                ("MESH_SPAWN_TYPE", "process".to_string()),
+                ("RDM_FABRIC", "fabric1".into()),
+                ("RDM_MESH", "mesh1".into()),
+                ("RDM_DATA_DIR", root.join("mesh1.admin.1").display().to_string()),
+                ("RDM_STORE_DIR", root.join("store").display().to_string()),
+                ("RDM_ESTATE_ROOT", root.display().to_string()),
+                ("RDM_BIN_DIR", bin.display().to_string()),
+                ("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0".into()),
+            ])
+            .stdout(std::fs::File::create(&log).unwrap())
+            .stderr(std::fs::File::create(root.join("admin1.err")).unwrap())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("the consumer's Day-0 node-admin starts");
+        let until = std::time::Instant::now() + Duration::from_secs(120);
+        let birth = loop {
+            let printed = std::fs::read_to_string(&log).unwrap_or_default();
+            if let Some(birth) = printed.lines().find_map(rdm_client::birth_of_line) {
+                break birth.unwrap_or_else(|e| panic!("{e}"));
+            }
+            let exited = day0.try_wait().ok().flatten();
+            if exited.is_some() || std::time::Instant::now() >= until {
+                let err = std::fs::read_to_string(root.join("admin1.err")).unwrap_or_default();
+                let tail: Vec<&str> = err.lines().rev().take(20).collect();
+                panic!("the Day-0 node-admin printed no birth (exited: {exited:?}) within 120 s: stdout {printed:?}; its stderr ends {tail:#?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let executables = [(rdm_core::NodeKind::NodeAdmin, bin.join("rshape-node-admin")), (rdm_core::NodeKind::Gateway, bin.join("rshape-gateway"))].into_iter().collect();
+        let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(executables));
+        let until = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            match admin.fabric().await {
+                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break,
+                other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary of a ready fabric: {other:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        (estate, admin)
+    }
+
+    /// `executable` copied beside it with one byte appended: the same program under another sha256.
+    fn another_build(&self, exe: &str) -> std::path::PathBuf {
+        use std::io::Write;
+        let to = self.bin.join(format!("{exe}-next"));
+        std::fs::copy(self.bin.join(exe), &to).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&to).unwrap().write_all(&[0]).unwrap();
+        to
+    }
+}
+
+impl Drop for ConsumerEstate {
+    fn drop(&mut self) {
+        let pattern = format!("{}/", self.bin.display());
+        for signal in ["-TERM", "-KILL"] {
+            let _ = std::process::Command::new("pkill").args([signal, "-f", &pattern]).status();
+            for _ in 0..40 {
+                if !std::process::Command::new("pgrep").args(["-f", &pattern]).status().is_ok_and(|s| s.success()) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// CONTRACT (build-deployment.md §3: a request naming a different executable for an existing path is that
+/// node's replacement, node.delete then node.create at the path; states.md "Resize and executable
+/// replacement"; Q154): on the consumer's own estate, the UI adds a gateway (Complete), resubmits the
+/// current topology (Complete, nothing executed) and replaces the gateway's executable with another build
+/// of it (Complete); after each the fabric is ready-for-traffic, and after the last the gateway's row
+/// records the new executable. Must NOT happen: a Build the UI submitted never Complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_completes() {
+    let (estate, admin) = ConsumerEstate::start("replace").await;
+    let ui = router(Some(admin.clone()), Arc::new(Timeline::default()));
+    let id = accepted(&ui, "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "gateway"}))).await;
+    until_complete(&admin, "the gateway added", &id).await;
+    ready(&admin, "after the gateway added").await;
+    let id = accepted(&ui, "/api/builds/resubmit", None).await;
+    until_complete(&admin, "the topology resubmitted", &id).await;
+    ready(&admin, "after the topology resubmitted").await;
+    let next = estate.another_build("rshape-gateway");
+    let id = accepted(&ui, "/api/nodes/mesh1.gateway.1/replace", Some(json!({"executable": next}))).await;
+    until_complete(&admin, "the gateway's executable replaced", &id).await;
+    ready(&admin, "after the gateway's executable replaced").await;
+    let sha = rdm_core::binding::sha256_file(&next).unwrap();
+    let rows = admin.rows().await.expect("fabric.nodes.get");
+    let gateway = rows.iter().find(|n| n.name.to_string() == "mesh1.gateway.1" && n.status == rdm_client::NodeStatus::ReadyForTraffic).unwrap_or_else(|| panic!("mesh1.gateway.1 is ready-for-traffic: {rows:?}"));
+    assert_eq!(gateway.executable.as_ref().map(|b| b.sha256.clone()), Some(sha), "the replaced gateway's row records the executable its request named: {gateway:?}");
+    drop(estate);
+}

@@ -173,6 +173,9 @@ export const api = {
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/restart`, { method: "POST" }),
   remove: (name: string) =>
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  replace: (name: string, executable: string) =>
+    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/replace`, post({ executable })),
+  resubmit: () => call<BuildAccepted>("/api/builds/resubmit", { method: "POST" }),
   createMesh: (shape: MeshShape) => call<BuildAccepted>("/api/meshes", post(shape)),
   removeMesh: (name: string) =>
     call<BuildAccepted>(`/api/meshes/${encodeURIComponent(name)}`, { method: "DELETE" }),

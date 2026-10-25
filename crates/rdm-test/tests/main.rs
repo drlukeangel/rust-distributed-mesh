@@ -178,6 +178,8 @@ mod successor_adoption;
 mod live_resize;
 #[path = "build/role_build.rs"]
 mod role_build;
+#[path = "build/reconcile_variants.rs"]
+mod reconcile_variants;
 #[path = "build/shape_reconcile.rs"]
 mod shape_reconcile;
 #[path = "node/admin_restart.rs"]

@@ -157,6 +157,11 @@ impl Admin {
         Ok(out)
     }
 
+    /// `fabric.nodes.get`: every node's row, the executable it records included.
+    pub async fn rows(&self) -> Result<Vec<NodeView>, CallEnd> {
+        Fabrics::new(self.carrier()).nodes().await
+    }
+
     /// `node.connections.get` of `n`'s exact birth.
     pub async fn connections(&self, n: &NodeView) -> Option<Result<ConnectionsView, CallEnd>> {
         let incarnation = n.incarnation_id.clone()?;
@@ -212,6 +217,30 @@ impl Admin {
             return Err(CallEnd::Rejected { reason: "mesh-already-exists".into(), detail: format!("the fabric holds mesh {} already", desired.name) });
         }
         let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?;
+        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
+    }
+
+    /// build.create of the current topology as it stands: every live path on the executable its row records,
+    /// based on the current Build. It changes nothing any node runs, so its Build has nothing to execute
+    /// and is Complete once the fabric holds ready-for-traffic (states.md "Resize and executable replacement").
+    pub async fn resubmit(&self) -> Result<Accepted, CallEnd> {
+        let current = self.current().await?;
+        let nodes = current.paths.into_iter().collect();
+        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
+        Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
+    }
+
+    /// build.create of the current topology with `node`'s entry naming the executable at `executable`,
+    /// hashed here: its replacement, which RDM realizes as node.delete then node.create at the path
+    /// (build-deployment.md §3). A path the rows hold no live node at is refused `unknown-node`.
+    pub async fn replace(&self, node: &PathName, executable: PathBuf) -> Result<Accepted, CallEnd> {
+        let mut current = self.current().await?;
+        let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
+        let image = current.image.clone();
+        let config = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at {node}") })?;
+        config.executable = Some(Binding { launch_id: node.kind.name().into(), executable, sha256, image });
+        let nodes = current.paths.into_iter().collect();
         let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }

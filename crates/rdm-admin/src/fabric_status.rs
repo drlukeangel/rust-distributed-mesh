@@ -2294,4 +2294,126 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }
+
+    /// What the pages say a Reconcile variant does to a ready-for-traffic fabric at its acceptance.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Back {
+        /// A resize or an executable replacement: back to pending (states.md "Resize and executable replacement").
+        ToPending,
+        /// Neither: the fabric stays ready-for-traffic.
+        Stays,
+        /// No page names it: the row records what the fabric did and asserts nothing about it.
+        Unpaged,
+    }
+
+    /// CONTRACT (states.md "Resize and executable replacement": "A resize or an executable replacement puts the
+    /// fabric back to pending"; build.md: a topology-changing request compiles to a new complete Build;
+    /// build-deployment.md §3: a member is replaced when its row records another executable than its entry
+    /// names): the Reconcile variant matrix's acceptance rows (the drive's rows, and why no cell held the gap,
+    /// are tests/reconcile_variants.rs). Each request is compiled by the door's compiler against a Day-0
+    /// fabric (the Day-0 admin's entry names no executable, its row records `aa`; mesh1.rpc.1's entry and row
+    /// name `rr`), accepted while the fabric is ready-for-traffic, and the fabric's state read after the
+    /// acceptance and after the ready-for-traffic step. A request naming the executable a row records, an
+    /// unchanged request, a tags-only and a placement-only request (`PlacementMeta` declares no constraint) are
+    /// neither a resize nor a replacement: the fabric stays ready-for-traffic. A path added or removed (a
+    /// resize) and another executable (a replacement, the Day-0 admin's included) put it back to pending. A
+    /// storage-only change of a held path is named by no page: its row records what happened. Must NOT
+    /// happen: a request naming what a node already runs reset the fabric to pending for a Build with nothing
+    /// to do (Rafka 141).
+    #[tokio::test]
+    async fn a_reconcile_puts_the_fabric_back_to_pending_only_for_a_resize_or_an_executable_replacement() {
+        use crate::accepted::{compile_against, MeshTopology, Recorded, RecordedRow, TopologyChange};
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+        use crate::node_rows::WriteRecord;
+        use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+        type Edit = fn(&mut Vec<(PathName, PathConfig)>);
+        let exe = |id: &str, sha: &str| rdm_core::binding::Binding { launch_id: id.into(), executable: format!("/b/{id}-{sha}").into(), sha256: sha.into(), image: None };
+        let admin: PathName = "mesh1.admin.1".parse().unwrap();
+        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let held = |admin_entry: Option<&str>| {
+            let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
+            let mut c = m.path_config(&admin).cloned().unwrap();
+            c.executable = admin_entry.map(|sha| exe("node_admin", sha));
+            m.set_path_config(&admin, c).unwrap();
+            let mut c = m.path_config(&rpc).cloned().unwrap();
+            c.executable = Some(exe("rpc_node", "rr"));
+            m.set_path_config(&rpc, c).unwrap();
+            FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+        };
+        fn at<'a>(r: &'a mut [(PathName, PathConfig)], p: &str) -> &'a mut PathConfig {
+            &mut r.iter_mut().find(|(q, _)| q.to_string() == p).expect("the request lists the path").1
+        }
+        let rows: [(&str, Option<&str>, Edit, Back); 10] = [
+            ("the Day-0 admin named on the executable its row records (its entry names none)", None, |r| at(r, "mesh1.admin.1").executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-aa".into(), sha256: "aa".into(), image: None }), Back::Stays),
+            ("every path named on the executable its entry names", Some("aa"), |_| {}, Back::Stays),
+            ("the unchanged request: every held path naming none", None, |r| r.iter_mut().for_each(|(_, c)| c.executable = None), Back::Stays),
+            ("tags only", None, |r| at(r, "mesh1.rpc.1").tags = ["zone_a".to_string()].into(), Back::Stays),
+            ("placement only (PlacementMeta declares no constraint)", None, |r| at(r, "mesh1.rpc.1").placement = PlacementMeta::default(), Back::Stays),
+            ("another executable for mesh1.rpc.1 (a replacement)", None, |r| at(r, "mesh1.rpc.1").executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc_node-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
+            ("another executable for the Day-0 admin (a replacement)", None, |r| at(r, "mesh1.admin.1").executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
+            ("a new path (a resize)", None, |r| {
+                let mut c = PathConfig::default_for(NodeKind::RpcNode);
+                c.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc_node-rr".into(), sha256: "rr".into(), image: None });
+                r.push(("mesh1.rpc.2".parse().unwrap(), c));
+            }, Back::ToPending),
+            ("a removed path (a resize)", None, |r| r.retain(|(p, _)| p.to_string() != "mesh1.rpc.1"), Back::ToPending),
+            ("storage only", None, |r| at(r, "mesh1.rpc.1").storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, Back::Unpaged),
+        ];
+        let mut red = Vec::new();
+        for (what, admin_entry, edit, want) in rows {
+            let builds = Arc::new(MemoryBuildStateAdapter::new());
+            let topology = held(admin_entry);
+            let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+            builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+            claim(&builds, &a, 1).await;
+            let (fp, _) = fabric_primary_and_mesh2();
+            let store = Arc::new(crate::storage::MemoryNodesStorage::default());
+            let mut recorded = Recorded::new();
+            for (path, node_id, sha, id) in [(&admin, fp.node_id.clone(), "aa", "node_admin"), (&rpc, NodeId::mint(), "rr", "rpc_node")] {
+                let mut row = crate::storage::NodeRow::new(path.clone(), node_id.clone(), NodeStatus::ReadyForTraffic);
+                row.executable = Some(exe(id, sha));
+                store.write_record(&row).await.unwrap();
+                recorded.insert(path.clone(), RecordedRow { node_id, sha256: Some(sha.into()) });
+            }
+            let view = projected(vec![fp.clone()]);
+            let records = Arc::new(Records::default());
+            let _ = records.contacts.set(store.clone());
+            let states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
+            records.set_fabric_state(FabricState::ReadyForTraffic);
+            records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
+            {
+                let mut change = states.change.lock().await;
+                states.step_ready(&mut change).await;
+            }
+            let mut nodes: Vec<(PathName, PathConfig)> = topology.meshes.values().flat_map(|m| m.path_config_by_path.iter().map(|(p, c)| (p.clone(), c.clone()))).collect();
+            edit(&mut nodes);
+            let change = TopologyChange::Reconcile { based_on: a.clone(), nodes };
+            let next = compile_against(&topology, &change, &view, &recorded).unwrap_or_else(|e| panic!("{what}: the request compiles: {e}"));
+            let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
+            builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: next.clone(), submitted_change: Some(change), submitted_at_ms: 2_000 }).await.unwrap();
+            claim(&builds, &b, 1).await;
+            let at_acceptance = states.accepted().await;
+            {
+                let mut change = states.change.lock().await;
+                states.step_ready(&mut change).await;
+            }
+            let now = records.fabric_state();
+            let changed = next != topology;
+            let got = match (at_acceptance, now) {
+                (true, FabricState::Pending) => Back::ToPending,
+                (false, FabricState::ReadyForTraffic) => Back::Stays,
+                other => {
+                    red.push(format!("{what}: the acceptance said put-back={} and the fabric holds {:?}", other.0, other.1));
+                    continue;
+                }
+            };
+            match want {
+                Back::Unpaged => eprintln!("reconcile matrix, {what}: no page names it; the fabric {got:?} (the compiled topology {} the accepted one)", if changed { "differs from" } else { "is" }),
+                want if want != got => red.push(format!("{what}: the pages say {want:?}, the fabric {got:?} (the compiled topology {} the accepted one)", if changed { "differs from" } else { "is" })),
+                _ => {}
+            }
+        }
+        assert!(red.is_empty(), "Reconcile variant rows that differ from the pages:\n  {}", red.join("\n  "));
+    }
 }

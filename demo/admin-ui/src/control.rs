@@ -13,6 +13,10 @@
 //! POST   /api/meshes      {name, node_admin, rpc_node?, gateway?, compute?, broker?} -> Reconcile: the topology
 //!                                                   with the new mesh
 //! DELETE /api/meshes/{name}                      -> RemoveMesh
+//! POST   /api/builds/resubmit                    -> Reconcile: the current topology as it stands, each
+//!                                                   node on the executable its row records
+//! POST   /api/nodes/{name}/replace {executable}  -> Reconcile: the current topology with that node on the
+//!                                                   executable at that file (its replacement)
 //! ```
 //!
 //! The counts are the UI's vocabulary: it expands them into named paths, each on its executable
@@ -71,6 +75,12 @@ struct BootstrapRequest {
 }
 
 #[derive(Deserialize)]
+struct ReplaceRequest {
+    /// The file the node's replacement runs, hashed by the UI.
+    executable: std::path::PathBuf,
+}
+
+#[derive(Deserialize)]
 struct SpawnRequest {
     mesh: String,
     kind: NodeKind,
@@ -82,6 +92,8 @@ pub fn router(admin: Option<Arc<Admin>>, events: Arc<dyn BuildEvents>) -> Router
     Router::new()
         .route("/api/nodes/spawn", post(spawn))
         .route("/api/nodes/{node_name}/restart", post(restart))
+        .route("/api/nodes/{node_name}/replace", post(replace))
+        .route("/api/builds/resubmit", post(resubmit))
         .route("/api/nodes/{node_name}", delete(remove))
         .route("/api/bootstrap", post(bootstrap))
         .route("/api/meshes", post(create_mesh))
@@ -137,6 +149,25 @@ async fn restart(State(c): State<Control>, Path(name): Path<String>) -> Response
     };
     let r = admin.restart(&node).await;
     answer(&c, "restart node", r, Some(&name), Some(&node.mesh))
+}
+
+async fn replace(State(c): State<Control>, Path(name): Path<String>, Json(body): Json<ReplaceRequest>) -> Response {
+    let (admin, node) = match (client(&c), parse_node(&name)) {
+        (Ok(a), Ok(n)) => (a, n),
+        (Err(r), _) | (_, Err(r)) => return r,
+    };
+    let r = admin.replace(&node, body.executable).await;
+    answer(&c, "replace executable", r, Some(&name), Some(&node.mesh))
+}
+
+/// The current topology submitted again as it stands: one Build with nothing to execute.
+async fn resubmit(State(c): State<Control>) -> Response {
+    let admin = match client(&c) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let r = admin.resubmit().await;
+    answer(&c, "resubmit topology", r, None, None)
 }
 
 async fn remove(State(c): State<Control>, Path(name): Path<String>) -> Response {

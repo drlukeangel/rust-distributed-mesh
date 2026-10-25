@@ -50,6 +50,18 @@ export function SpawnBar() {
         title="Retire this whole mesh: members first, its node-admins last">
         remove mesh
       </button>
+      <button disabled={busy === "resubmit"} onClick={() => run("resubmit", "resubmit topology", () => api.resubmit())}
+        title="Submit the current topology again, each node on the executable its row records: one Build with nothing to execute">
+        resubmit
+      </button>
+      <button disabled={busy === "replace"} onClick={() => {
+          const node = window.prompt("replace the executable of node (path.name)");
+          const executable = node ? window.prompt(`the executable file ${node} runs next`) : null;
+          if (node && executable) run("replace", `replace ${node}'s executable`, () => api.replace(node, executable));
+        }}
+        title="Replace a node's executable: node.delete then node.create at its path, on the file named">
+        replace executable
+      </button>
       <span style={{ flex: 1 }} />
       <button className="primary" disabled={busy === "bootstrap"} onClick={() => run("bootstrap", "bootstrap", () => api.bootstrap())}
         title="Reconcile the fabric to mesh1 with 2 node-admins and 3 rpc nodes">

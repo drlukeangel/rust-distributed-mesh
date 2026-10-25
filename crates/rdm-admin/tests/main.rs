@@ -136,6 +136,7 @@ mod process_launch_environment;
 mod provider_state;
 mod provider_policy;
 mod readiness_gates;
+mod reconcile_variants;
 mod receipt_refusal;
 mod recovery_admission;
 #[cfg(feature = "file-backend")]
