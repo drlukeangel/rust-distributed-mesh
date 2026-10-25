@@ -2359,3 +2359,73 @@ async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view
     assert!(!r.ran.0.lock().unwrap().iter().any(|op| op == &format!("mesh.delete:{mesh3}")), "the Dead mesh is not deleted again: {:?}", r.ran.0.lock().unwrap());
     assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the Build completes");
 }
+
+/// A gate whose fabric holds ready-for-traffic only once the cell sets it: the fabric's change a
+/// Build put it back to pending for.
+#[derive(Default)]
+struct FabricChange {
+    ready: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Gate for FabricChange {
+    fn fabric_ready(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
+    }
+}
+
+/// CONTRACT (Q154; states.md "Resize and roll": "Its Build is Complete only when the fabric is
+/// ready-for-traffic again from this Build's own change ... while the fabric changes, the Build reports
+/// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
+/// execution attempt re-reads the accepted topology and current realized/observed state and computes
+/// remaining work"; fabric-state-sync.md: the state-sync handoff names the accepted Build's `attempt`):
+/// a Build whose topology put the fabric back to pending and whose work the view already holds (nothing
+/// left to execute) claims its first attempt, which hands back with nothing run, so the fabric's change
+/// has the attempt to name; it reports Blocked `fabric-change`, never Complete, while the fabric changes,
+/// and is Complete once the fabric holds ready-for-traffic. Must NOT happen: no attempt ever claimed, the
+/// fabric's change waiting on the attempt and the drive waiting on the fabric's change, for ever.
+#[tokio::test]
+async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_names_and_is_complete_after_it() {
+    let r = rig().await;
+    // The view already holds what the Build adds: nothing is left to execute.
+    {
+        let mut v = r.env.topology.write().await;
+        v.nodes.push(node("mesh1.rpc.2", false, false));
+    }
+    let gate = Arc::new(FabricChange::default());
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    for pass in 0..2 {
+        match tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await {
+            Ok(DriveEnd::Stalled(why)) => assert!(why.contains("ready-for-traffic"), "pass {pass}: the drive waits for the fabric's change: {why}"),
+            other => panic!("pass {pass}: the Build is never Complete while the fabric changes: {other:?}"),
+        }
+    }
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (fabric-state-sync.md): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing is left to execute and nothing ran: {:?}", r.ran.0.lock().unwrap());
+    let mut frames = Vec::new();
+    while let Some(read) = next_within(&mut reader).await {
+        frames.push(read);
+    }
+    assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Build reports Blocked naming the fabric's change: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
+    // The fabric's change set ready-for-traffic: the Build is Complete.
+    gate.ready.store(true, Ordering::SeqCst);
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready-for-traffic"), DriveEnd::Terminal);
+    let done = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready-for-traffic: {done:?}");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
+}

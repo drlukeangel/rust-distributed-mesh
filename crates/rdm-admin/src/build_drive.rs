@@ -1185,12 +1185,15 @@ impl DriveEnv {
                 // A Build that put the fabric back to pending, its work all done, is Complete only once
                 // the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
                 // roll": "while the fabric changes, the Build reports Blocked naming the change, never
-                // Complete"; proposal roll.md step 8): no attempt is claimed until the fabric holds
-                // ready-for-traffic, and the reconcile loop drives the Build again. Waiting is not
+                // Complete"; proposal roll.md step 8): no further attempt is claimed until the fabric holds
+                // ready-for-traffic, and the reconcile loop drives the Build again. Its first attempt is
+                // always claimed, even with nothing left to execute (build.md §1: every attempt "computes
+                // remaining work"): the fabric's change names the accepted Build's attempt
+                // (fabric-state-sync.md), and that attempt's run hands back at the hold of `plan_dispatch`. Waiting is not
                 // failure; a state-sync the application reports failed fails the Build on that step (Q158:
                 // "a state's check-in or a hook that reports failure fails the Build on that step"): the
                 // next attempt is claimed and ends `Failed` on `fabric-change`, its reason the application's.
-                if changes_the_fabric(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
+                if p.attempt > 0 && changes_the_fabric(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
                     let Some((operation, reason)) = self.gate.state_sync_failed(&id, p.attempt) else {
                         let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");
                         self.blocked(drive, p.attempt, "", "fabric-change", &why);
@@ -1304,8 +1307,13 @@ impl DriveEnv {
                     // Build stays in progress, and the next attempt waits for what it decides on to move.
                     if next == me {
                         if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
-                            let after = world(drive, &ended, &self.topology.read().await.clone());
-                            if ended_incomplete(&me, &executor, &next, &before, &after) {
+                            let t = self.topology.read().await.clone();
+                            let after = world(drive, &ended, &t);
+                            // A run with nothing left, handed back by the hold of a Build that put the
+                            // fabric back to pending ([`Self::plan_dispatch`]), did not end incomplete: it
+                            // waits on the fabric's change, and the next pass reports it Blocked naming it.
+                            let held_for_the_fabric_change = changes_the_fabric(&ended) && !self.gate.fabric_ready() && left(drive, &ended, &t).is_empty();
+                            if !held_for_the_fabric_change && ended_incomplete(&me, &executor, &next, &before, &after) {
                                 let why = format!(
                                     "{me}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves"
                                 );
