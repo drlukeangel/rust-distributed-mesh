@@ -585,6 +585,7 @@ A Join call.
 | 0 | **`JoinNode`** |  |  | `op() = "join-node"` | The node reports its full digest, with the address it really bound. |
 | 0.0 | `digest` | `WireDigest` → [`WireDigest`](#t-rdm_core-wire-WireDigest) |  |  | The node's full digest. |
 | 0.1 | `types` | `Vec<String>` |  |  | The birth's immutable app type declaration. |
+| 0.2 | `listeners` | `Vec<(String, std::net::SocketAddr)>` |  |  | The non-Iroh listeners the node bound, by name, each with the port the operating system |
 
 <a id="t-rdm_core-join-JoinReply"></a>
 
@@ -809,6 +810,7 @@ A Build call.
 | 1.4 | `intent` | `Vec<Vec<u8>>` |  |  | The Build as the fabric-primary decided the claim on it: its acceptance and every attempt |
 | 1.5 | `operations` | `Vec<Vec<u8>>` |  |  | The operations the fabric-primary planned for this run, in plan order: the contiguous |
 | 1.6 | `hand_off_to` | `Option<String>` |  |  | The executor of the operation that follows this run, when the run is not the whole of |
+| 1.7 | `mesh` | `Option<String>` |  |  | The attempt's mesh for a drift attempt, numbered `(build_id, mesh, attempt)` (build.md section |
 | 2 | **`Get`** |  |  | `op() = "get"` | `build.get`: the Build and its receipts, for reattachment after a cut. |
 | 2.0 | `build_id` | `String` |  |  | The Build. |
 | 3 | **`Delete`** |  |  | `op() = "delete"` | `build.delete`: a finished Build leaves history. |
@@ -828,11 +830,12 @@ One frame of a Build stream.
 | 0.0 | `build_id` | `String` |  |  | The Build. |
 | 0.1 | `attempt` | `u32` |  |  | The attempt this stream follows (the one the call opened, claimed or attached to). |
 | 0.2 | `disposition` | `Disposition` → [`Disposition`](#t-rdm_core-build-Disposition) |  |  | How the call came to the Build. |
-| 1 | **`Step`** |  |  | `name() = "step"` | A step completed: sent only after its Complete receipt is durable on the executor that wrote it. |
+| 1 | **`Step`** |  |  | `name() = "step"` | A step completed. On the inner attempt stream it reports the step's result upstream to the |
 | 1.0 | `build_id` | `String` |  |  | The Build. |
 | 1.1 | `attempt` | `u32` |  |  | The attempt. |
 | 1.2 | `operation` | `String` |  |  | The operation's idempotency key. |
 | 1.3 | `step` | `String` |  |  | The step. |
+| 1.4 | `receipt` | `Option<Vec<u8>>` |  |  | On the inner attempt stream the step's receipt (its output and executor), JSON-encoded, which |
 | 2 | **`Blocked`** |  |  | `name() = "blocked"` | The step in flight is blocked. Non-terminal, in memory only, sent on a new blocker or a |
 | 2.0 | `build_id` | `String` |  |  | The Build. |
 | 2.1 | `attempt` | `u32` |  |  | The attempt. |
@@ -950,6 +953,7 @@ The directed calls of node.primary.update.
 | 1.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
 | 1.2 | `run` | `u32` |  |  | The run of that Build. |
 | 1.3 | `operation` | `String` |  |  | The update's operation identity. |
+| 1.4 | `successor` | `Option<Birth>` → [`Birth`](#t-rdm_core-framing-Birth) |  |  | The successor's exact birth, named by the mesh-primary's pre-check (node-primary-update.md step |
 
 <a id="t-rdm_core-handover-NodePrimaryUpdateReply"></a>
 
@@ -1622,6 +1626,23 @@ Who answered.
 | 1 | `node` | `String` |  | The answering node's `path.name`. |
 | 2 | `incarnation_id` | `String` |  | The answering node's incarnation id. |
 
+<a id="t-rdm_core-binding-Binding"></a>
+
+### `Binding`
+
+`crates/rdm-core/src/binding.rs` · struct · 4 fields · rdm-core
+
+One launch id's executable.
+
+serde: `deny_unknown_fields`
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `launch_id` | `String` |  | The launch id the executable runs. |
+| 1 | `executable` | `PathBuf` |  | The path of the executable. |
+| 2 | `sha256` | `String` |  | Lowercase hex sha256 of the executable's bytes. |
+| 3 | `image` | `Option<String>` | `default` | The image the executable must run in (a container provider); absent for a host process. |
+
 <a id="t-rdm_core-framing-Birth"></a>
 
 ### `Birth`
@@ -1639,24 +1660,18 @@ A sending node's exact birth, `(node.id, incarnation)`: the first half of every 
 
 ### `BuildChange`
 
-`crates/rdm-core/src/build.rs` · enum · 13 variants · rdm-core
+`crates/rdm-core/src/build.rs` · enum · 16 variants · rdm-core
 
 What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | **`ReconcileFabric`** |  |  | The whole fabric's meshes and counts. |
-| 0.0 | `fabric` | `String` |  | The fabric's name. |
-| 0.1 | `meshes` | `Vec<MeshCounts>` → [`MeshCounts`](#t-rdm_core-build-MeshCounts) |  | The desired meshes. |
-| 1 | **`ReconcileMesh`** |  |  | One mesh's counts (grow or shrink). |
-| 1.0 | `mesh` | `MeshCounts` → [`MeshCounts`](#t-rdm_core-build-MeshCounts) |  | The mesh's desired counts. |
-| 2 | **`AddNode`** |  |  | One more node of `node_kind` in `mesh`. |
-| 2.0 | `mesh` | `String` |  | The mesh to add the node to. |
-| 2.1 | `node_kind` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  | The kind of node to add. |
+| 0 | **`Reserved0`** |  |  | Reserved position: the removed count form `ReconcileFabric` (proposal |
+| 1 | **`Reserved1`** |  |  | Reserved position: the removed count form `ReconcileMesh` (§3.10(a)), as `Self::Reserved0`. |
+| 2 | **`Reserved2`** |  |  | Reserved position: the removed count form `AddNode` (§3.10(a)), as `Self::Reserved0`. |
 | 3 | **`RemoveNode`** |  |  | Remove one node. |
 | 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node to remove. |
-| 4 | **`CreateMesh`** |  |  | A new mesh with its counts. |
-| 4.0 | `mesh` | `MeshCounts` → [`MeshCounts`](#t-rdm_core-build-MeshCounts) |  | The mesh's desired counts. |
+| 4 | **`Reserved4`** |  |  | Reserved position: the removed count form `CreateMesh` (§3.10(a)), as `Self::Reserved0`. |
 | 5 | **`RemoveMesh`** |  |  | Remove a mesh. |
 | 5.0 | `mesh` | `String` |  | The mesh to remove. |
 | 6 | **`Restart`** |  |  | Restart the live birth at `node` (the next attempt of the accepted Build). |
@@ -1674,6 +1689,22 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 11 | **`Recipe`** |  |  | A recipe: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's |
 | 11.0 | `steps` | `Vec<RecipeStep>` → [`RecipeStep`](#t-rdm_core-build-RecipeStep) |  | The steps, in the order they run. |
 | 12 | **`DeleteFabric`** |  |  | Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each |
+| 13 | **`Terminate`** |  |  | A deleted birth heard again (node-investigation.md: "A node that comes back after it was |
+| 13.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` the birth held. |
+| 13.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The deleted birth's node.id. |
+| 13.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The deleted birth's incarnation. |
+| 14 | **`Reserved14`** |  |  | Reserved position: the removed per-kind executable-set change (proposal |
+| 15 | **`Reconcile`** |  |  | The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the |
+| 15.0 | `based_on` | `crate::BuildId` → [`BuildId`](#t-rdm_core-ids-BuildId) |  | The build_id of the current Build the caller read. |
+| 15.1 | `nodes` | `Vec<(PathName, crate::meta::PathConfig)>` → [`PathName`](#t-rdm_core-path-PathName), [`PathConfig`](#t-rdm_core-meta-PathConfig) |  | Every node of the fabric, by `path.name`, with its config. |
+
+<a id="t-rdm_core-ids-BuildId"></a>
+
+### `BuildId`
+
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
+
+A Build's identity (build.md §3): minted once when the Build is accepted, carried by every
 
 <a id="t-rdm_core-build-BuildPhase"></a>
 
@@ -2228,23 +2259,6 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | The node takes no new work: its connections are being deleted. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
-<a id="t-rdm_core-build-MeshCounts"></a>
-
-### `MeshCounts`
-
-`crates/rdm-core/src/build.rs` · struct · 6 fields · rdm-core
-
-One mesh's counts by kind, as a submitted change names them.
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `name` | `String` |  | The mesh's name. |
-| 1 | `node_admin` | `u32` |  | The number of node-admins. |
-| 2 | `rpc_node` | `u32` |  | The number of rpc nodes. |
-| 3 | `broker` | `u32` |  | The number of brokers. |
-| 4 | `gateway` | `u32` |  | The number of gateways. |
-| 5 | `compute` | `u32` |  | The number of compute nodes. |
-
 <a id="t-rdm_core-status-MeshDeleteRound"></a>
 
 ### `MeshDeleteRound`
@@ -2380,7 +2394,7 @@ One process's CPU and RAM, as its digest carries them: what is used and the ceil
 
 ### `NodeSelect`
 
-`crates/rdm-core/src/status.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
 Which nodes `node.get` selects. Positional order is part of the wire schema.
 
@@ -2392,6 +2406,7 @@ Which nodes `node.get` selects. Positional order is part of the wire schema.
 | 1.0 | `0` | `String` |  |  |  |
 | 2 | **`Tags`** |  |  | `name() = "tags"` | Every node carrying the tag labels the filter names (R-TG1), read through the node store's |
 | 2.0 | `0` | `TagFilter` → [`TagFilter`](#t-rdm_core-status-TagFilter) |  |  |  |
+| 3 | **`Fabric`** |  |  | `name() = "fabric"` | Every node of every mesh (`fabric.nodes.get`): the mesh selector's answer over every mesh, |
 
 <a id="t-rdm_core-digest-NodeState"></a>
 
@@ -2450,7 +2465,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rdm-core/src/views.rs` · struct · 27 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 28 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2483,6 +2498,7 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 24 | `held` | `std::collections::BTreeSet<String>` | `default` | Types this birth joined, including members and peers on a node-admin. |
 | 25 | `held_hash` | `[u8; 32]` | `default` | Canonical held-set hash carried by this birth's digest. |
 | 26 | `cert` | `Option<NodeCertView>` → [`NodeCertView`](#t-rdm_core-views-NodeCertView) | `default` | The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None` |
+| 27 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable this birth runs, as its node row records it (proposal |
 
 <a id="t-rdm_core-status-NotPrimary"></a>
 
@@ -2539,6 +2555,23 @@ The delivery identity an Owed request keeps on every leg: each carried attempt i
 | 0 | `delivery_seq` | `u64` |  | The request's `delivery_seq` in its origin birth's window. |
 | 1 | `forget_below` | `u64` |  | The origin's `forget_below` toward the target. |
 
+<a id="t-rdm_core-meta-PathConfig"></a>
+
+### `PathConfig`
+
+`crates/rdm-core/src/meta.rs` · struct · 4 fields · rdm-core
+
+The defaults set at a path that every node created there inherits (here storage and
+
+serde: `deny_unknown_fields`
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `storage` | `StorageMeta` → [`StorageMeta`](#t-rdm_core-meta-StorageMeta) |  | What survives a restart or a retirement. |
+| 1 | `placement` | `PlacementMeta` → [`PlacementMeta`](#t-rdm_core-meta-PlacementMeta) |  | Placement constraints. |
+| 2 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable a node created at the path runs (path, sha256 and, under the container |
+| 3 | `tags` | `std::collections::BTreeSet<String>` | `default` | The tag labels a node created at the path carries from its name claim (the request's node entry, |
+
 <a id="t-rdm_core-path-PathName"></a>
 
 ### `PathName`
@@ -2554,6 +2587,34 @@ A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.ol
 | 2 | `ordinal` | `u32` |  | The node's ordinal within its mesh and kind, from 1 (`0` when `label` carries a non-numeric free-text name). |
 | 3 | `label` | `String` |  | Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`. |
 | 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
+
+<a id="t-rdm_core-meta-PersistentRetireDisposition"></a>
+
+### `PersistentRetireDisposition`
+
+`crates/rdm-core/src/meta.rs` · enum · 2 variants · rdm-core
+
+The declared disposition of persistent storage once its node is gone. node.delete acts on
+
+serde: `rename_all = "kebab-case"`
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`Preserve`** |  |  | The storage is kept. |
+| 1 | **`Release`** |  |  | The storage may be removed by separate application work; node.delete does not release it. |
+
+<a id="t-rdm_core-meta-PlacementMeta"></a>
+
+### `PlacementMeta`
+
+`crates/rdm-core/src/meta.rs` · struct · 0 fields · rdm-core
+
+Placement constraints of the logical node. None are declared in this build; the type exists
+
+serde: `deny_unknown_fields`
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
 
 <a id="t-rdm_core-seat-Primary"></a>
 
@@ -2699,6 +2760,7 @@ One step of a `BuildChange::Recipe`: one node primitive acting on the node a `pa
 |---|---|---|---|---|
 | 0 | **`Create`** |  |  | node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name` |
 | 0.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` the node is created at. |
+| 0.1 | `executable` | `Option<crate::binding::Binding>` → [`Binding`](#t-rdm_core-binding-Binding) | `default` | The executable binding the Build fixes for the node (node-rpc-envelope.md "Build recipe"; |
 | 1 | **`Stop`** |  |  | node.stop of the live node at `node`: it is stopped, its process and data kept. |
 | 1.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 2 | **`Update`** |  |  | node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the |
@@ -2846,6 +2908,20 @@ How a step ended, as a receipt says it.
 | 1 | **`Failed`** |  |  | The step failed. |
 | 1.0 | `reason` | `String` |  | Why it failed. |
 | 1.1 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  | The standard code captured where the failure occurred. |
+
+<a id="t-rdm_core-meta-StorageMeta"></a>
+
+### `StorageMeta`
+
+`crates/rdm-core/src/meta.rs` · enum · 2 variants · rdm-core
+
+What survives a topology-preserving runtime loss or restart, and the declared disposition of
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`Ephemeral`** |  |  | Fresh storage for a new node. |
+| 1 | **`Persistent`** |  |  | Storage survives stop, start and restart, and a new node created over an inherited data dir |
+| 1.0 | `on_retire` | `PersistentRetireDisposition` → [`PersistentRetireDisposition`](#t-rdm_core-meta-PersistentRetireDisposition) |  | The declared disposition of the storage once the node is gone. |
 
 <a id="t-rdm_core-topology-StoredNode"></a>
 

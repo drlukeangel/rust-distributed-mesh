@@ -328,7 +328,7 @@ The `sync_state` choice. A configuration with none is refused at start by name: 
 |---|---|---|---|---|---|
 | 0 | **`NoAppWork`** | (not serialized) |  |  | The embedding owes no application work in state-sync. RDM's own executables and test |
 | 1 | **`Hook`** | (not serialized) |  |  | The application's async function: called by the fabric-primary with the `SyncState` round |
-| 1.0 | `0` |  | `Arc<dyn Fn(StateSyncRound)->Pin<Box<dyn Future<Output = StateSyncRound> + Send>> + Send + Sync>` |  |  |
+| 1.0 | `0` |  | `Arc<dyn Fn(StateSyncRound)->Pin<Box<dyn Future<Output = StateSyncAnswer> + Send>> + Send + Sync>` |  |  |
 
 ## Status strings
 
