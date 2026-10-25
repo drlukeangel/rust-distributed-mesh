@@ -2146,6 +2146,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         own.set_data_connections(data_connections.clone());
                                         own.set_session(Arc::new(AdminSession {
                                             data_connections: data_connections.clone(),
+                                            drives: drives.clone(),
                                             gate: park_gate.clone(),
                                             node_id: node_id.clone(),
                                             incarnation: incarnation.clone(),

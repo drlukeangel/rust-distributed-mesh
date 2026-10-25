@@ -321,6 +321,9 @@ pub(crate) struct AdminSession {
     /// The app protocols this admin opens connections on: what the member cert each join answers is
     /// installed on.
     pub(crate) data_connections: rdm_transport::connections::ConnectionsRegistry,
+    /// The Builds this admin drives: the callers reading a Build's frames are what a stop its own run
+    /// commands spares (`Drive::callers`).
+    pub(crate) drives: Arc<crate::build_drive::Drives>,
 }
 
 #[async_trait::async_trait]
@@ -334,6 +337,10 @@ impl crate::node_self::Session for AdminSession {
             None => self.gate.quiesce().await,
         };
         crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
+    }
+
+    fn callers_of(&self, build: &str) -> Vec<iroh::PublicKey> {
+        crate::build::BuildId::parse(build).map(|id| self.drives.callers_of(&id)).unwrap_or_default()
     }
 
     async fn leave_channels(&self) {

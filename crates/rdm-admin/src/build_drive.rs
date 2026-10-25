@@ -313,6 +313,9 @@ pub struct Drive {
     /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::dead_meshes`]):
     /// planned as Dead whatever the view shows.
     dead: Mutex<std::collections::HashSet<crate::model::MeshId>>,
+    /// The endpoint keys of the callers reading this drive's frames now, one per reader
+    /// ([`DriveReader::of_caller`]).
+    callers: Mutex<Vec<iroh::PublicKey>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -332,7 +335,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -442,7 +445,14 @@ impl Drive {
 
     /// The frames from attempt `from_attempt` on, from the first.
     pub fn reader(self: &Arc<Self>, from_attempt: u32) -> DriveReader {
-        DriveReader { drive: self.clone(), cursor: 0, from_attempt, done: false }
+        DriveReader { drive: self.clone(), cursor: 0, from_attempt, done: false, caller: None }
+    }
+
+    /// The endpoint keys of the callers reading this drive's frames now: the calls this Build's run
+    /// answers. A stop of this admin that the run commands spares their connections, as every stop
+    /// spares the call it answers on (node-stop.md "Transport cut").
+    pub fn callers(&self) -> Vec<iroh::PublicKey> {
+        self.callers.lock().unwrap().clone()
     }
 
 
@@ -499,9 +509,32 @@ pub struct DriveReader {
     cursor: usize,
     from_attempt: u32,
     done: bool,
+    /// The caller this reader streams to, named on its drive while it reads ([`Drive::callers`]).
+    caller: Option<iroh::PublicKey>,
+}
+
+impl Drop for DriveReader {
+    fn drop(&mut self) {
+        if let Some(key) = self.caller.take() {
+            let mut callers = self.drive.callers.lock().unwrap();
+            if let Some(i) = callers.iter().position(|k| *k == key) {
+                callers.remove(i);
+            }
+        }
+    }
 }
 
 impl DriveReader {
+    /// This reader as the one of the caller at `caller` (its endpoint key), named on its drive until
+    /// the reader is dropped.
+    pub fn of_caller(mut self, caller: Option<iroh::PublicKey>) -> Self {
+        if let Some(key) = caller {
+            self.drive.callers.lock().unwrap().push(key);
+            self.caller = Some(key);
+        }
+        self
+    }
+
     /// The Build this reader follows.
     pub fn build_id(&self) -> &BuildId {
         &self.drive.build_id
@@ -685,6 +718,11 @@ impl Drives {
     /// The drive of `build_id` when one is held (running, stalled, paused or completed).
     pub fn get(&self, build_id: &BuildId) -> Option<Arc<Drive>> {
         self.drives.lock().unwrap().get(build_id).cloned()
+    }
+
+    /// The endpoint keys of the callers reading `build_id`'s frames now ([`Drive::callers`]).
+    pub fn callers_of(&self, build_id: &BuildId) -> Vec<iroh::PublicKey> {
+        self.get(build_id).map(|d| d.callers()).unwrap_or_default()
     }
 }
 

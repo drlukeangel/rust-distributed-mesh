@@ -149,6 +149,13 @@ pub trait Session: Send + Sync {
     async fn hold_tasks(&self, _commanded_by: Option<&str>) -> TasksParked {
         TasksParked::default()
     }
+    /// The endpoint keys of the callers Build `build`'s run on this node answers (the calls reading
+    /// its frames): a stop that run commands spares their connections at its cut, as every stop
+    /// spares the call it answers on (node-stop.md "Transport cut"). None on a surface that runs no
+    /// Build.
+    fn callers_of(&self, _build: &str) -> Vec<iroh::PublicKey> {
+        Vec::new()
+    }
     /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
     /// the connections peers made, sparing the connections from `spare` (the commanders whose calls
     /// are in flight and answered on their connections). The endpoint stays bound.
@@ -1177,7 +1184,7 @@ impl NodeSelf {
         use tracing::Instrument;
         // Who commanded it, the calls to spare, the operation, the stream, how many calls in flight are
         // the asker's own (not eligible work), and whether a command's own delete runs (step 4's book).
-        let (commander, spare, op, progress, asking, by_command): (Option<&NodeId>, Vec<iroh::PublicKey>, Option<&LifecycleOp>, Option<CommandProgress>, u64, bool) = match by {
+        let (commander, mut spare, op, progress, asking, by_command): (Option<&NodeId>, Vec<iroh::PublicKey>, Option<&LifecycleOp>, Option<CommandProgress>, u64, bool) = match by {
             StopBy::Command { commander, spare, op, progress } => (commander, spare.into_iter().collect(), Some(op), progress, 1, true),
             StopBy::Signal => (None, Vec::new(), None, None, 0, false),
             StopBy::FailedStart { commander, calls, op } => (commander, calls.to_vec(), Some(op), None, calls.len() as u64, false),
@@ -1212,12 +1219,17 @@ impl NodeSelf {
             let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
         }
         let session = self.session.lock().unwrap().clone();
+        // A stop this node commanded itself is its own run's (the in-process command of an executor
+        // that is its own subject): the hold does not wait for the turns of that run's Build, and the
+        // cut spares the connections of the callers that run answers, as a dialled stop spares its
+        // commander's (node-stop.md "Transport cut": never the stop call's stream).
+        let commanded_by = op.filter(|_| by_command && commander == Some(&self.node_id)).map(|o| o.build_id.as_str());
+        if let (Some(session), Some(build)) = (&session, commanded_by) {
+            spare.extend(session.callers_of(build));
+        }
         // 2. The node's own tasks are held: no turn begins, and every turn already past its wait
         // point runs to its end before anything more is said or cut.
         if let Some(session) = &session {
-            // A stop this node commanded itself is its own run's (the in-process command of an executor
-            // that is its own subject): the hold does not wait for the turns of that run's Build.
-            let commanded_by = op.filter(|_| by_command && commander == Some(&self.node_id)).map(|o| o.build_id.as_str());
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-stop-quiesce",
                 node = %self.held_name(), operation = %operation, commanded_by = commanded_by.unwrap_or(""), turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
@@ -1258,7 +1270,7 @@ impl NodeSelf {
         let cut = tracing::info_span!(
             "rdm.node_admin.node.update.via-stop-transport-cut",
             node = %self.held_name(), operation = %operation,
-            neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
+            spared = spare.len(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
         );
         let (report, _) = self.leave_mesh(spare.as_slice(), operation).instrument(cut.clone()).await;
         cut.record("neighbours", report.neighbours);

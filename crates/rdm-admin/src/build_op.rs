@@ -211,8 +211,8 @@ impl BuildDoor {
         self.run.held_name().await
     }
 
-    /// Answer one Build call.
-    pub async fn serve(&self, req: BuildRequest, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    /// Answer one Build call from the caller at `caller` (its endpoint key).
+    pub async fn serve(&self, caller: Option<iroh::PublicKey>, req: BuildRequest, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let me = self.held_name().await;
         let span = tracing::info_span!("rdm.node_admin.build.serve.via-node-rpc", node = %me, call = req.op(), outcome = tracing::field::Empty);
         let call = req.op();
@@ -240,7 +240,7 @@ impl BuildDoor {
                         return Ok(refusal);
                     }
                     match other {
-                        BuildRequest::Create { submit } => self.create(submit, sink).await,
+                        BuildRequest::Create { submit } => self.create(submit, caller, sink).await,
                         BuildRequest::Get { build_id } => match build_id_of(&build_id) {
                             Ok(id) => self.get(id, sink).await,
                             Err(refused) => Ok(refused),
@@ -264,7 +264,7 @@ impl BuildDoor {
         reply
     }
 
-    async fn create(&self, submit: BuildSubmit, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    async fn create(&self, submit: BuildSubmit, caller: Option<iroh::PublicKey>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         match submit {
             BuildSubmit::Change(change) => {
                 let opened = match self.admit_change(&change).await {
@@ -283,16 +283,16 @@ impl BuildDoor {
                     Ok(Admitted::Resumed(o, disposition)) => {
                         let drive = self.drives.ensure(&self.env, &o.build_id, o.attempt);
                         let sink = started(sink, BuildReply::Started { build_id: o.build_id.to_string(), attempt: o.attempt, disposition }).await?;
-                        return stream_frames(sink, drive.reader(o.attempt)).await;
+                        return stream_frames(sink, drive.reader(o.attempt).of_caller(caller)).await;
                     }
                     Err(refusal) => return Ok(refusal),
                 };
                 let drive = self.drives.ensure(&self.env, &opened.build_id, opened.attempt);
                 let sink = started(sink, BuildReply::Started { build_id: opened.build_id.to_string(), attempt: opened.attempt, disposition: Disposition::Created }).await?;
-                stream_frames(sink, drive.reader(opened.attempt)).await
+                stream_frames(sink, drive.reader(opened.attempt).of_caller(caller)).await
             }
             BuildSubmit::Resubmit { build_id, from_attempt } => match build_id_of(&build_id) {
-                Ok(id) => self.resubmit(id, from_attempt, sink).await,
+                Ok(id) => self.resubmit(id, from_attempt, caller, sink).await,
                 Err(refused) => Ok(refused),
             },
         }
@@ -445,7 +445,7 @@ impl BuildDoor {
     /// A re-submit by build id never creates a second Build: a complete Build answers
     /// `AlreadyApplied` and its terminal; a running one with a holder streams that holder's run; a
     /// failed one, or one whose holder was lost, takes its next attempt.
-    async fn resubmit(&self, id: BuildId, from_attempt: u32, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    async fn resubmit(&self, id: BuildId, from_attempt: u32, caller: Option<iroh::PublicKey>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let me = self.held_name().await;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
@@ -460,7 +460,7 @@ impl BuildDoor {
         if p.state == BuildState::Complete && held.as_ref().map(|d| d.ended()).unwrap_or(true) {
             let drive = self.drives.replay_of(&self.env, &id, p.attempt);
             let sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
-            return stream_frames(sink, drive.reader(from_attempt)).await;
+            return stream_frames(sink, drive.reader(from_attempt).of_caller(caller)).await;
         }
         match crate::build_state::drivable(&*self.control.builds, &p).await {
             Ok(true) => {}
@@ -472,7 +472,7 @@ impl BuildDoor {
         // reads every earlier attempt's receipts at its first dispatch, in its own task.
         let drive = self.drives.ensure(&self.env, &id, p.attempt_to_drive());
         let sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: from_attempt, disposition }).await?;
-        stream_frames(sink, drive.reader(from_attempt)).await
+        stream_frames(sink, drive.reader(from_attempt).of_caller(caller)).await
     }
 
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
@@ -658,13 +658,15 @@ async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streami
 /// Serve the Build family on this admin. Until `slot` is filled the admin holds no view and every
 /// call is `NotReady` by name.
 pub fn serve(b: ServerBuilder, slot: BuildSlot) -> ServerBuilder {
-    b.serve_stream::<Build, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: BuildRequest, sink| {
+    b.serve_stream::<Build, _, _>(OpOwner::Product("rdm".into()), move |peer, req: BuildRequest, sink| {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::build::not_ready("this admin holds no view yet".into()));
             };
-            door.serve(req, sink).await
+            // The caller's endpoint key: a stop of this admin that the Build's run commands spares
+            // its connection while it reads the Build's frames (`Drive::callers`).
+            door.serve(Some(peer.endpoint_id), req, sink).await
         }
     })
 }
