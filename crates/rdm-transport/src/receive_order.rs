@@ -43,10 +43,10 @@
 //! NodeId is refused by the existing deleted-identity rule, and an unheld terminal fact applies
 //! regardless of unrelated traffic. Event timestamps never order or expire that fact.
 //!
-//! Round hooks use [`RoundReceipts`] shared by the view's local apply path and all channels. Each
+//! State hooks use [`HookReceipts`] shared by the view's local apply path and all channels. Each
 //! full operation identity has one ordinary receive span and at most one carrier invocation;
 //! repeats emit `via-duplicate`. These receipts drive no checklist or lifecycle. Only the admin's
-//! existing open-round book decides whether an ordinary check-in is carried (Q21: x).
+//! existing open-checklist book decides whether an ordinary check-in is carried (Q21: x).
 //!
 //! The envelope refuses reserved types before domain decoding. [`refuse_reserved`] also protects
 //! in-process domain calls for Concern (position 10, Q23), NodeConnectionsDeleting (11),
@@ -277,7 +277,7 @@ pub(crate) fn reject_lifecycle_version(frame: &str, subject: &str, held: u64, of
 /// One hook's identity; authored evidence time, publisher path and forwarding metadata do not
 /// distinguish another operation fact. The exact subject birth and kind always do.
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct RoundIdentity {
+struct HookIdentity {
     kind: &'static str,
     fabric_id: rdm_core::FabricId,
     build_id: String,
@@ -288,13 +288,13 @@ struct RoundIdentity {
 }
 
 /// Hook effects already applied during this receiver's lifetime. This records receipt identity,
-/// never command admission or round completion; no gossip receipt can change a checklist.
+/// never command admission or state completion; no gossip receipt can change a checklist.
 #[derive(Default)]
-pub(crate) struct RoundReceipts {
-    applied: HashSet<RoundIdentity>,
+pub(crate) struct HookReceipts {
+    applied: HashSet<HookIdentity>,
 }
 
-impl RoundReceipts {
+impl HookReceipts {
     /// Admit each full operation identity once, before its span and carrier effect. Non-hook
     /// frames are untouched. The caller serializes admission across local apply and all channels.
     pub(crate) fn admit(&mut self, f: &Frame) -> bool {
@@ -305,7 +305,7 @@ impl RoundReceipts {
             Frame::TrafficOpened { hook, .. } => ("traffic-opened", hook),
             _ => return true,
         };
-        if self.applied.insert(RoundIdentity { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt, operation: hook.operation.clone(), node_id: hook.node_id.clone(), incarnation: hook.incarnation.clone() }) {
+        if self.applied.insert(HookIdentity { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt, operation: hook.operation.clone(), node_id: hook.node_id.clone(), incarnation: hook.incarnation.clone() }) {
             return true;
         }
         tracing::info_span!(
@@ -313,7 +313,7 @@ impl RoundReceipts {
             frame = kind,
             identity = %format!("{kind} {} {} {} {} {}/{}", hook.fabric_id, hook.build_id, hook.attempt, hook.operation, hook.node_id, hook.incarnation),
             outcome = "ignored",
-        ).in_scope(|| tracing::info!("the round hook identity was already applied: ignored"));
+        ).in_scope(|| tracing::info!("the state hook identity was already applied: ignored"));
         false
     }
 }

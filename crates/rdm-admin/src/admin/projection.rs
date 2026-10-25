@@ -521,8 +521,8 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     }
     if topology.fabric_primary().is_some() {
         // The fabric primary authors `degraded` from the investigation's recovery decision until the
-        // recovered mesh's primary reports for its round (`crate::investigate`), and a successor holder
-        // keeps an adopted `degraded` until every mesh primary reports (`crate::round`). An admin
+        // recovered mesh's primary reports for its checklist (`crate::investigate`), and a successor holder
+        // keeps an adopted `degraded` until every mesh primary reports (`crate::checklist`). An admin
         // that holds no seat serves the `degraded` the holder published.
         let held = records.fabric_state();
         let degraded = records.peer_recovering() || records.adopted_degraded() || records.published_degraded();
@@ -532,7 +532,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     for m in mesh_names {
         // A mesh becomes ready-for-traffic when every node of the mesh is (states.md); once heard
         // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
-        // a round for the primary that takes over, never a mesh gone back to pending.
+        // a checklist for the primary that takes over, never a mesh gone back to pending.
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
         // A mesh past ready-for-traffic is the state its row holds (states.md: pending ->

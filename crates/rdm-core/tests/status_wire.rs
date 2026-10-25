@@ -1,7 +1,7 @@
 //! Fixed bytes for the coordinated 2026-10-07 status wire change (#2923); the four drain/stop command
 //! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
 //! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
-//! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete round
+//! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete workflow
 //! and manifest refusals (39, 40, 41), the tag filter `node.get` (22) selects by, the tags and the
 //! config its answer (33) carries, the tag refusal (43), the tags commands `node.tags.create` (26)
 //! and `node.tags.delete` (27) with their replies (45, 46), and `node.name.update` (20) with its
@@ -12,7 +12,7 @@
 use rdm_core::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotPrimary, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteIdentity, MeshState, NodeSelect, NodeState, NotPrimary, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
 use rdm_core::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -21,7 +21,7 @@ fn fabric() -> FabricId { FabricId::parse("2123456789ab").unwrap() }
 fn birth() -> IncarnationId { IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() }
 fn connection() -> ConnectionId { ConnectionId::parse("3123456789ab").unwrap() }
 
-fn round(build_id: &str, attempt: u32) -> MeshDeleteRound { MeshDeleteRound { build_id: build_id.into(), attempt, operation: "o".into() } }
+fn identity(build_id: &str, attempt: u32) -> MeshDeleteIdentity { MeshDeleteIdentity { build_id: build_id.into(), attempt, operation: "o".into() } }
 
 fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| {
@@ -165,9 +165,9 @@ fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
         (UnknownMesh { mesh: "m".into() }, "25016d"),
         (ReadOverBound { read: "r".into(), bytes: 300, max: 65536 }, "260172ac02808004"),
         // held { build_id "b" | attempt 2 | operation "o" } | offered { "b" | 1 | "o" }
-        (RejectedStaleRound { held: round("b", 2), offered: round("b", 1) }, "27016202016f016201016f"),
+        (RejectedStaleWorkflow { held: identity("b", 2), offered: identity("b", 1) }, "27016202016f016201016f"),
         // held { "b" | 1 | "o" } | offered { "c" | 1 | "o" }
-        (RejectedConflictingRound { held: round("b", 1), offered: round("c", 1) }, "28016201016f016301016f"),
+        (RejectedConflictingWorkflow { held: identity("b", 1), offered: identity("c", 1) }, "28016201016f016301016f"),
         // missing 1 | without_exit (len 1: "n i") | reason "r"
         (RejectedIncompleteManifest { missing: 1, without_exit: vec!["n i".into()], reason: "r".into() }, "290101036e20690172"),
         // source "s" | op "o" | cause "c"
@@ -350,7 +350,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(ProviderKind::Process, "00");
     golden(ProviderKind::Container, "01");
     // build_id "b" | attempt 300 (ac 02) | operation "o"
-    golden(MeshDeleteRound { build_id: "b".into(), attempt: 300, operation: "o".into() }, "0162ac02016f");
+    golden(MeshDeleteIdentity { build_id: "b".into(), attempt: 300, operation: "o".into() }, "0162ac02016f");
 }
 
 #[test]

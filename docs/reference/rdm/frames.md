@@ -85,16 +85,16 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 13.2 | `transport_addr` | `std::net::SocketAddr` |  | The holder's bound QUIC UDP address. |
 | 13.3 | `admin_api_base` | `Option<String>` |  | The holder's control API base URL with its bound HTTP port, when it runs one. |
 | 14 | **`StateCommitting`** |  |  | The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook` |
-| 14.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 14.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
 | 14.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
 | 15 | **`StateCommitted`** |  |  | The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were |
-| 15.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 15.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
 | 15.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 16 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same |
-| 16.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 16.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
 | 16.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
 | 17 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as |
-| 17.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 17.0 | `hook` | `StateHook` → [`StateHook`](#t-rdm_core-lifecycle-StateHook) |  | The state key, the subject birth and the author. |
 | 17.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 18 | **`NodeStopped`** |  |  | The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the |
 | 18.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The stop being executed. |
@@ -213,25 +213,6 @@ The author of a versioned topology: its descriptive name and exact node/incarnat
 | 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
 | 2 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The author's logical node, supplied at publication, never resolved from its name. |
 
-<a id="t-rdm_core-lifecycle-RoundHook"></a>
-
-### `RoundHook`
-
-`crates/rdm-core/src/lifecycle.rs` · struct · 8 fields · rdm-core
-
-One fabric round hook on one exact birth (gossip.md, "Fabric round gossip hooks"): the fields
-
-| # | field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  | The fabric the round belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The subject: the commanded or reporting node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of that birth. |
-| 3 | `build_id` | `String` |  | The Build the round belongs to. |
-| 4 | `attempt` | `u32` |  | The Build attempt that holds the round. |
-| 5 | `operation` | `String` |  | The operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`. |
-| 6 | `publisher` | `String` |  | The author at this hop, by `path.name`. |
-| 7 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only. |
-
 <a id="t-rdm_core-seat-Seat"></a>
 
 ### `Seat`
@@ -246,4 +227,23 @@ A primary seat. The discriminants are the wire positions.
 | 1 | **`FabricPrimary`** |  |  | `name() = "fabric-primary"` | The fabric primary: a mesh primary that also holds the fabric's control. |
 | 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of the holder's mesh's cohort of this node type, every type but `node_admin` |
 | 2.0 | `0` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  |  |
+
+<a id="t-rdm_core-lifecycle-StateHook"></a>
+
+### `StateHook`
+
+`crates/rdm-core/src/lifecycle.rs` · struct · 8 fields · rdm-core
+
+One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"): the fields
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  | The fabric the checklist belongs to. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The subject: the commanded or reporting node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of that birth. |
+| 3 | `build_id` | `String` |  | The Build the checklist belongs to. |
+| 4 | `attempt` | `u32` |  | The Build attempt that holds the checklist. |
+| 5 | `operation` | `String` |  | The operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`. |
+| 6 | `publisher` | `String` |  | The author at this hop, by `path.name`. |
+| 7 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only. |
 

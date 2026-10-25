@@ -321,7 +321,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let test = "a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothing";
     let fp = "mesh1.admin.1";
     // mesh2 holds two rpc nodes: they carry mesh2's primary's tickle of the cut admin, so that node
-    // recovery's second round reaches it after the heal, as in the kept run (with no carrier both rounds
+    // recovery's second checklist reaches it after the heal, as in the kept run (with no carrier both checklists
     // are direct only and the cut admin is re-created before its backbone arm runs). What the cut admin,
     // mesh2's primary in its own view while the cut holds, does to those rpc nodes is the own-mesh arm's
     // (Q111) and not this story: the views are read for mesh1 and the fabric-primary.

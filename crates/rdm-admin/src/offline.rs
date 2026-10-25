@@ -7,10 +7,10 @@
 //! running; only the node-admin holding its mesh's primary seat tickles. Half a floor after the
 //! mark (floor + half a floor in all) it runs the one reach ladder, `node.tickle` ([`tickle`],
 //! node-tickle.md: direct, then through up to two live peers at once), which this module holds for
-//! every caller of it. Each round runs beside the loop, one per exact birth, and the first tick
+//! every caller of it. Each ladder runs beside the loop, one per exact birth, and the first tick
 //! after it ends folds what it found (node-recovery.md: one loop, on every gossip interval). An
-//! answer is `reachable-silent`: recorded, no action. No path on round 1 opens the hold-down at the instant that no path is known, when
-//! round 1's probes ended; no path again at least one staleness floor after that instant is TRUE
+//! answer is `reachable-silent`: recorded, no action. No path on ladder 1 opens the hold-down at the instant that no path is known, when
+//! ladder 1's probes ended; no path again at least one staleness floor after that instant is TRUE
 //! OFFLINE. A node that leaves the silent set has
 //! returned. The `Dead` status is observer-inferred, never sent, never a reason to restart or delete.
 //! The admin writes the node's status on its row in nodes.storage and shows it in the view.
@@ -119,14 +119,14 @@ pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
 /// The longest one tickle takes when each probe waits `per_call`: the direct probe, then one via-peer
 /// rung with every carrier probed at once (node-tickle.md steps 2-3). The fan-out adds no wait.
-pub fn tickle_round(per_call: std::time::Duration) -> std::time::Duration {
+pub fn tickle_ladder(per_call: std::time::Duration) -> std::time::Duration {
     per_call * 2
 }
 
-/// [`tickle_round`] at the default call budget, the one every call of the tickle spends.
-pub fn tickle_round_at_default_budget() -> std::time::Duration {
+/// [`tickle_ladder`] at the default call budget, the one every call of the tickle spends.
+pub fn tickle_ladder_at_default_budget() -> std::time::Duration {
     match rdm_transport::CallOptions::default().budget {
-        rdm_transport::Budget::Overall(d) => tickle_round(d),
+        rdm_transport::Budget::Overall(d) => tickle_ladder(d),
         other => panic!("the default call budget is not one overall deadline: {other:?}"),
     }
 }
@@ -473,33 +473,33 @@ pub(crate) struct OfflineTickReport {
     pub gone: Vec<String>,
 }
 
-/// How one round of the ladder ended (node-recovery.md step 2): the tickle's result, or no ladder run.
+/// How one ladder of the ladder ended (node-recovery.md step 2): the tickle's result, or no ladder run.
 #[derive(Debug)]
-enum RoundEnd {
+enum LadderEnd {
     /// The exact birth answered the tickle (`reached`): its answer's name, whether it was `Current`,
     /// and the carrier that carried it (`None`: direct).
     Reached { answer: &'static str, current: bool, carrier: Option<String> },
     /// Nobody reached the birth: how the direct probe ended, the carriers asked, and the instant on
-    /// the tick clock the ladder ended (`verdict_at_ms`: the round's probes ended).
+    /// the tick clock the ladder ended (`verdict_at_ms`: the ladder's probes ended).
     Unreached { direct: String, asked: String, verdict_at_ms: u64 },
     /// No ladder ran: the birth could not be probed, by name (no incarnation, no client).
     NotRun(String),
 }
 
-/// One round of the ladder, running beside the loop: started by one tick, folded by a later one.
+/// One ladder of the ladder, running beside the loop: started by one tick, folded by a later one.
 #[derive(Debug)]
-struct Round {
-    /// The clock of the tick that started it, named on the round's hold-down span; the hold-down
-    /// itself opens at the round's verdict (`RoundEnd::Unreached::verdict_at_ms`).
+struct LadderRun {
+    /// The clock of the tick that started it, named on the ladder's hold-down span; the hold-down
+    /// itself opens at the ladder's verdict (`LadderEnd::Unreached::verdict_at_ms`).
     started_at_ms: u64,
     path: String,
-    /// The mark (or first sighting) the round ran on, named on its spans.
+    /// The mark (or first sighting) the ladder ran on, named on its spans.
     seen_at: u64,
-    /// `None`: the round was cancelled at a stop's park.
-    task: tokio::task::JoinHandle<Option<RoundEnd>>,
+    /// `None`: the ladder was cancelled at a stop's park.
+    task: tokio::task::JoinHandle<Option<LadderEnd>>,
 }
 
-/// The exact birth a round runs for: node id and incarnation.
+/// The exact birth a ladder runs for: node id and incarnation.
 type Birth = (String, Option<crate::model::IncarnationId>);
 
 #[derive(Default)]
@@ -507,29 +507,29 @@ pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
     /// whether or not this node-admin holds the seat.
     first_seen: HashMap<String, u64>,
-    /// Silent nodes whose round 1 returned NoPath, waiting for round 2: node id -> no-path-since (ms),
-    /// the instant round 1's verdict came back, after its probes spent their budgets.
+    /// Silent nodes whose ladder 1 returned NoPath, waiting for ladder 2: node id -> no-path-since (ms),
+    /// the instant ladder 1's verdict came back, after its probes spent their budgets.
     hold_down: HashMap<String, u64>,
     /// Silent nodes whose tickle has settled (answered, or true offline): not tickled again until
     /// they leave and re-enter the silent set.
     settled: HashSet<String>,
     /// The nodes held true offline now, by node id.
     offline: HashSet<String>,
-    /// The round in flight for each exact birth, at most one: a birth whose round runs is not
-    /// tickled again until a tick folds the round.
-    running: HashMap<Birth, Round>,
+    /// The ladder in flight for each exact birth, at most one: a birth whose ladder runs is not
+    /// tickled again until a tick folds the ladder.
+    running: HashMap<Birth, LadderRun>,
     /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
-    /// read from which admin ran each round.
+    /// read from which admin ran each ladder.
     observer: String,
-    /// The admin's stop gate: a stop's park retires the rounds in flight.
+    /// The admin's stop gate: a stop's park retires the ladders in flight.
     gate: crate::stop_gate::StopGate,
 }
 
 impl Drop for OfflineTickle {
-    /// The rounds are the tickle's: their probes end with it.
+    /// The ladders are the tickle's: their probes end with it.
     fn drop(&mut self) {
-        for round in self.running.values() {
-            round.task.abort();
+        for ladder in self.running.values() {
+            ladder.task.abort();
         }
     }
 }
@@ -540,7 +540,7 @@ impl OfflineTickle {
         Self::default()
     }
 
-    /// The tickle of node-admin `observer` (its path.name), whose rounds a park of `gate` retires.
+    /// The tickle of node-admin `observer` (its path.name), whose ladders a park of `gate` retires.
     pub fn observed_by(observer: String, gate: crate::stop_gate::StopGate) -> Self {
         let mut tickle = Self::default();
         tickle.observer = observer;
@@ -559,9 +559,9 @@ impl OfflineTickle {
         self.offline.contains(id)
     }
 
-    /// How many rounds are in flight, and how many of them have ended (not yet folded).
+    /// How many ladders are in flight, and how many of them have ended (not yet folded).
     #[cfg(test)]
-    pub(crate) fn rounds(&self) -> (usize, usize) {
+    pub(crate) fn ladders(&self) -> (usize, usize) {
         (self.running.len(), self.running.values().filter(|r| r.task.is_finished()).count())
     }
 
@@ -572,14 +572,14 @@ impl OfflineTickle {
     /// (a verdict that came back after awaited probes) is `now_ms` plus the time the tick has run;
     /// `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
-    /// delay between round 1 and round 2; `tickle` runs the one ladder ([`tickle`], node-tickle.md)
+    /// delay between ladder 1 and ladder 2; `tickle` runs the one ladder ([`tickle`], node-tickle.md)
     /// over the birth. `observe` reads iroh's local view of a node once for the reachable-silent and
     /// the TRUE OFFLINE span (`rdm_transport::iroh_obs`); it decides nothing.
     ///
-    /// A tick waits on no probe (node-recovery.md: one loop, on every gossip interval). Each round it
+    /// A tick waits on no probe (node-recovery.md: one loop, on every gossip interval). Each ladder it
     /// starts runs beside the loop, at once for every member due, so each member's connect is made
     /// half a floor after its own mark (step 2), whatever another member's connect spends; the first
-    /// tick after a round ends folds what it found, and nothing is decided before that. A round ends
+    /// tick after a ladder ends folds what it found, and nothing is decided before that. A ladder ends
     /// with its birth's silence and with the seat: its probes are dropped and nothing of it is folded.
     #[allow(clippy::too_many_arguments)]
     pub async fn tick<P, T, TF, O, OF>(
@@ -604,13 +604,13 @@ impl OfflineTickle {
         let mut report = OfflineTickReport::default();
         let silent_ids: HashSet<String> = silent.iter().map(|n| n.node_id.clone()).collect();
         // A birth this tick does not list silent (heard again, gone, or another birth now at its node
-        // id), and every birth while this admin does not hold the seat: its round's probes are
+        // id), and every birth while this admin does not hold the seat: its ladder's probes are
         // dropped (step 2: an answer "cancels the probes still running"; a new holder runs its own).
         let births: HashSet<Birth> = silent.iter().map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
-        self.running.retain(|birth, round| {
+        self.running.retain(|birth, ladder| {
             let keep = holds_seat && births.contains(birth);
             if !keep {
-                round.task.abort();
+                ladder.task.abort();
             }
             keep
         });
@@ -646,14 +646,14 @@ impl OfflineTickle {
         if !holds_seat {
             return report;
         }
-        // Every round that ended since the last tick, folded in the order the silent set lists its birth.
+        // Every ladder that ended since the last tick, folded in the order the silent set lists its birth.
         for n in &silent {
             let birth = (n.node_id.clone(), n.incarnation.clone());
             if !self.running.get(&birth).is_some_and(|r| r.task.is_finished()) {
                 continue;
             }
-            let Some(Round { started_at_ms, path, seen_at, task }) = self.running.remove(&birth) else { continue };
-            // A round that panicked takes the loop with it, as one run inside the pass did. A round
+            let Some(LadderRun { started_at_ms, path, seen_at, task }) = self.running.remove(&birth) else { continue };
+            // A ladder that panicked takes the loop with it, as one run inside the pass did. A ladder
             // cancelled at a stop's park found nothing: nothing is folded, and the birth is due again.
             let end = match task.await {
                 Ok(Some(end)) => end,
@@ -662,7 +662,7 @@ impl OfflineTickle {
             };
             let id = n.node_id.clone();
             match end {
-                RoundEnd::Reached { answer, current, carrier } => {
+                LadderEnd::Reached { answer, current, carrier } => {
                     // An answer is reachable-silent: recorded (node-recovery.md step 2). The tickle's own
                     // span carried the answer; this is the mesh-primary's record of it.
                     self.hold_down.remove(&id);
@@ -688,11 +688,11 @@ impl OfflineTickle {
                     }
                     report.reachable_silent.push(id);
                 }
-                RoundEnd::NotRun(reason) => {
+                LadderEnd::NotRun(reason) => {
                     tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_id = %id, path = %path, error = %reason, observer = %self.observer, "otel.kind" = "internal")
                         .in_scope(|| tracing::warn!(node_id = %id, error = %reason, "no ladder ran over the birth: no status change, the hold-down left as it was"));
                 }
-                RoundEnd::Unreached { direct: e, asked, verdict_at_ms } => {
+                LadderEnd::Unreached { direct: e, asked, verdict_at_ms } => {
                     if self.offline.contains(&id) {
                         self.settled.insert(id.clone());
                     } else if let Some(no_path_since) = self.hold_down.remove(&id) {
@@ -707,7 +707,7 @@ impl OfflineTickle {
                             asked = %asked,
                             iroh_known_addrs = %seen.known_addrs,
                             iroh_active_addrs = %seen.active_addrs,
-                            round = 2i64,
+                            ladder = 2i64,
                             first_no_path_ms = no_path_since as i64,
                             observer = %self.observer,
                             first_seen_ms = seen_at as i64,
@@ -716,11 +716,11 @@ impl OfflineTickle {
                         .in_scope(|| tracing::info!(node_id = %id, error = %e, "no path again one floor after the first: TRUE OFFLINE, no restart, no delete"));
                         report.offline.push(id);
                     } else {
-                        // The hold-down runs from the instant no path was known: the round's
+                        // The hold-down runs from the instant no path was known: the ladder's
                         // verdict, when its probes ended, never the tick that started it.
                         self.hold_down.insert(id.clone(), verdict_at_ms);
-                        tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, no_path_at_ms = verdict_at_ms as i64, round_began_ms = started_at_ms as i64, "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after round 1 no path"));
+                        tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, no_path_at_ms = verdict_at_ms as i64, ladder_began_ms = started_at_ms as i64, "otel.kind" = "internal")
+                            .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after ladder 1 no path"));
                     }
                 }
             }
@@ -742,8 +742,8 @@ impl OfflineTickle {
                 }
             }
             report.tickled.push(id.clone());
-            // What this round's `unreached` would be followed by, known at its start (node-tickle.md
-            // "what the caller does next"): the hold-down opens after round 1, round 2 is TRUE OFFLINE,
+            // What this ladder's `unreached` would be followed by, known at its start (node-tickle.md
+            // "what the caller does next"): the hold-down opens after ladder 1, ladder 2 is TRUE OFFLINE,
             // and a held TRUE OFFLINE birth probed again goes to the inspect.
             let next = if self.offline.contains(&id) {
                 "inspect"
@@ -752,32 +752,32 @@ impl OfflineTickle {
             } else {
                 "hold-down"
             };
-            // The round: the one ladder over the birth (`tickle`). It takes no lock and waits on
+            // The ladder: the one ladder over the birth (`tickle`). It takes no lock and waits on
             // nothing of this admin's; a stop's park cancels it where it stands
             // (`StopGate::until_stopped`), and it never resumes.
             let ladder = tickle(id.clone());
             // The verdict's instant on the tick clock: this tick's `now_ms` plus the time since it began.
             let (tick_ms, tick_began) = (now_ms, began);
             let (cancelled_id, cancelled_path, cancelled_by) = (id.clone(), path.clone(), self.observer.clone());
-            let round = self.gate.until_stopped(async move {
+            let run = self.gate.until_stopped(async move {
                 match ladder.await {
-                    Ok(Tickle::Reached { answer, carrier }) => RoundEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
+                    Ok(Tickle::Reached { answer, carrier }) => LadderEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
                     Ok(Tickle::Unreached(unreached)) => {
                         unreached.next(next);
                         let verdict_at_ms = tick_ms + tick_began.elapsed().as_millis() as u64;
-                        RoundEnd::Unreached { direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
+                        LadderEnd::Unreached { direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
                     }
-                    Err(reason) => RoundEnd::NotRun(reason),
+                    Err(reason) => LadderEnd::NotRun(reason),
                 }
             });
             let task = tokio::spawn(async move {
-                let end = round.await;
+                let end = run.await;
                 if end.is_none() {
-                    tracing::info!(node_id = %cancelled_id, path = %cancelled_path, observer = %cancelled_by, "the tickle round was cancelled at the stop's park: it proves nothing, and the birth is due again");
+                    tracing::info!(node_id = %cancelled_id, path = %cancelled_path, observer = %cancelled_by, "the tickle ladder was cancelled at the stop's park: it proves nothing, and the birth is due again");
                 }
                 end
             });
-            self.running.insert(birth, Round { started_at_ms: now_ms, path, seen_at, task });
+            self.running.insert(birth, LadderRun { started_at_ms: now_ms, path, seen_at, task });
         }
         report
     }
@@ -872,7 +872,7 @@ pub(crate) mod tests {
         vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: None, marked_at_ms: None }]
     }
 
-    /// How a cell says the via-peer rung of a round ended, when the direct probe did not answer.
+    /// How a cell says the via-peer rung of a ladder ended, when the direct probe did not answer.
     #[derive(Debug, Clone, PartialEq)]
     enum ViaPeerVerdict {
         /// A peer carried the birth's answer.
@@ -909,8 +909,8 @@ pub(crate) mod tests {
         tick_observed(t, now, seat, set, direct, via, &std::sync::atomic::AtomicUsize::new(0)).await
     }
 
-    /// `tick`, counting every iroh observation read in `reads`. One round as the loop runs it, at
-    /// one clock reading `now`: the tick that starts what is due, the rounds it started run to their
+    /// `tick`, counting every iroh observation read in `reads`. One ladder as the loop runs it, at
+    /// one clock reading `now`: the tick that starts what is due, the ladders it started run to their
     /// end beside it (every probe here answers at once), and the next tick, which folds them. The
     /// two ticks' reports, joined in order.
     async fn tick_observed(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict, reads: &std::sync::atomic::AtomicUsize) -> OfflineTickReport {
@@ -934,7 +934,7 @@ pub(crate) mod tests {
             .await
         };
         let mut report = once(t).await;
-        while t.rounds().1 < t.rounds().0 {
+        while t.ladders().1 < t.ladders().0 {
             tokio::task::yield_now().await;
         }
         let folded = once(t).await;
@@ -947,9 +947,9 @@ pub(crate) mod tests {
         report
     }
 
-    /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or round-2 failed
+    /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or ladder-2 failed
     /// event, never on a tick that records neither, and the reports are the tickle's own: the
-    /// answered node is reachable-silent and round 2 with no path is TRUE OFFLINE.
+    /// answered node is reachable-silent and ladder 2 with no path is TRUE OFFLINE.
     #[tokio::test(start_paused = true)]
     async fn iroh_is_read_once_per_answered_or_failed_event_and_decides_nothing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -965,10 +965,10 @@ pub(crate) mod tests {
         let mut t = OfflineTickle::new();
         tick_observed(&mut t, 0, true, silent("b"), false, no_path(), &reads).await;
         let r1 = tick_observed(&mut t, PROBE_DELAY, true, silent("b"), false, no_path(), &reads).await;
-        assert!(r1.offline.is_empty(), "round 1 opens the hold-down");
+        assert!(r1.offline.is_empty(), "ladder 1 opens the hold-down");
         assert_eq!(reads.load(Ordering::SeqCst), 0, "the hold-down opening is not an observed event");
         let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
-        assert_eq!(r2.offline, vec!["b".to_string()], "round 2 is TRUE OFFLINE, as without the read");
+        assert_eq!(r2.offline, vec!["b".to_string()], "ladder 2 is TRUE OFFLINE, as without the read");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the failed event");
     }
 
@@ -1056,7 +1056,7 @@ pub(crate) mod tests {
         /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
         /// two members marked at the same instant each get their direct connect half a floor after the
         /// mark, at once, and the pass that starts them waits on neither connect. Their outcomes
-        /// are folded by a later tick: both rounds ended with no path, so both hold-downs open on the
+        /// are folded by a later tick: both ladders ended with no path, so both hold-downs open on the
         /// clock of the tick that started them. Must NOT happen: the second member's connect waiting
         /// for the first one's to end (3 s late at the gate's cadence, a whole 10 s call budget at
         /// production's), or a pass that lasts as long as the ladders it starts.
@@ -1091,23 +1091,23 @@ pub(crate) mod tests {
             assert_eq!(*connects.lock().unwrap(), vec![("a".to_string(), Duration::ZERO), ("b".to_string(), Duration::ZERO)], "both direct connects at half a floor after the mark, at once");
             assert_eq!(pass, Duration::ZERO, "the pass waits on no connect");
             assert_eq!(started.tickled, vec!["a".to_string(), "b".to_string()]);
-            // The next tick on the gossip interval's grid after both rounds ended folds them.
+            // The next tick on the gossip interval's grid after both ladders ended folds them.
             sleep(INTERVAL).await;
             let folded = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
-            assert!(folded.tickled.is_empty(), "a birth whose round was folded with no path waits out its hold-down");
-            assert!(t.is_in_hold_down("a") && t.is_in_hold_down("b"), "both rounds ended with no path: both hold-downs are open");
+            assert!(folded.tickled.is_empty(), "a birth whose ladder was folded with no path waits out its hold-down");
+            assert!(t.is_in_hold_down("a") && t.is_in_hold_down("b"), "both ladders ended with no path: both hold-downs are open");
         }
 
         /// CONTRACT (node-stop retires the work the loop runs beside it; the lead's decision: "a stop
         /// cancels it as part of retiring the birth, and does not wait for it"): a stop's park while a
-        /// tickle round and a recovery follower are in flight ends both at the park, with no time
+        /// tickle ladder and a recovery follower are in flight ends both at the park, with no time
         /// passing. The follower, queued on the view lock a handler holds, leaves that queue, and its
         /// birth leaves `in_flight`, so the first tick after a start submits again; neither goes on
-        /// when the gate opens again, and the next tick folds nothing of the cancelled round and starts
-        /// it again. Must NOT happen: a round's probe or a follower running on past the park, one held
+        /// when the gate opens again, and the next tick folds nothing of the cancelled ladder and starts
+        /// it again. Must NOT happen: a ladder's probe or a follower running on past the park, one held
         /// at the gate while it waits on the view lock, or one resumed by the start.
         #[tokio::test(start_paused = true)]
-        async fn a_stops_gate_cancels_the_tickle_round_and_the_recovery_follower_in_flight() {
+        async fn a_stops_gate_cancels_the_tickle_ladder_and_the_recovery_follower_in_flight() {
             use crate::model::{IncarnationId, NodeId};
             use std::collections::HashSet;
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1150,33 +1150,33 @@ pub(crate) mod tests {
                 })
             };
             tokio::task::yield_now().await;
-            assert_eq!(t.rounds(), (1, 0), "the round runs, at its direct connect");
+            assert_eq!(t.ladders(), (1, 0), "the ladder runs, at its direct connect");
             assert!(!follower.is_finished(), "the follower runs, queued on the view lock");
             let at = Instant::now();
             gate.quiesce().await;
             tokio::task::yield_now().await;
-            assert_eq!(t.rounds(), (1, 1), "the round ended at the park");
+            assert_eq!(t.ladders(), (1, 1), "the ladder ended at the park");
             assert!(follower.is_finished(), "the follower ended at the park");
             assert!(in_flight.lock().unwrap().is_empty(), "its birth left in_flight: a tick after the start submits again");
             assert_eq!(at.elapsed(), Duration::ZERO, "the park waited on neither");
             gate.resume();
             drop(held);
             sleep(DIAL + INTERVAL).await;
-            assert_eq!(ended.load(Ordering::SeqCst), 0, "the round's probe never ran on to its end");
+            assert_eq!(ended.load(Ordering::SeqCst), 0, "the ladder's probe never ran on to its end");
             assert!(!read.load(Ordering::SeqCst), "the follower never took the view lock: cancelled, not held");
             let again = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
-            assert_eq!(again.tickled, vec!["a".to_string()], "nothing is folded of the cancelled round: a's round starts again");
-            assert!(!t.is_in_hold_down("a"), "a cancelled round opens no hold-down");
+            assert_eq!(again.tickled, vec!["a".to_string()], "nothing is folded of the cancelled ladder: a's ladder starts again");
+            assert!(!t.is_in_hold_down("a"), "a cancelled ladder opens no hold-down");
         }
 
         /// CONTRACT (at most one ladder in flight per exact birth; step 2: an answer "cancels the
-        /// probes still running"): the ticks that come while a birth's round runs never start another
-        /// for it; a birth heard again has its round's probes dropped, never folded; another birth at
-        /// the same node id is its own birth, its round starts and the old birth's is dropped. Must NOT
-        /// happen: a second round for a birth whose first is in flight (a retry by tick), or a dropped
-        /// round's probe running on to its end.
+        /// probes still running"): the ticks that come while a birth's ladder runs never start another
+        /// for it; a birth heard again has its ladder's probes dropped, never folded; another birth at
+        /// the same node id is its own birth, its ladder starts and the old birth's is dropped. Must NOT
+        /// happen: a second ladder for a birth whose first is in flight (a retry by tick), or a dropped
+        /// ladder's probe running on to its end.
         #[tokio::test(start_paused = true)]
-        async fn one_round_per_exact_birth_and_a_birth_that_leaves_the_silent_set_drops_its_probes() {
+        async fn one_ladder_per_exact_birth_and_a_birth_that_leaves_the_silent_set_drops_its_probes() {
             use std::sync::atomic::{AtomicUsize, Ordering};
             let ended = Arc::new(AtomicUsize::new(0));
             let tick = async |t: &mut OfflineTickle, now: u64, set: Vec<SilentNode>| {
@@ -1203,20 +1203,20 @@ pub(crate) mod tests {
             assert_eq!(tick(&mut t, PROBE_DELAY, vec![marked("a")]).await.tickled, vec!["a".to_string()]);
             for k in 1..=5u64 {
                 sleep(INTERVAL).await;
-                assert!(tick(&mut t, PROBE_DELAY + k * 500, vec![marked("a")]).await.tickled.is_empty(), "tick {k}: the round of a's birth is in flight");
+                assert!(tick(&mut t, PROBE_DELAY + k * 500, vec![marked("a")]).await.tickled.is_empty(), "tick {k}: the ladder of a's birth is in flight");
             }
-            assert_eq!(t.rounds(), (1, 0), "one round, still running");
+            assert_eq!(t.ladders(), (1, 0), "one ladder, still running");
             let r = tick(&mut t, PROBE_DELAY + 2_500, vec![]).await;
-            assert_eq!((r.returned, t.rounds()), (vec!["a".to_string()], (0, 0)), "heard again: its round is dropped");
+            assert_eq!((r.returned, t.ladders()), (vec!["a".to_string()], (0, 0)), "heard again: its ladder is dropped");
             sleep(DIAL).await;
-            assert_eq!(ended.load(Ordering::SeqCst), 0, "the dropped round's probe never ran to its end");
+            assert_eq!(ended.load(Ordering::SeqCst), 0, "the dropped ladder's probe never ran to its end");
 
             let mut t = OfflineTickle::new();
             assert_eq!(tick(&mut t, PROBE_DELAY, vec![marked("b")]).await.tickled, vec!["b".to_string()]);
             let reborn = SilentNode { incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-b-again")).unwrap()), ..marked("b") };
             sleep(INTERVAL).await;
-            assert_eq!(tick(&mut t, PROBE_DELAY + 500, vec![reborn]).await.tickled, vec!["b".to_string()], "another birth at b's node id: its own round");
-            assert_eq!(t.rounds(), (1, 0), "the old birth's round was dropped");
+            assert_eq!(tick(&mut t, PROBE_DELAY + 500, vec![reborn]).await.tickled, vec!["b".to_string()], "another birth at b's node id: its own ladder");
+            assert_eq!(t.ladders(), (1, 0), "the old birth's ladder was dropped");
             sleep(DIAL + INTERVAL).await;
             assert_eq!(ended.load(Ordering::SeqCst), 1, "only the new birth's probe ran to its end");
         }
@@ -1399,7 +1399,7 @@ pub(crate) mod tests {
             let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(BUDGET, None)), ("mesh1.rpc.3", probe(BUDGET, None))]);
             let start = Instant::now();
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("no answer: unreached") };
-            assert_eq!(start.elapsed(), tickle_round(BUDGET) - BUDGET, "the two peer probes overlap: one budget, not two");
+            assert_eq!(start.elapsed(), tickle_ladder(BUDGET) - BUDGET, "the two peer probes overlap: one budget, not two");
             assert_eq!(u.carriers(), "mesh1.rpc.2,mesh1.rpc.3", "both carriers of the birth's mesh, this admin never one: {u:?}");
             assert_eq!(rig.ended.load(Ordering::SeqCst), 3, "no answer: the direct and both carried probes ran to their end");
         }
@@ -1513,10 +1513,10 @@ pub(crate) mod tests {
 
         /// CONTRACT (R-SW1 acceptance: the provider check stays mandatory and comes last): TRUE
         /// OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
-        /// (`recovery_due`), is reached on round 2 only after both peer probes of each round ended
-        /// unanswered, each round costing the direct probe's budget plus one peer budget.
+        /// (`recovery_due`), is reached on ladder 2 only after both peer probes of each ladder ended
+        /// unanswered, each ladder costing the direct probe's budget plus one peer budget.
         #[tokio::test(start_paused = true)]
-        async fn the_provider_is_owed_only_after_both_peer_probes_of_round_two_ended() {
+        async fn the_provider_is_owed_only_after_both_peer_probes_of_the_second_ladder_ended() {
             let b = birth();
             let (node, view) = member_and_view(&b);
             let rig = Arc::new(Rig::new(probe(BUDGET, None), vec![("mesh1.rpc.2", probe(BUDGET, None)), ("mesh1.rpc.3", probe(BUDGET, None))]));
@@ -1524,9 +1524,9 @@ pub(crate) mod tests {
             let mut t = OfflineTickle::new();
             let id = b.0.to_string();
             let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into(), incarnation: Some(b.1.clone()), marked_at_ms: None }];
-            // The instant each round's ladder ended.
+            // The instant each ladder's ladder ended.
             let verdict_at: Arc<Mutex<Vec<Instant>>> = Arc::default();
-            let round = async |t: &mut OfflineTickle, now: u64| {
+            let ladder = async |t: &mut OfflineTickle, now: u64| {
                 t.tick(
                     now,
                     true,
@@ -1547,27 +1547,27 @@ pub(crate) mod tests {
                 .await
             };
             let ms = |d: Duration| d.as_millis() as u64;
-            round(&mut t, 0).await;
-            // Round 1, started by the tick at half a floor: the tick waits on none of it.
+            ladder(&mut t, 0).await;
+            // Ladder 1, started by the tick at half a floor: the tick waits on none of it.
             let start = Instant::now();
-            assert_eq!(round(&mut t, PROBE_DELAY).await.tickled, vec![id.clone()]);
-            assert_eq!(start.elapsed(), Duration::ZERO, "the tick that starts round 1 waits on none of it");
-            sleep(tickle_round(BUDGET) + Duration::from_millis(1)).await;
-            assert_eq!(verdict_at.lock().unwrap()[0] - start, tickle_round(BUDGET), "round 1: the direct budget, then one budget for both peers");
-            let r1 = round(&mut t, PROBE_DELAY + ms(tickle_round(BUDGET)) + 1).await;
-            assert!(r1.offline.is_empty() && t.is_in_hold_down(&id), "round 1 no path opens the hold-down: nothing is owed to the provider");
-            // Round 2 is due one floor after round 1's verdict, when its probes ended (the hold-down
-            // is stamped there, not at the tick that started the round): one floor after round 1
+            assert_eq!(ladder(&mut t, PROBE_DELAY).await.tickled, vec![id.clone()]);
+            assert_eq!(start.elapsed(), Duration::ZERO, "the tick that starts ladder 1 waits on none of it");
+            sleep(tickle_ladder(BUDGET) + Duration::from_millis(1)).await;
+            assert_eq!(verdict_at.lock().unwrap()[0] - start, tickle_ladder(BUDGET), "ladder 1: the direct budget, then one budget for both peers");
+            let r1 = ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + 1).await;
+            assert!(r1.offline.is_empty() && t.is_in_hold_down(&id), "ladder 1 no path opens the hold-down: nothing is owed to the provider");
+            // Ladder 2 is due one floor after ladder 1's verdict, when its probes ended (the hold-down
+            // is stamped there, not at the tick that started the ladder): one floor after ladder 1
             // STARTED is still inside it.
-            assert!(round(&mut t, PROBE_DELAY + FLOOR).await.tickled.is_empty(), "one floor after round 1 started is inside the hold-down that runs from its verdict");
+            assert!(ladder(&mut t, PROBE_DELAY + FLOOR).await.tickled.is_empty(), "one floor after ladder 1 started is inside the hold-down that runs from its verdict");
             let start = Instant::now();
-            assert_eq!(round(&mut t, PROBE_DELAY + ms(tickle_round(BUDGET)) + FLOOR).await.tickled, vec![id.clone()], "round 2 starts one floor after round 1's verdict");
-            assert_eq!(start.elapsed(), Duration::ZERO, "the tick that starts round 2 waits on none of it");
-            sleep(tickle_round(BUDGET) + Duration::from_millis(1)).await;
-            assert_eq!(verdict_at.lock().unwrap()[1] - start, tickle_round(BUDGET), "round 2: the direct budget, then one budget for both peers");
-            let r2 = round(&mut t, PROBE_DELAY + ms(tickle_round(BUDGET)) + FLOOR + ms(tickle_round(BUDGET)) + 1).await;
-            assert_eq!(r2.offline, vec![id.clone()], "round 2 no path is TRUE OFFLINE: the provider is owed");
-            assert_eq!(rig.ended.load(Ordering::SeqCst), 6, "TRUE OFFLINE only once the direct and both peer probes of both rounds ended");
+            assert_eq!(ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + FLOOR).await.tickled, vec![id.clone()], "ladder 2 starts one floor after ladder 1's verdict");
+            assert_eq!(start.elapsed(), Duration::ZERO, "the tick that starts ladder 2 waits on none of it");
+            sleep(tickle_ladder(BUDGET) + Duration::from_millis(1)).await;
+            assert_eq!(verdict_at.lock().unwrap()[1] - start, tickle_ladder(BUDGET), "ladder 2: the direct budget, then one budget for both peers");
+            let r2 = ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + FLOOR + ms(tickle_ladder(BUDGET)) + 1).await;
+            assert_eq!(r2.offline, vec![id.clone()], "ladder 2 no path is TRUE OFFLINE: the provider is owed");
+            assert_eq!(rig.ended.load(Ordering::SeqCst), 6, "TRUE OFFLINE only once the direct and both peer probes of both ladders ended");
         }
     }
 
@@ -1590,7 +1590,7 @@ pub(crate) mod tests {
     /// one QUIC connect"; step 1: "a node-admin that takes the seat mid-window continues the window
     /// already running"): the window runs from the mark, the instant the birth went unheard past the
     /// staleness floor, not from the tick that first lists it. A birth marked at 0 and first listed
-    /// by a tick 700 ms later is tickled by the tick at half a floor after the mark, and the round's
+    /// by a tick 700 ms later is tickled by the tick at half a floor after the mark, and the ladder's
     /// span names the mark as `first_seen_ms`. Must NOT happen: the connect half a floor after the
     /// sighting (a window that grows by the time between the mark and the tick that saw it).
     #[tokio::test(start_paused = true)]
@@ -1600,7 +1600,7 @@ pub(crate) mod tests {
         assert!(tick(&mut t, 700, true, marked("a"), false, no_path()).await.tickled.is_empty(), "listed 700 ms after its mark: no tickle yet");
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "one connect half a floor after the mark, not half a floor after the tick that first listed it");
-        assert!(t.is_in_hold_down("a"), "round 1 with no path opens the hold-down");
+        assert!(t.is_in_hold_down("a"), "ladder 1 with no path opens the hold-down");
         // A node-admin that takes the seat later still runs on the mark its own book holds.
         let mut successor = OfflineTickle::new();
         assert!(tick(&mut successor, 700, false, marked("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
@@ -1665,28 +1665,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn true_offline_needs_two_rounds_with_no_path_at_least_one_floor_apart() {
+    async fn true_offline_needs_two_ladders_with_no_path_at_least_one_floor_apart() {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
         let r1 = tick(&mut t, PROBE_DELAY, true, silent("a"), false, no_path()).await;
         assert_eq!(r1.tickled, vec!["a".to_string()]);
-        assert!(r1.offline.is_empty() && t.is_in_hold_down("a"), "round 1 no path opens the hold-down, no verdict");
+        assert!(r1.offline.is_empty() && t.is_in_hold_down("a"), "ladder 1 no path opens the hold-down, no verdict");
         assert!(tick(&mut t, PROBE_DELAY + FLOOR - 1, true, silent("a"), false, no_path()).await.tickled.is_empty(), "within the hold-down");
         let r2 = tick(&mut t, PROBE_DELAY + FLOOR, true, silent("a"), false, no_path()).await;
-        assert_eq!(r2.offline, vec!["a".to_string()], "round 2 no path is TRUE OFFLINE");
+        assert_eq!(r2.offline, vec!["a".to_string()], "ladder 2 no path is TRUE OFFLINE");
         assert!(t.is_offline("a"));
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 2: "No path opens a hold-down; no
     /// path again at least one floor later is TRUE OFFLINE"): the hold-down opens at the instant
-    /// round 1's no path was known, when its probes ended, carried by the round to the tick that
-    /// folds it, never the instant the tick that started the round began. Round 1 starts at
+    /// ladder 1's no path was known, when its probes ended, carried by the ladder to the tick that
+    /// folds it, never the instant the tick that started the ladder began. Ladder 1 starts at
     /// PROBE_DELAY and the tick waits on none of it; its direct connect and its via-peer step each
     /// spend a 10 s budget, so no path is known at PROBE_DELAY + 20 s, and the next tick folds it. A
-    /// tick one floor after round 1 STARTED is only 10 s after no path was known: it starts nothing.
-    /// Round 2 starts one floor after the verdict and, folded, is TRUE OFFLINE naming that verdict.
-    /// Must NOT happen: round 2 started, and TRUE OFFLINE declared, less than a floor after round 1's
-    /// no path (gate 0484f457: hold-down opened 1483.7 s, round 2 began 1485.7 s).
+    /// tick one floor after ladder 1 STARTED is only 10 s after no path was known: it starts nothing.
+    /// Ladder 2 starts one floor after the verdict and, folded, is TRUE OFFLINE naming that verdict.
+    /// Must NOT happen: ladder 2 started, and TRUE OFFLINE declared, less than a floor after ladder 1's
+    /// no path (gate 0484f457: hold-down opened 1483.7 s, ladder 2 began 1485.7 s).
     // @feature: node-lifecycle
     #[tokio::test(start_paused = true)]
     async fn the_hold_down_runs_one_floor_from_the_no_path_verdict_not_from_the_tick_that_probed() {
@@ -1695,7 +1695,7 @@ pub(crate) mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-hold-down-from-verdict");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::stop_gate::StopGate::new());
-        let round = async |t: &mut OfflineTickle, now: u64| {
+        let ladder = async |t: &mut OfflineTickle, now: u64| {
             t.tick(
                 now,
                 true,
@@ -1713,29 +1713,29 @@ pub(crate) mod tests {
             .await
         };
         let ended = std::time::Duration::from_millis(2 * BUDGET + 1);
-        round(&mut t, 0).await;
+        ladder(&mut t, 0).await;
         let started = tokio::time::Instant::now();
-        let r1 = round(&mut t, PROBE_DELAY).await;
-        assert_eq!(r1.tickled, vec!["a".to_string()], "round 1 runs half a floor after the mark");
-        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "the tick that starts round 1 waits on none of it");
-        assert!(!t.is_in_hold_down("a"), "nothing is decided before a tick folds the round");
+        let r1 = ladder(&mut t, PROBE_DELAY).await;
+        assert_eq!(r1.tickled, vec!["a".to_string()], "ladder 1 runs half a floor after the mark");
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "the tick that starts ladder 1 waits on none of it");
+        assert!(!t.is_in_hold_down("a"), "nothing is decided before a tick folds the ladder");
         tokio::time::sleep(ended).await;
-        let folded = round(&mut t, verdict_at + 1).await;
-        assert!(folded.offline.is_empty() && t.is_in_hold_down("a"), "the tick after round 1 ended folds its no path: the hold-down opens");
-        let early = round(&mut t, PROBE_DELAY + FLOOR).await;
-        assert!(early.tickled.is_empty() && early.offline.is_empty(), "one floor after round 1 started is {} ms after its no path: still inside the hold-down: {early:?}", PROBE_DELAY + FLOOR - verdict_at);
-        assert!(round(&mut t, verdict_at + FLOOR - 1).await.tickled.is_empty(), "one ms short of a floor after the no path: inside the hold-down");
-        let r2 = round(&mut t, verdict_at + FLOOR).await;
-        assert_eq!(r2.tickled, vec!["a".to_string()], "round 2 starts one floor after round 1's no path");
+        let folded = ladder(&mut t, verdict_at + 1).await;
+        assert!(folded.offline.is_empty() && t.is_in_hold_down("a"), "the tick after ladder 1 ended folds its no path: the hold-down opens");
+        let early = ladder(&mut t, PROBE_DELAY + FLOOR).await;
+        assert!(early.tickled.is_empty() && early.offline.is_empty(), "one floor after ladder 1 started is {} ms after its no path: still inside the hold-down: {early:?}", PROBE_DELAY + FLOOR - verdict_at);
+        assert!(ladder(&mut t, verdict_at + FLOOR - 1).await.tickled.is_empty(), "one ms short of a floor after the no path: inside the hold-down");
+        let r2 = ladder(&mut t, verdict_at + FLOOR).await;
+        assert_eq!(r2.tickled, vec!["a".to_string()], "ladder 2 starts one floor after ladder 1's no path");
         tokio::time::sleep(ended).await;
-        let folded = round(&mut t, verdict_at + FLOOR + 2 * BUDGET + 1).await;
-        assert_eq!(folded.offline, vec!["a".to_string()], "round 2's no path, folded, is TRUE OFFLINE");
+        let folded = ladder(&mut t, verdict_at + FLOOR + 2 * BUDGET + 1).await;
+        assert_eq!(folded.offline, vec!["a".to_string()], "ladder 2's no path, folded, is TRUE OFFLINE");
         let failed = capture.named("rdm.node_admin.node.update.via-true-offline");
         assert_eq!(failed.len(), 1, "one TRUE OFFLINE span");
-        assert_eq!(failed[0].attributes.get("first_no_path_ms").map(String::as_str), Some(verdict_at.to_string().as_str()), "the hold-down ran from round 1's no path: {:?}", failed[0].attributes);
+        assert_eq!(failed[0].attributes.get("first_no_path_ms").map(String::as_str), Some(verdict_at.to_string().as_str()), "the hold-down ran from ladder 1's no path: {:?}", failed[0].attributes);
         let opened = capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened");
         assert_eq!(opened.len(), 1, "one hold-down");
-        assert_eq!((opened[0].attributes.get("no_path_at_ms").map(String::as_str), opened[0].attributes.get("round_began_ms").map(String::as_str)), (Some(verdict_at.to_string().as_str()), Some(PROBE_DELAY.to_string().as_str())), "{:?}", opened[0].attributes);
+        assert_eq!((opened[0].attributes.get("no_path_at_ms").map(String::as_str), opened[0].attributes.get("ladder_began_ms").map(String::as_str)), (Some(verdict_at.to_string().as_str()), Some(PROBE_DELAY.to_string().as_str())), "{:?}", opened[0].attributes);
         eprintln!("span rdm.node_admin.node.update.via-offline-hold-down-opened trace_id={} {:?}", opened[0].trace_id, opened[0].attributes);
         eprintln!("span rdm.node_admin.node.update.via-true-offline trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
     }

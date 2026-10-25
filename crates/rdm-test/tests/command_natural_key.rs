@@ -7,8 +7,8 @@
 //! One admin side commands the birth under several attempts of one Build: each attempt is its own
 //! open command at the admin, matched by its attempt, so a completion carrying
 //! another attempt resolves nothing. A natural key holds no commander, so a second physical
-//! node-admin adds nothing the attempts do not already prove. A fabric round is scoped to the
-//! accepted Build and attempt (node-rpc-envelope.md, "Fabric status rounds") and its command comes
+//! node-admin adds nothing the attempts do not already prove. A fabric checklist is scoped to the
+//! accepted Build and attempt (node-rpc-envelope.md, "Fabric status command pairs") and its command comes
 //! from whichever node-admin holds the mesh's primary seat: its cell moves the seat between two
 //! admin sides.
 //!
@@ -232,7 +232,7 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
     })
 }
 
-/// A round action that holds until the cell opens its gate, counting every run.
+/// A state action that holds until the cell opens its gate, counting every run.
 struct HeldActions {
     entered: tokio::sync::Notify,
     gate: tokio::sync::watch::Sender<bool>,
@@ -256,7 +256,7 @@ impl HeldActions {
 }
 
 #[async_trait::async_trait]
-impl rdm_admin::fabric_rounds::RoundActions for HeldActions {
+impl rdm_admin::fabric_status::StateActions for HeldActions {
     async fn commit_state(&self, _node: &rdm_core::PathName) -> Result<(), String> {
         self.run().await
     }
@@ -282,9 +282,9 @@ impl Birth {
         .unwrap_or_else(|_| panic!("{NODE} never held {} as mesh1's primary at revision {revision}", admin.launcher.name));
     }
 
-    /// The round command `kind` of `attempt` from `admin`, the birth resolved by it.
-    async fn round_from(&self, admin: &crate::common::AdminSide, kind: rdm_admin::fabric_state::RoundKind, attempt: u32) -> StatusReply {
-        let key = rdm_admin::fabric_state::RoundKey { kind, fabric_id: self.launch.fabric_id.clone(), build_id: BUILD.into(), attempt };
+    /// The state command `kind` of `attempt` from `admin`, the birth resolved by it.
+    async fn state_from(&self, admin: &crate::common::AdminSide, kind: rdm_admin::fabric_state::StateCommand, attempt: u32) -> StatusReply {
+        let key = rdm_admin::fabric_state::StateKey { kind, fabric_id: self.launch.fabric_id.clone(), build_id: BUILD.into(), attempt };
         let req = kind.down(&key, self.launch.node_id.clone(), self.launch.incarnation.clone());
         match admin.observer.client.call::<Status>(&self.target, &req, &Self::opts()).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
@@ -322,7 +322,7 @@ impl Birth {
 /// the birth's completion call has received its reply.
 async fn checked_in(admin: &crate::common::AdminSide, spans: &crate::common::Spans, completion: &str, attempt: u32) {
     let mut held = admin.observer.check_ins.subscribe();
-    tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rdm_admin::fabric_state::RoundOp::of(r).is_some_and(|o| o.attempt == attempt))))
+    tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rdm_admin::fabric_state::StateOp::of(r).is_some_and(|o| o.attempt == attempt))))
         .await
         .unwrap_or_else(|_| panic!("{} never took a {completion} check-in of attempt {attempt}", admin.launcher.name))
         .expect("the check-ins are held by the admin side");
@@ -341,24 +341,24 @@ async fn checked_in(admin: &crate::common::AdminSide, spans: &crate::common::Spa
     .unwrap_or_else(|_| panic!("the birth's {completion} check-in call to {} never completed", admin.launcher.name));
 }
 
-/// CONTRACT: a fabric round is scoped to the accepted Build and attempt, never to the node-admin
-/// that commands it (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the
+/// CONTRACT: a fabric checklist is scoped to the accepted Build and attempt, never to the node-admin
+/// that commands it (node-rpc-envelope.md, "Fabric status command pairs": "The state's command is scoped to the
 /// accepted Build, attempt and planned exact births"; "Idempotency is the natural key"). When the
-/// mesh's primary seat moves and the new holder sends the same round, the birth answers it
+/// mesh's primary seat moves and the new holder sends the same checklist, the birth answers it
 /// `AlreadyApplied` and its action is not run again: while the action runs the new holder is owed
 /// the check-in once it is stored, and after it is stored the check-in is made to the new holder at
-/// once (serve_round's contract: that is how a new primary's checklist rebuilds itself). What must
-/// NOT happen: `Applied` to the new holder and a second run of the round's action.
+/// once (serve_state's contract: that is how a new primary's checklist rebuilds itself). What must
+/// NOT happen: `Applied` to the new holder and a second run of the checklist's action.
 #[test]
-fn a_round_sent_again_by_the_new_primary_is_the_same_round_and_its_action_runs_once() {
-    let cell = "a_round_sent_again_by_the_new_primary_is_the_same_round_and_its_action_runs_once";
+fn a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_action_runs_once() {
+    let cell = "a_state_command_sent_again_by_the_new_primary_is_the_same_state_key_and_its_action_runs_once";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        use rdm_admin::fabric_state::RoundKind;
-        let birth = Birth::up("round-new-commander").await;
+        use rdm_admin::fabric_state::StateCommand;
+        let birth = Birth::up("state-new-commander").await;
         let actions = HeldActions::new();
-        birth.running.own.set_round_actions(actions.clone());
+        birth.running.own.set_state_actions(actions.clone());
 
         // A second node-admin of mesh1 on the same gossip mesh, resolving the birth too.
         let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
@@ -381,54 +381,54 @@ fn a_round_sent_again_by_the_new_primary_is_the_same_round_and_its_action_runs_o
 
         // commit-state: admin1 commands it and the action runs, held.
         birth.record_mesh_primary(&birth.admin, 1).await;
-        assert_eq!(birth.round_from(&birth.admin, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted");
+        assert_eq!(birth.state_from(&birth.admin, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's first command is admitted");
         actions.entered.notified().await;
-        // The seat moves; the new holder sends the same round while the action runs.
+        // The seat moves; the new holder sends the same checklist while the action runs.
         birth.record_mesh_primary(&admin2, 2).await;
-        assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::AlreadyApplied, "the same round from the new seat holder is the round already taken");
+        assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::AlreadyApplied, "the same checklist from the new seat holder is the checklist already taken");
         actions.gate.send_replace(true);
         checked_in(&birth.admin, &spans, "state-committed", 1).await;
         checked_in(&admin2, &spans, "state-committed", 1).await;
-        assert_eq!(actions.runs(), 1, "the commit-state action runs once for the round, whoever commands it");
+        assert_eq!(actions.runs(), 1, "the commit-state action runs once for the checklist, whoever commands it");
 
         // open-traffic: the action is stored before the seat moves; the new holder is checked in at once.
         birth.record_mesh_primary(&birth.admin, 3).await;
-        assert_eq!(birth.round_from(&birth.admin, RoundKind::OpenTraffic, 1).await, StatusReply::Applied);
+        assert_eq!(birth.state_from(&birth.admin, StateCommand::OpenTraffic, 1).await, StatusReply::Applied);
         checked_in(&birth.admin, &spans, "traffic-opened", 1).await;
         birth.record_mesh_primary(&admin2, 4).await;
-        assert_eq!(birth.round_from(&admin2, RoundKind::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "a stored round from the new seat holder is the round already taken");
+        assert_eq!(birth.state_from(&admin2, StateCommand::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "a stored checklist from the new seat holder is the checklist already taken");
         checked_in(&admin2, &spans, "traffic-opened", 1).await;
-        assert_eq!(actions.runs(), 2, "one action per round: commit-state once and open-traffic once");
-        for round in ["commit-state", "open-traffic"] {
-            let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-round").into_iter().filter(|f| f.get("round").map(String::as_str) == Some(round) && f.get("acted").map(String::as_str) == Some(a)).count();
-            assert_eq!((acted("true"), acted("false")), (1, 1), "{round}: one acted round for the first holder and one check-in without acting for the new holder");
+        assert_eq!(actions.runs(), 2, "one action per checklist: commit-state once and open-traffic once");
+        for state_key in ["commit-state", "open-traffic"] {
+            let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-check-in").into_iter().filter(|f| f.get("command").map(String::as_str) == Some(state_key) && f.get("acted").map(String::as_str) == Some(a)).count();
+            assert_eq!((acted("true"), acted("false")), (1, 1), "{state_key}: one acted checklist for the first holder and one check-in without acting for the new holder");
         }
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
 
-/// CONTRACT: a member checks in with the primary that commanded it (fabric-state-commit.md, round
+/// CONTRACT: a member checks in with the primary that commanded it (fabric-state-commit.md, checklist
 /// sequence: "M->>N: commit-state (exact planned birth)" then "N->>M: state-committed"; states.md,
-/// "The round checklist": "A new primary, through election or recovery, re-sends the current round.
+/// "The check-in checklist": "A new primary, through election or recovery, re-sends the current state's command.
 /// Members already done check in again, and the checklist rebuilds itself"). The seat moved to
 /// admin2, which commands the birth at once; the birth has not yet heard the seat move, so its seat
 /// book still names admin1. The command is admitted and the birth's check-in goes to admin2, the
 /// commander the call came from. What must NOT happen: the check-in addressed to the holder the
-/// birth's seat book names, which no longer holds the round, refuses it `RejectedNotPrimary` and
+/// birth's seat book names, which no longer holds the checklist, refuses it `RejectedNotPrimary` and
 /// never asks again: admin2's command was answered `Applied`, so it never re-sends and its
 /// checklist never completes (gate red, tree b24a4303, mesh_elections__sticky_seat trace
 /// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-primary).
 #[test]
-fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander() {
-    let cell = "a_round_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander";
+fn a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander() {
+    let cell = "a_state_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_checked_in_to_that_commander";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        use rdm_admin::fabric_state::RoundKind;
-        let birth = Birth::up("round-unheard-commander").await;
+        use rdm_admin::fabric_state::StateCommand;
+        let birth = Birth::up("state-unheard-commander").await;
         let actions = HeldActions::new();
         actions.gate.send_replace(true);
-        birth.running.own.set_round_actions(actions.clone());
+        birth.running.own.set_state_actions(actions.clone());
 
         // A second node-admin of mesh1 on the same gossip mesh, resolving the birth, and carried in
         // admin1's member projection, so the birth names a call from it by its endpoint.
@@ -460,9 +460,9 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_over_is_check
         .await
         .expect("the birth's member projection names admin2 at its endpoint");
 
-        // The birth's seat book names admin1; admin2, which took the seat, commands the round.
+        // The birth's seat book names admin1; admin2, which took the seat, commands the checklist.
         birth.record_mesh_primary(&birth.admin, 1).await;
-        assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted, whoever sends it");
+        assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's first command is admitted, whoever sends it");
         checked_in(&admin2, &spans, "state-committed", 1).await;
         let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
         assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's seat book names");
@@ -631,10 +631,10 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        use rdm_admin::fabric_state::RoundKind;
-        let birth = Birth::up("round-removed-commander").await;
+        use rdm_admin::fabric_state::StateCommand;
+        let birth = Birth::up("state-removed-commander").await;
         let actions = HeldActions::new();
-        birth.running.own.set_round_actions(actions.clone());
+        birth.running.own.set_state_actions(actions.clone());
         let admin2 = birth.other_admin("mesh1.admin.2").await;
         let admin3 = birth.other_admin("mesh1.admin.3").await;
         let (gone_id, gone_inc, gone_name) = (admin2.launcher.node_id.clone(), admin2.launcher.incarnation.clone(), admin2.launcher.name.clone());
@@ -642,7 +642,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
 
         // admin1 holds the seat at revision 1 from its boot.
         birth.record_mesh_primary(&admin2, 2).await;
-        assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's command is admitted");
+        assert_eq!(birth.state_from(&admin2, StateCommand::StateCommit, 1).await, StatusReply::Applied, "the checklist's command is admitted");
         actions.entered.notified().await;
         // admin2 goes away; the check-in is owed to it and resent. Dropping admin2 does not wait for it to
         // stop serving, so the action is released only once the birth's own call to admin2 (the

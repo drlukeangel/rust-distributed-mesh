@@ -113,7 +113,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // apply-node-config (ops-naming "Node data"; node-config-update.md step 3: "it applies the map and
         // carries it in its next digest"): the birth holds the whole config and carries it in its digest. Its
         // own topology answer serves its mesh as published (gossip.md §3.1: a version names one content), so
-        // it carries the config on its own digest from the version the mesh-primary's round publishes it at.
+        // it carries the config on its own digest from the version the mesh-primary's checklist publishes it at.
         let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();
         let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
         assert_eq!(call(told).await, StatusReply::Applied);

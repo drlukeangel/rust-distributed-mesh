@@ -758,10 +758,10 @@ impl AdminRunner {
         // A delete-mesh of an attempt the Build has moved past, as this admin's fold of the Build holds it,
         // is a superseded writer's call (fabric-recovery.md step 4, Q160: a returning fabric-primary's Build
         // calls are refused): it is refused by name against the attempt held, as an earlier attempt of a
-        // round held is, and nothing is admitted. A fold that has not reached the carried attempt refuses nothing.
+        // workflow held is, and nothing is admitted. A fold that has not reached the carried attempt refuses nothing.
         if let Ok(p) = self.builds.read_build(&key.build_id).await {
             if p.attempt > key.attempt {
-                return crate::mesh_delete::refuse_round("delete-mesh", &MeshDeleteKey { attempt: p.attempt, ..key.clone() }, &key);
+                return crate::mesh_delete::refuse_workflow("delete-mesh", &MeshDeleteKey { attempt: p.attempt, ..key.clone() }, &key);
             }
         }
         let me_str = me_name.to_string();
@@ -774,7 +774,7 @@ impl AdminRunner {
             Ok(owner) => owner,
             Err(refused) => return refused,
         };
-        // The mesh row Leaving and the round's admission (the command hook's mesh-leaving is the
+        // The mesh row Leaving and the workflow's admission (the command hook's mesh-leaving is the
         // owner's): [`crate::mesh_delete::admit_delete_mesh`].
         let crate::mesh_delete::DeleteMeshAdmission { leaving_row, admission } = crate::mesh_delete::admit_delete_mesh(&self.mesh_delete_runs, &*self.mesh_storage, &self.records.caches, &self.records.declared, &me.mesh, &key, &owner).await;
         if let Some(committed) = &leaving_row {
@@ -919,7 +919,7 @@ impl AdminRunner {
         // mesh.deleted (ops-naming mesh.delete: "reported by the mesh-primary, still alive, from its
         // members' exit proofs; mesh is dead, id kept retired"): every other member's exit is proven,
         // so this primary commits its mesh row Dead (states.md: "one commit stores the row, applies
-        // it, gossips it and answers"); its view then states the mesh Dead and its status round
+        // it, gossips it and answers"); its view then states the mesh Dead and its status workflow
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
         // answers no handoff: the owner's repeated delete-mesh decides it afresh.
         // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1

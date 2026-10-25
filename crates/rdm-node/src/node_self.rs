@@ -215,12 +215,12 @@ pub(crate) fn declared(op: &LifecycleOp) -> rdm_core::status::DeclaredOperation 
     rdm_core::status::DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() }
 }
 
-/// How far this birth took a round, keyed by the round alone: its kind in its fabric for the
-/// accepted Build and attempt (node-rpc-envelope.md, "Fabric status rounds"), never the node-admin
+/// How far this birth took a state command, keyed by the state key alone: its kind in its fabric for the
+/// accepted Build and attempt (node-rpc-envelope.md, "Fabric status command pairs"), never the node-admin
 /// that commanded it.
-enum RoundProgress {
+enum CheckInProgress {
     /// The action is running for `first`, the commander whose command started it: every other
-    /// commander that sent the round meanwhile (a new holder of the mesh's primary seat), with the
+    /// commander that sent the checklist meanwhile (a new holder of the mesh's primary seat), with the
     /// serve span of its command, is owed the check-in once the action is stored.
     Acting {
         /// The commander whose command started the action.
@@ -228,7 +228,7 @@ enum RoundProgress {
         /// The commanders owed the check-in when it is stored.
         joined: Vec<(NodeId, tracing::Span)>,
     },
-    /// The action is stored: a commander that sends the round is checked in at once.
+    /// The action is stored: a commander that sends the checklist is checked in at once.
     Acted,
 }
 
@@ -287,7 +287,7 @@ pub struct NodeSelf {
     /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
     /// retired, so its `before_ready` hook and any pull it has in flight end.
     pub retire: Option<rdm_transport::Retirement>,
-    /// The backbone, for a node-admin: its round hooks go out on its mesh channel and the backbone.
+    /// The backbone, for a node-admin: its state hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
     pub backbone: Option<rdm_transport::membership::Backbone>,
@@ -311,12 +311,12 @@ pub struct NodeSelf {
     /// The process's data-plane `ConnectionsRegistry`: `node.connections.delete` closes active
     /// `Connection`s by their row id and blocks new connections under `All`.
     data_connections: Mutex<Option<rdm_transport::connections::ConnectionsRegistry>>,
-    /// What this birth completes before it checks in to a commit-state or open-traffic round.
-    round_actions: Mutex<Arc<dyn crate::rounds::RoundActions>>,
-    /// The rounds this birth took, by round, and how far it took each.
-    rounds_seen: Mutex<std::collections::HashMap<crate::rounds::RoundKey, RoundProgress>>,
-    /// The round keys this node's action ran for, in any role (`rounds::ActedRecord`).
-    acted: Arc<crate::rounds::ActedRecord>,
+    /// What this birth completes before it checks in to a commit-state or open-traffic checklist.
+    state_actions: Mutex<Arc<dyn crate::fabric_states::StateActions>>,
+    /// The state commands this birth took, by state key, and how far it took each.
+    states_seen: Mutex<std::collections::HashMap<crate::fabric_states::StateKey, CheckInProgress>>,
+    /// The state keys this node's action ran for, in any role (`fabric_states::ActedRecord`).
+    acted: Arc<crate::fabric_states::ActedRecord>,
 }
 
 impl NodeSelf {
@@ -336,7 +336,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         membership.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), state_actions: Mutex::new(Arc::new(crate::fabric_states::NoScratchpad)), states_seen: Mutex::new(std::collections::HashMap::new()), acted: Arc::default() }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -346,7 +346,7 @@ impl NodeSelf {
         self.membership.held_name(&self.name)
     }
 
-    /// This surface, publishing its round hooks on `backbone` as well as its mesh channel.
+    /// This surface, publishing its state hooks on `backbone` as well as its mesh channel.
     pub fn with_backbone(mut self, backbone: rdm_transport::membership::Backbone) -> Self {
         self.backbone = Some(backbone);
         self
@@ -706,32 +706,32 @@ impl NodeSelf {
         !matches!(*self.cycle.lock().unwrap(), Cycle::Live(_))
     }
 
-    /// This surface, completing `actions` before it checks in to a round.
-    pub fn with_round_actions(self, actions: Arc<dyn crate::rounds::RoundActions>) -> Self {
-        self.set_round_actions(actions);
+    /// This surface, completing `actions` before it checks in to a checklist.
+    pub fn with_state_actions(self, actions: Arc<dyn crate::fabric_states::StateActions>) -> Self {
+        self.set_state_actions(actions);
         self
     }
 
-    /// This surface, with the record of the round keys this node's action ran for shared with the
-    /// admin's round driver: one action per round key whichever role runs it.
-    pub fn with_acted(mut self, acted: Arc<crate::rounds::ActedRecord>) -> Self {
+    /// This surface, with the record of the state keys this node's action ran for shared with the
+    /// admin's checklist driver: one action per state key whichever role runs it.
+    pub fn with_acted(mut self, acted: Arc<crate::fabric_states::ActedRecord>) -> Self {
         self.acted = acted;
         self
     }
 
-    /// Complete `actions` before checking in to a round, from the next round this birth takes.
-    pub fn set_round_actions(&self, actions: Arc<dyn crate::rounds::RoundActions>) {
-        *self.round_actions.lock().unwrap() = actions;
+    /// Complete `actions` before checking in, from the next state command this birth takes.
+    pub fn set_state_actions(&self, actions: Arc<dyn crate::fabric_states::StateActions>) {
+        *self.state_actions.lock().unwrap() = actions;
     }
 
     /// Serve `commit-state` or `open-traffic` from `commander`, the primary of this birth's mesh
     /// (the caller resolved it). The command is admitted at once; the birth then completes its
-    /// action and calls the matching completion at `commander`. A round this birth already took,
+    /// action and calls the matching completion at `commander`. A checklist this birth already took,
     /// whichever commander sends it, is answered `AlreadyApplied` and its action is not run again:
     /// the check-in is made to the commander that sends it, at once when the action is stored and
     /// otherwise once it is. That is how a new primary's checklist rebuilds itself.
-    fn serve_round(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> StatusReply {
-        let op = crate::rounds::RoundOp::of(req).expect("a round op");
+    fn serve_state(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> StatusReply {
+        let op = crate::fabric_states::StateOp::of(req).expect("a state op");
         // Answered by the birth the call reached (R-RX5: no receiver refuses a downward call for the
         // node id it names); the exact birth it names is checked, so a call that reached another
         // birth is refused naming the one held.
@@ -740,7 +740,7 @@ impl NodeSelf {
         }
         let want = op.kind.operation(op.fabric_id);
         if op.operation != want {
-            return rdm_core::reply::status::not_ready(format!("{}: {} names operation {}, the round's is {want}", self.held_name(), req.op(), op.operation));
+            return rdm_core::reply::status::not_ready(format!("{}: {} names operation {}, the checklist's is {want}", self.held_name(), req.op(), op.operation));
         }
         let key = op.key();
         let parent = tracing::Span::current();
@@ -750,31 +750,31 @@ impl NodeSelf {
             CheckIn,
         }
         let admit = {
-            let mut seen = self.rounds_seen.lock().unwrap();
+            let mut seen = self.states_seen.lock().unwrap();
             match seen.get_mut(&key) {
-                // This node's action for the round ran in another role (its mesh round as the primary):
+                // This node's action for the checklist ran in another role (its mesh checklist as the primary):
                 // the command is checked in from the record, the action is not run again.
                 None if self.acted.acted(&key) => {
-                    seen.insert(key.clone(), RoundProgress::Acted);
+                    seen.insert(key.clone(), CheckInProgress::Acted);
                     Admit::CheckIn
                 }
                 None => {
-                    seen.insert(key.clone(), RoundProgress::Acting { first: commander.clone(), joined: Vec::new() });
+                    seen.insert(key.clone(), CheckInProgress::Acting { first: commander.clone(), joined: Vec::new() });
                     Admit::Act
                 }
-                Some(RoundProgress::Acting { first, joined }) => {
+                Some(CheckInProgress::Acting { first, joined }) => {
                     if first != commander && !joined.iter().any(|(c, _)| c == commander) {
                         joined.push((commander.clone(), parent.clone()));
                     }
                     Admit::Joined
                 }
-                Some(RoundProgress::Acted) => Admit::CheckIn,
+                Some(CheckInProgress::Acted) => Admit::CheckIn,
             }
         };
         let (me, commander) = (self.clone(), commander.clone());
         match admit {
             Admit::Act => {
-                tokio::spawn(async move { me.round(commander, key, parent).await });
+                tokio::spawn(async move { me.run_state(commander, key, parent).await });
                 rdm_core::reply::applied()
             }
             Admit::CheckIn => {
@@ -785,23 +785,23 @@ impl NodeSelf {
         }
     }
 
-    /// The round of this birth: its action (once per round), then the completion call at its
-    /// commander and at every commander that sent the round while the action ran.
-    async fn round(self: Arc<Self>, commander: NodeId, key: crate::rounds::RoundKey, parent: tracing::Span) {
+    /// The checklist of this birth: its action (once per checklist), then the completion call at its
+    /// commander and at every commander that sent the checklist while the action ran.
+    async fn run_state(self: Arc<Self>, commander: NodeId, key: crate::fabric_states::StateKey, parent: tracing::Span) {
         use tracing::Instrument;
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.held_name(), round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = true, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-check-in", node = %self.held_name(), command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = true, "otel.kind" = "internal");
         async {
-            let actions = self.round_actions.lock().unwrap().clone();
-            if let Err(e) = crate::rounds::run_action(&*actions, &self.held_name(), key.kind).await {
-                tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %self.held_name(), round = key.kind.command(), error = %e, "otel.kind" = "internal")
+            let actions = self.state_actions.lock().unwrap().clone();
+            if let Err(e) = crate::fabric_states::run_action(&*actions, &self.held_name(), key.kind).await {
+                tracing::info_span!("rdm.node_admin.fabric.update.via-state-action-failed", node = %self.held_name(), command = key.kind.command(), error = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("this birth's action failed: it owes no check-in"));
-                // Nobody is owed a check-in; the next command of the round runs the action afresh.
-                self.rounds_seen.lock().unwrap().remove(&key);
+                // Nobody is owed a check-in; the next command of the checklist runs the action afresh.
+                self.states_seen.lock().unwrap().remove(&key);
                 return;
             }
             self.acted.record(&key);
-            let joined = match self.rounds_seen.lock().unwrap().insert(key.clone(), RoundProgress::Acted) {
-                Some(RoundProgress::Acting { joined, .. }) => joined,
+            let joined = match self.states_seen.lock().unwrap().insert(key.clone(), CheckInProgress::Acted) {
+                Some(CheckInProgress::Acting { joined, .. }) => joined,
                 _ => Vec::new(),
             };
             // Each commander owed is checked in on its own: one that cannot be reached holds up no other.
@@ -815,25 +815,25 @@ impl NodeSelf {
         .await
     }
 
-    /// The check-in of a round whose action this birth already stored, made to `commander`: the
+    /// The check-in of a checklist whose action this birth already stored, made to `commander`: the
     /// action is not run again.
-    async fn check_in_again(self: Arc<Self>, commander: NodeId, key: crate::rounds::RoundKey, parent: tracing::Span) {
+    async fn check_in_again(self: Arc<Self>, commander: NodeId, key: crate::fabric_states::StateKey, parent: tracing::Span) {
         use tracing::Instrument;
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.held_name(), round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = false, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-check-in", node = %self.held_name(), command = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = false, "otel.kind" = "internal");
         self.check_in(&commander, &key).instrument(span).await
     }
 
-    /// The check-in hook, then the completion owed at `commander`, naming `key`'s round (node-rpc.md
+    /// The check-in hook, then the completion owed at `commander`, naming `key`'s checklist (node-rpc.md
     /// §43, i146 Q44): one Owed call, ended by its answer, by the runtime's proof that its receiver is
     /// gone, or by the primary seat of this birth's mesh moving to another node, which is its one
     /// retargeting (Q39): the call to the old holder is dropped and the completion is owed to the new
     /// one. A completion whose receiver was proven gone is owed to the next node the seat names. The
     /// hook runs once, however often the completion is sent.
-    async fn check_in(&self, commander: &NodeId, key: &crate::rounds::RoundKey) {
+    async fn check_in(&self, commander: &NodeId, key: &crate::fabric_states::StateKey) {
         let req = key.kind.up(key, self.node_id.clone(), self.incarnation.clone());
         // The check-in hook runs in the path of the completion call, before it goes out. What became
         // of it is named on the call's span: handed to gossip, or why not.
-        let hook = match crate::rounds::publish_hook(&self.held_name(), key, true, &self.node_id, &self.incarnation, &self.membership, self.backbone.as_ref()).await {
+        let hook = match crate::fabric_states::publish_hook(&self.held_name(), key, true, &self.node_id, &self.incarnation, &self.membership, self.backbone.as_ref()).await {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };
@@ -890,7 +890,7 @@ impl NodeSelf {
     }
 
     /// `key`'s completion, owed at `from`, is owed at `to` from now on, because of `why`.
-    fn retargeted(&self, key: &crate::rounds::RoundKey, from: &NodeId, to: &NodeId, why: &str) {
+    fn retargeted(&self, key: &crate::fabric_states::StateKey, from: &NodeId, to: &NodeId, why: &str) {
         tracing::info_span!("rdm.node_admin.status.update.via-completion-retargeted", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, from = %from, to = %to, why, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the completion is owed to the holder of this birth's mesh's primary seat"));
     }
@@ -900,12 +900,12 @@ impl NodeSelf {
     /// and `Reserved7` are reserved positions, refused by name, whoever calls
     /// (node-rpc.md §14: nothing inside the mesh checks who is calling): `commander` is the caller as
     /// the receiver resolved it (`None` when it holds no birth for the calling endpoint), `spare` the
-    /// call's own connection. A round command is served for `commander`, the primary of this birth's
+    /// call's own connection. A state command is served for `commander`, the primary of this birth's
     /// mesh, which its check-in goes to. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
         if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
             return Some(match commander {
-                Some(commander) => self.serve_round(commander, req),
+                Some(commander) => self.serve_state(commander, req),
                 None => rdm_core::reply::status::not_ready(format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op())),
             });
         }

@@ -58,10 +58,10 @@ pub struct ControlPlane {
     pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rdm_core::NodeLoad>, Option<rdm_core::GossipStats>)> + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
-    /// The fabric's climb told of a Build this admin accepted, before the door answers it: a resize or
+    /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize or
     /// an executable replacement puts the fabric back to pending inside the acceptance (states.md,
     /// Resize and executable replacement), and the
-    /// view this admin answers from holds it. Set once by the admin that owns the climb.
+    /// view this admin answers from holds it. Set once by the admin that owns the change.
     pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
     /// Where each attempt this admin brings into being keeps its context, for the claim to return.
     pub contexts: Arc<crate::build_claim::AttemptContexts>,
@@ -598,7 +598,7 @@ impl ControlPlane {
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &me.to_string(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id.log(), "build accepted");
-            // A resize or an executable replacement puts the fabric back to pending (states.md): the climb takes
+            // A resize or an executable replacement puts the fabric back to pending (states.md): the change takes
             // the accepted Build before the door answers it and before the executor is woken.
             if let Some(resize) = self.resize.get() {
                 resize().await;

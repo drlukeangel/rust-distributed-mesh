@@ -1,7 +1,7 @@
 //! The path a forwarding mesh primary's frames take onto its own mesh channel.
 //!
 //! ONE ordered sender carries every frame the primary puts on its mesh channel for the backbone:
-//! the forwarder's decisions (the backbone receiver, the own-mesh round, the seat fulls) and the
+//! the forwarder's decisions (the backbone receiver, the own-mesh publication, the seat fulls) and the
 //! lifecycle frames it carries in. A decision is made under the forwarder's lock and queued while
 //! that lock is still held, so the queue's order is the decision order; a single task drains the
 //! queue, finishing every frame of a decision (a chunked full is one decision) before it takes the

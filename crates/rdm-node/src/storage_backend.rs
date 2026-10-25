@@ -5,7 +5,7 @@
 //! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
 //! one process's rows.
 
-use crate::rounds::RoundActions;
+use crate::fabric_states::StateActions;
 use crate::storage::ConnectionsStorage;
 use async_trait::async_trait;
 use rdm_core::launch::Launch;
@@ -16,7 +16,7 @@ pub struct NodeStorage {
     /// The node's own connections rows.
     pub connections: Arc<dyn ConnectionsStorage>,
     /// The node's commit-state and open-traffic actions.
-    pub round_actions: Arc<dyn RoundActions>,
+    pub state_actions: Arc<dyn StateActions>,
     /// Where the rows are written now, as the boot's span records it.
     pub writes_to: String,
 }
@@ -30,7 +30,7 @@ pub trait NodeStorageBackend: Send + Sync {
 
 /// RDM standalone's backend: the node's connections rows under `connections/<its path.name>/` of
 /// the fabric's store root (R14), held in its scratchpad before the fabric's first state-commit and
-/// published by its commit-state action (states.md, Rounds).
+/// published by its commit-state action (states.md, Setting a state).
 #[cfg(feature = "file-backend")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FileNodeBackend;
@@ -43,7 +43,7 @@ impl NodeStorageBackend for FileNodeBackend {
         let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &launch.incarnation).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
-            round_actions: Arc::new(crate::rounds::StorePublication::new(root.scratchpad().cloned(), None)),
+            state_actions: Arc::new(crate::fabric_states::StorePublication::new(root.scratchpad().cloned(), None)),
             writes_to: root.writes_to().to_string(),
         })
     }
@@ -63,6 +63,6 @@ pub struct MemoryNodeBackend;
 #[async_trait]
 impl NodeStorageBackend for MemoryNodeBackend {
     async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
-        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), round_actions: Arc::new(crate::rounds::NoScratchpad), writes_to: "memory".into() })
+        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), state_actions: Arc::new(crate::fabric_states::NoScratchpad), writes_to: "memory".into() })
     }
 }

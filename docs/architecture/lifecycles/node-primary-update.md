@@ -129,7 +129,7 @@ and recording it are separate for every type.
   workflow that commanded it (the stop, restart or delete of that node) fails by name with that reason.
   The exceptions that skip the update: the delete of a mesh's only node, and the delete of a type's only
   node in its mesh, whether the node leaves the topology (a removal) or is re-created at the same
-  `path.name` (node recovery, a roll's replacement); the type has no primary until the election names
+  `path.name` (node recovery, an executable replacement); the type has no primary until the election names
   the new birth ReadyForTraffic. A mesh's sole `broker` cannot be stopped or restarted until a second
   broker is ReadyForTraffic. No row and no vacancy inferred from a stop.
 - **No other mesh-primary for the fabric-primary:** the fabric arm's own refusal,

@@ -342,7 +342,7 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
             if Birth::publisher(&context.source.fabric, publisher) != context.source => return Err(invalid("publisher and source disagree").into()),
         Frame::FabricStatus { fabric, .. } if fabric != &context.source.fabric => return Err(invalid("fabric and source disagree").into()),
         Frame::StateCommitting { hook, .. } | Frame::StateCommitted { hook, .. } | Frame::TrafficOpening { hook, .. } | Frame::TrafficOpened { hook, .. }
-            if hook.fabric_id != context.source.fabric => return Err(invalid("round fabric and source disagree").into()),
+            if hook.fabric_id != context.source.fabric => return Err(invalid("state hook fabric and source disagree").into()),
         _ => (),
     }
     let owner = context.publication.as_ref().map(|(b, _)| b).unwrap_or(&context.source);

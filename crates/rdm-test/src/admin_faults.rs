@@ -100,7 +100,7 @@ pub enum CutSpec {
     /// skips that neighbour's catch-up, so none of its frames is offered to the topic. It models the
     /// one-shot catch-up lost at the send seam.
     CatchUp,
-    /// The testkit application took the fabric's `sync_state` round and has not answered it: the
+    /// The testkit application took the fabric's `sync_state` checklist and has not answered it: the
     /// fabric stays in state-sync until the release (`test_app` mode `hold`).
     StateSync,
     /// A joining admin has joined and is about to make the topology read (op `0x1E`) of node-start.md
@@ -135,14 +135,14 @@ pub enum CutSpec {
         /// The state declared, as `NodeState` names it.
         #[serde(default)] state: Option<String>,
     },
-    /// A node-admin's round action (`commit-state` or `open-traffic`) is about to run, after RDM's
-    /// own publication: held until the release, so the round's command is answered and its check-in
-    /// not yet owed (i146 e3). `node` narrows the cut to one admin, `round` to one round.
-    RoundAction {
+    /// A node-admin's state action (`commit-state` or `open-traffic`) is about to run, after RDM's
+    /// own publication: held until the release, so the checklist's command is answered and its check-in
+    /// not yet owed (i146 e3). `node` narrows the cut to one admin, `command` to one command.
+    StateAction {
         /// The acting admin's `path.name`.
         #[serde(default)] node: Option<String>,
-        /// The round, as its command names it: `commit-state` or `open-traffic`.
-        #[serde(default)] round: Option<String>,
+        /// The checklist, as its command names it: `commit-state` or `open-traffic`.
+        #[serde(default)] command: Option<String>,
     },
     /// The deployment provider's inspection of the runtimes at `pids` answers `Unknown` while the cut is
     /// armed: no exit proof of them can be read, while every other runtime, a launch of this admin's
@@ -226,11 +226,11 @@ pub enum Probe {
         /// The neighbour.
         neighbour: String,
     },
-    /// The application's answer to a `sync_state` round, about to be returned.
+    /// The application's answer to a `sync_state` checklist, about to be returned.
     StateSync {
-        /// The round's Build.
+        /// The checklist's Build.
         build_id: String,
-        /// The round's attempt.
+        /// The checklist's attempt.
         attempt: u32,
     },
     /// A final aggregate or leadership announcement about to be sent on a channel.
@@ -263,12 +263,12 @@ pub enum Probe {
         /// The state declared.
         state: String,
     },
-    /// A node-admin's round action about to run.
-    RoundAction {
+    /// A node-admin's state action about to run.
+    StateAction {
         /// The acting admin.
         node: String,
-        /// The round, as its command names it.
-        round: &'static str,
+        /// The checklist, as its command names it.
+        command: &'static str,
     },
     /// A provider `inspect` about to be made.
     ProviderInspect {
@@ -301,7 +301,7 @@ impl CutSpec {
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
-            (CutSpec::RoundAction { node, round }, Probe::RoundAction { node: n, round: r }) => node_is(node, n) && round.as_deref().is_none_or(|w| w == *r),
+            (CutSpec::StateAction { node, command }, Probe::StateAction { node: n, command: r }) => node_is(node, n) && command.as_deref().is_none_or(|w| w == *r),
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
             _ => false,
@@ -326,7 +326,7 @@ impl Probe {
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
-            Probe::RoundAction { node, round } => Hit::RoundAction { node: node.clone(), round: round.to_string() },
+            Probe::StateAction { node, command } => Hit::StateAction { node: node.clone(), command: command.to_string() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
         }
@@ -725,20 +725,20 @@ impl rdm_admin::wiring::DeclarationSeam for FaultedDeclaration {
     }
 }
 
-/// The embedding's round action: an armed [`CutSpec::RoundAction`] holds the admin's action before it
+/// The embedding's state action: an armed [`CutSpec::StateAction`] holds the admin's action before it
 /// runs, until the release. The testkit binds no action of its own, so open-traffic names that, as
 /// RDM's does with none bound.
-struct FaultedRoundActions(Arc<AdminFaults>);
+struct FaultedStateActions(Arc<AdminFaults>);
 
 #[async_trait]
-impl rdm_admin::fabric_rounds::RoundActions for FaultedRoundActions {
+impl rdm_admin::fabric_status::StateActions for FaultedStateActions {
     async fn commit_state(&self, node: &rdm_core::PathName) -> Result<(), String> {
-        self.0.hold(Probe::RoundAction { node: node.to_string(), round: "commit-state" }).await;
+        self.0.hold(Probe::StateAction { node: node.to_string(), command: "commit-state" }).await;
         Ok(())
     }
     async fn open_traffic(&self, node: &rdm_core::PathName) -> Result<(), String> {
-        self.0.hold(Probe::RoundAction { node: node.to_string(), round: "open-traffic" }).await;
-        rdm_admin::fabric_rounds::RoundActions::open_traffic(&rdm_admin::fabric_rounds::NoScratchpad, node).await
+        self.0.hold(Probe::StateAction { node: node.to_string(), command: "open-traffic" }).await;
+        rdm_admin::fabric_status::StateActions::open_traffic(&rdm_admin::fabric_status::NoScratchpad, node).await
     }
 }
 
@@ -787,7 +787,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         certs: CertChoice::NoCerts,
         serve_app: None,
         fabric_hooks: FabricHooks::no_app_work(),
-        round_actions: Some(Arc::new(FaultedRoundActions(faults.clone()))),
+        state_actions: Some(Arc::new(FaultedStateActions(faults.clone()))),
         hooks: NODE_READY_PHASES
             .iter()
             .map(|&phase| {

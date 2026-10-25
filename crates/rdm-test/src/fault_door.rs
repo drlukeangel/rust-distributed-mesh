@@ -43,7 +43,7 @@ enum CutWire {
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
     Declaration { node: Option<String>, state: Option<String> },
-    RoundAction { node: Option<String>, round: Option<String> },
+    StateAction { node: Option<String>, command: Option<String> },
     ProviderUnproven { pids: Vec<u32> },
     DriftPass { node: Option<String> },
 }
@@ -153,11 +153,11 @@ pub enum Hit {
         /// The neighbour.
         neighbour: String,
     },
-    /// The application's answer to a `sync_state` round, about to be returned.
+    /// The application's answer to a `sync_state` checklist, about to be returned.
     StateSync {
-        /// The round's Build.
+        /// The checklist's Build.
         build_id: String,
-        /// The round's attempt.
+        /// The checklist's attempt.
         attempt: u32,
     },
     /// A joining admin's topology read, about to be made.
@@ -190,12 +190,12 @@ pub enum Hit {
         /// The state it declares.
         state: String,
     },
-    /// A node-admin's round action, about to run.
-    RoundAction {
+    /// A node-admin's state action, about to run.
+    StateAction {
         /// The acting admin.
         node: String,
-        /// The round, as its command names it.
-        round: String,
+        /// The checklist, as its command names it.
+        command: String,
     },
     /// A provider `inspect` answered `Unknown` while the cut is armed.
     ProviderInspect {
@@ -227,7 +227,7 @@ impl Hit {
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
             Hit::Declaration { node, state } => json!({"node": node, "state": state}),
-            Hit::RoundAction { node, round } => json!({"node": node, "round": round}),
+            Hit::StateAction { node, command } => json!({"node": node, "command": command}),
             Hit::ProviderInspect { pid } => json!({"pid": pid}),
             Hit::DriftPass { node } => json!({"node": node}),
         }

@@ -3,15 +3,15 @@
 //!
 //! `RDM_TEST_APP` picks the behaviour of `sync_state` (unset is `answer:0`):
 //!
-//! - `answer[:<ms>]`: simulated work for `<ms>` milliseconds, then `StateSynced` for the round.
+//! - `answer[:<ms>]`: simulated work for `<ms>` milliseconds, then `StateSynced` for the checklist.
 //! - `never`: the application never answers; the fabric stays in state-sync with a named blocker.
 //! - `foreign-build`: answers `StateSynced` naming another Build.
 //! - `old-attempt`: answers `StateSynced` naming attempt 0, an attempt older than any claimed.
-//! - `hold`: takes the round and holds its answer at the admin's fault cut `state-sync` (armed at
-//!   boot) until the fault door releases it, then answers `StateSynced` for the round.
+//! - `hold`: takes the checklist and holds its answer at the admin's fault cut `state-sync` (armed at
+//!   boot) until the fault door releases it, then answers `StateSynced` for the checklist.
 //! - `fail:<reason>`: holds like `hold`, then reports its work failed naming `<reason>` (Q158).
 //!
-//! `traffic_opened` is the one notice after the open-traffic round; it only records a span.
+//! `traffic_opened` is the one notice after the open-traffic checklist; it only records a span.
 //!
 //! It declares one secret (Q150), [`DECLARED_SECRET`], set on the broker and the gateway only: a
 //! scenario sets its value in the bootstrap admin's environment and reads which processes hold it.
@@ -20,7 +20,7 @@
 //! launch, reports them at its join and its row publishes them.
 
 use crate::admin_faults::{AdminFaults, CutSpec, Probe};
-use rdm_admin::wiring::{FabricHooks, StateSyncAnswer, StateSyncFailed, StateSyncRound, SyncState};
+use rdm_admin::wiring::{FabricHooks, StateSyncAnswer, StateSyncFailed, StateSyncHandoff, SyncState};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -52,7 +52,7 @@ pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {
 /// How the application answers `sync_state`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
-    /// Work for the duration, then answer the round.
+    /// Work for the duration, then answer the checklist.
     Answer(Duration),
     /// Never answer.
     Never,
@@ -98,43 +98,43 @@ impl Mode {
 }
 
 /// The hooks of this application in `mode`, held at the cuts of `faults` (the admin's own). A `hold`
-/// application arms its cut here, at boot, before any round can reach it.
+/// application arms its cut here, at boot, before any checklist can reach it.
 pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String> {
     if matches!(mode, Mode::Hold | Mode::Fail(_)) {
         faults.arm(STATE_SYNC_CUT, CutSpec::StateSync)?;
     }
     let sync_mode = mode.clone();
-    let sync_state = SyncState::hook(move |round: StateSyncRound| {
+    let sync_state = SyncState::hook(move |handoff: StateSyncHandoff| {
         let mode = sync_mode.clone();
         let faults = faults.clone();
-        let span = tracing::info_span!("rdm.testkit.app.update.via-sync-state", mode = %mode.label(), fabric_id = %round.fabric_id, build_id = %round.build_id, attempt = round.attempt, operation = %round.operation, "otel.kind" = "internal");
-        tracing::info_span!(parent: &span, "rdm.testkit.app.update.via-sync-state-taken", mode = %mode.label(), build_id = %round.build_id, attempt = round.attempt, "otel.kind" = "internal").in_scope(|| tracing::info!("the application took the round"));
+        let span = tracing::info_span!("rdm.testkit.app.update.via-sync-state", mode = %mode.label(), fabric_id = %handoff.fabric_id, build_id = %handoff.build_id, attempt = handoff.attempt, operation = %handoff.operation, "otel.kind" = "internal");
+        tracing::info_span!(parent: &span, "rdm.testkit.app.update.via-sync-state-taken", mode = %mode.label(), build_id = %handoff.build_id, attempt = handoff.attempt, "otel.kind" = "internal").in_scope(|| tracing::info!("the application took the checklist"));
         async move {
             let answer: StateSyncAnswer = match mode {
                 Mode::Answer(work) => {
                     tokio::time::sleep(work).await;
                     tracing::info!(work_ms = work.as_millis() as u64, "the application finished its state-sync work: state-synced");
-                    Ok(round)
+                    Ok(handoff)
                 }
                 Mode::Never => {
-                    tracing::info!("the application takes the round and never answers");
+                    tracing::info!("the application takes the checklist and never answers");
                     std::future::pending().await
                 }
                 Mode::ForeignBuild => {
                     tracing::info!("the application answers state-synced for another Build");
-                    Ok(StateSyncRound { build_id: "b5zscevkjkja".into(), ..round })
+                    Ok(StateSyncHandoff { build_id: "b5zscevkjkja".into(), ..handoff })
                 }
                 Mode::OldAttempt => {
                     tracing::info!("the application answers state-synced for attempt 0");
-                    Ok(StateSyncRound { attempt: 0, ..round })
+                    Ok(StateSyncHandoff { attempt: 0, ..handoff })
                 }
                 Mode::Hold => {
-                    faults.hold(Probe::StateSync { build_id: round.build_id.clone(), attempt: round.attempt }).await;
-                    tracing::info!("the fault door released the held round: state-synced");
-                    Ok(round)
+                    faults.hold(Probe::StateSync { build_id: handoff.build_id.clone(), attempt: handoff.attempt }).await;
+                    tracing::info!("the fault door released the held checklist: state-synced");
+                    Ok(handoff)
                 }
                 Mode::Fail(reason) => {
-                    faults.hold(Probe::StateSync { build_id: round.build_id.clone(), attempt: round.attempt }).await;
+                    faults.hold(Probe::StateSync { build_id: handoff.build_id.clone(), attempt: handoff.attempt }).await;
                     tracing::info!(reason = %reason, "the fault door released the held call: the application reports its work failed");
                     Err(StateSyncFailed { reason })
                 }
@@ -143,8 +143,8 @@ pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String
         }
         .instrument(span)
     });
-    let traffic_opened: rdm_admin::wiring::TrafficOpenedNotice = std::sync::Arc::new(|round: StateSyncRound| {
-        let span = tracing::info_span!("rdm.testkit.app.update.via-traffic-opened", fabric_id = %round.fabric_id, build_id = %round.build_id, attempt = round.attempt, operation = %round.operation, "otel.kind" = "internal");
+    let traffic_opened: rdm_admin::wiring::TrafficOpenedNotice = std::sync::Arc::new(|handoff: StateSyncHandoff| {
+        let span = tracing::info_span!("rdm.testkit.app.update.via-traffic-opened", fabric_id = %handoff.fabric_id, build_id = %handoff.build_id, attempt = handoff.attempt, operation = %handoff.operation, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application opens client traffic") }.instrument(span))
     });
     Ok(FabricHooks { sync_state: Some(sync_state), traffic_opened: Some(traffic_opened) })

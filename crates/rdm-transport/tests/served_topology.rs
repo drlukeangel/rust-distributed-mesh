@@ -5,7 +5,7 @@
 //! gossip.md §3.1, `Members`: "the version bumps on a material change of the normalized projection
 //! below and not on an unchanged republish"; the receiver rule: "A frame equal in revision to the
 //! held one but different in content is an inconsistency, refused by name". A (publisher,
-//! `topology_version`) names one content: the one its publication round put into the mesh.
+//! `topology_version`) names one content: the one its publication put into the mesh.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -94,15 +94,15 @@ fn take_read(reader: &Membership, s: &SourceSnapshot, snapshot_id: u64) -> Taken
 }
 
 /// CONTRACT (gossip.md §3.1 `Members` and its receiver rule; node-rpc-envelope.md Topology `0x1E`):
-/// the mesh-primary's round publishes its own mesh at version N. A birth then joins its book: a
-/// material change of the projection that no round has published yet. A topology read in that
+/// the mesh-primary's publication publishes its own mesh at version N. A birth then joins its book: a
+/// material change of the projection that no publication has published yet. A topology read in that
 /// window serves the own mesh as published, the version-N publication itself at version N, and a
-/// joiner that read version N before takes it again as the same content. The round that follows
+/// joiner that read version N before takes it again as the same content. The publication that follows
 /// bumps the version and the read serves the new member there. Must NOT happen: the read serving
 /// the book's live members under version N, which a joiner holding version N refuses as
 /// `rdm.mesh.membership.reject.via-inconsistent`.
 #[test]
-fn a_read_between_a_material_change_and_its_round_serves_the_published_members_at_their_version() {
+fn a_read_between_a_material_change_and_its_publication_serves_the_published_members_at_their_version() {
     let dir = crate::evidence_dir();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-served-topology").expect("the cell's evidence file can be created");
     capture.run(4, async {
@@ -115,7 +115,7 @@ fn a_read_between_a_material_change_and_its_round_serves_the_published_members_a
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
-        let round = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its round") };
+        let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
         let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::ReadyForTraffic, 0, 41_101);
         p.publish(&p_digest).await.unwrap();
@@ -124,15 +124,15 @@ fn a_read_between_a_material_change_and_its_round_serves_the_published_members_a
         assert!(p.book.started(&one, &one_birth, &"mesh1.rpc.1".parse().unwrap()));
         let own = || p.book.get(p_node_id.as_str()).expect("the primary holds itself").0;
 
-        // Version N: the round puts the projection into the mesh; a joiner reads it and installs it.
-        round().await;
+        // Version N: the publication puts the projection into the mesh; a joiner reads it and installs it.
+        publication().await;
         let published = of(p.held_topology(&own()), "mesh1");
         assert_eq!(published.publisher, publisher);
         let n = published.topology_version;
-        assert!(n >= 1, "the round published a version: {n}");
+        assert!(n >= 1, "the publication published a version: {n}");
         assert!(matches!(take_read(&reader, &published, 1), Taken::Installed(_)), "the joiner installs version {n}");
 
-        // A birth joins the book: a material change no round has published yet.
+        // A birth joins the book: a material change no publication has published yet.
         let (two, two_birth) = (NodeId::mint(), IncarnationId::mint());
         assert!(p.book.record(digest("mesh1.rpc.2", &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
         assert!(p.book.get(two.as_str()).is_some(), "the primary's book holds the new birth");
@@ -145,10 +145,10 @@ fn a_read_between_a_material_change_and_its_round_serves_the_published_members_a
         assert!(served.digests.iter().all(|d| d.node.node_id != two), "the read serves no member under version {n} that version {n} does not carry: {:?}", names(&served));
         assert_eq!(served.full(), published.full(), "the read serves the version-{n} publication as published: {:?} against {:?}", names(&served), names(&published));
 
-        // The round that follows publishes the change at a later version, and the read serves it there.
-        round().await;
+        // The publication that follows publishes the change at a later version, and the read serves it there.
+        publication().await;
         let next = of(p.held_topology(&own()), "mesh1");
-        assert!(next.topology_version > n, "the change was material: the round bumped the version ({} after {n})", next.topology_version);
+        assert!(next.topology_version > n, "the change was material: the publication bumped the version ({} after {n})", next.topology_version);
         assert!(next.digests.iter().any(|d| d.node.node_id == two), "the read serves the new member at the version that carries it: {:?}", names(&next));
         assert!(matches!(take_read(&reader, &next, 3), Taken::Installed(_)), "the joiner installs version {}", next.topology_version);
 

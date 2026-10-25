@@ -1,19 +1,19 @@
-//! The fabric states and the round checklist (states.md; fabric-state-sync.md,
+//! The fabric states and the check-in checklist (states.md; fabric-state-sync.md,
 //! fabric-state-commit.md, lifecycles/fabric-ready-for-traffic.md).
 //!
 //! A fabric is `pending`, then `state-sync` once every mesh is ready-for-traffic, then
 //! `state-commit` once the application answers state-synced, then `ready-for-traffic` once the
-//! commit-state and open-traffic rounds have both completed. Only the fabric-primary moves it.
+//! commit-state and open-traffic checklists have both completed. Only the fabric-primary moves it.
 //!
-//! A round is a command pair, fabric-primary → mesh-primary → member, and its completion pair back
+//! A checklist is a command pair, fabric-primary → mesh-primary → member, and its completion pair back
 //! up. Each primary keeps a checklist of the planned births of the accepted Build; a member counts
-//! only when it checks in as its planned birth, after the primary received this round's down op.
+//! only when it checks in as its planned birth, after the primary received this checklist's down op.
 //! Nothing leaves a checklist by a timer.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
 use crate::status_declare::{eligible, Destination, Sent};
 use crate::topology::Topology;
-use crate::round::Missing;
+use crate::checklist::Missing;
 use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
@@ -29,7 +29,7 @@ pub enum FabricState {
     StateSync,
     /// The application answered state-synced; the scratchpads are published and traffic is opened.
     StateCommit,
-    /// Both rounds completed.
+    /// Both checklists completed.
     ReadyForTraffic,
 }
 
@@ -68,7 +68,7 @@ impl FabricState {
 ///
 /// The durable fact is the ready-for-traffic event on the Fabric record (`crate::fabric_storage::FabricRecord`).
 /// The initial fabric first reaching ready-for-traffic is the fabric-primary's one fact (states.md: "The
-/// fabric-primary declares fabric state through the completed rounds"): it puts the row among its own
+/// fabric-primary declares fabric state through the completed check-ins"): it puts the row among its own
 /// mesh's status rows as the first act of entering ready-for-traffic, before it latches or admits
 /// anything, then applies the event at every other mesh primary. An admin of any mesh reads the row among
 /// its own mesh's rows, else among the fabric-primary's mesh's rows on the store root, so a command the
@@ -125,7 +125,7 @@ impl FirstReady {
 /// Why an admin knows the fabric first reached ready-for-traffic when its root holds the fact.
 pub const READY_ROW_ON_ROOT: &str = "ready-for-traffic-row-on-store-root";
 
-pub use rdm_node::rounds::{hook_frame, RoundKey, RoundKind, RoundOp};
+pub use rdm_node::fabric_states::{hook_frame, StateKey, StateCommand, StateOp};
 
 /// A planned birth a checklist names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,8 +154,8 @@ enum Command {
 }
 
 #[derive(Debug, Default)]
-struct Round {
-    /// Which opening of its key this round is: a round closed and opened again is a new opening.
+struct Checklist {
+    /// Which opening of its key this checklist is: a checklist closed and opened again is a new opening.
     opening: u64,
     expected: BTreeMap<NodeId, Expected>,
     /// Planned births the primary's view holds no birth of yet: each blocks completion by name.
@@ -164,12 +164,12 @@ struct Round {
     commands: HashMap<(NodeId, IncarnationId), Command>,
 }
 
-/// The rounds one primary has received the down op of, with their checklists. A change to any
+/// The checklists one primary has received the down op of, with their checklists. A change to any
 /// checklist, or a birth with an undelivered command addressing this primary, moves `tick`: the
 /// waiter arms on it before it reads, so a change that happened during the read is not lost.
 #[derive(Debug, Default)]
-pub struct RoundBook {
-    rounds: Mutex<HashMap<RoundKey, Round>>,
+pub struct Checklists {
+    checklists: Mutex<HashMap<StateKey, Checklist>>,
     /// The openings this book has made, the last one's number.
     openings: Mutex<u64>,
     tick: watch::Sender<u64>,
@@ -179,12 +179,12 @@ fn deliverable(n: &Node) -> bool {
     matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::ConnectionsDeleting) && n.incarnation_id.is_some()
 }
 
-impl RoundBook {
-    /// Open the round `key`: the primary received (or issued) its down op. Whether it is new. A new
-    /// round is a new opening of its key ([`Self::opening`]).
-    pub fn open(&self, key: &RoundKey) -> bool {
-        let mut rounds = self.rounds.lock().unwrap();
-        if rounds.contains_key(key) {
+impl Checklists {
+    /// Open the checklist `key`: the primary received (or issued) its down op. Whether it is new. A new
+    /// checklist is a new opening of its key ([`Self::opening`]).
+    pub fn open(&self, key: &StateKey) -> bool {
+        let mut checklists = self.checklists.lock().unwrap();
+        if checklists.contains_key(key) {
             return false;
         }
         let opening = {
@@ -192,40 +192,40 @@ impl RoundBook {
             *openings += 1;
             *openings
         };
-        rounds.insert(key.clone(), Round { opening, ..Round::default() });
+        checklists.insert(key.clone(), Checklist { opening, ..Checklist::default() });
         true
     }
 
     /// Which opening of `key` is open now, if it is open.
-    pub fn opening(&self, key: &RoundKey) -> Option<u64> {
-        self.rounds.lock().unwrap().get(key).map(|r| r.opening)
+    pub fn opening(&self, key: &StateKey) -> Option<u64> {
+        self.checklists.lock().unwrap().get(key).map(|r| r.opening)
     }
 
-    /// The rounds this book holds.
-    pub fn keys(&self) -> Vec<RoundKey> {
-        self.rounds.lock().unwrap().keys().cloned().collect()
+    /// The checklists this book holds.
+    pub fn keys(&self) -> Vec<StateKey> {
+        self.checklists.lock().unwrap().keys().cloned().collect()
     }
 
-    /// Forget every round: the tenure that opened them ended. A command call still out sees its round
+    /// Forget every checklist: the tenure that opened them ended. A command call still out sees its checklist
     /// gone and is cancelled.
     pub fn clear(&self) {
-        self.rounds.lock().unwrap().clear();
+        self.checklists.lock().unwrap().clear();
         self.bump();
     }
 
-    /// Whether the round is open.
-    pub fn is_open(&self, key: &RoundKey) -> bool {
-        self.rounds.lock().unwrap().contains_key(key)
+    /// Whether the checklist is open.
+    pub fn is_open(&self, key: &StateKey) -> bool {
+        self.checklists.lock().unwrap().contains_key(key)
     }
 
-    /// Carry an ordinary node's round check-in only while this mesh-admin holds the round open.
+    /// Carry an ordinary node's state check-in only while this mesh-admin holds the checklist open.
     /// Receipt never drives this checklist. The caller supplies the existing backbone publication;
     /// its named outcome is returned to the hook's receive span (Q21: x).
     pub fn carry_check_in(&self, frame: &rdm_transport::membership::Frame, carry: impl FnOnce(&rdm_transport::membership::Frame)) -> rdm_transport::membership::CompletionCarry {
         use rdm_transport::membership::{CompletionCarry, Frame};
         let (hook, kind) = match frame.data() {
-            Frame::StateCommitted { hook, .. } => (hook, RoundKind::StateCommit),
-            Frame::TrafficOpened { hook, .. } => (hook, RoundKind::OpenTraffic),
+            Frame::StateCommitted { hook, .. } => (hook, StateCommand::StateCommit),
+            Frame::TrafficOpened { hook, .. } => (hook, StateCommand::OpenTraffic),
             _ => return CompletionCarry::NotHeld,
         };
         match hook.publisher.parse::<crate::model::PathName>() {
@@ -233,37 +233,37 @@ impl RoundBook {
             Err(_) => return CompletionCarry::NotOrdinary,
             _ => {}
         }
-        let key = RoundKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
+        let key = StateKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
         if !self.is_open(&key) {
-            return CompletionCarry::ClosedRound;
+            return CompletionCarry::ClosedChecklist;
         }
         carry(frame);
         CompletionCarry::Carried
     }
 
-    /// Forget the round: its completion went up, or it is no longer this admin's. A command call still
-    /// out sees its round gone and is cancelled.
-    pub fn close(&self, key: &RoundKey) {
-        self.rounds.lock().unwrap().remove(key);
+    /// Forget the checklist: its completion went up, or it is no longer this admin's. A command call still
+    /// out sees its checklist gone and is cancelled.
+    pub fn close(&self, key: &StateKey) {
+        self.checklists.lock().unwrap().remove(key);
         self.bump();
     }
 
-    /// [`Self::close`] the round only while `opening` is the one open: a driver ends its own opening
-    /// of the round, never a later one.
-    pub fn close_opening(&self, key: &RoundKey, opening: u64) {
-        let mut rounds = self.rounds.lock().unwrap();
-        if rounds.get(key).is_some_and(|r| r.opening == opening) {
-            rounds.remove(key);
-            drop(rounds);
+    /// [`Self::close`] the checklist only while `opening` is the one open: a driver ends its own opening
+    /// of the checklist, never a later one.
+    pub fn close_opening(&self, key: &StateKey, opening: u64) {
+        let mut checklists = self.checklists.lock().unwrap();
+        if checklists.get(key).is_some_and(|r| r.opening == opening) {
+            checklists.remove(key);
+            drop(checklists);
             self.bump();
         }
     }
 
-    /// Replace the planned births the round's checklist names. A check-in already held for a birth
+    /// Replace the planned births the checklist names. A check-in already held for a birth
     /// that is no longer planned stays held but counts for nothing.
     /// `unresolved` are planned births with no birth in the view: they block completion.
-    pub fn expect(&self, key: &RoundKey, planned: BTreeMap<NodeId, Expected>, unresolved: Vec<Missing>) {
-        let moved = match self.rounds.lock().unwrap().get_mut(key) {
+    pub fn expect(&self, key: &StateKey, planned: BTreeMap<NodeId, Expected>, unresolved: Vec<Missing>) {
+        let moved = match self.checklists.lock().unwrap().get_mut(key) {
             Some(r) if r.expected != planned || r.unresolved != unresolved => {
                 r.expected = planned;
                 r.unresolved = unresolved;
@@ -280,9 +280,9 @@ impl RoundBook {
     /// is deliverable in `view`. A command that was not delivered is due again only on an eligible
     /// event ([`eligible`], R-S2, and a change of the target's state): reading the checklist again
     /// is not one.
-    pub fn take_due(&self, key: &RoundKey, view: &Topology) -> Vec<(NodeId, Expected, &'static str)> {
-        let mut rounds = self.rounds.lock().unwrap();
-        let Some(r) = rounds.get_mut(key) else { return Vec::new() };
+    pub fn take_due(&self, key: &StateKey, view: &Topology) -> Vec<(NodeId, Expected, &'static str)> {
+        let mut checklists = self.checklists.lock().unwrap();
+        let Some(r) = checklists.get_mut(key) else { return Vec::new() };
         let mut due = Vec::new();
         for (n, e) in &r.expected {
             let target = view.members().find(|t| &t.node_id == n);
@@ -318,8 +318,8 @@ impl RoundBook {
     }
 
     /// The down op to this birth was answered, by name: it is not sent again.
-    pub fn answered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId) {
-        if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
+    pub fn answered(&self, key: &StateKey, node_id: &NodeId, incarnation: &IncarnationId) {
+        if let Some(r) = self.checklists.lock().unwrap().get_mut(key) {
             r.commands.insert((node_id.clone(), incarnation.clone()), Command::Answered);
         }
     }
@@ -328,8 +328,8 @@ impl RoundBook {
     /// call ended because the birth's exit or removal is proven): it waits for an eligible event. The
     /// waiter is woken so the current view is checked against what was sent (an address, or a state or
     /// destination change while the call was out).
-    pub fn undelivered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId, typed: bool) -> bool {
-        let recorded = match self.rounds.lock().unwrap().get_mut(key) {
+    pub fn undelivered(&self, key: &StateKey, node_id: &NodeId, incarnation: &IncarnationId, typed: bool) -> bool {
+        let recorded = match self.checklists.lock().unwrap().get_mut(key) {
             Some(r) => {
                 let slot = (node_id.clone(), incarnation.clone());
                 match r.commands.get(&slot).cloned() {
@@ -352,7 +352,7 @@ impl RoundBook {
     /// eligible to be sent again, and so is one out now, should that call end undelivered.
     pub fn heard_from(&self, node_id: &NodeId) {
         let mut any = false;
-        for r in self.rounds.lock().unwrap().values_mut() {
+        for r in self.checklists.lock().unwrap().values_mut() {
             for ((n, _), c) in r.commands.iter_mut() {
                 if let (true, Command::Undelivered { addressed, .. } | Command::Out { addressed, .. }) = (n == node_id, c) {
                     *addressed = true;
@@ -376,22 +376,22 @@ impl RoundBook {
 
     /// Record the check-in of the planned birth `node_id`/`incarnation` without a call (a primary's
     /// own mesh, which it completes itself).
-    pub fn check_in_local(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId) {
-        if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
+    pub fn check_in_local(&self, key: &StateKey, node_id: &NodeId, incarnation: &IncarnationId) {
+        if let Some(r) = self.checklists.lock().unwrap().get_mut(key) {
             r.checked.insert((node_id.clone(), incarnation.clone()));
         }
         self.bump();
     }
 
     /// Whether every planned birth has checked in as its planned birth. An empty checklist is complete.
-    pub fn complete(&self, key: &RoundKey) -> bool {
+    pub fn complete(&self, key: &StateKey) -> bool {
         self.missing(key).is_empty()
     }
 
     /// The planned births that have not checked in, and why.
-    pub fn missing(&self, key: &RoundKey) -> Vec<Missing> {
-        let rounds = self.rounds.lock().unwrap();
-        let Some(r) = rounds.get(key) else { return vec![Missing { who: key.kind.command().into(), why: "round-not-open" }] };
+    pub fn missing(&self, key: &StateKey) -> Vec<Missing> {
+        let checklists = self.checklists.lock().unwrap();
+        let Some(r) = checklists.get(key) else { return vec![Missing { who: key.kind.command().into(), why: "checklist-not-open" }] };
         r.unresolved
             .iter()
             .cloned()
@@ -407,10 +407,10 @@ impl RoundBook {
     /// The check-in `req` makes, decided by this primary for the subject it names, whoever calls
     /// (node-rpc.md §14). `subject` is that birth as this primary's view holds it: `(incarnation
     /// held for it, path.name)`, `None` when the view holds no such node. A refusal names the one
-    /// fact that is wrong, `NotReady` for a round this primary does not hold open (an unmatched round
+    /// fact that is wrong, `NotReady` for a checklist this primary does not hold open (an unmatched checklist
     /// is never a check-in).
     pub fn check_in(&self, receiver: &str, subject: Option<(Option<&IncarnationId>, &str)>, req: &StatusRequest) -> StatusReply {
-        let Some(op) = RoundOp::of(req).filter(|o| !o.is_down) else { return rdm_core::reply::status::not_ready(format!("{receiver}: {} is not a completion call", req.op())) };
+        let Some(op) = StateOp::of(req).filter(|o| !o.is_down) else { return rdm_core::reply::status::not_ready(format!("{receiver}: {} is not a completion call", req.op())) };
         let completion = op.kind.completion();
         let Some((held, from_name)) = subject else {
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
@@ -421,25 +421,25 @@ impl RoundBook {
             Some(_) => {}
         }
         let key = op.key();
-        let mut rounds = self.rounds.lock().unwrap();
-        let reply = match rounds.get_mut(&key) {
+        let mut checklists = self.checklists.lock().unwrap();
+        let reply = match checklists.get_mut(&key) {
             None => {
-                let near = rounds.iter().filter(|(k, _)| k.kind == op.kind).min_by_key(|(k, _)| (k.fabric_id != *op.fabric_id, k.build_id != op.build_id, k.attempt != op.attempt));
+                let near = checklists.iter().filter(|(k, _)| k.kind == op.kind).min_by_key(|(k, _)| (k.fabric_id != *op.fabric_id, k.build_id != op.build_id, k.attempt != op.attempt));
                 let why = match near {
-                    None => format!("{receiver} holds no open {} round; {completion} from {from_name} counts for nothing", op.kind.command()),
-                    Some((k, _)) if k.fabric_id != *op.fabric_id => format!("{receiver}: {completion} from {from_name}: field fabric_id: round holds {}, reported {}", k.fabric_id, op.fabric_id),
-                    Some((k, _)) if k.build_id != op.build_id => format!("{receiver}: {completion} from {from_name}: field build_id: round holds {}, reported {}", k.build_id, op.build_id),
-                    Some((k, _)) => format!("{receiver}: {completion} from {from_name}: field attempt: round holds {}, reported {}", k.attempt, op.attempt),
+                    None => format!("{receiver} holds no open {} checklist; {completion} from {from_name} counts for nothing", op.kind.command()),
+                    Some((k, _)) if k.fabric_id != *op.fabric_id => format!("{receiver}: {completion} from {from_name}: field fabric_id: checklist holds {}, reported {}", k.fabric_id, op.fabric_id),
+                    Some((k, _)) if k.build_id != op.build_id => format!("{receiver}: {completion} from {from_name}: field build_id: checklist holds {}, reported {}", k.build_id, op.build_id),
+                    Some((k, _)) => format!("{receiver}: {completion} from {from_name}: field attempt: checklist holds {}, reported {}", k.attempt, op.attempt),
                 };
                 rdm_core::reply::status::not_ready(why)
             }
             Some(r) => {
                 let want = op.kind.operation(&key.fabric_id);
                 if op.operation != want {
-                    rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: field operation: round holds {want}, reported {}", op.operation))
+                    rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: field operation: checklist holds {want}, reported {}", op.operation))
                 } else {
                     match r.expected.get(op.node_id) {
-                        None => rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: not on this round's checklist")),
+                        None => rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: not on this checklist")),
                         Some(e) if e.incarnation != *op.incarnation => {
                             rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: field incarnation: the checklist plans birth {}, reported {}", e.incarnation, op.incarnation))
                         }
@@ -454,7 +454,7 @@ impl RoundBook {
                 }
             }
         };
-        drop(rounds);
+        drop(checklists);
         if matches!(reply, StatusReply::Applied) {
             self.bump();
         }
@@ -467,29 +467,29 @@ mod tests {
     use super::*;
     use crate::model::FabricId;
 
-    fn key(build: &str, attempt: u32, f: &FabricId) -> RoundKey {
-        RoundKey { kind: RoundKind::StateCommit, fabric_id: f.clone(), build_id: build.into(), attempt }
+    fn key(build: &str, attempt: u32, f: &FabricId) -> StateKey {
+        StateKey { kind: StateCommand::StateCommit, fabric_id: f.clone(), build_id: build.into(), attempt }
     }
 
     fn planned(n: &NodeId, i: &IncarnationId, name: &str) -> BTreeMap<NodeId, Expected> {
         BTreeMap::from([(n.clone(), Expected { incarnation: i.clone(), name: name.into() })])
     }
 
-    /// CONTRACT: a check-in counts only for a planned birth, in an open round of the same Build and
+    /// CONTRACT: a check-in counts only for a planned birth, in an open checklist of the same Build and
     /// attempt, for the birth the receiver holds; every other case is refused naming the one fact
     /// that is wrong, and a repeat is already applied.
     #[test]
-    fn a_check_in_counts_only_as_the_planned_birth_of_the_open_round() {
+    fn a_check_in_counts_only_as_the_planned_birth_of_the_open_checklist() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
-        let book = RoundBook::default();
+        let book = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
-        let up = |build: &str, attempt: u32, inc: &IncarnationId| RoundKind::StateCommit.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
+        let up = |build: &str, attempt: u32, inc: &IncarnationId| StateCommand::StateCommit.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
         fn sender<'a>(_node: &'a NodeId, held: &'a IncarnationId) -> Option<(Option<&'a IncarnationId>, &'static str)> {
             Some((Some(held), "mesh2.admin.1"))
         }
 
         let early = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc));
-        assert!(matches!(&early, StatusReply::NotReady { reason } if reason.contains("no open commit-state round")), "a check-in before the down op: {early:?}");
+        assert!(matches!(&early, StatusReply::NotReady { reason } if reason.contains("no open commit-state checklist")), "a check-in before the down op: {early:?}");
 
         book.open(&k);
         book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
@@ -497,9 +497,9 @@ mod tests {
         assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "no-check-in" }]);
 
         let foreign = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("t9ktgq6zvxtt", 1, &inc));
-        assert!(matches!(&foreign, StatusReply::NotReady { reason } if reason.contains("field build_id: round holds 66h8qrqvaajk, reported t9ktgq6zvxtt")), "{foreign:?}");
+        assert!(matches!(&foreign, StatusReply::NotReady { reason } if reason.contains("field build_id: checklist holds 66h8qrqvaajk, reported t9ktgq6zvxtt")), "{foreign:?}");
         let old = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 2, &inc));
-        assert!(matches!(&old, StatusReply::NotReady { reason } if reason.contains("field attempt: round holds 1, reported 2")), "{old:?}");
+        assert!(matches!(&old, StatusReply::NotReady { reason } if reason.contains("field attempt: checklist holds 1, reported 2")), "{old:?}");
         let other = IncarnationId::mint();
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &other), &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
         assert_eq!(book.check_in("mesh1.admin.1", None, &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
@@ -521,11 +521,11 @@ mod tests {
     #[test]
     fn a_check_in_for_a_subject_the_view_does_not_hold_is_subject_unknown() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
-        let book = RoundBook::default();
+        let book = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
         book.open(&k);
         book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
-        let up = RoundKind::StateCommit.up(&k, node.clone(), inc.clone());
+        let up = StateCommand::StateCommit.up(&k, node.clone(), inc.clone());
         assert_eq!(book.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
         assert!(!book.complete(&k), "nothing counted");
     }
@@ -541,10 +541,10 @@ mod tests {
         Topology { fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process }, meshes: Vec::new(), nodes }
     }
 
-    /// A book holding an open round whose checklist names `n` (as `inc`), the command to it out and then not delivered.
-    fn undelivered(typed: bool, status: NodeStatus) -> (RoundBook, RoundKey, Node, IncarnationId) {
+    /// A book holding an open checklist that names `n` (as `inc`), the command to it out and then not delivered.
+    fn undelivered(typed: bool, status: NodeStatus) -> (Checklists, StateKey, Node, IncarnationId) {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (RoundBook::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, status));
+        let (book, k, n) = (Checklists::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, status));
         book.open(&k);
         book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
         assert_eq!(book.take_due(&k, &view_of(vec![n.clone()])).len(), 1);
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn a_planned_birth_is_commanded_once_per_exact_birth() {
         let (fabric, a, b) = (FabricId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        let book = RoundBook::default();
+        let book = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
         let n = target(&a, NodeStatus::ReadyForTraffic);
         book.open(&k);
@@ -590,11 +590,11 @@ mod tests {
     }
 
     /// CONTRACT (R-S1, R-S2): a birth in `Pending` (still inside `node.start`) is not commanded by a
-    /// round until it reaches `ReadyForTraffic`.
+    /// checklist until it reaches `ReadyForTraffic`.
     #[test]
     fn a_pending_birth_is_not_commanded_until_it_reaches_ready_for_traffic() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let book = RoundBook::default();
+        let book = Checklists::default();
         let k = key("66h8qrqvaajk", 1, &fabric);
         let n = target(&inc, NodeStatus::Pending);
         book.open(&k);
@@ -607,8 +607,8 @@ mod tests {
     /// CONTRACT (node-rpc.md §43: retry stops "on the receiver's proven exit or accepted removal";
     /// i146 e3): a command whose call ended because its birth's exit is proven is not sent again when
     /// the target reads reachable again: that birth is gone, and the birth that replaces it is
-    /// commanded as its own. Must NOT happen: a returned route sending the command again (the round
-    /// book's own retry, `reachable-again`).
+    /// commanded as its own. Must NOT happen: a returned route sending the command again (the checklists'
+    /// own retry, `reachable-again`).
     #[test]
     fn a_command_whose_birth_is_gone_is_not_sent_again_when_the_target_reads_reachable() {
         let (book, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn an_address_that_arrives_while_the_command_is_out_sends_it_again_once_the_call_ends_undelivered() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (RoundBook::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        let (book, k, n) = (Checklists::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
         book.open(&k);
         book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
         let view = view_of(vec![n.clone()]);
@@ -673,7 +673,7 @@ mod tests {
 
     /// CONTRACT (i146 e3; node-rpc.md §43): the target going unreachable while the command to it is
     /// out sends nothing beside the call, and neither does its return: the Owed call carries the
-    /// command until the birth answers, a lost reply included, and a call's end wakes the round
+    /// command until the birth answers, a lost reply included, and a call's end wakes the checklist
     /// waiter. Must NOT happen (gate red, tree a269d7e5, accepted_topology trace 6d1b67fa:
     /// mesh1.admin.2 went PendingReconnect while the commit-state to it was out, the bounded call
     /// failed ReplyLost, and the command was never sent again): a call that ends on a lost reply. A
@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn a_target_going_unreachable_and_back_while_the_command_is_out_sends_nothing_beside_the_call() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (RoundBook::default(), key("7k63hjhgtbsw", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        let (book, k, n) = (Checklists::default(), key("7k63hjhgtbsw", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
         book.open(&k);
         book.expect(&k, planned(&n.node_id, &inc, "mesh1.admin.2"), Vec::new());
         let ready = view_of(vec![n.clone()]);
@@ -693,7 +693,7 @@ mod tests {
         let mut rx = book.subscribe();
         let before = *rx.borrow_and_update();
         assert!(book.undelivered(&k, &n.node_id, &inc, true));
-        assert!(*rx.borrow_and_update() > before, "a call's end wakes the round waiter");
+        assert!(*rx.borrow_and_update() > before, "a call's end wakes the checklist waiter");
         assert!(book.take_due(&k, &ready).is_empty(), "a refusal by name waits for an eligible event");
         let changed = view_of(vec![Node { status: NodeStatus::ConnectionsDeleting, ..n.clone() }]);
         assert_eq!(book.take_due(&k, &changed).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed: sent again");

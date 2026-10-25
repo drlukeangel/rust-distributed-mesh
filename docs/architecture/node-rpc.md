@@ -881,7 +881,7 @@ Overall is the default: one absolute deadline covers resolve -> route/pool -> di
 
 Split exists for domains such as writer ingress that already have a stronger request-send certainty bound followed by a separate post-commit reply budget. The reply budget begins only after the complete-send certainty cut.
 
-Owed has no send or reply deadline. An Owed call ends only on its reply, on the runtime's proof that the receiver is gone (exited, removed or superseded), or when its owner drops it; the resend schedule of §43 runs unchanged underneath it. It is for a report or completion its owner owes with no bound of its own: a member's round check-in, the mesh-primary's check-in, a node's owed declaration. A command with an owner's bound keeps a finite budget; Owed is never a default.
+Owed has no send or reply deadline. An Owed call ends only on its reply, on the runtime's proof that the receiver is gone (exited, removed or superseded), or when its owner drops it; the resend schedule of §43 runs unchanged underneath it. It is for a report or completion its owner owes with no bound of its own: a member's state check-in, the mesh-primary's check-in, a node's owed declaration. A command with an owner's bound keeps a finite budget; Owed is never a default.
 
 The [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) runs its outer and inner streams with no overall deadline, bounded by the transport idle timeout and keepalive. A carried call's inner budget is the `remaining_ms` the source stamps ([Forward](node-rpc-envelope.md#forward-op-0x1a-core)).
 

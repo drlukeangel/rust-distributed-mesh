@@ -1,6 +1,6 @@
 //! A node.create accepted right after a node.delete of the same class completed, before the
 //! fabric-primary's view has dropped the deleted birth: the soak `i143-rshape-soak-authority-container`
-//! at `2a641bf6` (its 97th round, a hand-off of mesh2's seat) saw the create reconciled against a view
+//! at `2a641bf6` (its 97th checklist, a hand-off of mesh2's seat) saw the create reconciled against a view
 //! that still held the deleted admin, plan no operation and complete, and nothing re-created the path
 //! in the 150 s it waited (i143 PRD, e10.s2 "The fifth run").
 use rdm_client::{LaunchKind as NodeKind, NodeStatus};

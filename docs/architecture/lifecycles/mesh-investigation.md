@@ -18,7 +18,7 @@ One investigation per peer mesh, owned by the fabric-primary. Let t be the elaps
 since the fabric-primary's last valid direct backbone receipt from mesh-x. Only that receipt starts
 or resets t; forwarded snapshots and forwarded topology never reset or extend it, and the backbone
 interval or a delayed tick never moves a threshold: the thresholds below are elapsed time, not
-round counts. This investigation does not author mesh-x's MeshStatus. Probe traffic carries no
+counts of intervals. This investigation does not author mesh-x's MeshStatus. Probe traffic carries no
 status change. Node recovery of a mesh's own members stays its mesh-primary's
 ([Node recovery](node-recovery.md)). Over a mesh whose members live, the fabric-primary runs no
 per-node recovery ladder over its node-admins, and the per-admin observations it records are
@@ -68,7 +68,7 @@ diagnostic spans that open no node.create.
 7. The joined node-admin, as mesh-x's successor primary, adopts the mesh's held state
    ([fabric primary §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)) and
    republishes its held MeshStatus, preserving changed_at, only after the
-   fresh planned-birth round in [event-driven declarations](node-status.md#node-status-declaration).
+   fresh planned-birth checklist in [event-driven declarations](node-status.md#node-status-declaration).
    Only on that report, the fabric-primary clears the degraded health observation on both the mesh and the fabric.
    The fabric-primary never authors mesh-x's MeshStatus outside the investigation arms (R-DG1). Fabric readiness is
    [States](states.md#states)'s. Routing uses admitted births, lifecycle and connection
@@ -166,7 +166,7 @@ No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent
 At the 60 s carrier-edge-lost verdict, or on the no-member-answers arm's verdict (both arms, R-DG1),
 both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded, and travel as the
 [frame catalog](../gossip.md#31-frame-catalog) states. The joined node-admin, as mesh-primary, later
-authors its MeshStatus readiness after its fresh planned-birth round, which clears the degraded marker on both the
+authors its MeshStatus readiness after its fresh planned-birth checklist, which clears the degraded marker on both the
 mesh and the fabric. Neither a probe nor degraded means the mesh is deleted.
 
 Trace propagation and correlation follow the

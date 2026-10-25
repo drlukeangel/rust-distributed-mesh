@@ -1,26 +1,26 @@
-//! Fabric round types, gossip hook frames, and [`RoundActions`] (`rdm-node`).
+//! Fabric state types, gossip hook frames, and [`StateActions`] (`rdm-node`).
 
 #[cfg(feature = "file-backend")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use rdm_transport::membership::{Backbone, Frame, Membership};
-use rdm_core::RoundHook;
+use rdm_core::StateHook;
 use rdm_core::status::StatusRequest;
 use tracing::Instrument;
 
 use crate::model::{EndpointId, FabricId, IncarnationId, Node, NodeId, PathName};
 
-/// Which of the two rounds.
+/// Which of the two checklists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum RoundKind {
+pub enum StateCommand {
     /// commit-state / state-committed.
     StateCommit,
     /// open-traffic / traffic-opened.
     OpenTraffic,
 }
 
-impl RoundKind {
+impl StateCommand {
     /// The down op's name.
     pub fn command(self) -> &'static str {
         match self {
@@ -37,13 +37,13 @@ impl RoundKind {
         }
     }
 
-    /// The round's operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`.
+    /// The checklist's operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`.
     pub fn operation(self, fabric_id: &FabricId) -> String {
         format!("{}:{}", self.command(), fabric_id)
     }
 
     /// The down op naming `node_id`/`incarnation` as its subject.
-    pub fn down(self, key: &RoundKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
+    pub fn down(self, key: &StateKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
         let (fabric_id, build_id, attempt, operation) = (key.fabric_id.clone(), key.build_id.clone(), key.attempt, self.operation(&key.fabric_id));
         match self {
             Self::StateCommit => StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation },
@@ -52,7 +52,7 @@ impl RoundKind {
     }
 
     /// The up op reporting `node_id`/`incarnation`.
-    pub fn up(self, key: &RoundKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
+    pub fn up(self, key: &StateKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
         let (fabric_id, build_id, attempt, operation) = (key.fabric_id.clone(), key.build_id.clone(), key.attempt, self.operation(&key.fabric_id));
         match self {
             Self::StateCommit => StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation },
@@ -61,11 +61,11 @@ impl RoundKind {
     }
 }
 
-/// The gossip hook frame of a round op (gossip.md, "Fabric round gossip hooks"): `StateCommitting`
+/// The gossip hook frame of a state op (gossip.md, "Fabric state gossip hooks"): `StateCommitting`
 /// or `TrafficOpening` for a command (`up == false`), `StateCommitted` or `TrafficOpened` for a
 /// check-in. The subject is `node_id`/`incarnation`; `publisher` is the author at this hop.
-pub fn hook_frame(key: &RoundKey, up: bool, node_id: NodeId, incarnation: IncarnationId, publisher: &str, event_at_rafka_ms: u64) -> Frame {
-    let hook = RoundHook {
+pub fn hook_frame(key: &StateKey, up: bool, node_id: NodeId, incarnation: IncarnationId, publisher: &str, event_at_rafka_ms: u64) -> Frame {
+    let hook = StateHook {
         fabric_id: key.fabric_id.clone(),
         node_id,
         incarnation,
@@ -77,22 +77,22 @@ pub fn hook_frame(key: &RoundKey, up: bool, node_id: NodeId, incarnation: Incarn
     };
     let forwarded_by = None;
     match (key.kind, up) {
-        (RoundKind::StateCommit, false) => Frame::StateCommitting { hook, forwarded_by },
-        (RoundKind::StateCommit, true) => Frame::StateCommitted { hook, forwarded_by },
-        (RoundKind::OpenTraffic, false) => Frame::TrafficOpening { hook, forwarded_by },
-        (RoundKind::OpenTraffic, true) => Frame::TrafficOpened { hook, forwarded_by },
+        (StateCommand::StateCommit, false) => Frame::StateCommitting { hook, forwarded_by },
+        (StateCommand::StateCommit, true) => Frame::StateCommitted { hook, forwarded_by },
+        (StateCommand::OpenTraffic, false) => Frame::TrafficOpening { hook, forwarded_by },
+        (StateCommand::OpenTraffic, true) => Frame::TrafficOpened { hook, forwarded_by },
     }
 }
 
-/// Publish the round hook of `key`'s op (gossip.md, "Fabric round gossip hooks"), in the path of the
+/// Publish the state hook of `key`'s op (gossip.md, "Fabric state gossip hooks"), in the path of the
 /// call it runs with: a command hook (`up == false`) names the commanded birth, a completion hook
 /// `publisher`'s own birth. The frame goes on `publisher`'s mesh channel and, when it is on the
 /// backbone, the backbone. `Err` names why the frame was not handed to every channel.
-pub async fn publish_hook(publisher: &PathName, key: &RoundKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId, membership: &Membership, backbone: Option<&Backbone>) -> Result<(), String> {
+pub async fn publish_hook(publisher: &PathName, key: &StateKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId, membership: &Membership, backbone: Option<&Backbone>) -> Result<(), String> {
     let frame = hook_frame(key, up, node_id.clone(), incarnation.clone(), &publisher.to_string(), membership.clock().now_rafka_ms());
     let hook = if up { key.kind.completion() } else { key.kind.command() };
     let channels = if backbone.is_some() { "mesh,backbone" } else { "mesh" };
-    let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %publisher, round = key.kind.command(), hook, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal");
+    let span = tracing::info_span!("rdm.node_admin.fabric.update.via-state-hook", node = %publisher, command = key.kind.command(), hook, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal");
     async {
         let published = match backbone {
             Some(backbone) => backbone.publish_command_hook(&frame).await,
@@ -100,11 +100,11 @@ pub async fn publish_hook(publisher: &PathName, key: &RoundKey, up: bool, node_i
         };
         match published {
             Ok(()) => {
-                tracing::info!("the round hook was published");
+                tracing::info!("the state hook was published");
                 Ok(())
             }
             Err(e) => {
-                tracing::info!(error = %e, "the round hook was not handed to every channel");
+                tracing::info!(error = %e, "the state hook was not handed to every channel");
                 Err(e.to_string())
             }
         }
@@ -113,7 +113,7 @@ pub async fn publish_hook(publisher: &PathName, key: &RoundKey, up: bool, node_i
     .await
 }
 
-/// Where an owed message (a declaration, a round command) went: the exact birth, and the address
+/// Where an owed message (a declaration, a state command) went: the exact birth, and the address
 /// facts the view held for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destination {
@@ -163,11 +163,11 @@ pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addre
     }
 }
 
-/// The fields every round op carries.
+/// The fields every state op carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoundOp<'a> {
-    /// Which round.
-    pub kind: RoundKind,
+pub struct StateOp<'a> {
+    /// Which checklist.
+    pub kind: StateCommand,
     /// Down (command) or up (completion).
     pub is_down: bool,
     /// The fabric.
@@ -184,50 +184,50 @@ pub struct RoundOp<'a> {
     pub operation: &'a str,
 }
 
-impl<'a> RoundOp<'a> {
-    /// The round op `req` is, when it is one.
+impl<'a> StateOp<'a> {
+    /// The state op `req` is, when it is one.
     pub fn of(req: &'a StatusRequest) -> Option<Self> {
         let (kind, is_down, fabric_id, node_id, incarnation, build_id, attempt, operation) = match req {
-            StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::StateCommit, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::StateCommit, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::OpenTraffic { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::OpenTraffic, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::OpenTraffic, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
+            StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::StateCommit, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
+            StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::StateCommit, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
+            StatusRequest::OpenTraffic { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::OpenTraffic, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
+            StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation } => (StateCommand::OpenTraffic, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
             _ => return None,
         };
         Some(Self { kind, is_down, fabric_id, node_id, incarnation, build_id, attempt, operation })
     }
 
-    /// The round this op belongs to.
-    pub fn key(&self) -> RoundKey {
-        RoundKey { kind: self.kind, fabric_id: self.fabric_id.clone(), build_id: self.build_id.to_string(), attempt: self.attempt }
+    /// The checklist this op belongs to.
+    pub fn key(&self) -> StateKey {
+        StateKey { kind: self.kind, fabric_id: self.fabric_id.clone(), build_id: self.build_id.to_string(), attempt: self.attempt }
     }
 }
 
-/// The round keys this node's own action ran for, whichever role ran it: a member commanded by its
-/// primary, or a mesh-primary's own action in its mesh round. One record per process, so a node whose
-/// role changes inside a round (a standby that takes its mesh's seats, a fabric-primary that comes back
-/// as a member, Q89) runs each round action once per round key (states.md "The round checklist") and
+/// The state keys this node's own action ran for, whichever role ran it: a member commanded by its
+/// primary, or a mesh-primary's own action in its mesh checklist. One record per process, so a node whose
+/// role changes inside a checklist (a standby that takes its mesh's seats, a fabric-primary that comes back
+/// as a member, Q89) runs each state action once per state key (states.md "The check-in checklist") and
 /// checks in from its record after.
 #[derive(Debug, Default)]
-pub struct ActedRecord(std::sync::Mutex<std::collections::HashSet<RoundKey>>);
+pub struct ActedRecord(std::sync::Mutex<std::collections::HashSet<StateKey>>);
 
 impl ActedRecord {
     /// Did this node's action run for `key`?
-    pub fn acted(&self, key: &RoundKey) -> bool {
+    pub fn acted(&self, key: &StateKey) -> bool {
         self.0.lock().unwrap().contains(key)
     }
 
     /// This node's action ran for `key`.
-    pub fn record(&self, key: &RoundKey) {
+    pub fn record(&self, key: &StateKey) {
         self.0.lock().unwrap().insert(key.clone());
     }
 }
 
-/// A round: the Build and attempt it belongs to, in one fabric.
+/// A checklist: the Build and attempt it belongs to, in one fabric.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RoundKey {
-    /// Which round.
-    pub kind: RoundKind,
+pub struct StateKey {
+    /// Which checklist.
+    pub kind: StateCommand,
     /// The fabric.
     pub fabric_id: FabricId,
     /// The accepted Build.
@@ -237,14 +237,14 @@ pub struct RoundKey {
 }
 
 
-/// What a node does before it checks in to a round: the required writes of the phase.
+/// What a node does before it checks in to a checklist: the required writes of the phase.
 ///
 /// Commit-state: the node writes what its scratchpad holds into the system org (a node its
 /// connection rows, a mesh primary its members' Node rows and its Mesh row, the fabric-primary the
 /// Fabric row). The check-in is owed only after the writes are stored; a refused write is an `Err`
 /// and the node owes no check-in.
 #[async_trait]
-pub trait RoundActions: Send + Sync {
+pub trait StateActions: Send + Sync {
     /// The commit-state action of `node`.
     async fn commit_state(&self, node: &PathName) -> Result<(), String>;
     /// The open-traffic action of `node`.
@@ -255,14 +255,14 @@ pub trait RoundActions: Send + Sync {
 pub struct NoScratchpad;
 
 #[async_trait]
-impl RoundActions for NoScratchpad {
+impl StateActions for NoScratchpad {
     async fn commit_state(&self, node: &PathName) -> Result<(), String> {
-        tracing::info_span!("rdm.node_admin.fabric.update.via-round-action", node = %node, round = "commit-state", bound = false, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.fabric.update.via-state-action", node = %node, command = "commit-state", bound = false, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("no scratchpad publication is bound: this node holds nothing to publish"));
         Ok(())
     }
     async fn open_traffic(&self, node: &PathName) -> Result<(), String> {
-        tracing::info_span!("rdm.node_admin.fabric.update.via-round-action", node = %node, round = "open-traffic", bound = false, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.fabric.update.via-state-action", node = %node, command = "open-traffic", bound = false, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("no traffic-opening action is bound to this node"));
         Ok(())
     }
@@ -276,32 +276,32 @@ impl RoundActions for NoScratchpad {
 /// action, if it binds one. Each node holds only the rows it writes, so a node publishes its
 /// connections rows, a mesh primary also its Mesh row and its members' Node rows, and the
 /// fabric-primary also the Fabric row. A node that opened a root the Fabric row was already
-/// published to holds nothing, and every later round's publication finds nothing held. A
+/// published to holds nothing, and every later checklist's publication finds nothing held. A
 /// publication that fails is an `Err`: the node owes no check-in.
 pub struct StorePublication {
     /// What this node holds before the fabric's first state-commit; `None` when it opened the store
     /// root after it.
     scratchpad: Option<Arc<crate::record_store::Scratchpad>>,
     /// The embedding's own action, run after the publication.
-    then: Option<Arc<dyn RoundActions>>,
+    then: Option<Arc<dyn StateActions>>,
 }
 
 #[cfg(feature = "file-backend")]
 impl StorePublication {
     /// The action publishing `scratchpad`, then running `then`.
-    pub fn new(scratchpad: Option<Arc<crate::record_store::Scratchpad>>, then: Option<Arc<dyn RoundActions>>) -> Self {
+    pub fn new(scratchpad: Option<Arc<crate::record_store::Scratchpad>>, then: Option<Arc<dyn StateActions>>) -> Self {
         Self { scratchpad, then }
     }
 }
 
 #[cfg(feature = "file-backend")]
 #[async_trait]
-impl RoundActions for StorePublication {
+impl StateActions for StorePublication {
     async fn commit_state(&self, node: &PathName) -> Result<(), String> {
         let span = tracing::info_span!(
-            "rdm.node_admin.fabric.update.via-round-action",
+            "rdm.node_admin.fabric.update.via-state-action",
             node = %node,
-            round = "commit-state",
+            command = "commit-state",
             bound = true,
             rows = tracing::field::Empty,
             stands = tracing::field::Empty,
@@ -342,10 +342,10 @@ impl RoundActions for StorePublication {
 }
 
 /// Run the action of `kind` for `node` under its span.
-pub async fn run_action(actions: &dyn RoundActions, node: &PathName, kind: RoundKind) -> Result<(), String> {
+pub async fn run_action(actions: &dyn StateActions, node: &PathName, kind: StateCommand) -> Result<(), String> {
     match kind {
-        RoundKind::StateCommit => actions.commit_state(node).await,
-        RoundKind::OpenTraffic => actions.open_traffic(node).await,
+        StateCommand::StateCommit => actions.commit_state(node).await,
+        StateCommand::OpenTraffic => actions.open_traffic(node).await,
     }
 }
 

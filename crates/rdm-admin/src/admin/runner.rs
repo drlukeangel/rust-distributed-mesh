@@ -99,7 +99,7 @@ pub struct AdminRunner {
 pub struct GossipLifecycle {
     /// This admin's mesh channel.
     pub membership: Membership,
-    /// This admin's place on the backbone: the fabric round hooks publish there as well.
+    /// This admin's place on the backbone: the fabric state hooks publish there as well.
     pub backbone: Backbone,
     /// This admin's own path: the publisher of the mesh frames it authors.
     pub me: PathName,

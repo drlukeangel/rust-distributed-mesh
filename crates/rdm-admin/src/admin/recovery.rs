@@ -26,7 +26,7 @@ pub(crate) struct RecoverySubmitter {
     /// Parent directory under which birth data directories are allocated (`<data_root>/<name>-<node_id>`).
     pub data_root: PathBuf,
     /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
-    /// `(first_seen_ms, consecutive_rounds)`.
+    /// `(first_seen_ms, consecutive_observations)`.
     pub gone_dirs: Arc<Mutex<HashMap<(NodeId, IncarnationId), (u64, u64)>>>,
 }
 

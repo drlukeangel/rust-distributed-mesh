@@ -25,11 +25,11 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 /// How long after a member's exact runtime is killed its mesh-primary's node recovery has put a
 /// new node, ready, at its path.name (node-recovery.md "Detection and proof" and the numbered
 /// sequence): the silence (one staleness floor, marked on the pruner's gossip-interval sweep);
-/// half a floor after the mark, on the next tick, tickle round 1 (one direct connect, then the
+/// half a floor after the mark, on the next tick, tickle ladder 1 (one direct connect, then the
 /// connects through up to `VIA_PEER_TICKLE_FANOUT` peers at once, each to a killed process and so
-/// spending the call's whole budget: `offline::tickle_round`); round 2 one floor after round 1's no-path
+/// spending the call's whole budget: `offline::tickle_ladder`); ladder 2 one floor after ladder 1's no-path
 /// verdict, when its probes ended (the hold-down runs from that instant: offline.rs
-/// `RoundEnd::ViaPeer::verdict_at_ms`), and its own round; TRUE OFFLINE, the provider's exit proof and the
+/// `LadderEnd::ViaPeer::verdict_at_ms`), and its own ladder; TRUE OFFLINE, the provider's exit proof and the
 /// submit on the next tick; then the recovery Build's run (node.delete, node.create through the
 /// new node's start), one call budget.
 pub fn node_recovery_due() -> std::time::Duration {
@@ -39,8 +39,8 @@ pub fn node_recovery_due() -> std::time::Duration {
         rdm_transport::Budget::Overall(d) => d,
         other => panic!("the default call budget is not one overall deadline: {other:?}"),
     };
-    let round = rdm_admin::offline::tickle_round(call);
-    floor + gossip + floor / 2 + gossip + round + floor + round + gossip + call
+    let state_key = rdm_admin::offline::tickle_ladder(call);
+    floor + gossip + floor / 2 + gossip + state_key + floor + state_key + gossip + call
 }
 
 #[path = "../../../tools/test-support/own_process.rs"]
@@ -64,8 +64,8 @@ mod issuance;
 mod cert_renewal;
 #[path = "fabric/seeded.rs"]
 mod seeded;
-#[path = "fabric/rounds.rs"]
-mod rounds;
+#[path = "fabric/fabric_states.rs"]
+mod fabric_states;
 #[path = "fabric/owed_check_ins.rs"]
 mod owed_check_ins;
 #[path = "fabric/declared_secrets.rs"]

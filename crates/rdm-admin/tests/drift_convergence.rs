@@ -1755,7 +1755,7 @@ mod decided_mesh {
         rdm_admin::build_state::BuildStateAdapter::append_step_receipt(&*e.builds, &receipt).await.unwrap();
         let t = e.view.read().await.clone();
         assert!(t.is_mesh_primary(&peer_mesh, &own_id(&t, &admins[0].parse().unwrap())), "the recovered first node-admin is the mesh's primary in the view");
-        // Heard again; the ladder still holds its decision until its next round.
+        // Heard again; the ladder still holds its decision until its next checklist.
         let peer = peer_mesh.clone();
         let heard_still_decided = move |m: &str| (m == peer).then_some(PeerMesh { unheard_ms: None, recovery_decided: true, unreachable_decided: false });
         let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-decided-mesh-rest");

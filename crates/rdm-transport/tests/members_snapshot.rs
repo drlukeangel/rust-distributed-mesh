@@ -456,7 +456,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
         let remote = Mesh::new("mesh2", 40);
-        // Publish rounds (the admin's hierarchy loop does this every gossip interval) until the
+        // Publish (the admin's hierarchy loop does this every gossip interval) until the
         // forwarding primary holds the snapshot, then until the ordinary member does.
         let held_by_fwd = {
             let mut seq = 1;
@@ -473,7 +473,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(held_by_fwd.0.node, "mesh2.admin.1");
         assert_eq!(held_by_fwd.0.incarnation, src_birth, "the publisher is the exact birth");
         let v1 = held_by_fwd.1;
-        assert_eq!(v1, 1, "one projection, one version, however many rounds");
+        assert_eq!(v1, 1, "one projection, one version, however many publications");
         let at_member = {
             let mut n = 0;
             wait("the ordinary member to install the forwarded full", || {
@@ -489,12 +489,12 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             .await
         };
         assert_eq!(at_member, (held_by_fwd.0.clone(), v1));
-        // Heartbeats alone: many more rounds, digest_seq and load moving, no version, no delta.
-        for round in 0..12u64 {
-            let mut hb = remote.digests(100 + round);
+        // Heartbeats alone: many more of them, digest_seq and load moving, no version, no delta.
+        for beat in 0..12u64 {
+            let mut hb = remote.digests(100 + beat);
             hb.iter_mut().for_each(|d| {
-                d.emitted_at_rafka_ms = 9_000_000 + round;
-                d.in_flight = Some(round);
+                d.emitted_at_rafka_ms = 9_000_000 + beat;
+                d.in_flight = Some(beat);
             });
             src_bb.publish(&src_m, hb).await;
             tokio::time::sleep(Duration::from_millis(60)).await;
@@ -525,7 +525,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
         let bumps_seen = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| attr(s, "node") == "mesh2.admin.1").count();
-        assert_eq!(bumps_seen, 2, "the real publisher bumped twice: the first projection and the one change (12 heartbeat rounds bumped nothing)");
+        assert_eq!(bumps_seen, 2, "the real publisher bumped twice: the first projection and the one change (12 heartbeats bumped nothing)");
         // The source primary forwards its own Mesh as a source too; the remote change is the forwarding primary's delta.
         let deltas_sent: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.admin.1").collect();
         assert_eq!(deltas_sent.len(), 1, "one remote change produced one delta: {deltas_sent:?}");
@@ -544,7 +544,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
                 "first_version": v1,
                 "version_after_one_change": v2,
                 "topology_version_spans": bumps_seen,
-                "heartbeat_rounds_without_a_bump": 12,
+                "heartbeat_intervals_without_a_bump": 12,
                 "deltas_forwarded": deltas_sent.len(),
                 "delta": { "changed_member": changed_name, "base_version": attr(deltas_sent[0], "base_version"), "topology_version": attr(deltas_sent[0], "topology_version"), "trace_id": deltas_sent[0]["trace_id"], "span_id": deltas_sent[0]["span_id"] },
                 "member_applied_spans": applied.iter().map(|s| json!({ "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),

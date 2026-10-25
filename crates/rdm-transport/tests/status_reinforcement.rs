@@ -113,27 +113,27 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         not_primary.set_role(false);
         assert!(sweep(&mut not_primary, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "a primary that lost the role sends no more");
         // A successor that hears the status it observes adopts it: no transition is invented, so nothing
-        // is sent until its round completes; then the adopted fact is sent, the old instant, five sends.
+        // is sent until its checklist completes; then the adopted fact is sent, the old instant, five sends.
         let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         successor.set_role(true);
         let heard = rdm_transport::membership::StatusFact { status: "ready-for-traffic".into(), changed_at_rafka_ms: 2 };
-        assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the round completes");
-        assert!(successor.awaiting_round(), "the adopted status waits for its round");
+        assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
+        assert!(successor.awaiting_checklist(), "the adopted status waits for its checklist");
         assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "no timer republishes an adopted status");
-        assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base + ms(11_000), 78).is_none(), "an incomplete round still sends nothing");
-        let again = successor.observe("ready-for-traffic", Some(heard.clone()), true, base + ms(12_000), 79).expect("the completed round republishes the adopted status");
+        assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base + ms(11_000), 78).is_none(), "an incomplete checklist still sends nothing");
+        let again = successor.observe("ready-for-traffic", Some(heard.clone()), true, base + ms(12_000), 79).expect("the completed checklist republishes the adopted status");
         assert_eq!((ts(&again), status_of(&again), publisher_of(&again)), (2, "ready-for-traffic", me), "the old instant, the same status, under the new publisher");
-        assert!(!successor.awaiting_round());
+        assert!(!successor.awaiting_checklist());
         let rest = sweep(&mut successor, base, ms(12_000), Duration::from_secs(10), ms(100));
         assert_eq!(rest.len(), 4, "the republished fact is five identical sends: {rest:?}");
         assert!(rest.iter().all(|(_, f)| ts(f) == 2));
-        // A status that differs from the adopted one while the round is open is a change like any other.
+        // A status that differs from the adopted one while the checklist is open is a change like any other.
         let mut moved_on = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         moved_on.set_role(true);
         assert!(moved_on.observe("ready-for-traffic", Some(heard.clone()), false, base, 80).is_none());
         let changed = moved_on.observe("leaving", Some(heard), false, base, 81).expect("a different status is a change");
         assert_eq!((ts(&changed), status_of(&changed)), (81, "leaving"));
-        assert!(!moved_on.awaiting_round());
+        assert!(!moved_on.awaiting_checklist());
 
         // Forwarding: a peer mesh's primary keeps the original publisher and instant, names itself
         // only in forwarded_by, never forwards its own mesh's status, and forwards only what an author sent.

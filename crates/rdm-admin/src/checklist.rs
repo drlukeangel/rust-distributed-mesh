@@ -1,7 +1,7 @@
-//! The round checklist's readers (states.md, "The round checklist"): the planned births of the
+//! The check-in checklist's readers (states.md, "The check-in checklist"): the planned births of the
 //! accepted Build, which of them have not checked in, which mesh primaries have not reported, and
-//! whether a mesh the fabric-primary decided to recover is back. The rounds that read them are
-//! [`crate::fabric_rounds::FabricRounds`]'s.
+//! whether a mesh the fabric-primary decided to recover is back. The checklists that read them are
+//! [`crate::fabric_status::FabricStates`]'s.
 
 use crate::accepted::FabricTopology;
 use crate::admin::PeerRecovery;
@@ -10,7 +10,7 @@ use crate::status_rpc::MeshReport;
 use rdm_core::{MemberStatus, MeshDigest};
 use std::collections::BTreeMap;
 
-/// A planned birth that has not checked in this round, and why.
+/// A planned birth that has not checked in this checklist, and why.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Missing {
     /// Who has not checked in.
@@ -35,9 +35,9 @@ pub fn planned(topology: &FabricTopology, mesh: &str) -> Vec<PathName> {
     topology.meshes.get(mesh).map(|m| m.nodes.iter().cloned().collect()).unwrap_or_default()
 }
 
-/// The planned births that have not checked in. `me` is the primary running the round, ready or not
-/// by its own status. `heard` are the digests received from their members since the round began;
-/// `known` every digest held (to tell a birth never heard from one heard before the round).
+/// The planned births that have not checked in. `me` is the primary running the checklist, ready or not
+/// by its own status. `heard` are the digests received from their members since the checklist began;
+/// `known` every digest held (to tell a birth never heard from one heard before the checklist).
 pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], departed: &dyn Fn(&str) -> bool) -> Vec<Missing> {
     let mut out = Vec::new();
     for path in planned {
@@ -61,16 +61,16 @@ pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: boo
         } else if held.iter().all(|d| departed(d.node.node_id.as_str())) {
             "departed"
         } else {
-            "not-heard-since-round"
+            "not-heard-since-opening"
         };
         out.push(Missing { who, why });
     }
     out
 }
 
-/// The meshes whose primary has not reported to the fabric-primary running the round. `meshes` is
+/// The meshes whose primary has not reported to the fabric-primary running the checklist. `meshes` is
 /// each mesh with its current primary node-admin's birth (`None`: no primary), and whether that
-/// primary is `me`; `my_mesh_done` says whether `me`'s own mesh round is finished. A report counts
+/// primary is `me`; `my_mesh_done` says whether `me`'s own mesh checklist is finished. A report counts
 /// only from the exact birth that is the mesh's primary now.
 pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], my_mesh_done: bool, reports: &BTreeMap<String, MeshReport>) -> Vec<Missing> {
     let mut out = Vec::new();
@@ -82,7 +82,7 @@ pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], m
         };
         if *is_me {
             if !my_mesh_done {
-                out.push(Missing { who, why: "own-mesh-round-open" });
+                out.push(Missing { who, why: "own-mesh-checklist-open" });
             }
             continue;
         }
@@ -147,16 +147,16 @@ mod tests {
 
     // @feature: node-lifecycle
     #[test]
-    fn checklist_names_every_planned_birth_that_has_not_checked_in_this_round() {
+    fn checklist_names_every_planned_birth_that_has_not_checked_in_since_the_opening() {
         let (a1, r1, r2, r3) = (path("mesh1", NodeKind::NodeAdmin, 1), path("mesh1", NodeKind::RpcNode, 1), path("mesh1", NodeKind::RpcNode, 2), path("mesh1", NodeKind::RpcNode, 3));
         let planned = vec![a1.clone(), r1.clone(), r2.clone(), r3.clone()];
         let ready = digest(&r1, MemberStatus::ReadyForTraffic);
         let pending = digest(&r2, MemberStatus::Pending);
-        let before_round = digest(&r3, MemberStatus::ReadyForTraffic);
+        let before_opening = digest(&r3, MemberStatus::ReadyForTraffic);
         let none = |_: &str| false;
-        // r1 checked in ready; r2 checked in but is not ready; r3 was heard only before the round began.
-        let m = missing_members(&planned, &a1, true, &[ready.clone(), pending.clone()], &[ready.clone(), pending.clone(), before_round.clone()], &none);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.2(not-ready)", "mesh1.rpc.3(not-heard-since-round)"]);
+        // r1 checked in ready; r2 checked in but is not ready; r3 was heard only before the checklist began.
+        let m = missing_members(&planned, &a1, true, &[ready.clone(), pending.clone()], &[ready.clone(), pending.clone(), before_opening.clone()], &none);
+        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.2(not-ready)", "mesh1.rpc.3(not-heard-since-opening)"]);
         // A planned birth never heard at all is named as such, and the primary itself counts only when ready.
         let m = missing_members(&planned, &a1, false, &[ready.clone()], &[ready.clone()], &none);
         assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.admin.1(not-ready)", "mesh1.rpc.2(no-birth-heard)", "mesh1.rpc.3(no-birth-heard)"]);
@@ -175,7 +175,7 @@ mod tests {
 
     // @feature: node-lifecycle
     #[test]
-    fn fabric_round_waits_for_a_report_from_each_mesh_primarys_current_birth() {
+    fn fabric_checklist_waits_for_a_report_from_each_mesh_primarys_current_birth() {
         let (old, new, other) = (IncarnationId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
         let meshes = vec![("mesh1".to_string(), Some(other.clone()), true), ("mesh2".to_string(), Some(new.clone()), false), ("mesh3".to_string(), None, false)];
@@ -188,9 +188,9 @@ mod tests {
         assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh2(report-of-another-birth)"]);
         reports.insert("mesh2".to_string(), report(&new, t0));
         assert!(fabric_missing(&meshes[..2], true, &reports).is_empty());
-        // The holder's own mesh counts only once its own round is finished.
+        // The holder's own mesh counts only once its own checklist is finished.
         let m = fabric_missing(&meshes[..2], false, &reports);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1(own-mesh-round-open)"]);
+        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1(own-mesh-checklist-open)"]);
     }
 
     // @feature: node-lifecycle

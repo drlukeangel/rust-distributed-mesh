@@ -106,7 +106,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
     let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     // The rows mesh2's primary commits (its mesh row Leaving at delete-mesh) are durable only once the
-    // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
+    // fabric's state-commit published them (states.md, Setting a state: "Before state-commit, RDM holds its
     // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
     // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
     estate.until_fabric_ready(Duration::from_secs(90)).await;

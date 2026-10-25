@@ -10,7 +10,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | page | owns |
 |---|---|
 | this page | the page map, the workflow tables, the wire-op → workflow table, the terminology firewall |
-| [States](lifecycles/states.md) | fabric, mesh and node lifecycle states, who sets each, the status rounds and their checklist, the one routing rule, stopped nodes, resize and roll |
+| [States](lifecycles/states.md) | fabric, mesh and node lifecycle states, who sets each, setting a state and its checklist, the one routing rule, stopped nodes, resize and executable replacement |
 | [Gossip](gossip.md) | the channels, the frame catalog (each frame's fields, author and channels), cadence and timers, peers' receive rules, external topology, deleted retention, held-member repair, frame examples |
 | [Node RPC envelope](node-rpc-envelope.md) | the op ledger, target and context, every op's request/reply schema and positional order, reserved stream codes, the typed object → wire mapping, the Build carrier `0x20` schema, RPC runtime span names, caller execution and certainty |
 | [Node RPC runtime](node-rpc.md) | how one invocation executes: resolver, pool, dispatch after the target, admission and memory, supervision, HandlerScope/ReplySink, the RpcOutcome algebra, budgets, connections-deleting runtime behaviour, retry guidance |
@@ -53,10 +53,10 @@ progress wait.
 
 | Workflow | Read when |
 |---|---|
-| [fabric.create](lifecycles/fabric-create.md) | Creating a fabric: minting it, its first mesh's first node-admin as fabric-primary, the status rounds to ready-for-traffic |
+| [fabric.create](lifecycles/fabric-create.md) | Creating a fabric: minting it, its first mesh's first node-admin as fabric-primary, the fabric's states to ready-for-traffic |
 | [State-sync](lifecycles/fabric-state-sync.md) | Choosing application day-0/seed actions and saved images |
 | [State-commit](lifecycles/fabric-state-commit.md) | Publishing scratchpad records |
-| [Ready-for-traffic](lifecycles/fabric-ready-for-traffic.md) | Completing the round and notifying Rafka |
+| [Ready-for-traffic](lifecycles/fabric-ready-for-traffic.md) | Setting ready-for-traffic and notifying Rafka |
 | [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, restart, replace or `node.connections.delete { scope: All }` of a primary |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |

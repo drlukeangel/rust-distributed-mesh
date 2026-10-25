@@ -33,22 +33,22 @@ pub struct LifecycleOp {
     pub event_at_rafka_ms: u64,
 }
 
-/// One fabric round hook on one exact birth (gossip.md, "Fabric round gossip hooks"): the fields
+/// One fabric state hook on one exact birth (gossip.md, "Fabric state gossip hooks"): the fields
 /// `StateCommitting`, `StateCommitted`, `TrafficOpening` and `TrafficOpened` carry. The subject is the
 /// commanded or reporting birth; `publisher` is the author at that hop (a `path.name`). Identity is
 /// `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)`; neither timestamp nor a
 /// forwarded receipt supplies liveness or operation authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoundHook {
-    /// The fabric the round belongs to.
+pub struct StateHook {
+    /// The fabric the checklist belongs to.
     pub fabric_id: FabricId,
     /// The subject: the commanded or reporting node.
     pub node_id: NodeId,
     /// The incarnation of that birth.
     pub incarnation: IncarnationId,
-    /// The Build the round belongs to.
+    /// The Build the checklist belongs to.
     pub build_id: String,
-    /// The Build attempt that holds the round.
+    /// The Build attempt that holds the checklist.
     pub attempt: u32,
     /// The operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`.
     pub operation: String,
@@ -58,7 +58,7 @@ pub struct RoundHook {
     pub event_at_rafka_ms: u64,
 }
 
-impl RoundHook {
+impl StateHook {
     /// The mesh of the author: the first segment of its `path.name`.
     pub fn publisher_mesh(&self) -> &str {
         self.publisher.split('.').next().unwrap_or_default()

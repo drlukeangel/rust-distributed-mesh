@@ -194,7 +194,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         mesh_deleter: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
-        rounds: Default::default(), fabric_recovery: Default::default(),
+        fabric_states: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
         republish: Default::default(), configure: Default::default(),
         before_ready: Default::default(),

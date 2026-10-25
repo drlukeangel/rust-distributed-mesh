@@ -425,7 +425,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // forwarder emits one delta from the version it last published to the one it holds (gossip.md
     // invariant 31): the deltas chain with no hole and end at the version the member installed, and the
     // three changes apart in time are three deltas at least (Pending and ReadyForTraffic may share one
-    // aggregate round, one version).
+    // aggregate checklist, one version).
     let mut chain: Vec<(u64, u64)> = deltas_forwarded.iter().map(|sp| (num(sp, "base_version"), num(sp, "topology_version"))).collect();
     chain.sort();
     assert!(chain.len() >= 3, "held, released and held again are three deltas at least from the forwarding primary: {chain:?}");

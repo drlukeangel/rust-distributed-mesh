@@ -1829,7 +1829,7 @@ mod tests {
 
     /// CONTRACT (R14 items 1 and 9; acceptance "an ordinary node's connections rows land under
     /// `connections/<node>/` in the shared root and the successor mesh-primary reads them there";
-    /// states.md, Rounds): before the fabric's first state-commit a node holds its connections rows
+    /// states.md, Setting a state): before the fabric's first state-commit a node holds its connections rows
     /// and raw log in its scratchpad, reads them there, and puts nothing on the root; its publication
     /// writes them under `connections/<its path.name>/`, where a second store opened by another
     /// process (another incarnation) reads every row.

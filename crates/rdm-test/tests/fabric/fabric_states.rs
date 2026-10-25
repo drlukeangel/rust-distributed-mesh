@@ -1,10 +1,10 @@
-//! i143.e12.s6 process E2E: the fabric states and their rounds (states.md; fabric-state-sync.md,
+//! i143.e12.s6 process E2E: the fabric states and their checklists (states.md; fabric-state-sync.md,
 //! fabric-state-commit.md, lifecycles/fabric-ready-for-traffic.md).
 //!
 //! A real estate whose node-admin is the testkit's, carrying the testkit application
 //! (`RDM_TEST_APP`). The fabric-primary alone moves the fabric: pending, state-sync (every mesh
 //! ready-for-traffic), state-commit (the application answered state-synced), ready-for-traffic (the
-//! commit-state and open-traffic rounds completed). Evidence is read from the spans every process
+//! commit-state and open-traffic checklists completed). Evidence is read from the spans every process
 //! wrote.
 
 use crate::build_log;
@@ -20,7 +20,7 @@ fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "fabric-states".into(),
-        subfeature: "rounds".into(),
+        subfeature: "check-ins".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: test.into(),
@@ -60,18 +60,18 @@ async fn estate_with_roles(test: &str, app: &str) -> Estate {
 }
 
 /// Await the fabric under `build` in `state`, as `fabric.get` at the admin the estate asks reports it:
-/// the Build the fabric accepted is the one whose climb reached the state.
+/// the Build the fabric accepted is the one whose change reached the state.
 async fn until_fabric(estate: &Estate, state: ScopeStatus, build: Option<&str>, within: Duration) -> FabricView {
     let what = format!("the fabric is {state:?}{}", build.map(|b| format!(" under {b}")).unwrap_or_default());
     estate.fabrics_obj().await.fact(&what, within, |f| f.status == state && build.is_none_or(|b| f.build_id.as_deref() == Some(b))).await.unwrap_or_else(|end| panic!("{end}"))
 }
 
-/// The spans of the climb whose root carries `build_id`.
-fn climb_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Value>) {
-    let root = named(spans, "rdm.node_admin.fabric.update.via-state-climb")
+/// The spans of the change whose root carries `build_id`.
+fn change_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Value>) {
+    let root = named(spans, "rdm.node_admin.fabric.update.via-change")
         .into_iter()
         .find(|r| r["attributes"]["build_id"] == build_id)
-        .unwrap_or_else(|| panic!("no climb of {build_id}"));
+        .unwrap_or_else(|| panic!("no change of {build_id}"));
     let mut mine: Vec<&Value> = spans.iter().filter(|sp| sp["trace_id"] == root["trace_id"] && start(sp) >= start(root)).collect();
     mine.sort_by_key(|sp| start(sp));
     (root, mine)
@@ -80,26 +80,26 @@ fn climb_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Value
 /// CONTRACT: a fabric whose Build adds a second mesh goes back to pending, and reaches
 /// ready-for-traffic only through state-sync, state-commit and open-traffic, in that order, all
 /// authored by the fabric-primary. The application is called once at state-sync and its
-/// state-synced starts state-commit; every mesh primary and every member takes each round's command
+/// state-synced starts state-commit; every mesh primary and every member takes each checklist's command
 /// and checks in; the application's one traffic-opened notice follows ready-for-traffic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_open_traffic() {
     let test = "a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_open_traffic";
     let estate = estate_with(test, "answer:300").await;
     let members = ["rpc.1", "rpc.2", "rpc.3"];
-    two_mesh_climb(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)], &members).await;
+    two_mesh_change(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)], &members).await;
 }
 
 /// CONTRACT: a two-mesh fabric whose meshes each hold the product role nodes (a broker, a gateway
-/// and a compute) climbs to ready-for-traffic exactly as the rpc-node fabric does: every role node
-/// takes both round commands, acts through the one member-round path, publishes its check-in hook
+/// and a compute) changes to ready-for-traffic exactly as the rpc-node fabric does: every role node
+/// takes both state commands, acts through the one member-checklist path, publishes its check-in hook
 /// on its mesh channel and completes at its mesh primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_and_open_traffic_rounds() {
-    let test = "a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_and_open_traffic_rounds";
+async fn a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_and_open_traffic_check_ins() {
+    let test = "a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_and_open_traffic_check_ins";
     let estate = estate_with_roles(test, "answer:300").await;
     let members = ["broker.1", "gateway.1", "compute.1"];
-    two_mesh_climb(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)], &members).await;
+    two_mesh_change(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)], &members).await;
 }
 
 /// CONTRACT: the mesh-primary of a role-node mesh dies and the election names its mesh's other admin
@@ -149,9 +149,9 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     estate.record_trace_url(&s(&named(&spans, "rdm.node_rpc.status.update.via-mesh-primary-moved").first().expect("a re-owe")["trace_id"]));
 }
 
-/// The two-mesh climb over meshes of `shape` (their node-admins and members), whose members are named
+/// The two-mesh change over meshes of `shape` (their node-admins and members), whose members are named
 /// `members` under each mesh.
-async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: &[&str]) {
+async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members: &[&str]) {
     let mesh = |m: &str| MeshDesired::of(m, shape.iter().copied());
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
     let two_meshes = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
@@ -164,10 +164,10 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     let nodes = estate.node_values().await;
     estate.artifact("nodes.json", &json!(nodes));
     let primaries: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
-    // The gossip hooks of the last round are read after the stop, and the last of them is still in
+    // The gossip hooks of the last checklist are read after the stop, and the last of them is still in
     // flight when the fabric turns ready: a member's `traffic-opened` goes to its primary on the mesh
     // channel, onto the backbone by that primary, and onto the peer mesh's channel by the peer's
-    // primary, while the fabric-primary completes the round on the member's declaration, not on
+    // primary, while the fabric-primary completes the checklist on the member's declaration, not on
     // the hook (at `ce9224ae` mesh2.broker.1's hook reached its primary 71 ms after the fabric was
     // ready and the stop came 55 ms after that, before mesh1's admins heard the backbone hop). The
     // estate is stopped once every member's check-in has made its last hop, bounded; a hook that has
@@ -177,7 +177,7 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
         let landed_by = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let spans = estate.spans();
-            let frames = named(&spans, "rdm.mesh.membership.update.via-round-frame");
+            let frames = named(&spans, "rdm.mesh.membership.update.via-state-frame");
             let landed = want.iter().filter(|n| !n.contains(".admin.")).all(|subject| {
                 let other = if subject.starts_with("mesh1.") { "mesh2." } else { "mesh1." };
                 let peer_primary = primaries.iter().find(|p| p.starts_with(other)).cloned().unwrap_or_default();
@@ -192,17 +192,17 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     estate.stop().await;
     let spans = estate.spans();
     assert_eq!(primaries.len(), 2, "one primary per mesh: {primaries:?}");
-    let (root, climb) = climb_of(&spans, &two_meshes);
+    let (root, change) = change_of(&spans, &two_meshes);
     let fp = s(&root["attributes"]["node"]);
-    let at = |name: &str, f: &dyn Fn(&Value) -> bool| -> &Value { climb.iter().copied().find(|sp| sp["name"] == name && f(sp)).unwrap_or_else(|| panic!("no {name} in the climb")) };
+    let at = |name: &str, f: &dyn Fn(&Value) -> bool| -> &Value { change.iter().copied().find(|sp| sp["name"] == name && f(sp)).unwrap_or_else(|| panic!("no {name} in the change")) };
     let entered = |to: &str| at("rdm.node_admin.fabric.update.via-state-entered", &|sp| sp["attributes"]["to"] == to);
-    let opened = |round: &str| at("rdm.node_admin.fabric.update.via-round-opened", &|sp| sp["attributes"]["round"] == round);
-    let complete = |round: &str| at("rdm.node_admin.fabric.update.via-round-complete", &|sp| sp["attributes"]["round"] == round);
+    let opened = |state_key: &str| at("rdm.node_admin.fabric.update.via-checklist-opened", &|sp| sp["attributes"]["command"] == state_key);
+    let complete = |state_key: &str| at("rdm.node_admin.fabric.update.via-checklist-complete", &|sp| sp["attributes"]["command"] == state_key);
     let hook = at("rdm.node_admin.fabric.update.via-sync-state-hook", &|_| true);
     let app = at("rdm.testkit.app.update.via-sync-state", &|_| true);
     let synced = at("rdm.node_admin.fabric.update.via-state-synced", &|_| true);
     let notice = at("rdm.node_admin.fabric.update.via-traffic-opened-hook", &|_| true);
-    // `already-applied` when an earlier climb of this fabric put it (the one-mesh Build's, before the resize).
+    // `already-applied` when an earlier change of this fabric put it (the one-mesh Build's, before the resize).
     let ready_row = at("rdm.node_admin.fabric.update.via-ready-row-put", &|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) && s(&sp["attributes"]["node"]) == fp);
     assert!(ready_row["end_unix_nano"].as_u64().unwrap() <= start(entered("ready-for-traffic")), "the row is durable before the fabric-primary enters ready-for-traffic: {ready_row}");
     let order = [
@@ -226,58 +226,58 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     }
     assert!(app["end_unix_nano"].as_u64().unwrap() - start(app) >= 250_000_000, "the application's simulated work ran inside the hook: {app}");
     assert_eq!(hook["attributes"]["outcome"], "state-synced", "{hook}");
-    assert_eq!(named(&spans, "rdm.testkit.app.update.via-sync-state").iter().filter(|a| a["attributes"]["build_id"] == two_meshes.as_str()).count(), 1, "the application is called once per round of state-sync");
+    assert_eq!(named(&spans, "rdm.testkit.app.update.via-sync-state").iter().filter(|a| a["attributes"]["build_id"] == two_meshes.as_str()).count(), 1, "the application is called once per checklist of state-sync");
 
-    // Each round: the fabric-primary commands the other mesh's primary, every member of both meshes takes the command and checks in.
-    for (round, completion) in [("commit-state", "state-committed"), ("open-traffic", "traffic-opened")] {
-        let o = opened(round);
-        let c = complete(round);
-        let in_round = |sp: &&Value| start(sp) >= start(o) && start(sp) <= start(c) + 2_000_000_000;
-        let commands: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-round-command").into_iter().filter(in_round).filter(|sp| sp["attributes"]["round"] == round).collect();
+    // Each checklist: the fabric-primary commands the other mesh's primary, every member of both meshes takes the command and checks in.
+    for (state_key, completion) in [("commit-state", "state-committed"), ("open-traffic", "traffic-opened")] {
+        let o = opened(state_key);
+        let c = complete(state_key);
+        let in_checklist = |sp: &&Value| start(sp) >= start(o) && start(sp) <= start(c) + 2_000_000_000;
+        let commands: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-state-command").into_iter().filter(in_checklist).filter(|sp| sp["attributes"]["command"] == state_key).collect();
         let to: std::collections::BTreeSet<String> = commands.iter().filter(|c| s(&c["attributes"]["node"]) == fp).map(|c| s(&c["attributes"]["to"])).collect();
-        assert!(to.iter().any(|t| t.starts_with("mesh2.admin.")), "{round}: the fabric-primary {fp} commanded mesh2's primary: {to:?}");
-        let members: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.fabric.update.via-member-round").into_iter().filter(in_round).filter(|sp| sp["attributes"]["round"] == round).map(|sp| s(&sp["attributes"]["node"])).collect();
+        assert!(to.iter().any(|t| t.starts_with("mesh2.admin.")), "{state_key}: the fabric-primary {fp} commanded mesh2's primary: {to:?}");
+        let members: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.fabric.update.via-member-check-in").into_iter().filter(in_checklist).filter(|sp| sp["attributes"]["command"] == state_key).map(|sp| s(&sp["attributes"]["node"])).collect();
         let expected: std::collections::BTreeSet<String> = want.difference(&primaries).cloned().collect();
-        assert!(expected.is_subset(&members), "{round}: every member that is not a primary took the command and acted; missing {:?}", expected.difference(&members).collect::<Vec<_>>());
-        let ups: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-round-op").into_iter().filter(in_round).filter(|sp| sp["attributes"]["op"] == completion).collect();
-        assert!(ups.iter().all(|u| u["attributes"]["outcome"] == "applied"), "{round}: every {completion} was applied: {ups:#?}");
-        assert!(ups.iter().any(|u| s(&u["attributes"]["node"]) == fp && s(&u["attributes"]["sender"]).starts_with("mesh2.admin.")), "{round}: the fabric-primary took mesh2's {completion}");
+        assert!(expected.is_subset(&members), "{state_key}: every member that is not a primary took the command and acted; missing {:?}", expected.difference(&members).collect::<Vec<_>>());
+        let ups: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-state-op").into_iter().filter(in_checklist).filter(|sp| sp["attributes"]["op"] == completion).collect();
+        assert!(ups.iter().all(|u| u["attributes"]["outcome"] == "applied"), "{state_key}: every {completion} was applied: {ups:#?}");
+        assert!(ups.iter().any(|u| s(&u["attributes"]["node"]) == fp && s(&u["attributes"]["sender"]).starts_with("mesh2.admin.")), "{state_key}: the fabric-primary took mesh2's {completion}");
     }
 
-    // The gossip hooks (gossip.md, "Fabric round gossip hooks"): each command is announced by its
+    // The gossip hooks (gossip.md, "Fabric state gossip hooks"): each command is announced by its
     // commanding authority on its mesh channel and the backbone before the call; each check-in by the
     // subject (a node-admin on both channels, an ordinary node on its mesh channel, which its
     // mesh-admin carries onto the backbone); and a peer mesh's primary forwards them.
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let name_of: std::collections::BTreeMap<&String, &String> = id_of.iter().map(|(n, i)| (i, n)).collect();
     let primary_of = |mesh: &str| primaries.iter().find(|p| p.starts_with(&format!("{mesh}."))).cloned().expect("a primary per mesh");
-    let hooks: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-round-hook").into_iter().filter(|h| start(h) >= start(root) && flag(&h["attributes"]["bound"])).collect();
-    let frames: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-round-frame").into_iter().filter(|f| start(f) >= start(root)).collect();
+    let hooks: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-state-hook").into_iter().filter(|h| start(h) >= start(root) && flag(&h["attributes"]["bound"])).collect();
+    let frames: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-state-frame").into_iter().filter(|f| start(f) >= start(root)).collect();
     let mut firsts = Vec::new();
-    for (round, command_frame, completion, completion_frame) in [("commit-state", "state-committing", "state-committed", "state-committed"), ("open-traffic", "traffic-opening", "traffic-opened", "traffic-opened")] {
+    for (state_key, command_frame, completion, completion_frame) in [("commit-state", "state-committing", "state-committed", "state-committed"), ("open-traffic", "traffic-opening", "traffic-opened", "traffic-opened")] {
         let sent = |hook: &str, subject: &str| -> Vec<&Value> { hooks.iter().copied().filter(|h| h["attributes"]["hook"] == hook && s(&h["attributes"]["subject_id"]) == id_of[subject]).collect() };
         let mut cmd_at = Vec::new();
         let mut done_at = Vec::new();
         for subject in want.iter().filter(|n| **n != fp) {
             let mesh = subject.split('.').next().unwrap();
             let authority = if *subject == primary_of(mesh) { fp.clone() } else { primary_of(mesh) };
-            let cmd = sent(round, subject);
-            assert!(!cmd.is_empty(), "{round}: the commanding authority announced the command to {subject}");
-            assert!(cmd.iter().all(|h| s(&h["attributes"]["node"]) == authority && h["attributes"]["channels"] == "mesh,backbone"), "{round}: {subject} was announced by {authority} on its mesh channel and the backbone: {cmd:?}");
+            let cmd = sent(state_key, subject);
+            assert!(!cmd.is_empty(), "{state_key}: the commanding authority announced the command to {subject}");
+            assert!(cmd.iter().all(|h| s(&h["attributes"]["node"]) == authority && h["attributes"]["channels"] == "mesh,backbone"), "{state_key}: {subject} was announced by {authority} on its mesh channel and the backbone: {cmd:?}");
             let done = sent(completion, subject);
-            assert!(!done.is_empty(), "{round}: {subject} announced its {completion} check-in");
+            assert!(!done.is_empty(), "{state_key}: {subject} announced its {completion} check-in");
             let channels = if subject.contains(".admin.") { "mesh,backbone" } else { "mesh" };
-            assert!(done.iter().all(|h| s(&h["attributes"]["node"]) == *subject && h["attributes"]["channels"] == channels), "{round}: {subject} announced {completion} itself on {channels}: {done:?}");
-            assert!(start(cmd[0]) <= start(done[0]), "{round}: the command to {subject} was announced before its check-in");
+            assert!(done.iter().all(|h| s(&h["attributes"]["node"]) == *subject && h["attributes"]["channels"] == channels), "{state_key}: {subject} announced {completion} itself on {channels}: {done:?}");
+            assert!(start(cmd[0]) <= start(done[0]), "{state_key}: the command to {subject} was announced before its check-in");
             cmd_at.push(start(cmd[0]));
             done_at.push(start(done[0]));
             // An ordinary node's check-in reaches the backbone through its mesh-admin; a node-admin's is its own.
             if !subject.contains(".admin.") {
                 let carried = frames.iter().any(|f| f["attributes"]["kind"] == completion_frame && f["attributes"]["via"] == "backbone" && s(&f["attributes"]["subject_id"]) == id_of[subject.as_str()] && s(&f["attributes"]["forwarded_by"]) == authority);
-                assert!(carried, "{round}: {authority} carried {subject}'s {completion_frame} onto the backbone");
+                assert!(carried, "{state_key}: {authority} carried {subject}'s {completion_frame} onto the backbone");
             }
             let heard_by_members = frames.iter().any(|f| f["attributes"]["kind"] == command_frame && f["attributes"]["via"] == "mesh-channel" && s(&f["attributes"]["subject_id"]) == id_of[subject.as_str()] && s(&f["attributes"]["forwarded_by"]).is_empty());
-            assert!(heard_by_members, "{round}: the {command_frame} for {subject} was heard on a mesh channel as its author sent it");
+            assert!(heard_by_members, "{state_key}: the {command_frame} for {subject} was heard on a mesh channel as its author sent it");
         }
         // A peer mesh's primary forwards the other mesh's hooks onto its own channel, the author unchanged.
         for (from, to) in [("mesh1", "mesh2"), ("mesh2", "mesh1")] {
@@ -293,7 +293,7 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
             }
         }
         assert!(frames.iter().all(|f| name_of.contains_key(&s(&f["attributes"]["subject_id"]))), "every hook frame names a node of this fabric");
-        firsts.push((round, *cmd_at.iter().min().unwrap(), *done_at.iter().max().unwrap()));
+        firsts.push((state_key, *cmd_at.iter().min().unwrap(), *done_at.iter().max().unwrap()));
     }
     assert!(firsts[0].1 <= firsts[0].2 && firsts[0].2 <= firsts[1].1 && firsts[1].1 <= firsts[1].2, "StateCommitting, StateCommitted, TrafficOpening, TrafficOpened came in that order: {firsts:?}");
 
@@ -301,31 +301,31 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     // is commanded once as `first`, a send after it carries the event that made it due, and nothing is
     // sent again after the birth answered.
     let mut sends: std::collections::BTreeMap<(String, String, String), Vec<&Value>> = std::collections::BTreeMap::new();
-    for c in named(&spans, "rdm.node_admin.fabric.update.via-round-command").into_iter().filter(|c| start(c) >= start(root)) {
-        sends.entry((s(&c["attributes"]["node"]), s(&c["attributes"]["round"]), s(&c["attributes"]["to"]))).or_default().push(c);
+    for c in named(&spans, "rdm.node_admin.fabric.update.via-state-command").into_iter().filter(|c| start(c) >= start(root)) {
+        sends.entry((s(&c["attributes"]["node"]), s(&c["attributes"]["command"]), s(&c["attributes"]["to"]))).or_default().push(c);
     }
     assert!(!sends.is_empty());
     let mut resends = 0;
-    for ((from, round, to), calls) in &mut sends {
+    for ((from, state_key, to), calls) in &mut sends {
         calls.sort_by_key(|c| start(c));
-        assert_eq!(calls.iter().filter(|c| c["attributes"]["event"] == "first").count(), 1, "{from} commanded {to} once as first in {round}: {calls:?}");
-        assert_eq!(calls[0]["attributes"]["event"], "first", "{from}'s first send to {to} in {round} is the first");
+        assert_eq!(calls.iter().filter(|c| c["attributes"]["event"] == "first").count(), 1, "{from} commanded {to} once as first in {state_key}: {calls:?}");
+        assert_eq!(calls[0]["attributes"]["event"], "first", "{from}'s first send to {to} in {state_key} is the first");
         for (i, c) in calls.iter().enumerate().skip(1) {
             resends += 1;
             let event = s(&c["attributes"]["event"]);
-            assert!(["addressed", "destination-changed", "reachable-again", "state-changed"].contains(&event.as_str()), "{from} sent {round} to {to} again with no eligible event: {event}");
+            assert!(["addressed", "destination-changed", "reachable-again", "state-changed"].contains(&event.as_str()), "{from} sent {state_key} to {to} again with no eligible event: {event}");
             let before = s(&calls[i - 1]["attributes"]["outcome"]);
-            assert!(before != "applied" && before != "already-applied", "{from} sent {round} to {to} again after it answered {before}");
+            assert!(before != "applied" && before != "already-applied", "{from} sent {state_key} to {to} again after it answered {before}");
         }
     }
-    eprintln!("[rounds] {} commands to {} (round, birth) pairs, {resends} sent again on an eligible event", sends.values().map(Vec::len).sum::<usize>(), sends.len());
+    eprintln!("[fabric_states] {} commands to {} (command, birth) pairs, {resends} sent again on an eligible event", sends.values().map(Vec::len).sum::<usize>(), sends.len());
 
-    // One trace: every call of the climb has its receiver's serve span under it, every mesh ran both
-    // rounds in it, and mesh2's primary reported each round up in a new caller span of the same trace.
-    let count = |name: &str| climb.iter().filter(|sp| sp["name"] == name).count();
-    assert_eq!(count("rdm.node_rpc.request.update.via-call"), count("rdm.node_rpc.request.serve.via-direct"), "every call of the climb was served under it");
-    assert_eq!(count("rdm.node_admin.fabric.update.via-mesh-round"), 4, "two meshes ran two rounds each inside the climb's trace");
-    assert_eq!(count("rdm.node_admin.status.update.via-round-completion"), 2, "the other mesh's primary reported each round up in the climb's trace");
+    // One trace: every call of the change has its receiver's serve span under it, every mesh ran both
+    // checklists in it, and mesh2's primary reported each checklist up in a new caller span of the same trace.
+    let count = |name: &str| change.iter().filter(|sp| sp["name"] == name).count();
+    assert_eq!(count("rdm.node_rpc.request.update.via-call"), count("rdm.node_rpc.request.serve.via-direct"), "every call of the change was served under it");
+    assert_eq!(count("rdm.node_admin.fabric.update.via-mesh-checklist"), 4, "two meshes ran two checklists each inside the change's trace");
+    assert_eq!(count("rdm.node_admin.status.update.via-state-completion"), 2, "the other mesh's primary reported each checklist up in the change's trace");
 
     // The fabric states went out as FabricStatus authored by the fabric-primary only.
     let sends: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| sp["attributes"]["scope"].as_str().is_some_and(|x| x.contains("fabric")) && start(sp) >= start(root)).collect();
@@ -338,8 +338,8 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
             seen.push(st);
         }
     }
-    let climb_states: Vec<&str> = vec!["state-sync", "state-commit", "ready-for-traffic"];
-    assert!(seen.windows(3).any(|w| w == climb_states), "FabricStatus went state-sync, state-commit, ready-for-traffic: {seen:?}");
+    let change_states: Vec<&str> = vec!["state-sync", "state-commit", "ready-for-traffic"];
+    assert!(seen.windows(3).any(|w| w == change_states), "FabricStatus went state-sync, state-commit, ready-for-traffic: {seen:?}");
     estate.record_trace_url(&s(&root["trace_id"]));
 }
 
@@ -362,7 +362,7 @@ fn rows_on(root: &std::path::Path) -> Vec<String> {
     out
 }
 
-/// Wait until the fabric is ready-for-traffic under the climb of `build`.
+/// Wait until the fabric is ready-for-traffic under the change of `build`.
 async fn ready_under(estate: &Estate, build: &str) {
     until_fabric(estate, ScopeStatus::ReadyForTraffic, Some(build), Duration::from_secs(90)).await;
 }
@@ -441,8 +441,8 @@ async fn a_resize_is_blocked_on_the_fabric_change_and_complete_only_after_its_ow
     // The order, from the spans: the fabric entered ready-for-traffic under this Build's change before the
     // attempt that completed it was dispatched.
     let spans = estate.spans();
-    let (_, climb) = climb_of(&spans, &build);
-    let ready = climb.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready-for-traffic").unwrap_or_else(|| panic!("the fabric entered ready-for-traffic under the climb of {build}"));
+    let (_, change) = change_of(&spans, &build);
+    let ready = change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready-for-traffic").unwrap_or_else(|| panic!("the fabric entered ready-for-traffic under the change of {build}"));
     let completed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| sp["attributes"]["build_id"] == build.as_str() && sp["attributes"]["outcome"] == "complete").unwrap_or_else(|| panic!("the attempt that completed {build} is spanned"));
     let Some(BuildFrame::Complete { attempt }) = done.frames.last() else { panic!("Build {build} ended {:?}", done.frames.last()) };
     assert_eq!(num(&completed["attributes"]["attempt"]), Some(u64::from(*attempt)), "the dispatch span is of the attempt the stream reported Complete: {completed}");
@@ -508,7 +508,7 @@ async fn a_resize_whose_sync_state_reports_failure_fails_on_the_fabric_change_st
     estate.record_trace_url(&s(&hook["trace_id"]));
 }
 
-/// CONTRACT (states.md, Rounds: "Before state-commit, RDM holds its rows in the scratchpad;
+/// CONTRACT (states.md, Setting a state: "Before state-commit, RDM holds its rows in the scratchpad;
 /// state-commit publishes the required held rows to the configured stores"; fabric-state-commit.md
 /// step 2; node-identity-and-state.md §2.7, The write; node-admin-lifecycle.md §7; R14 item 9): while
 /// the fabric is held in state-sync, every node of a two-mesh fabric up and ready (the fabric-primary,
@@ -519,11 +519,11 @@ async fn a_resize_whose_sync_state_reports_failure_fails_on_the_fabric_change_st
 /// birth but the Day-0 root, mesh1.admin.1, which joins nobody), the Pending its mesh-primary (the
 /// fabric-primary for a mesh with no primary) recorded when it accepted the birth's join report (Q97,
 /// node-mesh-join.md step 10): an applied declared-state row, durable before state-commit (Q54), and
-/// each among the status rows of the birth's own mesh, whichever admin accepted the join. The state-commit round publishes it: each node's
+/// each among the status rows of the birth's own mesh, whichever admin accepted the join. The state-commit checklist publishes it: each node's
 /// commit-state action writes what it holds before its check-in (the fabric-primary the Fabric row,
 /// each mesh primary its Mesh row and its members' Node rows, a node the connections rows it holds). After
 /// that first state-commit the store exists: a node born later writes straight to it, and the next
-/// round's commit-state action of every node has nothing held to publish.
+/// checklist's commit-state action of every node has nothing held to publish.
 ///
 /// A connections row is a data-plane connection a node originated (connections.md: "The data plane is
 /// the connections log"; R-CR6: the control plane, gossip and the control-plane Node RPC pool, writes
@@ -542,7 +542,7 @@ async fn a_resize_whose_sync_state_reports_failure_fails_on_the_fabric_change_st
 /// The second Build adds a node, a resize, and a resize puts the fabric back to pending (states.md,
 /// Resize and executable replacement): the fabric-primary that accepts it holds the fabric pending before its
 /// build.create door answers, so no `fabric.get` after the answer pairs the second Build with the
-/// ready-for-traffic the first Build's climb reached, and the second Build climbs its own rounds.
+/// ready-for-traffic the first Build's change reached, and the second Build changes its own checklists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_until_state_commit_publishes_other_rows() {
     let test = "the_store_root_holds_only_acknowledged_declarations_and_build_facts_until_state_commit_publishes_other_rows";
@@ -556,7 +556,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let first = first_stream.build_id().to_string();
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
-    // The application took the two-mesh Build's state-sync round and the door holds its answer: the
+    // The application took the two-mesh Build's state-sync checklist and the door holds its answer: the
     // fabric cannot reach state-commit.
     until_fabric(&estate, ScopeStatus::StateSync, Some(first.as_str()), Duration::from_secs(60)).await;
     door.wait_held("state-sync").await;
@@ -628,7 +628,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
         assert!(!holds(&format!("connections/{name}/")), "{name} originated no connection, so it holds no connections row; the control plane writes none: {after:#?}");
     }
 
-    // A node born after the first state-commit writes straight to the store, and the second round's
+    // A node born after the first state-commit writes straight to the store, and the second checklist's
     // commit-state actions publish nothing: nothing is held any more.
     let second = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 2)] }).await.build_id.to_string();
     let mut want_later = want.clone();
@@ -659,14 +659,14 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     let answered = door_span["end_unix_nano"].as_u64().unwrap();
     assert!(start(reset) <= answered, "the fabric is pending before the door answers the second Build: reset at {}, door answered at {answered} ({} us later than the answer): {reset}", start(reset), start(reset).saturating_sub(answered) / 1000);
 
-    // The first round: each node's commit-state action published what it held, before its check-in.
-    let (first_root, first_climb) = climb_of(&spans, &first);
-    let actions = |climb: &[&Value]| -> std::collections::BTreeMap<String, Value> {
-        climb.iter().filter(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-round-action" && sp["attributes"]["round"] == "commit-state").map(|sp| (s(&sp["attributes"]["node"]), (*sp).clone())).collect()
+    // The first checklist: each node's commit-state action published what it held, before its check-in.
+    let (first_root, first_change) = change_of(&spans, &first);
+    let actions = |change: &[&Value]| -> std::collections::BTreeMap<String, Value> {
+        change.iter().filter(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-action" && sp["attributes"]["command"] == "commit-state").map(|sp| (s(&sp["attributes"]["node"]), (*sp).clone())).collect()
     };
-    let published = actions(&first_climb);
+    let published = actions(&first_change);
     for name in &want {
-        let a = published.get(name).unwrap_or_else(|| panic!("{name}'s commit-state action is in the first climb: {:?}", published.keys().collect::<Vec<_>>()));
+        let a = published.get(name).unwrap_or_else(|| panic!("{name}'s commit-state action is in the first change: {:?}", published.keys().collect::<Vec<_>>()));
         assert!(flag(&a["attributes"]["bound"]), "{name}'s commit-state action publishes its scratchpad: {a}");
         let stores = s(&a["attributes"]["stores"]);
         if name == "mesh1.rpc.1" || name.contains(".admin.") {
@@ -682,16 +682,16 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
             // fabric/ has one writer, the fabric-primary (R14 item 2): no other node holds a row there.
             assert!(!stores.contains("fabric"), "{name} does not hold the fabric seat, yet its commit-state publication names a fabric/ store: {stores}");
         }
-        let check_in = named(&spans, "rdm.node_admin.fabric.update.via-round-hook")
+        let check_in = named(&spans, "rdm.node_admin.fabric.update.via-state-hook")
             .into_iter()
             .find(|h| h["attributes"]["hook"] == "state-committed" && s(&h["attributes"]["subject_id"]) == id_of[name] && flag(&h["attributes"]["bound"]) && start(h) >= start(first_root));
         let end = a["end_unix_nano"].as_u64().unwrap();
         if name == "mesh1.admin.1" {
-            // The fabric-primary's own mesh round checks in locally: its round completes after it.
-            let complete = first_climb.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-round-complete" && sp["attributes"]["round"] == "commit-state").expect("the first commit-state round completed");
-            assert!(end <= start(complete), "the fabric-primary published before the commit-state round completed: action {a}, complete {complete}");
+            // The fabric-primary's own mesh checklist checks in locally: its checklist completes after it.
+            let complete = first_change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-checklist-complete" && sp["attributes"]["command"] == "commit-state").expect("the first commit-state checklist completed");
+            assert!(end <= start(complete), "the fabric-primary published before the commit-state checklist completed: action {a}, complete {complete}");
         } else {
-            let h = check_in.unwrap_or_else(|| panic!("{name} announced its state-committed check-in in the first round"));
+            let h = check_in.unwrap_or_else(|| panic!("{name} announced its state-committed check-in in the first checklist"));
             assert!(end <= start(h), "{name} published before it checked in: action {a}, check-in {h}");
         }
     }
@@ -708,15 +708,15 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     assert!(accepted.iter().all(|sp| sp["attributes"]["node"] == "mesh1.admin.1"), "only the fabric-primary writes a Build: {:?}", accepted.iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["via"])).collect::<Vec<_>>());
 
     // The node born after the first state-commit opened its store on the store root; the second
-    // round's actions had nothing held.
+    // checklist's actions had nothing held.
     assert!(later.iter().any(|r| r.starts_with("connections/mesh2.rpc.2/")), "mesh2.rpc.2 wrote the connection it originated straight to the store: {later:#?}");
     let opened = named(&spans, "rdm.mesh.node.resolve.via-connections-hydrated").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.2").expect("mesh2.rpc.2 opened its connections store");
     assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node born after state-commit writes to the store root: {opened}");
-    let (_, second_climb) = climb_of(&spans, &second);
-    let republished = actions(&second_climb);
-    assert!(!republished.is_empty(), "the second round ran commit-state actions");
+    let (_, second_change) = change_of(&spans, &second);
+    let republished = actions(&second_change);
+    assert!(!republished.is_empty(), "the second checklist ran commit-state actions");
     for (name, a) in &republished {
-        assert_eq!(num(&a["attributes"]["rows"]), Some(0), "{name} held nothing to publish in the second round: {a}");
+        assert_eq!(num(&a["attributes"]["rows"]), Some(0), "{name} held nothing to publish in the second checklist: {a}");
     }
     estate.record_trace_url(&s(&first_root["trace_id"]));
 }
@@ -738,17 +738,17 @@ async fn held_in_state_sync(test: &str, app: &str) -> (Vec<Value>, Value) {
 }
 
 fn assert_no_traffic_opened(spans: &[Value]) {
-    for round in ["via-round-opened", "via-round-command", "via-member-round", "via-round-complete", "via-traffic-opened-hook"] {
-        let name = format!("rdm.node_admin.fabric.update.{round}");
+    for state_key in ["via-checklist-opened", "via-state-command", "via-member-check-in", "via-checklist-complete", "via-traffic-opened-hook"] {
+        let name = format!("rdm.node_admin.fabric.update.{state_key}");
         assert!(named(spans, &name).is_empty(), "{name} ran although the fabric never left state-sync");
     }
     assert!(named(spans, "rdm.node_admin.fabric.update.via-state-entered").iter().all(|e| e["attributes"]["to"] == "state-sync"), "no state past state-sync was entered");
-    assert!(named(spans, "rdm.node_admin.status.update.via-round-op").is_empty(), "no commit-state or open-traffic op was served");
+    assert!(named(spans, "rdm.node_admin.status.update.via-state-op").is_empty(), "no commit-state or open-traffic op was served");
 }
 
 /// CONTRACT: an application that takes `sync_state` and never answers keeps the fabric in
 /// state-sync. The fabric-primary names what it waits for (the application's state-synced for the
-/// accepted Build and attempt), calls the application once, runs no round and opens no traffic.
+/// accepted Build and attempt), calls the application once, runs no checklist and opens no traffic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_application_that_never_answers_keeps_the_fabric_in_state_sync_with_a_named_blocker() {
     let (spans, fabric) = held_in_state_sync("an_application_that_never_answers_keeps_the_fabric_in_state_sync_with_a_named_blocker", "never").await;
@@ -760,7 +760,7 @@ async fn an_application_that_never_answers_keeps_the_fabric_in_state_sync_with_a
         blocked.iter().map(|b| &b["attributes"]).collect::<Vec<_>>()
     );
     assert_eq!(named(&spans, "rdm.node_admin.fabric.update.via-sync-state-called").len(), 1, "sync_state is called once and never again on a timer");
-    assert_eq!(named(&spans, "rdm.testkit.app.update.via-sync-state-taken").len(), 1, "the application took the round once");
+    assert_eq!(named(&spans, "rdm.testkit.app.update.via-sync-state-taken").len(), 1, "the application took the checklist once");
     assert_no_traffic_opened(&spans);
 }
 
@@ -777,7 +777,7 @@ async fn refused_state_synced(test: &str, app: &str, field: &str) {
     assert_no_traffic_opened(&spans);
 }
 
-/// CONTRACT: a state-synced for another Build is not the round's completion: it is refused naming
+/// CONTRACT: a state-synced for another Build is not the checklist's completion: it is refused naming
 /// `build_id` with what was sent and what was answered, and the fabric stays in state-sync.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_state_synced_for_a_foreign_build_is_refused_by_name() {
@@ -886,7 +886,7 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     assert_eq!(held_seats, seats_before, "every seat is where it was");
     assert!(held_seats.contains(&("mesh1.admin.1".to_string(), true, true)) && held_seats.contains(&("mesh2.admin.1".to_string(), true, false)), "{held_seats:?}");
 
-    // The application answers: the fabric climbs, and the same kind of workflow is accepted.
+    // The application answers: the fabric changes, and the same kind of workflow is accepted.
     door.release("state-sync").await;
     followed(&estate, first_stream, &format!("the initial Build {first} after its state-sync was released"), Duration::from_secs(90)).await;
     estate.fabrics_obj().await.fact("ready-for-traffic under the initial Build", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic && f.build_id.as_deref() == Some(first.as_str())).await.unwrap_or_else(|end| panic!("{end}"));

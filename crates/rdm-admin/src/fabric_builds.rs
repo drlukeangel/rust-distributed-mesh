@@ -714,7 +714,7 @@ mod tests {
     /// nonce of another length can never push a sent message over the limit.
     #[test]
     fn every_packed_message_fits_whatever_nonce_it_drew() {
-        for round in 0..200u32 {
+        for n in 0..200u32 {
             let facts: Vec<BuildFact> = (0..60u32)
                 .map(|i| {
                     BuildFact::Claim(BuildAttemptClaim {
@@ -722,7 +722,7 @@ mod tests {
                         mesh: None,
                         build_id: BuildId::mint(),
                         attempt: i,
-                        executor: format!("mesh{}.admin.{}", round, "x".repeat(((i * 37 + round) % 90) as usize)),
+                        executor: format!("mesh{}.admin.{}", n, "x".repeat(((i * 37 + n) % 90) as usize)),
                     })
                 })
                 .collect();

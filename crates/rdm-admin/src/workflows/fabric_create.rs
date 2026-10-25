@@ -2,10 +2,10 @@
 //!
 //! Brings a fabric into being with its first mesh. The fabric id is minted with
 //! status pending, each mesh's first node-admin is created, the first mesh's primary
-//! becomes the fabric-primary, and the fabric climbs to ready-for-traffic.
+//! becomes the fabric-primary, and the fabric changes to ready-for-traffic.
 
-pub use crate::fabric_rounds::{FabricRounds, NoScratchpad, RoundActions};
+pub use crate::fabric_status::{FabricStates, NoScratchpad, StateActions};
 #[cfg(feature = "file-backend")]
-pub use crate::fabric_rounds::StorePublication;
+pub use crate::fabric_status::StorePublication;
 pub use crate::fabric_state::{FabricState, FirstReady};
 pub use crate::fabric_storage::{FabricClaim, FabricIdentity, FabricStorage, MemoryFabricStorage};

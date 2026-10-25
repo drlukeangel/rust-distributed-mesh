@@ -251,60 +251,60 @@ pub enum StatusRequest {
     },
     /// Downward: the commanding authority tells the exact birth to publish what its scratchpad holds (`commit-state`; fabric-state-commit.md). The reply admits the command; completion is [`Self::StateCommitted`].
     CommitState {
-        /// The fabric the round belongs to.
+        /// The fabric the command belongs to.
         fabric_id: FabricId,
         /// The subject: the commanded or reporting birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the round belongs to.
+        /// The Build the command belongs to.
         build_id: String,
-        /// The Build attempt that holds the round.
+        /// The Build attempt that holds the command.
         attempt: u32,
         /// The operation: `commit-state:<fabric_id>`.
         operation: String,
     },
-    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for the state-commit round (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state.
+    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for state-commit (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state.
     StateCommitted {
-        /// The fabric the round belongs to.
+        /// The fabric the command belongs to.
         fabric_id: FabricId,
         /// The subject: the commanded or reporting birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the round belongs to.
+        /// The Build the command belongs to.
         build_id: String,
-        /// The Build attempt that holds the round.
+        /// The Build attempt that holds the command.
         attempt: u32,
         /// The operation: `commit-state:<fabric_id>`.
         operation: String,
     },
     /// Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is [`Self::TrafficOpened`].
     OpenTraffic {
-        /// The fabric the round belongs to.
+        /// The fabric the command belongs to.
         fabric_id: FabricId,
         /// The subject: the commanded or reporting birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the round belongs to.
+        /// The Build the command belongs to.
         build_id: String,
-        /// The Build attempt that holds the round.
+        /// The Build attempt that holds the command.
         attempt: u32,
         /// The operation: `open-traffic:<fabric_id>`.
         operation: String,
     },
-    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for the open-traffic round (`traffic-opened`) after it completes traffic opening.
+    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for open-traffic (`traffic-opened`) after it completes traffic opening.
     TrafficOpened {
-        /// The fabric the round belongs to.
+        /// The fabric the command belongs to.
         fabric_id: FabricId,
         /// The subject: the commanded or reporting birth.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The Build the round belongs to.
+        /// The Build the command belongs to.
         build_id: String,
-        /// The Build attempt that holds the round.
+        /// The Build attempt that holds the command.
         attempt: u32,
         /// The operation: `open-traffic:<fabric_id>`.
         operation: String,
@@ -887,13 +887,13 @@ impl ConnectionsReceipt {
     }
 }
 
-/// The round of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it: its workflow identity
+/// The workflow identity of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it:
 /// `(mesh_id, build_id, attempt, operation)` (node-rpc-envelope.md, "Mesh delete command pair") less
-/// the mesh id, which the call itself names. A round refusal carries the round the receiver holds and
+/// the mesh id, which the call itself names. A workflow refusal carries the workflow the receiver holds and
 /// the one offered, so the mismatch is named whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeshDeleteRound {
-    /// The Build the round belongs to.
+pub struct MeshDeleteIdentity {
+    /// The Build the workflow belongs to.
     pub build_id: String,
     /// The Build attempt.
     pub attempt: u32,
@@ -901,7 +901,7 @@ pub struct MeshDeleteRound {
     pub operation: String,
 }
 
-impl std::fmt::Display for MeshDeleteRound {
+impl std::fmt::Display for MeshDeleteIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} (build {}, attempt {})", self.operation, self.build_id, self.attempt)
     }
@@ -1175,26 +1175,26 @@ pub enum StatusReply {
         /// The Status reply bound, in bytes.
         max: u64,
     },
-    /// A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the round the receiver holds for the
+    /// A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the workflow the receiver holds for the
     /// mesh: same Build and operation, a lower attempt (node-rpc-envelope.md, "Mesh delete command
-    /// pair": "A stale/conflicting round ... is refused by name"). Nothing is admitted or accepted.
-    RejectedStaleRound {
-        /// The round the receiver holds for the mesh.
-        held: MeshDeleteRound,
-        /// The round the call names.
-        offered: MeshDeleteRound,
+    /// pair": "A stale/conflicting workflow identity ... is refused by name"). Nothing is admitted or accepted.
+    RejectedStaleWorkflow {
+        /// The workflow the receiver holds for the mesh.
+        held: MeshDeleteIdentity,
+        /// The workflow the call names.
+        offered: MeshDeleteIdentity,
     },
-    /// A `DeleteMesh` or `MeshDeleted` names a round of the mesh the receiver does not hold and that is
+    /// A `DeleteMesh` or `MeshDeleted` names a workflow of the mesh the receiver does not hold and that is
     /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshDeleted`) an
     /// attempt the receiver never opened. Nothing is admitted or accepted.
-    RejectedConflictingRound {
-        /// The round the receiver holds for the mesh.
-        held: MeshDeleteRound,
-        /// The round the call names.
-        offered: MeshDeleteRound,
+    RejectedConflictingWorkflow {
+        /// The workflow the receiver holds for the mesh.
+        held: MeshDeleteIdentity,
+        /// The workflow the call names.
+        offered: MeshDeleteIdentity,
     },
     /// A `MeshDeleted` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
-    /// for the round, so the member workflows are incomplete and the open leave ends
+    /// for the workflow, so the member workflows are incomplete and the open leave ends
     /// (node-rpc-envelope.md, "Mesh delete command pair": "A ... incomplete manifest is refused by
     /// name with a typed Status refusal naming the mismatch").
     RejectedIncompleteManifest {
@@ -1548,8 +1548,8 @@ impl StatusReply {
             Self::Connections { .. } => "connections",
             Self::UnknownMesh { .. } => "unknown-mesh",
             Self::ReadOverBound { .. } => "read-over-bound",
-            Self::RejectedStaleRound { .. } => "rejected-stale-round",
-            Self::RejectedConflictingRound { .. } => "rejected-conflicting-round",
+            Self::RejectedStaleWorkflow { .. } => "rejected-stale-workflow",
+            Self::RejectedConflictingWorkflow { .. } => "rejected-conflicting-workflow",
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
             Self::RejectedTags { .. } => "rejected-tags",
@@ -1651,8 +1651,8 @@ impl NodeProtocol for Status {
             StatusReply::Connections { .. } => "connections",
             StatusReply::UnknownMesh { .. } => "unknown-mesh",
             StatusReply::ReadOverBound { .. } => "read-over-bound",
-            StatusReply::RejectedStaleRound { .. } => "rejected-stale-round",
-            StatusReply::RejectedConflictingRound { .. } => "rejected-conflicting-round",
+            StatusReply::RejectedStaleWorkflow { .. } => "rejected-stale-workflow",
+            StatusReply::RejectedConflictingWorkflow { .. } => "rejected-conflicting-workflow",
             StatusReply::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             StatusReply::RejectedSourceFailed { .. } => "rejected-source-failed",
             StatusReply::RejectedTags { .. } => "rejected-tags",
@@ -1715,8 +1715,8 @@ impl NodeProtocol for Status {
             StatusReply::Connections { .. } => ReplyKind::Success,
             StatusReply::UnknownMesh { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
             StatusReply::ReadOverBound { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
-            StatusReply::RejectedStaleRound { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
-            StatusReply::RejectedConflictingRound { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedStaleWorkflow { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::RejectedConflictingWorkflow { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedTags { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
@@ -1849,8 +1849,8 @@ mod tests {
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
-            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::Aborted)),
-            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),

@@ -24,7 +24,7 @@ use std::time::Duration;
 
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
-/// What a declaration owed at a report is given: the declarer's round runs on the report's wake.
+/// What a declaration owed at a report is given: the declarer's checklist runs on the report's wake.
 const DECLARED: Duration = Duration::from_secs(10);
 
 fn day0_config(dir: &std::path::Path) -> AdminConfig {

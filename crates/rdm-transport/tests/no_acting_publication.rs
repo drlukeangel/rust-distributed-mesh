@@ -2,7 +2,7 @@
 //! own mesh-primary publishes that mesh on the backbone; a live mesh with no primary goes unheard,
 //! and its new mesh-primary publishes once it is established. The fabric-primary executes the stops
 //! and deletes of a live peer mesh's nodes like any executor, and none of it makes it that mesh's
-//! publisher: its publication round has no aggregate of that mesh to put out, so nothing wakes it.
+//! publisher: its publication has no aggregate of that mesh to put out, so nothing wakes it.
 //! (A deleted mesh's aggregate from its last admin's stop on is `deleted_mesh_aggregate`'s.)
 
 use iroh::protocol::Router;
@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 const CELL: &str = "the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh";
 
-/// The anti-entropy interval the fabric-primary's round waits on: the wake the cell reads is the
-/// round returning at this deadline and no earlier.
+/// The anti-entropy interval the fabric-primary's publication waits on: the wake the cell reads is the
+/// publication returning at this deadline and no earlier.
 const ANTI_ENTROPY: Duration = Duration::from_millis(1500);
 
 fn fabric() -> FabricId {
@@ -76,14 +76,14 @@ async fn node() -> Node {
 /// CONTRACT (R-RX4: "Only a mesh's own mesh-primary publishes that mesh on the backbone. The
 /// fabric-primary never publishes a mesh as its acting primary"): the fabric-primary mesh1.admin.1,
 /// its view naming mesh2 live, holds mesh2's last admin and one rpc member, and runs its publication
-/// round as the node-admin does (publish its own mesh, then wait for the round's wake with a 1.5 s
+/// publication as the node-admin does (publish its own mesh, then wait for the publication's wake with a 1.5 s
 /// anti-entropy deadline).
-/// While the round waits, it executes the stop of mesh2.rpc.1 (NodeStopped) and the delete of
+/// While the publication waits, it executes the stop of mesh2.rpc.1 (NodeStopped) and the delete of
 /// mesh2.admin.1 (the departure its book takes). Neither is a change of mesh1's own projection, so
-/// the round returns at its deadline and no earlier; the NodeStopped is stamped by the executor
+/// the publication returns at its deadline and no earlier; the NodeStopped is stamped by the executor
 /// role with the version the fabric-primary holds, never an acting counter of mesh2; and no span
 /// names the fabric-primary an acting primary. Must NOT happen: the executed stop or delete waking
-/// the round to publish an aggregate of mesh2, whose primary is gone.
+/// the publication to publish an aggregate of mesh2, whose primary is gone.
 #[test]
 fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh() {
     let dir = crate::evidence_dir();
@@ -105,14 +105,14 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         for d in [&admin2, &rpc] {
             assert!(fp_m.book.record(d.clone()));
         }
-        // The first round has published; the next waits.
+        // The first publication has published; the next waits.
         fp_bb.publish(&fp_m, fp_bb.own_members(&fp_m)).await;
 
-        let round = {
+        let publication = {
             let (bb, m) = (fp_bb.clone(), fp_m.clone());
             tokio::spawn(async move {
                 let started = Instant::now();
-                bb.round_wake(&m, tokio::time::Instant::now() + ANTI_ENTROPY).await;
+                bb.publication_wake(&m, tokio::time::Instant::now() + ANTI_ENTROPY).await;
                 started.elapsed()
             })
         };
@@ -121,7 +121,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         // mesh2's primary is gone. The fabric-primary, as executor, stops mesh2.rpc.1 and deletes mesh2.admin.1.
         let (publisher, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &op("stop-node", &rpc)).await;
         assert!(fp_m.book.depart(op("delete-node", &admin2)), "the exit proof's departure is taken");
-        let woke_after = round.await.unwrap();
+        let woke_after = publication.await.unwrap();
 
         fp_bb.set_fabric_primary(false);
         drop(fp_bb);
@@ -129,7 +129,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
 
-        assert!(woke_after >= ANTI_ENTROPY, "the round returned after {woke_after:?}, before its {ANTI_ENTROPY:?} deadline: the executed stop or delete of mesh2 woke it to publish for mesh2");
+        assert!(woke_after >= ANTI_ENTROPY, "the publication returned after {woke_after:?}, before its {ANTI_ENTROPY:?} deadline: the executed stop or delete of mesh2 woke it to publish for mesh2");
         let event = spans
             .iter()
             .find(|s| s["name"] == "rdm.mesh.membership.update.via-status-event" && s["attributes"]["subject"] == "mesh2.rpc.1")

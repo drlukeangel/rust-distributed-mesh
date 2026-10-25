@@ -5,4 +5,4 @@
 //! or `unreached`, never dead. Run by node recovery, mesh investigation, the seat watch and the
 //! successor ladder of node.primary.update, each over its own [`TickleCalls`].
 
-pub use crate::offline::{birth_answered, eligible_carriers, tickle, tickle_round, tickle_round_at_default_budget, PeerProbe, ProbeEnd, Tickle, TickleCalls, TickleClient, Unreached, VIA_PEER_TICKLE_FANOUT};
+pub use crate::offline::{birth_answered, eligible_carriers, tickle, tickle_ladder, tickle_ladder_at_default_budget, PeerProbe, ProbeEnd, Tickle, TickleCalls, TickleClient, Unreached, VIA_PEER_TICKLE_FANOUT};

@@ -77,7 +77,7 @@ enum ClaimPublished {
     Refused(String),
 }
 
-/// The scratchpad side of one store on the fabric's store root (states.md, Rounds: "Before
+/// The scratchpad side of one store on the fabric's store root (states.md, Setting a state: "Before
 /// state-commit, RDM holds its rows in the scratchpad; state-commit publishes the required held
 /// rows to the configured stores").
 struct Held {
@@ -572,7 +572,7 @@ impl HeldStore for FileRecords {
     }
 }
 
-/// What a process holds before its fabric's first state-commit (states.md, Rounds: "Before
+/// What a process holds before its fabric's first state-commit (states.md, Setting a state: "Before
 /// state-commit, RDM holds its rows in the scratchpad; state-commit publishes the required held
 /// rows to the configured stores"; fabric-state-commit.md step 2): every store the process opens
 /// on a store root that holds no Fabric row yet holds its writes here. [`Scratchpad::publish`],
@@ -829,17 +829,17 @@ mod tests {
         tx
     }
 
-    /// Poll `f` until it has issued its disk job and waits on it (two scheduler rounds), then drop it.
+    /// Poll `f` until it has issued its disk job and waits on it (two scheduler checklists), then drop it.
     async fn cancel_after_issue<F: std::future::Future>(f: F) -> bool {
-        let mut rounds = 0;
+        let mut fabric_states = 0;
         tokio::pin!(f);
         loop {
             tokio::select! {
                 biased;
                 _ = &mut f => return true,
                 _ = tokio::task::yield_now() => {
-                    rounds += 1;
-                    if rounds == 2 {
+                    fabric_states += 1;
+                    if fabric_states == 2 {
                         return false;
                     }
                 }
@@ -891,7 +891,7 @@ mod tests {
         names
     }
 
-    /// CONTRACT (states.md, Rounds: "Before state-commit, RDM holds its rows in the scratchpad;
+    /// CONTRACT (states.md, Setting a state: "Before state-commit, RDM holds its rows in the scratchpad;
     /// state-commit publishes the required held rows to the configured stores"): a store opened on
     /// a scratchpad puts no file on the disk for a write, an insert or a removal; its reads and lists
     /// answer what it holds over what the disk holds. The publication writes what it holds, a held

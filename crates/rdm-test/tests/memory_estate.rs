@@ -107,7 +107,7 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
 /// initial fabric's first ready-for-traffic, until which `node.stop` is refused `fabric-not-ready`
 /// (node-rpc-envelope.md, the node workflows; states.md, "The initial fabric before
 /// ready-for-traffic"). A node's own ready-for-traffic and a Build's `Complete` are not it: a
-/// `node.create` changes the accepted topology, which takes the fabric's rounds back to pending
+/// `node.create` changes the accepted topology, which takes the fabric's checklists back to pending
 /// before the fabric first reaches it.
 async fn until_fabric_ready(fabrics: &Fabrics) {
     tokio::time::timeout(WRONG, async {

@@ -489,7 +489,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
 /// the handoff over the sender's Build facts (as the wire carries them) refuses it
 /// `RejectedIncompleteManifest` naming every roster birth without an Exited receipt (the unproven
 /// ordinary node and the other node-admin), their count, and not the one that exited nor the final
-/// primary (node-rpc-envelope.md, "Mesh delete command pair": "A stale/conflicting round or
+/// primary (node-rpc-envelope.md, "Mesh delete command pair": "A stale/conflicting workflow identity or
 /// incomplete manifest is refused by name with a typed Status refusal naming the mismatch"). What
 /// must NOT happen: `NotReady`, the answer of a door that is not serving yet.
 #[test]

@@ -194,7 +194,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     }
 
     // The second restart's return reached the peer mesh's admin. mesh2's primary authored the
-    // birth's ReadyForTraffic (`from-node-started`), and its next publication round bumped mesh2's
+    // birth's ReadyForTraffic (`from-node-started`), and its next publication bumped mesh2's
     // topology_version (gossip.md §3.1, `Members`: "at once on a material change"). mesh1.admin.1
     // installed that version of mesh2's projection or a later one: a receiver holds the newest
     // version it installed, and a snapshot overtaken by a later one is ignored in the gossip receive

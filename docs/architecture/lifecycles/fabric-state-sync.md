@@ -31,7 +31,7 @@ work ends; that answer starts state-commit, not ready-for-traffic.
 
 The [application handoff](../node-rpc-envelope.md#application-state-sync-handoff)
 is external integration, not a defined Node RPC family. These message values show
-context and round correlation without inventing a target or opcode for an unspecified
+context and state correlation without inventing a target or opcode for an unspecified
 application transport. RDM owns the lifecycle; Rafka owns the state-sync work.
 
 ### State-sync handoff → application
@@ -68,7 +68,7 @@ application transport. RDM owns the lifecycle; Rafka owns the state-sync work.
   }
 }
 ```
-The hook's answer means the requested application work is complete for this round. It
+The hook's answer means the requested application work is complete for this state. It
 starts [state-commit](fabric-state-commit.md), not traffic opening. A foreign Build,
 old attempt or incomplete application phase is not this completion.
 
@@ -87,9 +87,9 @@ sequenceDiagram
     participant B as Backbone
     F->>F: all planned meshes ready; enter state-sync
     F->>B: FabricStatus state-sync
-    F->>A: state-sync hook (round + trace context)
+    F->>A: state-sync hook (state + trace context)
     A->>A: requested day-0/seed work
-    A->>F: hook answer (matching round)
+    A->>F: hook answer (matching state)
     F->>F: validate completion; begin state-commit
 ```
 

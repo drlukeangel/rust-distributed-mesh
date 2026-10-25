@@ -15,7 +15,7 @@ never decides an RDM transition.
 | [`before_ready`](#before_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's ReadyForTraffic |
 | [`after_ready`](#after_ready) | every node | after ReadyForTraffic | nothing |
 | [`sync_state`](#sync_state) | fabric-primary | when the fabric enters state-sync | the fabric's state-commit |
-| [`traffic_opened`](#traffic_opened) | fabric-primary | after the ready-for-traffic round completes | nothing; it is a notice |
+| [`traffic_opened`](#traffic_opened) | fabric-primary | after the ready-for-traffic state is set | nothing; it is a notice |
 
 RDM also exposes [rafka-time](#rafka-time) to the application as a read handle. That is not
 a hook.
@@ -121,14 +121,14 @@ and seed, by script or by attaching a saved WAL image
 ([state-sync actions](lifecycles/fabric-state-sync.md#state-sync-actions)). The hook answers
 the fabric-primary when the work ends.
 
-The call and its answer carry the round as the
+The call and its answer carry the state as the
 [envelope](node-rpc-envelope.md#application-state-sync-handoff) defines. The answer starts
 [state-commit](lifecycles/fabric-state-commit.md), not ready-for-traffic;
-[fabric state-sync](lifecycles/fabric-state-sync.md) owns the round's rules.
+[fabric state-sync](lifecycles/fabric-state-sync.md) owns the state's rules.
 
 ## traffic_opened
 
-After the ready-for-traffic round completes, the fabric-primary sends the application one
+After the ready-for-traffic state is set, the fabric-primary sends the application one
 `traffic_opened` notice ([ready-for-traffic](lifecycles/fabric-ready-for-traffic.md)). Rafka
 opens client traffic on that notice. The notice gates nothing in RDM.
 
@@ -144,6 +144,6 @@ Rafka stamps its OrderKey `writer_timestamp_ms` from it.
 
 ## Observability
 
-Each hook call is one span under the node's boot span, or under the fabric round's span for
+Each hook call is one span under the node's boot span, or under the fabric state's span for
 `sync_state`. The span carries the outcome and the blocker or reason. `via-ready` follows the
 successful `before_ready`. A cancelled hook names the cancellation.

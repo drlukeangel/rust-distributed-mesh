@@ -26,7 +26,7 @@ pub mod blocking;
 pub mod durable_file;
 #[cfg(feature = "file-backend")]
 pub mod record_store;
-pub mod rounds;
+pub mod fabric_states;
 pub mod storage;
 pub mod storage_backend;
 pub mod storage_error;

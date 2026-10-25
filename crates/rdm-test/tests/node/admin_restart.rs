@@ -183,7 +183,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     let version = s(&frames[0]["attributes"]["topology_version"]);
     assert!(!version.is_empty(), "the NodeRestarting frame carries the version of {away}'s aggregate at which {target} changed: {}", frames[0]);
     // The frame's version is taken by the publish itself, under the version lock (membership.rs `publish_status_event`), which
-    // emits no `via-topology-version` span; that span belongs to the round path. So the proof that the frame's version is
+    // emits no `via-topology-version` span; that span belongs to the checklist path. So the proof that the frame's version is
     // the aggregate's is the other primary installing and forwarding the aggregate at exactly that version, below.
     // The other mesh's primary installs that mesh's aggregate from the backbone and forwards it onto its own mesh at a
     // version later than the frame's: the restart's outcome, from its own mesh primary's later aggregate, with nothing in

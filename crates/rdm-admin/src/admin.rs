@@ -260,8 +260,8 @@ mod tests {
             }
             let mut mesh1 = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
             let mut mesh2 = MeshRowsWriter::new("mesh2.admin.1", "mesh2", mesh_id("mesh2"), nodes.clone(), meshes.clone(), Default::default());
-            mesh1.round(&[admin.clone(), rpc.clone(), deleted.clone()], &writing(&["mesh1"]), |_| false).await;
-            mesh2.round(std::slice::from_ref(&other), &writing(&["mesh2"]), |_| false).await;
+            mesh1.sweep(&[admin.clone(), rpc.clone(), deleted.clone()], &writing(&["mesh1"]), |_| false).await;
+            mesh2.sweep(std::slice::from_ref(&other), &writing(&["mesh2"]), |_| false).await;
             crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &deleted.node.name, &deleted.node.node_id, None).await.ok().expect("the deleted node's record");
             // The live records of every mesh: no Deleted one.
             let live: std::collections::BTreeSet<String> = crate::storage::live_records(&*meshes, &*nodes, "mesh1").await.unwrap().into_iter().map(|r| r.name.to_string()).collect();
@@ -305,7 +305,7 @@ mod tests {
             }
             let written = crate::record_cache::Caches::default();
             let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), written.clone());
-            writer.round(&[admin.clone(), rpc.clone()], &writing(&["mesh1"]), |_| false).await;
+            writer.sweep(&[admin.clone(), rpc.clone()], &writing(&["mesh1"]), |_| false).await;
             assert_eq!(births_named(&*meshes, &*nodes).await.len(), 2, "{backend}: both births are seeds");
             assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 2, "{backend}: both primaries are recorded");
             // mesh1.rpc.1 restarts: its record's next write is its new birth's declared state.
@@ -313,7 +313,7 @@ mod tests {
             written.nodes.update(&*nodes, &rpc.node.node_id, None, |r| r.birth_mut(&restarted.node.incarnation, &restarted.node.name).declared.insert(rdm_core::status::NodeState::Pending)).await.unwrap();
             assert_eq!(births_named(&*meshes, &*nodes).await, vec![admin.node.node_id.clone()], "{backend}: the replaced birth is no seed");
             assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 1, "{backend}: the replaced birth's primary is no election input");
-            writer.round(&[admin.clone(), restarted.clone()], &writing(&["mesh1"]), |_| false).await;
+            writer.sweep(&[admin.clone(), restarted.clone()], &writing(&["mesh1"]), |_| false).await;
             let seeds = rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap();
             assert!(seeds.iter().any(|b| b.node_id == rpc.node.node_id && b.incarnation == restarted.node.incarnation), "{backend}: the new birth is the seed once its address is recorded: {seeds:?}");
             // mesh1.admin.1 is deleted: its record is Deleted.
@@ -339,7 +339,7 @@ mod tests {
             }
             let counting = Arc::new(CountingNodes(nodes.clone(), Default::default()));
             let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), counting.clone(), meshes.clone(), Default::default());
-            writer.round(&[fp.clone(), orphan.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
+            writer.sweep(&[fp.clone(), orphan.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
             let b = newest_of(&*nodes, &orphan).await.unwrap_or_else(|| panic!("{backend}: mesh2's member's record carries its birth"));
             assert_eq!((b.endpoint_id.as_ref(), b.transport_addr, b.is_primary), (Some(&orphan.node.endpoint_id), Some(orphan.node.transport_addr), Some(4)), "{backend}: the acting primary writes the address and the primaries its book holds");
             assert_eq!(nodes.node(&orphan.node.node_id).await.unwrap().and_then(|r| r.mesh_id), Some(mesh_id("mesh2")), "{backend}: the record names its own mesh's id");
@@ -349,17 +349,17 @@ mod tests {
             // mesh2 has a primary again: the fabric-primary writes none of its records.
             let before = counting.1.load(std::sync::atomic::Ordering::SeqCst);
             let moved = MeshDigest { node: MeshNode { transport_addr: "127.0.0.1:41999".parse().unwrap(), ..orphan.node.clone() }, ..orphan.clone() };
-            writer.round(&[fp.clone(), moved], &writing(&["mesh1"]), |_| false).await;
+            writer.sweep(&[fp.clone(), moved], &writing(&["mesh1"]), |_| false).await;
             assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), before, "{backend}: a mesh it no longer writes is not written");
         }
     }
 
     /// CONTRACT (storage-whole-records.md: one writer per record, each record written whole from the
     /// writer's copy; R13, `crate::node_rows::writes_for`): a mesh whose mesh-primary this admin's book
-    /// holds by another birth is that primary's to write, even in a round whose writing set, read from a
+    /// holds by another birth is that primary's to write, even in a sweep whose writing set, read from a
     /// view that has not caught up, still names the mesh. Must NOT happen: the fabric-primary writes a
     /// record of a mesh whose primary is already writing it, its older copy replacing what that primary
-    /// wrote (rounds: mesh2.admin.1's ReadyForTraffic lost to the fabric-primary's `is_primary` write).
+    /// wrote (fabric_states: mesh2.admin.1's ReadyForTraffic lost to the fabric-primary's `is_primary` write).
     #[tokio::test]
     async fn the_fabric_primary_writes_no_record_of_a_mesh_its_book_holds_a_mesh_primary_for() {
         for (backend, nodes, meshes) in record_stores("acting-until-held").await {
@@ -371,9 +371,9 @@ mod tests {
             }
             let counting = Arc::new(CountingNodes(nodes.clone(), Default::default()));
             let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), counting.clone(), meshes.clone(), Default::default());
-            writer.round(std::slice::from_ref(&fp), &writing(&["mesh1"]), |_| false).await;
+            writer.sweep(std::slice::from_ref(&fp), &writing(&["mesh1"]), |_| false).await;
             let before = counting.1.load(std::sync::atomic::Ordering::SeqCst);
-            writer.round(&[fp.clone(), held.clone(), member.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
+            writer.sweep(&[fp.clone(), held.clone(), member.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
             assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), before, "{backend}: no record of mesh2, whose mesh-primary the book holds, is written");
             assert!(newest_of(&*nodes, &held).await.and_then(|b| b.transport_addr).is_none(), "{backend}: mesh2's primary's record is its own to write");
         }
@@ -409,7 +409,7 @@ mod tests {
                 claimed(&*nodes, d).await;
             }
             let mut writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
-            writer.round(&[lost.clone(), standby.clone()], &writing(&["mesh1"]), |_| false).await;
+            writer.sweep(&[lost.clone(), standby.clone()], &writing(&["mesh1"]), |_| false).await;
             // Fabric recovery's node.delete of the lost birth: its record is Deleted, its births kept.
             crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &lost.node.name, &lost.node.node_id, None).await.ok().expect("the lost birth's Deleted record");
             // The re-created birth: its boot read first, then the standby's ReadyForTraffic heard before its entry.
@@ -446,7 +446,7 @@ mod tests {
                 claimed(&*nodes, d).await;
             }
             let mut writer = MeshRowsWriter::new("mesh1.admin.2", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
-            writer.round(&[former.clone(), successor.clone(), other.clone()], &writing(&["mesh1"]), |_| false).await;
+            writer.sweep(&[former.clone(), successor.clone(), other.clone()], &writing(&["mesh1"]), |_| false).await;
             crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &former.node.name, &former.node.node_id, None).await.ok().expect("the former primary's Deleted record");
             let book = DigestBook::default();
             rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &book.seats).await.unwrap();
@@ -627,7 +627,7 @@ mod tests {
             }
         })
         .await
-        .expect("the store refused the first round's writes");
+        .expect("the store refused the first sweep's writes");
         assert_eq!(at(std::sync::atomic::Ordering::SeqCst).1, 0, "nothing was acknowledged while the store refused");
         // The store recovers. No birth, digest or primary record changes from here.
         let (births, primaries) = (*book.birth_changes().borrow(), *book.seats.subscribe().borrow());
@@ -702,7 +702,7 @@ mod tests {
         let mut pw = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), p_nodes.clone(), p_meshes, Default::default());
         let mut qw = MeshRowsWriter::new("mesh1.admin.2", "mesh1", mesh_id("mesh1"), q_nodes.clone(), q_meshes.clone(), Default::default());
         let (primary, not_primary) = (writing(&["mesh1"]), writing(&[]));
-        tokio::join!(pw.round(&held, &primary, |_| false), qw.round(&held, &not_primary, |_| false));
+        tokio::join!(pw.sweep(&held, &primary, |_| false), qw.sweep(&held, &not_primary, |_| false));
         for m in [&p, &q, &rpc] {
             assert_eq!(newest_of(&*claims, m).await.and_then(|b| b.transport_addr), Some(m.node.transport_addr), "mesh1's primary writes {}'s address", m.node.name);
         }
@@ -717,7 +717,7 @@ mod tests {
         claimed(&*claims, &recovered).await;
         let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
         let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
-        tokio::join!(pw.round(&held, &not_primary, |_| false), qw.round(&held, &primary, |_| false));
+        tokio::join!(pw.sweep(&held, &not_primary, |_| false), qw.sweep(&held, &primary, |_| false));
         assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old holder writes nothing once the seat moved");
         assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "the new mesh-primary writes the one record that differs: the new member's");
         let now: Vec<NodeId> = rows_writer::recorded_births(&*q_meshes, &*q_nodes, "mesh1").await.unwrap().into_iter().map(|b| b.node_id).collect();
@@ -741,9 +741,9 @@ mod tests {
     /// the claim is the first durable write of a create, nothing is written for the entity until it
     /// wins): on one shared root, mesh A's primary claims `mesh2` and writes its row and its member's
     /// address on its record. A second mesh under the same name (another MeshId) has its primary's
-    /// rounds refused by name: the row still names A, the second primary writes no record, and it claims
+    /// sweeps refused by name: the row still names A, the second primary writes no record, and it claims
     /// once per seat tenure: one `rdm.node_admin.mesh.create.via-mesh-row` span `name-held` naming A,
-    /// however many rounds run. Must NOT happen: the second mesh's put overwriting A's row, its records
+    /// however many sweeps run. Must NOT happen: the second mesh's put overwriting A's row, its records
     /// written beside a refused claim, or a refused claim tried again on every birth change.
     // @feature: mesh-lifecycle
     #[cfg(feature = "file-backend")]
@@ -764,12 +764,12 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let mut aw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", first.clone(), a_nodes.clone(), a_meshes.clone(), Default::default());
-        aw.round(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
+        aw.sweep(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*a_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "mesh A's primary claims mesh2 and writes its row");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "mesh A's primary writes its member's record once its claim won");
         let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", second.clone(), b_nodes.clone(), b_meshes.clone(), Default::default());
-        for _round in 0..2 {
-            bw.round(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
+        for _sweep in 0..2 {
+            bw.sweep(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
         }
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*b_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "the second mesh's claim of a live name writes no row: mesh2's row still names mesh A");
         assert_eq!(b_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the second mesh's primary writes no record beside its refused claim");
@@ -1136,7 +1136,7 @@ mod tests {
     /// its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming a
     /// different one"; CLAUDE.md: the claim is the first durable write of a create, nothing is written
     /// for the entity until it wins): `fabric/` holds another Fabric's identity (a root an embedding app
-    /// handed in). This fabric-primary's rounds claim the fabric's name, are refused naming the holder,
+    /// handed in). This fabric-primary's sweeps claim the fabric's name, are refused naming the holder,
     /// and write nothing of the fabric: the held identity stands, and the claim is made once, one
     /// `rdm.node_admin.fabric.create.via-fabric-row` span `name-held` naming the holder. Must NOT happen:
     /// a row written into another Fabric's `fabric/` beside a refused claim.
@@ -1152,13 +1152,13 @@ mod tests {
         let h_seats = rdm_transport::membership::SeatBook::default();
         h_seats.take(rdm_core::Seat::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
-        hw.round(&h_seats).await;
+        hw.sweep(&h_seats).await;
         assert_eq!(storage.fabric().await.unwrap().map(|r| r.identity()), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
         let o_seats = rdm_transport::membership::SeatBook::default();
         o_seats.take(rdm_core::Seat::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
-        for _round in 0..2 {
-            ow.round(&o_seats).await;
+        for _sweep in 0..2 {
+            ow.sweep(&o_seats).await;
         }
         assert_eq!(storage.fabric().await.unwrap().map(|f| f.fabric_id), Some(holder.fabric_id.clone()), "the held identity stands");
         let spans = capture.named("rdm.node_admin.fabric.create.via-fabric-row");
@@ -1200,13 +1200,13 @@ mod tests {
         // Mesh A's primary holds one copy of its mesh's record: its claims and its removal start from it.
         let caches = crate::record_cache::Caches::default();
         let mut aw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", removed.clone(), a_nodes.clone(), meshes.clone(), caches.clone());
-        aw.round(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
+        aw.sweep(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("dead-written"), "the removal writes mesh A's row Dead");
         assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("already-dead"), "a repeat of the removal writes nothing");
         // Mesh A's primary takes a new tenure: its id is Dead and is never written live again.
         let records_before = a_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
-        aw.round(std::slice::from_ref(&a_admin), &writing(&[]), |_| false).await;
-        aw.round(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
+        aw.sweep(std::slice::from_ref(&a_admin), &writing(&[]), |_| false).await;
+        aw.sweep(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, &removed).await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }), "the removed mesh's later tenure writes nothing live");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its Dead record released the name");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), records_before, "nor any record");
@@ -1214,7 +1214,7 @@ mod tests {
         crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &a_admin.node.name, &a_admin.node.node_id, None).await.ok().expect("the removed mesh's admin's record is Deleted");
         claimed(&*claims, &b_admin).await;
         let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
-        bw.round(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
+        bw.sweep(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
         let row = crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap();
         assert_eq!(row, Some(crate::storage::MeshRecord { mesh_id: recreated.clone(), name: "mesh2".into(), dead: false, states: Default::default() }), "the recreated mesh's row holds mesh2 under its new MeshId");
         let births: Vec<NodeId> = rows_writer::recorded_births(&*meshes, &*b_nodes, "mesh2").await.unwrap().into_iter().map(|c| c.node_id).collect();
@@ -1608,7 +1608,7 @@ mod tests {
     /// `rdm.node_admin.build.reject.via-removal-announced` span naming the workflow. A recovery's own node.delete of the exited birth (`node.delete:<path>`) is such a
     /// workflow while its overlay stands. Must NOT happen: a recovery submitted for a birth whose
     /// own workflow's delete announced its removal (trace 3b983b72926d8d5e3629d7e3d1f264cf: the
-    /// tick's ladder round 2 read the view before the workflow's NodeDeleting, inspected the exit
+    /// tick's second ladder read the view before the workflow's NodeDeleting, inspected the exit
     /// that workflow's own TerminateRuntime made, and submitted).
     // @feature: node-lifecycle
     #[tokio::test]
@@ -1706,7 +1706,7 @@ mod tests {
 
     /// CONTRACT (gossip.md `NodeDeleting`: keyed `(kind, build_id, attempt, operation)`, "the fact
     /// rides `Members.in_flight` until the operation completes", and `Members.in_flight` is "while
-    /// the operation is claimed and has no completed receipt (derived from Build facts each round)";
+    /// the operation is claimed and has no completed receipt (derived from Build facts at each publication)";
     /// node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that workflow:
     /// its Build ends Failed, and the mesh-primary's next tick finds the member still proven exited
     /// and submits the recovery"): a removal's `NodeDeleting` overlay, opened from its attempt's
@@ -1961,9 +1961,9 @@ mod tests {
 
     /// CONTRACT (R-S3, states.md): a mesh's lifecycle is pending, ready-for-traffic, leaving, dead. A mesh
     /// heard ready-for-traffic that loses a node projects ready while it has a primary, so the primary that
-    /// takes over adopts the state and runs its round. A mesh never heard ready projects pending while a
+    /// takes over adopts the state and runs its checklist. A mesh never heard ready projects pending while a
     /// node is not ready. Must NOT happen: a ready mesh projected pending because one of its nodes is gone,
-    /// which gives the takeover a new status and no round.
+    /// which gives the takeover a new status and no checklist.
     #[test]
     fn a_mesh_heard_ready_stays_ready_when_a_node_is_lost() {
         use MemberStatus::*;
@@ -2180,7 +2180,7 @@ mod tests {
     /// holding another birth of its name, and any view while the authority is not filled leave the
     /// door closed. Must NOT happen: the door opened only by the view-rebuild task, which starts after
     /// the declarer and a Build-log catch-up, so the admin declares itself ready to its primary while
-    /// its router answers every round command NotReady (gate red, tree b24a4303,
+    /// its router answers every state command NotReady (gate red, tree b24a4303,
     /// fabric_states__rounds trace 95adb727: mesh1.admin.2 declared ReadyForTraffic at 788604, its door
     /// opened at 788637, and mesh1.admin.1's three commit-state sends had all come back NotReady).
     #[tokio::test]
@@ -2515,7 +2515,7 @@ mod tests {
     /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, lifecycles/node-primary-update.md step 3): the
     /// committed next-revision seat record is the resolver's input and the incumbent yields fabric
     /// authority. A hierarchy-loop decision is announced against the seat record it was decided
-    /// from: a committed handover that lands while the loop awaits (its round climb) is not
+    /// from: a committed handover that lands while the loop awaits (its change) is not
     /// answered by the incumbent taking the seat back at the next revision. Must NOT happen: the
     /// yielded incumbent announcing itself over the committed successor (the e3..e12 seat flap of
     /// the fabric-primary handover stem on f06c8197).
@@ -2539,7 +2539,7 @@ mod tests {
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
-        // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at revision 2.
+        // While the loop awaits its change, the committed transfer lands: mesh2.admin.1 at revision 2.
         book.seats.take(FabricPrimary, &primary_of(&successor, 2));
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
         assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
@@ -2788,7 +2788,7 @@ mod tests {
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),

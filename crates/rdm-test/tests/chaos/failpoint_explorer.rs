@@ -654,7 +654,7 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     let mut h = run.hold(&door, &id, ack, &build_id, &op, Some(retire_order[..receipts].to_vec()), Some((node, runtimes))).await;
     let view = run.node_from(&door, node).await;
     // Observed, not asserted: the executor derives the open overlay from its own Build facts each
-    // hierarchy round (`routable` goes false from the NodeDeleting receipt alone, within one round),
+    // hierarchy checklist (`routable` goes false from the NodeDeleting receipt alone, within one checklist),
     // so the executor's view is not a witness of the publish. The witness is the event's own span,
     // started only after the release (checked on the exported spans).
     h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["status"], "routable": v["routable"]})).unwrap_or(Value::Null);
@@ -771,7 +771,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let held = door.wait_held(id).await;
     let build_id = held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string();
     // Does any admin hold, or execute, a Build whose write is held? Every admin's own log, read for a
-    // few executor rounds (a round is 300 ms) while the cut holds.
+    // few executor turns (a turn is 300 ms) while the cut holds.
     let mut held_by = Value::Null;
     for _ in 0..12 {
         assert_eq!(run.fabric_build_id().await, previous, "`{id}`: the Build is not durable, so it is not the current Build");

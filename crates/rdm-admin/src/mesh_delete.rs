@@ -22,7 +22,7 @@ use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
 use rdm_core::{LifecycleOp, MeshId, NodeId};
-use rdm_core::status::{MeshDeleteRound, StatusReply, StatusRequest};
+use rdm_core::status::{MeshDeleteIdentity, StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -980,7 +980,7 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &MeshDeleteKey, admitted: &Admi
     let unmatched = |field: &str, expected: String, reported: String| HandoffVerdict::Unmatched { field: field.into(), expected, reported };
     let operation = key.operation.as_str();
     // The reference names where the manifest is recorded (node-rpc-envelope.md "Mesh delete command
-    // pair": scoped to the Build, attempt and operation): this round's attempt, or an earlier attempt of
+    // pair": scoped to the Build, attempt and operation): this workflow's attempt, or an earlier attempt of
     // it when the report is a replay of what that attempt recorded.
     let attempt = match recorded_attempt(receipt_manifest, key) {
         Some(a) => a,
@@ -1055,7 +1055,7 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
 
 /// The refusal of `call` (`delete-mesh` at the leaving mesh-primary, `mesh-deleted` at the
 /// fabric-primary) for the leave `key` because what it had to read failed: `source` failed `op` for
-/// `cause`. `RejectedSourceFailed`, under its reject span naming the call, the round and the three
+/// `cause`. `RejectedSourceFailed`, under its reject span naming the call, the workflow and the three
 /// fields; it is never this admin's own `NotReady` (node-rpc-envelope.md, "Node RPC readiness gate").
 /// Nothing is admitted or accepted.
 pub fn refuse_source_failed(call: &'static str, key: &MeshDeleteKey, source: &str, op: &str, cause: &str) -> StatusReply {
@@ -1139,53 +1139,53 @@ pub struct MeshDeleteKey {
 }
 
 impl MeshDeleteKey {
-    /// The round this key names, as a round refusal carries it (its mesh id is the call's own).
-    pub fn round(&self) -> MeshDeleteRound {
-        MeshDeleteRound { build_id: self.build_id.to_string(), attempt: self.attempt, operation: self.operation.clone() }
+    /// The workflow this key names, as a workflow refusal carries it (its mesh id is the call's own).
+    pub fn identity(&self) -> MeshDeleteIdentity {
+        MeshDeleteIdentity { build_id: self.build_id.to_string(), attempt: self.attempt, operation: self.operation.clone() }
     }
 }
 
-/// How the round a `delete-mesh` or `mesh-deleted` offers for a mesh stands against the round held for
+/// How the workflow a `delete-mesh` or `mesh-deleted` offers for a mesh stands against the workflow held for
 /// it (node-rpc-envelope.md, "Mesh delete command pair": the workflow identity is `(mesh_id,
 /// build_id, attempt, operation)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoundOrder {
-    /// The round held.
+pub enum WorkflowOrder {
+    /// The workflow held.
     Same,
-    /// A later attempt of the round held: the same Build and operation.
+    /// A later attempt of the workflow held: the same Build and operation.
     Later,
-    /// An earlier attempt of the round held: stale.
+    /// An earlier attempt of the workflow held: stale.
     Earlier,
     /// Another Build or operation: conflicting.
     Other,
 }
 
-/// Where `offered` stands against `held`, both rounds of one mesh.
-pub fn round_order(held: &MeshDeleteKey, offered: &MeshDeleteKey) -> RoundOrder {
+/// Where `offered` stands against `held`, both workflows of one mesh.
+pub fn workflow_order(held: &MeshDeleteKey, offered: &MeshDeleteKey) -> WorkflowOrder {
     if held.build_id != offered.build_id || held.operation != offered.operation {
-        return RoundOrder::Other;
+        return WorkflowOrder::Other;
     }
     match offered.attempt.cmp(&held.attempt) {
-        std::cmp::Ordering::Equal => RoundOrder::Same,
-        std::cmp::Ordering::Greater => RoundOrder::Later,
-        std::cmp::Ordering::Less => RoundOrder::Earlier,
+        std::cmp::Ordering::Equal => WorkflowOrder::Same,
+        std::cmp::Ordering::Greater => WorkflowOrder::Later,
+        std::cmp::Ordering::Less => WorkflowOrder::Earlier,
     }
 }
 
-/// The refusal of the round `offered` by `call` (`delete-mesh` at the leaving mesh-primary,
-/// `mesh-deleted` at the fabric-primary) against the round `held` for its mesh: `RejectedStaleRound`
-/// for an earlier attempt of the round held, `RejectedConflictingRound` for any other round it does
-/// not admit. Its reject span names the call and both rounds. Nothing is admitted.
-pub fn refuse_round(call: &'static str, held: &MeshDeleteKey, offered: &MeshDeleteKey) -> StatusReply {
-    let (h, o) = (held.round(), offered.round());
-    if round_order(held, offered) == RoundOrder::Earlier {
-        tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
-            .in_scope(|| tracing::info!("the call names an earlier attempt of the round held for the mesh: it is refused by name and nothing is admitted"));
-        rdm_core::reply::status::rejected_stale_round(h, o)
+/// The refusal of the workflow `offered` by `call` (`delete-mesh` at the leaving mesh-primary,
+/// `mesh-deleted` at the fabric-primary) against the workflow `held` for its mesh: `RejectedStaleWorkflow`
+/// for an earlier attempt of the workflow held, `RejectedConflictingWorkflow` for any other workflow it does
+/// not admit. Its reject span names the call and both workflows. Nothing is admitted.
+pub fn refuse_workflow(call: &'static str, held: &MeshDeleteKey, offered: &MeshDeleteKey) -> StatusReply {
+    let (h, o) = (held.identity(), offered.identity());
+    if workflow_order(held, offered) == WorkflowOrder::Earlier {
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-workflow", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
+            .in_scope(|| tracing::info!("the call names an earlier attempt of the workflow held for the mesh: it is refused by name and nothing is admitted"));
+        rdm_core::reply::status::rejected_stale_workflow(h, o)
     } else {
-        tracing::info_span!("rdm.node_admin.mesh.reject.via-conflicting-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
-            .in_scope(|| tracing::info!("the call names a round of the mesh that is not the one held nor an attempt it admits: it is refused by name and nothing is admitted"));
-        rdm_core::reply::status::rejected_conflicting_round(h, o)
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-conflicting-workflow", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
+            .in_scope(|| tracing::info!("the call names a workflow of the mesh that is not the one held nor an attempt it admits: it is refused by name and nothing is admitted"));
+        rdm_core::reply::status::rejected_conflicting_workflow(h, o)
     }
 }
 
@@ -1229,9 +1229,9 @@ impl MeshDeleteBook {
         self.open.lock().unwrap().get(key).map(|o| o.admitted.clone())
     }
 
-    /// What admission captured for the round a `MeshDeleted` names, or the reply that refuses it. Only
-    /// a round this owner holds open is admitted; any other round of a mesh it holds a leave open for
-    /// is refused by name against that round ([`refuse_round`]: an earlier attempt is stale, a later
+    /// What admission captured for the workflow a `MeshDeleted` names, or the reply that refuses it. Only
+    /// a workflow this owner holds open is admitted; any other workflow of a mesh it holds a leave open for
+    /// is refused by name against that workflow ([`refuse_workflow`]: an earlier attempt is stale, a later
     /// attempt it never opened or another Build conflicts); a mesh it holds no leave open for names
     /// no open command.
     pub fn admitted_for(&self, key: &MeshDeleteKey) -> Result<Admitted, StatusReply> {
@@ -1239,13 +1239,13 @@ impl MeshDeleteBook {
         if let Some(o) = open.get(key) {
             return Ok(o.admitted.clone());
         }
-        // The round held for the mesh: its open leave of the call's Build and operation, else its
+        // The workflow held for the mesh: its open leave of the call's Build and operation, else its
         // latest open attempt.
         let held = open.keys().filter(|k| k.mesh_id == key.mesh_id).max_by_key(|k| (k.build_id == key.build_id && k.operation == key.operation, k.attempt)).cloned();
         drop(open);
         match held {
-            Some(held) => Err(refuse_round("mesh-deleted", &held, key)),
-            None => Err(rdm_core::reply::status::rejected_unmatched_completion("command".into(), format!("an open leave of mesh {}", key.mesh_id), key.round().to_string())),
+            Some(held) => Err(refuse_workflow("mesh-deleted", &held, key)),
+            None => Err(rdm_core::reply::status::rejected_unmatched_completion("command".into(), format!("an open leave of mesh {}", key.mesh_id), key.identity().to_string())),
         }
     }
 
@@ -1342,7 +1342,7 @@ enum MeshDeleteRun {
     /// The member workflows are running; `key` is the `delete-mesh` admitted last and `owner` its
     /// sender, whom the handoff goes to.
     Running { key: MeshDeleteKey, owner: MeshDeleteOwner },
-    /// Every other member exited and the manifest is recorded under attempt `recorded` of the round:
+    /// Every other member exited and the manifest is recorded under attempt `recorded` of the workflow:
     /// the report to `owner`, under `key` (the `delete-mesh` admitted last), is what is left.
     Exited { key: MeshDeleteKey, owner: MeshDeleteOwner, manifest: ExitManifest, recorded: u32 },
 }
@@ -1354,7 +1354,7 @@ pub enum MeshDeleteAdmission {
     Start,
     /// The member workflows are running: their handoff goes to this sender, under its key.
     Running,
-    /// The manifest is recorded under this round, at this attempt or an earlier one: the recorded
+    /// The manifest is recorded under this workflow, at this attempt or an earlier one: the recorded
     /// MeshDeleted report is what repeats, to this sender under its key, and no member workflow runs
     /// again (mesh-delete.md "Failure and receipts": the next attempt resumes from the receipts).
     Resend {
@@ -1363,9 +1363,9 @@ pub enum MeshDeleteAdmission {
         /// The attempt it was recorded under: the replayed report's `receipt_manifest` names it.
         recorded: u32,
     },
-    /// The `delete-mesh` names an earlier attempt of the round held (`RejectedStaleRound`) or another
-    /// Build or operation (`RejectedConflictingRound`): nothing is admitted and the leave held, its
-    /// round and its sender, is unchanged.
+    /// The `delete-mesh` names an earlier attempt of the workflow held (`RejectedStaleWorkflow`) or another
+    /// Build or operation (`RejectedConflictingWorkflow`): nothing is admitted and the leave held, its
+    /// workflow and its sender, is unchanged.
     Refused(StatusReply),
 }
 
@@ -1415,16 +1415,16 @@ pub enum MeshDeleteRunEnd {
 pub struct MeshDeleteRuns(Mutex<HashMap<MeshId, MeshDeleteRun>>);
 
 impl MeshDeleteRuns {
-    /// `delete-mesh` for `key` from `sender`. The round held for the mesh decides it: the same round
+    /// `delete-mesh` for `key` from `sender`. The workflow held for the mesh decides it: the same workflow
     /// or a later attempt of it is the same leave; an earlier attempt or another Build or operation
-    /// is refused by name against the round held ([`refuse_round`]) and changes nothing.
+    /// is refused by name against the workflow held ([`refuse_workflow`]) and changes nothing.
     pub fn admit(&self, key: &MeshDeleteKey, sender: &MeshDeleteOwner) -> MeshDeleteAdmission {
         let mut runs = self.0.lock().unwrap();
         let held = runs.get(&key.mesh_id).cloned();
         if let Some(MeshDeleteRun::Running { key: h, .. } | MeshDeleteRun::Exited { key: h, .. }) = &held {
-            if matches!(round_order(h, key), RoundOrder::Earlier | RoundOrder::Other) {
+            if matches!(workflow_order(h, key), WorkflowOrder::Earlier | WorkflowOrder::Other) {
                 drop(runs);
-                return MeshDeleteAdmission::Refused(refuse_round("delete-mesh", h, key));
+                return MeshDeleteAdmission::Refused(refuse_workflow("delete-mesh", h, key));
             }
         }
         match held {
@@ -1432,7 +1432,7 @@ impl MeshDeleteRuns {
                 runs.insert(key.mesh_id.clone(), MeshDeleteRun::Running { key: key.clone(), owner: sender.clone() });
                 MeshDeleteAdmission::Running
             }
-            // Exited under this round or an earlier attempt of it (an earlier or another round was
+            // Exited under this workflow or an earlier attempt of it (an earlier or another workflow was
             // refused above): the recorded report is replayed to this sender under its key.
             Some(MeshDeleteRun::Exited { manifest, recorded, .. }) => {
                 runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key: key.clone(), owner: sender.clone(), manifest: manifest.clone(), recorded });
@@ -1445,7 +1445,7 @@ impl MeshDeleteRuns {
         }
     }
 
-    /// Whether a leave of `mesh_id` is held, running or exited: only a round admitted after its
+    /// Whether a leave of `mesh_id` is held, running or exited: only a workflow admitted after its
     /// mesh row was committed Leaving begins one ([`admit_delete_mesh`]).
     pub fn holds(&self, mesh_id: &MeshId) -> bool {
         self.0.lock().unwrap().contains_key(mesh_id)
@@ -1486,10 +1486,10 @@ impl MeshDeleteRuns {
 /// What a `delete-mesh` did at the leaving mesh-primary ([`admit_delete_mesh`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteMeshAdmission {
-    /// The commit of the mesh row `Leaving` this round made, as the commit answered, or `None` when
+    /// The commit of the mesh row `Leaving` this workflow made, as the commit answered, or `None` when
     /// it made none.
     pub leaving_row: Option<StatusReply>,
-    /// What the round does for the leave: `Refused` with the commit's refusal when the row's commit
+    /// What the workflow does for the leave: `Refused` with the commit's refusal when the row's commit
     /// was refused, so nothing is admitted.
     pub admission: MeshDeleteAdmission,
 }
@@ -1497,12 +1497,12 @@ pub struct DeleteMeshAdmission {
 /// `delete-mesh` for `key` from `sender` at the leaving mesh-primary (states.md: the mesh's
 /// `leaving` is entered by this down op, and "one commit stores the row, applies it, gossips it and
 /// answers the op"; node-identity-and-state.md 2.7: the mesh's primary writes every status of its own
-/// mesh row). The first round of the mesh's leave puts and applies the row before it is admitted: a
+/// mesh row). The first workflow of the mesh's leave puts and applies the row before it is admitted: a
 /// refused put admits nothing and is the reply, so the owner's repeated `delete-mesh` is decided
-/// afresh. A round that finds a leave of the mesh held commits nothing: the round that began the
+/// afresh. A workflow that finds a leave of the mesh held commits nothing: the workflow that began the
 /// leave committed the row, and the leave may since have written it Dead (mesh.deleted, before its
-/// handoff); it is decided on the round held alone ([`MeshDeleteRuns::admit`]), so the round held resends
-/// a lost handoff, a later attempt resumes from the receipts and a stale or conflicting round is
+/// handoff); it is decided on the workflow held alone ([`MeshDeleteRuns::admit`]), so the workflow held resends
+/// a lost handoff, a later attempt resumes from the receipts and a stale or conflicting workflow is
 /// refused by name.
 pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &Mutex<crate::status_rpc::Declared>, mesh: &str, key: &MeshDeleteKey, sender: &MeshDeleteOwner) -> DeleteMeshAdmission {
     if runs.holds(&key.mesh_id) {
@@ -1980,7 +1980,7 @@ mod tests {
     /// mesh-primary's MeshDeleted report for attempt 1 is lost. The owner's bounded wait ends attempt 1
     /// incomplete, its receipts standing. The owner's next attempt re-admits the same mesh.delete, and the
     /// mesh-primary replays the recorded report, naming the receipt recorded under attempt 1, with no
-    /// second run of the member workflows. The replay validates against attempt 2's open round from that
+    /// second run of the member workflows. The replay validates against attempt 2's open workflow from that
     /// receipt and resolves it exactly once.
     #[tokio::test]
     async fn a_lost_mesh_deleted_report_is_replayed_to_the_next_attempt_and_resolves_it_exactly_once() {
@@ -2018,7 +2018,7 @@ mod tests {
         assert_eq!(runs.admit(&next, &owner), MeshDeleteAdmission::Resend { manifest: manifest.clone(), recorded: 1 }, "attempt 2's DeleteMesh replays the recorded report");
         assert_eq!(ran.load(SeqCst), 1, "the member workflows ran once");
 
-        // The replay validates against attempt 2's open round from the receipt recorded under attempt 1 ...
+        // The replay validates against attempt 2's open workflow from the receipt recorded under attempt 1 ...
         let facts = vec![BuildFact::Step(BuildStepReceipt {
             build_id: first.build_id.clone(),
             attempt: 1,

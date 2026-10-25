@@ -4,7 +4,7 @@
 //! them. Every task that can take the view lock is therefore held only at its own wait, outside
 //! every lock (`ParkGate::opened`).
 //!
-//! The admin under test is a real Day-0 admin (`admin::start_with`) whose gossip and backbone rounds
+//! The admin under test is a real Day-0 admin (`admin::start_with`) whose gossip and backbone intervals
 //! are stretched far past the cell, in a process of its own: only the wakes the cell gives move its
 //! loops, as the stop's own status change moves them.
 
@@ -13,7 +13,7 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::NodeId;
 use std::time::Duration;
 
-/// Far past any round this cell could see.
+/// Far past any checklist this cell could see.
 const STRETCHED_MS: &str = "600000";
 /// What a parked admin's handler is given to take the view lock before the cell fails. Taking an
 /// uncontended lock is immediate; a lock a held task keeps is never given.
@@ -40,12 +40,12 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 #[test]
 fn a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers() {
     let cell = "a_stopped_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lock_to_its_handlers";
-    // Its own process, started with the stretched rounds: the cadence is read once per process.
+    // Its own process, started with the stretched checklists: the cadence is read once per process.
     let stretched = Some(std::ffi::OsStr::new(STRETCHED_MS));
     if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", stretched), ("RDM_BACKBONE_INTERVAL_MS", stretched)]) {
         return;
     }
-    assert_eq!(rdm_core::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
+    assert_eq!(rdm_core::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the cadence it was started with");
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("park-gate-view-lock-{}", NodeId::mint()));

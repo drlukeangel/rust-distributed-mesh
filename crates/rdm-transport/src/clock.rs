@@ -31,9 +31,9 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
 
 /// The jitter allowance, in milliseconds: how far behind its local clock the BEST sample of a
 /// window may stand and still be ordinary delivery delay. A gossip delivery on a healthy fabric
-/// takes milliseconds to tens of milliseconds; a heartbeat held for a whole 2 s round (a lazy-push
+/// takes milliseconds to tens of milliseconds; a heartbeat held for a whole 2 s publication (a lazy-push
 /// graft) is the long tail, and a window's best sample is not that one. 500 ms is a quarter of
-/// the 2 s publication round and a tenth of `RAFKA_TIME_SPREAD_MS` (5000 ms).
+/// the 2 s publication and a tenth of `RAFKA_TIME_SPREAD_MS` (5000 ms).
 ///
 /// The bound this gives, conditional on the measured delivery delay `D` (the delay of the least
 /// delayed sample of a window, `d_min`, and of the sample a step lands on, `d_max`): a node

@@ -111,10 +111,10 @@ pub struct Config {
     /// (`rdm_transport::membership`): the windows a silence is observed within.
     pub floor: Duration,
     pub backbone: Duration,
-    /// The longest one offline-tickle round takes: the direct connect, then every via-peer carrier at
+    /// The longest one offline-tickle ladder takes: the direct connect, then every via-peer carrier at
     /// once, each one call of the default budget
-    /// (`rdm_admin::offline::tickle_round_at_default_budget`).
-    pub tickle_round: Duration,
+    /// (`rdm_admin::offline::tickle_ladder_at_default_budget`).
+    pub tickle_ladder: Duration,
     /// How long a fault is held past the view's mark before it is lifted (the floors story, S6):
     /// a held runtime stays held, and a cut stays cut with traffic on both sides, for this long
     /// after the staleness floor marked it; `None` lifts a hold at the mark and heals a cut on the
@@ -128,7 +128,7 @@ pub struct Config {
 impl Config {
     /// Two meshes of two node-admins and three rpc nodes; a mesh holds 2..=3 node-admins and
     /// 3..=4 rpc nodes.
-    pub fn mm(seed: u64, secs: u64, floor: Duration, backbone: Duration, tickle_round: Duration) -> Self {
+    pub fn mm(seed: u64, secs: u64, floor: Duration, backbone: Duration, tickle_ladder: Duration) -> Self {
         Self {
             seed,
             secs,
@@ -138,7 +138,7 @@ impl Config {
             network_faults: false,
             floor,
             backbone,
-            tickle_round,
+            tickle_ladder,
             hold: None,
         }
     }
@@ -147,24 +147,24 @@ impl Config {
     /// nodes each (the R-shape roles); a role class may lose one node and regain it, or grow by
     /// one. `profile` names the actions the run draws from.
     #[allow(clippy::too_many_arguments)]
-    pub fn roles(seed: u64, secs: u64, per_mesh: [(NodeClass, u32); 4], profile: Profile, network_faults: bool, floor: Duration, backbone: Duration, tickle_round: Duration) -> Self {
+    pub fn roles(seed: u64, secs: u64, per_mesh: [(NodeClass, u32); 4], profile: Profile, network_faults: bool, floor: Duration, backbone: Duration, tickle_ladder: Duration) -> Self {
         let mut bounds = BTreeMap::new();
         for (class, n) in per_mesh {
             bounds.insert(class, if class == NodeClass::NodeAdmin { ClassBounds { min: n, max: n + 1 } } else { ClassBounds { min: n - 1, max: n + 1 } });
         }
-        Self { seed, secs, shape: vec![("mesh1", per_mesh.to_vec()), ("mesh2", per_mesh.to_vec())], bounds, profile, network_faults, floor, backbone, tickle_round, hold: None }
+        Self { seed, secs, shape: vec![("mesh1", per_mesh.to_vec()), ("mesh2", per_mesh.to_vec())], bounds, profile, network_faults, floor, backbone, tickle_ladder, hold: None }
     }
 
     /// How long a silenced node takes to be marked unheard in the view of the observer that judges
     /// it. Pending-reconnect: the staleness floor, then the views converge. True offline (`dead`):
-    /// the mark at the floor, round 1 half a floor later, round 2 at least one floor after round 1
-    /// found no path, each round at most `tickle_round`, then the mesh primary's write reaches the
+    /// the mark at the floor, ladder 1 half a floor later, ladder 2 at least one floor after ladder 1
+    /// found no path, each ladder at most `tickle_ladder`, then the mesh primary's write reaches the
     /// view (offline.rs, node-identity-and-state.md section 7.3).
     /// The mesh primary tickles the silent nodes it watches one after another, so each of the
-    /// `silent` nodes (the held node and every member of a silenced mesh) costs two rounds.
+    /// `silent` nodes (the held node and every member of a silenced mesh) costs two ladders.
     pub fn unheard_within(&self, true_offline: bool, silent: usize) -> Duration {
         if true_offline {
-            self.floor * 5 / 2 + self.tickle_round * 2 * silent.max(1) as u32 + self.backbone * 4 + Duration::from_secs(10)
+            self.floor * 5 / 2 + self.tickle_ladder * 2 * silent.max(1) as u32 + self.backbone * 4 + Duration::from_secs(10)
         } else {
             self.floor * 3 + self.backbone * 2 + Duration::from_secs(30)
         }
@@ -1683,7 +1683,7 @@ impl Driver {
         }
         // The container provider waits for the view to mark the held node unheard (pending-reconnect
         // or dead). A true-offline mark there was measured at 81 s after the hold against the 79.5 s
-        // the tickle's two rounds derive (spans of the i143-2787-soak-container run): the coin is
+        // the tickle's two ladders derive (spans of the i143-2787-soak-container run): the coin is
         // drawn all the same, so the schedule is the same on both providers.
         let coin = self.rng.next() % 2 == 0;
         // Only a node's own mesh-primary tickles it, so only it records `dead`. A held mesh-primary has

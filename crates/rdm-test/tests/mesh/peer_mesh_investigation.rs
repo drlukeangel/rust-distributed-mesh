@@ -98,7 +98,7 @@ async fn fixture(cell: &str) -> Fixture {
     // Control goes through the fabric primary's advertised API, which no fault here touches.
     estate.enter(&Estate::path(&fabric_primary)).await;
     // The fault falls on an established fabric: a cut that falls while the commit-state or
-    // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
+    // open-traffic checklist runs holds that checklist on the planned birth it cuts (states.md, "The check-in
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     Fixture { estate, accepted, attempt_before, fabric_primary, lost, lost_mesh_id, before }
@@ -200,12 +200,12 @@ fn mesh_sends_after(spans: &[Value], mesh: &str, from_ms: u64) -> BTreeMap<(Stri
     out
 }
 
-/// When the fabric left `degraded` on a completed round, in unix ms: the holder that decided the
+/// When the fabric left `degraded` on a completed checklist, in unix ms: the holder that decided the
 /// node.create of the mesh's node-admin clears it on the new mesh-primary's report; a successor
 /// holder that adopted `degraded` clears it when every mesh primary has reported.
 fn degraded_cleared_at(spans: &[Value], mesh: &str) -> Vec<u64> {
     let mut at: Vec<u64> = named(spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().filter(|sp| attr(sp, "mesh") == mesh).map(|sp| at_ns(sp) / 1_000_000).collect();
-    at.extend(named(spans, "rdm.node_admin.fabric.update.via-round-complete").into_iter().filter(|sp| attr(sp, "degraded_cleared") == "true").map(|sp| at_ns(sp) / 1_000_000));
+    at.extend(named(spans, "rdm.node_admin.fabric.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "degraded_cleared") == "true").map(|sp| at_ns(sp) / 1_000_000));
     at.sort();
     at
 }
@@ -357,7 +357,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     // mesh (its drift pass is then no one's but the new holder's). Heard again is its first direct backbone receipt
     // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 fence reads
     // (`Ladder::fence` over `DigestBook::mesh_unheard`); the ladder's own heard-again verdict comes on its next
-    // round, after it.
+    // checklist, after it.
     let heard_again = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
         .into_iter()
         .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(verdict))
@@ -410,7 +410,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     }
     // Same status, fresh proof (R-S3): the new mesh primary adopts the mesh's existing status and does
     // not stay silent. Once established it re-sends the SAME fact (the old changed_at, the lifecycle
-    // state did not change) five times, and the fabric stays degraded until that round-complete report.
+    // state did not change) five times, and the fabric stays degraded until that checklist-complete report.
     let created_at = at_ns(creates[0]) / 1_000_000;
     let status_before = mesh_status_change_before(&spans, &f.lost, fault_ms).unwrap_or_else(|| panic!("{} published its MeshStatus before the fault", f.lost));
     let republished = mesh_sends_after(&spans, &f.lost, created_at);
@@ -421,15 +421,15 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     }
     assert!(republished.values().any(|(n, _)| *n == 5), "the republished fact is five identical sends (R-S1): {republished:?}");
     let first_republish_ms = republished.values().map(|(_, first)| *first).min().unwrap();
-    let round_complete_ms = named(&spans, "rdm.node_admin.mesh.update.via-round-complete")
+    let checklist_complete_ms = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete")
         .into_iter()
         .filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_at)
         .map(|sp| at_ns(sp) / 1_000_000)
         .min()
-        .expect("the new primary's round completed");
-    assert!(first_republish_ms >= round_complete_ms, "the adopted status is republished only after the round completed: {first_republish_ms} vs {round_complete_ms}");
+        .expect("the new primary's checklist completed");
+    assert!(first_republish_ms >= checklist_complete_ms, "the adopted status is republished only after the checklist completed: {first_republish_ms} vs {checklist_complete_ms}");
     let cleared = degraded_cleared_at(&spans, &f.lost);
-    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= round_complete_ms), "degraded clears only after the new primary's round completed, never on a ready primary of a newer birth alone: cleared at {cleared:?}, round complete at {round_complete_ms}");
+    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= checklist_complete_ms), "degraded clears only after the new primary's checklist completed, never on a ready primary of a newer birth alone: cleared at {cleared:?}, checklist complete at {checklist_complete_ms}");
     result(
         &dir,
         json!({
@@ -745,17 +745,17 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses its primary node-admin (exact SIGKILL)
 /// while its other node-admin and its rpc nodes live. The survivor is ELECTED primary; nothing is created. It
-/// adopts the mesh's existing status without inventing a transition and re-sends the round's down op to
+/// adopts the mesh's existing status without inventing a transition and re-sends the checklist's down op to
 /// its planned births. The killed primary is still a planned birth of the accepted Build, so the
 /// elected primary's checklist names it as missing (a named hold, no timer) and republishes nothing.
-/// The Build restarts the killed birth; when every planned birth has checked in the round completes
+/// The Build restarts the killed birth; when every planned birth has checked in the checklist completes
 /// and the adopted fact is republished: the same status, the OLD changed_at, five identical sends,
-/// and the mesh primary's Mesh declaration to the fabric primary (the fresh round-complete report)
-/// follows the completed round. What must NOT happen: silence after the election with no named
-/// hold, a republish before the round completes, a new changed_at.
+/// and the mesh primary's Mesh declaration to the fabric primary (the fresh checklist-complete report)
+/// follows the completed checklist. What must NOT happen: silence after the election with no named
+/// hold, a republish before the checklist completes, a new changed_at.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status() {
-    let cell = "elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status";
+async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status() {
+    let cell = "elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -768,18 +768,18 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
         f.estate.kill_bootstrap();
     }
     let (lost, sv, killed) = (f.lost.clone(), survivor.clone(), primary.clone());
-    wait_for("the elected primary names the killed primary as missing from its round", Duration::from_secs(120), || {
+    wait_for("the elected primary names the killed primary as missing from its checklist", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let held = named(&spans, "rdm.node_admin.mesh.update.via-round-held").into_iter().any(|sp| attr(sp, "node") == sv && attr(sp, "mesh") == lost && attr(sp, "missing").contains(&killed) && at_ns(sp) / 1_000_000 >= fault_ms);
+        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| attr(sp, "node") == sv && attr(sp, "mesh") == lost && attr(sp, "missing").contains(&killed) && at_ns(sp) / 1_000_000 >= fault_ms);
         async move { held.then_some(()) }
     })
     .await;
-    // The report is its own declaration, owed once the round completed and sent on the declarer's
-    // cadence: it follows the round, and the republish does not wait for it. The estate is stopped
+    // The report is its own declaration, owed once the checklist completed and sent on the declarer's
+    // cadence: it follows the checklist, and the republish does not wait for it. The estate is stopped
     // only once the fabric primary of the moment has it, or the stop outruns the declaration.
-    wait_for("a round of the mesh completes after the fault, its adopted status is republished and the mesh primary's round-complete report reaches the fabric primary", Duration::from_secs(120), || {
+    wait_for("a checklist of the mesh completes after the fault, its adopted status is republished and the mesh primary's checklist-complete report reaches the fabric primary", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).min();
+        let complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).min();
         let sent = !mesh_sends_after(&spans, &lost, fault_ms).is_empty();
         let reported = complete.is_some_and(|c| {
             named(&spans, "rdm.node_admin.status.update.via-declaration")
@@ -802,11 +802,11 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
     let after_fault = |name: &str, node: Option<&str>| -> Vec<u64> {
         named(&spans, name).into_iter().filter(|sp| attr(sp, "mesh") == f.lost && node.is_none_or(|n| attr(sp, "node") == n) && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).collect()
     };
-    let held = after_fault("rdm.node_admin.mesh.update.via-round-held", Some(&survivor));
-    let down = after_fault("rdm.node_admin.mesh.update.via-round-down", Some(&survivor));
-    let complete = after_fault("rdm.node_admin.mesh.update.via-round-complete", None);
-    let (held_ms, complete_ms) = (*held.iter().min().expect("the elected primary held its round"), *complete.iter().min().expect("a round completed"));
-    assert!(!down.is_empty(), "the elected primary re-sent the round's down op to its planned births");
+    let held = after_fault("rdm.node_admin.mesh.update.via-checklist-held", Some(&survivor));
+    let down = after_fault("rdm.node_admin.mesh.update.via-state-down", Some(&survivor));
+    let complete = after_fault("rdm.node_admin.mesh.update.via-checklist-complete", None);
+    let (held_ms, complete_ms) = (*held.iter().min().expect("the elected primary held its checklist"), *complete.iter().min().expect("a checklist completed"));
+    assert!(!down.is_empty(), "the elected primary re-sent the checklist's down op to its planned births");
     assert!(held_ms <= complete_ms && complete_ms <= first_send_ms, "hold ({held_ms}) -> checklist complete ({complete_ms}) -> republish ({first_send_ms}), in that order: nothing is republished while a planned birth is missing");
     let republisher = sends.keys().map(|(sender, _)| sender.clone()).next().unwrap();
     let reports: Vec<u64> = named(&spans, "rdm.node_admin.status.update.via-declaration")
@@ -814,7 +814,7 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
         .filter(|sp| attr(sp, "op") == "declare-mesh-state" && attr(sp, "sender").starts_with(&format!("{}.admin.", f.lost)) && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
         .map(|sp| at_ns(sp) / 1_000_000)
         .collect();
-    assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary of the moment received a round-complete report from the mesh's primary after the round completed: {reports:?} vs {complete_ms}");
+    assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary of the moment received a checklist-complete report from the mesh's primary after the checklist completed: {reports:?} vs {complete_ms}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "killed_primary": primary, "elected": survivor, "republisher": republisher, "changed_at": before, "held_ms": held_ms, "complete_ms": complete_ms, "first_send_ms": first_send_ms}));
 }
 
@@ -823,7 +823,7 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
 /// given a node-admin under the same Build and MeshId; its new primary is ready in the fabric's view, a ready
 /// primary of a newer birth. That is not the proof: the new primary's checklist names the frozen
 /// planned birth as missing (a named hold, no timer), republishes nothing, and the fabric stays
-/// `degraded`. After the member is continued it checks in, the round completes, the adopted status is
+/// `degraded`. After the member is continued it checks in, the checklist completes, the adopted status is
 /// republished and only then does the fabric clear degraded. What must NOT happen: degraded cleared on
 /// the ready newer-birth primary alone, a republish while a planned birth is missing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -849,7 +849,7 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     let lost = f.lost.clone();
     wait_for("the new primary names the frozen planned birth as missing", Duration::from_secs(240), || {
         let spans = f.estate.spans();
-        let held = named(&spans, "rdm.node_admin.mesh.update.via-round-held").into_iter().any(|sp| attr(sp, "mesh") == lost && attr(sp, "missing").contains(&frozen));
+        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| attr(sp, "mesh") == lost && attr(sp, "missing").contains(&frozen));
         async move { held.then_some(()) }
     })
     .await;
@@ -875,15 +875,15 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     f.estate.stop().await;
     let spans = f.estate.spans();
     assert_eq!(held_status, "degraded", "a ready primary of a newer birth does not clear degraded while a planned birth ({frozen}) has not checked in");
-    assert!(!cleared_while_held, "degraded is not cleared while the round is held");
+    assert!(!cleared_while_held, "degraded is not cleared while the checklist is held");
     assert!(sent_while_held.is_empty(), "nothing is republished while a planned birth is missing: {sent_while_held:?}");
     let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, admin_created_at(&spans, &f.lost)).values().map(|(_, first)| *first).collect();
     assert!(!republished.is_empty() && republished.iter().all(|at| *at >= cont_ms), "the adopted status is republished only after {frozen} checks in: {republished:?} vs continued at {cont_ms}");
     let created_ms = admin_created_at(&spans, &f.lost);
-    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the new primary's round completed");
+    let complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the new primary's checklist completed");
     assert!(complete >= cont_ms, "the checklist completes only after the frozen member checks in: {complete} vs {cont_ms}");
     let cleared = degraded_cleared_at(&spans, &f.lost);
-    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= complete), "degraded clears only on the round-complete report: {cleared:?} vs {complete}");
+    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= complete), "degraded clears only on the checklist-complete report: {cleared:?} vs {complete}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "frozen": frozen, "continued_ms": cont_ms, "complete_ms": complete}));
 }
 

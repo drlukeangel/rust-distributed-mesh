@@ -236,7 +236,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let before = id_of(&nodes, &other_rpc[1]);
     complete(&format!("node.restart of {}", other_rpc[1]), estate.nodes_obj().await.restart(&path(&other_rpc[1])).await).await;
     // The Build completed on the executor; the asked admin's view holds the reborn node once its
-    // Ready has reached it (one gossip round): wait for the shape, as after the Build above.
+    // Ready has reached it (one gossip interval): wait for the shape, as after the Build above.
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     let nodes = settle(&estate, &admin1, "restart non-primary").await;
     assert_eq!(id_of(&nodes, &other_rpc[1]), before, "restart keeps the NodeId");
@@ -431,7 +431,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // A peer mesh's members reach this admin through its primary's backbone
-    // publication: the view settles within a publication round or two.
+    // publication: the view settles within a publication or two.
     let nodes = estate
         .until_view("the MM view settles with four cohort primaries", Duration::from_secs(15), |views| {
             let nodes = Estate::values(views);

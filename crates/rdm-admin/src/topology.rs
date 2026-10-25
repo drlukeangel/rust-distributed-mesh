@@ -170,8 +170,8 @@ impl Topology {
     /// counting as not ready; with no accepted Build held, the members the view holds. Empty: the
     /// mesh is ready. The one derivation of a mesh's state: the projection and the fabric's entry
     /// check both read it.
-    pub fn mesh_unready(&self, mesh: &str, planned: Option<&std::collections::BTreeSet<PathName>>) -> Vec<crate::round::Missing> {
-        use crate::round::Missing;
+    pub fn mesh_unready(&self, mesh: &str, planned: Option<&std::collections::BTreeSet<PathName>>) -> Vec<crate::checklist::Missing> {
+        use crate::checklist::Missing;
         let mut out = Vec::new();
         if self.node_type_primary(mesh, NodeKind::NodeAdmin).is_none() {
             out.push(Missing { who: mesh.to_string(), why: "no-primary" });

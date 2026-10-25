@@ -2,15 +2,15 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Op contracts](../node-rpc-envelope.md#the-op-ledger)
 
-Fabric ready-for-traffic is the round that opens traffic. When every mesh has checked in for
+Fabric ready-for-traffic is the state that opens traffic. When every mesh has checked in for
 [state-commit](fabric-state-commit.md), the fabric-primary carries the ready-for-traffic status
-down in a round: fabric-primary → mesh-primaries → nodes. Once every member has checked in under
-the [round checklist](states.md#the-round-checklist), the fabric is ready-for-traffic and Rafka
+down: fabric-primary → mesh-primaries → nodes. Once every member has checked in under
+the [check-in checklist](states.md#the-check-in-checklist), the fabric is ready-for-traffic and Rafka
 receives one notice, on which it opens client traffic.
 
 ## Command, completion and gossip messages
 
-The round runs the [fabric round command pairs](../node-rpc-envelope.md#fabric-round-command-pairs)
+The state runs the [fabric status command pairs](../node-rpc-envelope.md#fabric-status-command-pairs)
 under operation `open-traffic:<fabric_id>`; each payload names its subject:
 
 ```text
@@ -22,18 +22,18 @@ fabric-primary                    FabricStatus ready-for-traffic; one ready-for-
 ```
 
 Each line is its own directed call with its own target and caller span
-([target and context](../node-rpc-envelope.md#target-and-context)); when a check-in is owed is the [round checklist](states.md#the-round-checklist)'s, and its delivery is [Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes)'s. The hook frames' authors and channels are
-[Fabric round gossip hooks](../gossip.md#fabric-round-gossip-hooks).
+([target and context](../node-rpc-envelope.md#target-and-context)); when a check-in is owed is the [check-in checklist](states.md#the-check-in-checklist)'s, and its delivery is [Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes)'s. The hook frames' authors and channels are
+[Fabric state gossip hooks](../gossip.md#fabric-state-gossip-hooks).
 
 FabricStatus ready-for-traffic travels under the [frame catalog](../gossip.md#31-frame-catalog);
-it does not replace the round checklist. Who declares the transition is [States](states.md#states)'s.
+it does not replace the check-in checklist. Who declares the transition is [States](states.md#states)'s.
 
 ### Node-side and receiving-side trace evidence
 
 Calls and service emit the [runtime spans](../node-rpc-envelope.md#runtime-spans); evidence
 correlates admission, completion and the subject's action to the exact birth and operation.
 
-### Round sequence diagram
+### Check-in sequence diagram
 
 ```mermaid
 sequenceDiagram

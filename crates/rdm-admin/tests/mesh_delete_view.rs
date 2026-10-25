@@ -65,14 +65,14 @@ fn start_ns(sp: &Value) -> u64 {
 /// (admin/leave.rs: "self.records.hold_mesh_deleted(&key.mesh_id); ... self.refresh_view().await"):
 /// the mesh held deleted, then the view installed again from the stores. Before it the view names
 /// mesh1 live, and the backbone holds that view's meshes. The stop's status event follows at once,
-/// with no round of the admin's hierarchy in between. The view holds mesh1 deleted, the backbone
+/// with no workflow of the admin's hierarchy in between. The view holds mesh1 deleted, the backbone
 /// takes it deleted from that install, and the stop makes the fabric-primary mesh1's publisher of
 /// record: the status event is stamped as the deleted mesh's publisher and mesh1's aggregate leaves
 /// on the backbone, no digests, the stopped admin in `in_flight`. Must NOT happen: the backbone
 /// still holding mesh1 live from the view before the receipt, so the stop is published as a plain
 /// executor's and the stopped-stage aggregate never leaves (s23 part 9's
 /// mesh_lifecycle__fabric_primary_handover: receipt at -439.6 ms, the stop's status event at
-/// +7.4 ms in trace c1ea5c0096b1230d0370d6c8dc484a7d, the view moved at the next round, +54.9 ms).
+/// +7.4 ms in trace c1ea5c0096b1230d0370d6c8dc484a7d, the view moved at the next workflow, +54.9 ms).
 #[test]
 fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_deleted_receipt_publishes_the_stopped_aggregate() {
     let cell = "the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_deleted_receipt_publishes_the_stopped_aggregate";

@@ -192,7 +192,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let mut reads = Vec::new();
     let mut outcomes = Vec::new();
     for _ in 0..2 {
-        // A short budget: the hold ends inside the silent window. Past the second unreached tickle round
+        // A short budget: the hold ends inside the silent window. Past the second unreached tickle ladder
         // node investigation decides, and a verdict other than reached re-creates the node (Q111).
         let probe = estate.probe(&["get", "--target", &hold_exact, "--budget-ms", "1500", "--key", "83"]);
         reads.push(json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "cpu_ticks": cpu_ticks(hold_rt.pid), "outcome": probe["outcome"]}).to_string());

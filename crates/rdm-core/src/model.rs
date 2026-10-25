@@ -32,7 +32,7 @@ pub enum NodeStatus {
     /// clears it.
     Restarting,
     /// True offline: half a floor after the mark the mesh primary's one QUIC connect found no path,
-    /// on two rounds at least one staleness floor apart. Observer inferred only; never sent, never a
+    /// on two ladders at least one staleness floor apart. Observer inferred only; never sent, never a
     /// reason to restart or delete the node.
     Dead,
     /// Deleted: the node's identity and name are released. Only the node's row carries it, written
@@ -65,8 +65,8 @@ pub enum ScopeStatus {
     /// A fabric state: every mesh is ready-for-traffic and the application does its day-0 and seed
     /// work (fabric-state-sync.md).
     StateSync,
-    /// A fabric state: the commit-state round publishes what the scratchpads hold
-    /// (fabric-state-commit.md); the open-traffic round runs inside it.
+    /// A fabric state: commit-state publishes what the scratchpads hold
+    /// (fabric-state-commit.md); open-traffic runs inside it.
     StateCommit,
 }
 

@@ -1,9 +1,9 @@
-//! i146 process E2E: a round's check-ins are owed messages (node-rpc.md §43, `Budget::Owed`), and a
+//! i146 process E2E: a checklist's check-ins are owed messages (node-rpc.md §43, `Budget::Owed`), and a
 //! fabric-primary held past the staleness floor is re-created at its path.name by fabric recovery, the restored node
-//! re-sending the round (Q122). Each cell suspends or
+//! re-sending the checklist (Q122). Each cell suspends or
 //! kills a primary past the staleness floor and a call's former 10 s budget: a release-gate stem.
 //!
-//! A real estate whose node-admin is the testkit's (the fault door's round-action cut orders each
+//! A real estate whose node-admin is the testkit's (the fault door's state-action cut orders each
 //! cell), carrying the testkit application. Evidence is read from the spans every process wrote.
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView, ScopeStatus};
@@ -53,17 +53,17 @@ fn signal(pid: u64, sig: &str) {
     assert!(ok, "kill {sig} {pid}");
 }
 
-/// How many times each birth among `admins` ran its own `round` action for `attempt` of `build`, by its
+/// How many times each birth among `admins` ran its own `checklist` action for `attempt` of `build`, by its
 /// process's evidence file (one birth per process): `(file, runs)`.
-fn runs_per_birth(evidence: &std::path::Path, admins: &[String], round: &str, build: &str, attempt: &str) -> Vec<(String, usize)> {
+fn runs_per_birth(evidence: &std::path::Path, admins: &[String], state_key: &str, build: &str, attempt: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     for f in std::fs::read_dir(evidence).unwrap().flatten() {
         let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
         let ran = text
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-mesh-round")
-            .filter(|sp| admins.contains(&s(&sp["attributes"]["node"])) && sp["attributes"]["round"] == round && s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["own_action"] == "run")
+            .filter(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-mesh-checklist")
+            .filter(|sp| admins.contains(&s(&sp["attributes"]["node"])) && sp["attributes"]["command"] == state_key && s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["own_action"] == "run")
             .count();
         out.push((f.file_name().to_string_lossy().into_owned(), ran));
     }
@@ -93,7 +93,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let holder = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 has a primary");
-    assert!(!holder.is_fabric_primary, "mesh2's primary is not the fabric-primary: the climb goes on around it");
+    assert!(!holder.is_fabric_primary, "mesh2's primary is not the fabric-primary: the change goes on around it");
     let mut others: Vec<NodeView> = views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).cloned().collect();
     others.sort_by_key(|n| n.node_id.to_string());
     let (successor, member) = (others[0].clone(), others[1].clone());
@@ -101,10 +101,10 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     let (holder_id, successor_id) = (holder.node_id.to_string(), successor.node_id.to_string());
 
     let door = Door::at(&estate, &member_s).await;
-    door.arm("round-action", json!({"kind": "round-action", "node": member_s, "round": "commit-state"})).await;
+    door.arm("state-action", json!({"kind": "state-action", "node": member_s, "command": "commit-state"})).await;
     let resize = estate.submit(&rdm_test::typed::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 2)])] })).await;
     let resize_id = resize.build_id().to_string();
-    door.wait_held("round-action").await;
+    door.wait_held("state-action").await;
 
     // The check-in is owed to a suspended primary, then the primary is killed, all inside the staleness
     // floor: past it the election names the next holder (Q119 arm A), and a check-in sent after that is
@@ -113,7 +113,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     let pid = estate.pid_of(&holder_s).await;
     signal(pid, "-STOP");
     tokio::time::sleep(floor / 4).await;
-    door.release("round-action").await;
+    door.release("state-action").await;
     tokio::time::sleep(floor / 4).await;
     let killed_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_pid(pid as u32);
@@ -143,17 +143,17 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_prima
     estate.record_trace_url(&s(&moved["trace_id"]));
 }
 
-/// The fabric-primary held during the resize's `round` and continued (Q122; fabric-recovery.md "The loss
-/// of the fabric-primary while a node-admin lives"; states.md "The round checklist"): mesh2's primary is
-/// held in its own `round` action (the fault door's round-action cut) and the fabric-primary suspended.
+/// The fabric-primary held during the resize's `checklist` and continued (Q122; fabric-recovery.md "The loss
+/// of the fabric-primary while a node-admin lives"; states.md "The check-in checklist"): mesh2's primary is
+/// held in its own `checklist` action (the fault door's state-action cut) and the fabric-primary suspended.
 /// Unheard past the floor, nobody takes the fabric-primary: with another node-admin in its mesh, that
 /// node-admin runs fabric recovery at the first tick after the mark; alone in its mesh, mesh2's primary
 /// runs it from the backbone at mesh investigation's decision step. The node re-created at the
 /// fabric-primary's path.name is restored as mesh-primary and fabric-primary. The action is released past
 /// the 10 s a call had (mesh2's check-in owed upward, node-rpc.md §43) and the held birth continued. The
-/// restored fabric-primary re-sends the current round, the members already done check in again, and the
-/// fabric reaches ready-for-traffic under the resize. Every round action runs once per round key.
-async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
+/// restored fabric-primary re-sends the current state's command, the members already done check in again, and the
+/// fabric reaches ready-for-traffic under the resize. Every state action runs once per state key.
+async fn fabric_primary_held(test: &str, mesh1: (u32, u32), state_key: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
@@ -172,10 +172,10 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
     let floor = rdm_transport::membership::staleness_floor();
 
     let door = Door::at(&estate, &primary_s).await;
-    door.arm("round-action", json!({"kind": "round-action", "node": primary_s, "round": round})).await;
+    door.arm("state-action", json!({"kind": "state-action", "node": primary_s, "command": state_key})).await;
     let resize = estate.submit(&rdm_test::typed::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, mesh1.0), (NodeKind::RpcNode, mesh1.1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] })).await;
     let resize_id = resize.build_id().to_string();
-    door.wait_held("round-action").await;
+    door.wait_held("state-action").await;
 
     // The fabric-primary is the estate's Day-0 admin: its process is the estate's own child. Control is
     // read through the admin that runs fabric recovery from here: a held admin answers nothing.
@@ -193,7 +193,7 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
             views.iter().find(|n| n.name.to_string() == fp_s && n.node_id != fp.node_id && n.is_fabric_primary && n.is_primary).map(|n| n.node_id.clone())
         })
         .await;
-    door.release("round-action").await;
+    door.release("state-action").await;
     tokio::time::sleep(DEFAULT_CALL_BUDGET + Duration::from_secs(3)).await;
     // Continued, the held birth comes back to a path.name a new birth holds.
     signal(pid, "-CONT");
@@ -203,7 +203,7 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
     estate.stop().await;
     let spans = estate.spans();
     let of_resize = |name: &str, node: &str, r: &str| -> Vec<Value> {
-        let mut v: Vec<Value> = named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && sp["attributes"]["round"] == r && s(&sp["attributes"]["build_id"]) == resize_id).cloned().collect();
+        let mut v: Vec<Value> = named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && sp["attributes"]["command"] == r && s(&sp["attributes"]["build_id"]) == resize_id).cloned().collect();
         v.sort_by_key(start);
         v
     };
@@ -211,75 +211,75 @@ async fn fabric_primary_held(test: &str, mesh1: (u32, u32), round: &str) {
     let ran: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= suspended_at).collect();
     let run = ran.iter().find(|sp| s(&sp["attributes"]["node"]) == runner && sp["attributes"]["arm"] == arm && s(&sp["attributes"]["outcome"]).starts_with("restored")).cloned().unwrap_or_else(|| panic!("{runner} ran fabric recovery ({arm}) and restored {fp_s}: {ran:#?}"));
     assert!(ran.iter().all(|sp| s(&sp["attributes"]["node"]) == runner), "nobody else ran it: {ran:#?}");
-    // The restored fabric-primary re-sent the current round as its new primary (states.md "The round checklist").
+    // The restored fabric-primary re-sent the current checklist as its new primary (states.md "The check-in checklist").
     let restored_at = at(run);
-    let re_sent: Vec<Value> = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &fp_s, round).into_iter().filter(|sp| start(sp) >= restored_at).collect();
-    assert!(!re_sent.is_empty(), "the node restored at {fp_s} ({restored}) ran mesh1's {round} round after the restore: {re_sent:#?}");
-    // Every round action ran once per round key on each node (states.md "The round checklist": the key is
-    // the Build's attempt and the round; the record of what ran is each node's own,
-    // rdm_node::rounds::ActedRecord): a primary's own action is its own node's work (commit-state writes
+    let re_sent: Vec<Value> = of_resize("rdm.node_admin.fabric.update.via-mesh-checklist", &fp_s, state_key).into_iter().filter(|sp| start(sp) >= restored_at).collect();
+    assert!(!re_sent.is_empty(), "the node restored at {fp_s} ({restored}) ran mesh1's {state_key} checklist after the restore: {re_sent:#?}");
+    // Every state action ran once per state key on each node (states.md "The check-in checklist": the key is
+    // the Build's attempt and the checklist; the record of what ran is each node's own,
+    // rdm_node::fabric_states::ActedRecord): a primary's own action is its own node's work (commit-state writes
     // that node's scratchpad to the store root), so the held birth's action and the re-created birth's at
     // the same path.name are two nodes' actions, each run once; each process's evidence is one birth's.
-    // mesh1 ran its round for every attempt that reached it; mesh2's primary's and each member's ran once
+    // mesh1 ran its checklist for every attempt that reached it; mesh2's primary's and each member's ran once
     // per attempt.
     let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]);
     for r in ["commit-state", "open-traffic"] {
         let mesh1_admins: Vec<String> = [Some(fp_s.clone()), standby.clone()].into_iter().flatten().collect();
-        let mesh1_rounds: Vec<Value> = mesh1_admins.iter().flat_map(|admin| of_resize("rdm.node_admin.fabric.update.via-mesh-round", admin, r)).collect();
-        let attempts: std::collections::BTreeSet<String> = mesh1_rounds.iter().map(attempt_of).collect();
-        assert!(!attempts.is_empty(), "mesh1 ran its {r} round");
+        let mesh1_check_ins: Vec<Value> = mesh1_admins.iter().flat_map(|admin| of_resize("rdm.node_admin.fabric.update.via-mesh-checklist", admin, r)).collect();
+        let attempts: std::collections::BTreeSet<String> = mesh1_check_ins.iter().map(attempt_of).collect();
+        assert!(!attempts.is_empty(), "mesh1 ran its {r} checklist");
         for a in &attempts {
-            assert!(mesh1_rounds.iter().any(|m| attempt_of(m) == *a && m["attributes"]["own_action"] == "run"), "mesh1's own {r} action ran for attempt {a}");
+            assert!(mesh1_check_ins.iter().any(|m| attempt_of(m) == *a && m["attributes"]["own_action"] == "run"), "mesh1's own {r} action ran for attempt {a}");
             for (birth, ran) in runs_per_birth(&estate.evidence, &mesh1_admins, r, &resize_id, a) {
                 assert!(ran <= 1, "{birth}'s own {r} action ran once for attempt {a}: {ran}");
             }
         }
-        let primary_rounds = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &primary_s, r);
-        for a in primary_rounds.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
-            let ran = primary_rounds.iter().filter(|m| attempt_of(m) == a && m["attributes"]["own_action"] == "run").count();
+        let primary_check_ins = of_resize("rdm.node_admin.fabric.update.via-mesh-checklist", &primary_s, r);
+        for a in primary_check_ins.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
+            let ran = primary_check_ins.iter().filter(|m| attempt_of(m) == a && m["attributes"]["own_action"] == "run").count();
             assert_eq!(ran, 1, "{primary_s}'s own {r} action ran once for attempt {a}");
         }
         for m in &members {
-            let member_rounds = of_resize("rdm.node_admin.fabric.update.via-member-round", m, r);
-            for a in member_rounds.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
-                let acted = member_rounds.iter().filter(|x| attempt_of(x) == a && flag(&x["attributes"]["acted"])).count();
+            let member_check_ins = of_resize("rdm.node_admin.fabric.update.via-member-check-in", m, r);
+            for a in member_check_ins.iter().map(attempt_of).collect::<std::collections::BTreeSet<_>>() {
+                let acted = member_check_ins.iter().filter(|x| attempt_of(x) == a && flag(&x["attributes"]["acted"])).count();
                 assert_eq!(acted, 1, "{m}'s {r} action ran once for attempt {a}");
             }
         }
     }
     let flame = s(&run["trace_id"]);
-    println!("fabric-primary held during {round}: {runner} ran fabric recovery ({arm}); the restored node re-sent the round; flame http://192.168.68.99:16687/trace/{flame}");
+    println!("fabric-primary held during {state_key}: {runner} ran fabric recovery ({arm}); the restored node re-sent the checklist; flame http://192.168.68.99:16687/trace/{flame}");
     estate.record_trace_url(&flame);
 }
 
-/// CONTRACT (Q122; states.md "The round checklist": "A new primary, through election or recovery,
-/// re-sends the current round. Members already done check in again, and the checklist rebuilds
+/// CONTRACT (Q122; states.md "The check-in checklist": "A new primary, through election or recovery,
+/// re-sends the current state's command. Members already done check in again, and the checklist rebuilds
 /// itself"): a fabric-primary held past the staleness floor during state-commit is re-created at its
 /// path.name by the fabric recovery its mesh's other node-admin runs; the restored fabric-primary re-sends
-/// the round, the members check in again from their record and the fabric reaches ready-for-traffic under
+/// the checklist, the members check in again from their record and the fabric reaches ready-for-traffic under
 /// the resize. Must NOT happen: another node named fabric-primary, the fabric held in state-commit, a
-/// round action run twice for one key.
+/// state action run twice for one key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_round() {
-    fabric_primary_held("a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_round", (2, 1), "commit-state").await;
+async fn a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_state_command() {
+    fabric_primary_held("a_fabric_primary_held_during_state_commit_is_re_created_by_fabric_recovery_which_re_sends_the_state_command", (2, 1), "commit-state").await;
 }
 
 /// CONTRACT (Q122): the same for open-traffic: a fabric-primary held past the floor during the
-/// open-traffic round is re-created by fabric recovery from its own mesh, the restored fabric-primary
-/// re-sends the round, and the fabric reaches ready-for-traffic; no round action runs twice for one key.
+/// open-traffic checklist is re-created by fabric recovery from its own mesh, the restored fabric-primary
+/// re-sends the checklist, and the fabric reaches ready-for-traffic; no state action runs twice for one key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_round() {
-    fabric_primary_held("a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_round", (2, 1), "open-traffic").await;
+async fn a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_state_command() {
+    fabric_primary_held("a_fabric_primary_held_during_open_traffic_is_re_created_by_fabric_recovery_which_re_sends_the_state_command", (2, 1), "open-traffic").await;
 }
 
 /// CONTRACT (Q122, fabric-recovery.md "Outside its mesh"; node-rpc.md §43; fabric-state-commit.md step 3,
 /// "node → mesh-primary → fabric-primary"): a mesh primary's check-in is owed to the fabric-primary until
 /// it answers. A fabric-primary that is its mesh's only node, held past the floor, is probed by mesh2's
 /// primary, which runs fabric recovery from the backbone at mesh investigation's decision step; the node
-/// re-created at the fabric-primary's path.name is restored, re-sends the round, and the fabric reaches
+/// re-created at the fabric-primary's path.name is restored, re-sends the checklist, and the fabric reaches
 /// ready-for-traffic under the resize. Must NOT happen: mesh2's primary named fabric-primary, the
 /// check-in ending unanswered, the fabric held in state-commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_round() {
-    fabric_primary_held("a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_round", (1, 0), "commit-state").await;
+async fn a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_state_command() {
+    fabric_primary_held("a_fabric_primary_alone_in_its_mesh_held_during_state_commit_is_re_created_from_the_backbone_which_re_sends_the_state_command", (1, 0), "commit-state").await;
 }

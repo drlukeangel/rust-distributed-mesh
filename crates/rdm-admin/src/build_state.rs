@@ -3239,8 +3239,8 @@ mod tests {
         p
     }
 
-    /// CONTRACT (the Build log is read on async workers: the fabric-primary's climb reads its Build
-    /// through `AcceptedStore::current` -> `read_build` (accepted.rs `current`, fabric_rounds.rs
+    /// CONTRACT (the Build log is read on async workers: the fabric-primary's change reads its Build
+    /// through `AcceptedStore::current` -> `read_build` (accepted.rs `current`, fabric_status.rs
     /// `step_*`); `LocalBuildLog::derive_on_every_fact`: what is derived from the facts never lags a
     /// reader of them): while a push into the journal is held inside the installed derivation, a
     /// reader of the log on another thread (`read_build`, `list_active`) answers at once, from the log

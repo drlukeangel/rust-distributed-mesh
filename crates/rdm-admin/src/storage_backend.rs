@@ -9,7 +9,7 @@
 
 use crate::build_state::LocalBuildLog;
 use crate::fabric_handover::FinishWrites;
-use crate::fabric_rounds::RoundActions;
+use crate::fabric_status::StateActions;
 use crate::fabric_storage::FabricStorage;
 use crate::model::{FabricId, IncarnationId, PathName, ProviderKind};
 use crate::storage::{ConnectionsStorage, MeshStorage, NodeRecord, NodesStorage};
@@ -36,7 +36,7 @@ pub struct StorageScope {
 pub type OpenConnections = Arc<dyn Fn(PathName) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
 /// The storage a node-admin runs on, opened by its backend: the five boundaries, what the backend does
-/// at a commit-state round, and how it finishes the writes it has issued.
+/// at a commit-state checklist, and how it finishes the writes it has issued.
 pub struct StorageBoundaries {
     /// `fabric.storage`: the Fabric record, its name's claim and its events.
     pub fabric: Arc<dyn FabricStorage>,
@@ -50,7 +50,7 @@ pub struct StorageBoundaries {
     /// The Build journal: the Build facts, and each attempt's context.
     pub builds: Arc<dyn LocalBuildLog>,
     /// The node's commit-state and open-traffic actions: the backend's own, then the embedding's.
-    pub round_actions: Arc<dyn RoundActions>,
+    pub state_actions: Arc<dyn StateActions>,
     /// Finishes every write the boundaries have issued: a primary runs it before it calls its successor
     /// (node-primary-update.md step 3).
     pub finish_writes: FinishWrites,
@@ -72,9 +72,9 @@ pub trait StorageBackend: Send + Sync {
     /// restart on this data dir is the same logical node in the same Fabric and Mesh (R-FI1). Its
     /// address and primaries are on its node's record, written by its mesh-primary.
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
-    /// Opens the five boundaries of `scope`; `embedding` is the embedding's own round actions, run
+    /// Opens the five boundaries of `scope`; `embedding` is the embedding's own state actions, run
     /// after the backend's.
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String>;
+    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String>;
 }
 
 /// RDM standalone's backend: the boundaries as files, the shared ones on the fabric's store root
@@ -109,13 +109,13 @@ impl StorageBackend for FileBackend {
         crate::storage::FileNodesStorage::put_own_in(data_dir, writer, record).await
     }
 
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
+    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String> {
         let storage_err = |e: StorageError| e.to_string();
         let root = crate::store_root::StoreRoot::open(&self.store_dir, &scope.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
         // Before the fabric's first state-commit every row this admin writes is held in its
-        // scratchpad; its commit-state action publishes them (states.md, Rounds).
+        // scratchpad; its commit-state action publishes them (states.md, Setting a state).
         let writes_to = root.writes_to().to_string();
-        let round_actions: Arc<dyn RoundActions> = Arc::new(crate::fabric_rounds::StorePublication::new(root.scratchpad().cloned(), embedding));
+        let state_actions: Arc<dyn StateActions> = Arc::new(crate::fabric_status::StorePublication::new(root.scratchpad().cloned(), embedding));
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
@@ -138,7 +138,7 @@ impl StorageBackend for FileBackend {
                 Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
-        Ok(StorageBoundaries { fabric, meshes, nodes, connections, builds, round_actions, finish_writes, writes_to })
+        Ok(StorageBoundaries { fabric, meshes, nodes, connections, builds, state_actions, finish_writes, writes_to })
     }
 }
 
@@ -173,7 +173,7 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
-    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
+    async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn StateActions>>) -> Result<StorageBoundaries, String> {
         let connections: OpenConnections = Arc::new(|_name: PathName| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
         // A memory write is one step under its store's lock: every write issued has finished.
         let finish_writes: FinishWrites = Arc::new(|| Box::pin(async {}));
@@ -184,7 +184,7 @@ impl StorageBackend for MemoryBackend {
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             // Nothing is held for a later publication: the embedding's actions alone, or none.
-            round_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_rounds::NoScratchpad)),
+            state_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_status::NoScratchpad)),
             finish_writes,
             writes_to: "memory".into(),
         })

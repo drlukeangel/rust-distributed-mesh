@@ -1820,21 +1820,21 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     estate.shutdown().await;
 }
 
-/// The `observer`'s first fold span of tickle `round` for `node_id` (round 1 opens the hold-down,
-/// round 2 is TRUE OFFLINE), once exported.
-fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value, round: u8) -> Option<&'a Value> {
-    let name = if round == 1 { "rdm.node_admin.node.update.via-offline-hold-down-opened" } else { "rdm.node_admin.node.update.via-true-offline" };
+/// The `observer`'s first fold span of tickle `ladder` for `node_id` (ladder 1 opens the hold-down,
+/// ladder 2 is TRUE OFFLINE), once exported.
+fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value, ladder: u8) -> Option<&'a Value> {
+    let name = if ladder == 1 { "rdm.node_admin.node.update.via-offline-hold-down-opened" } else { "rdm.node_admin.node.update.via-true-offline" };
     let mut found: Vec<&Value> = named(spans, name).into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
     found.sort_by_key(|sp| start(sp));
     found.into_iter().next()
 }
 
-/// The span that ends the `caller`'s first tickle round for `node_id` with nobody reaching it: the
+/// The span that ends the `caller`'s first tickle ladder for `node_id` with nobody reaching it: the
 /// ladder's result span (`rdm.node.tickle.returns-unknown.via-unreached`, node-tickle.md), closed by
-/// the round itself when the ladder ends (offline.rs `OfflineTickle::tick`), once exported. The
-/// hold-down span ([`tickle_span`] round 1) is the loop's fold of that result, made by the first pass
-/// after the round ended.
-fn round_end_span<'a>(spans: &'a [Value], caller: &str, node_id: &Value) -> Option<&'a Value> {
+/// the ladder itself when the ladder ends (offline.rs `OfflineTickle::tick`), once exported. The
+/// hold-down span ([`tickle_span`] ladder 1) is the loop's fold of that result, made by the first pass
+/// after the ladder ended.
+fn ladder_end_span<'a>(spans: &'a [Value], caller: &str, node_id: &Value) -> Option<&'a Value> {
     let mut found: Vec<&Value> = named(spans, "rdm.node.tickle.returns-unknown.via-unreached")
         .into_iter()
         .filter(|sp| sp["attributes"]["caller"] == caller && sp["attributes"]["node_id"] == *node_id && sp["attributes"]["next"].is_string())
@@ -1852,9 +1852,9 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 /// CONTRACT (#3051 acceptance 2, node-recovery.md "Detection and proof" step 1: "Every node-admin
 /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
 /// continues the window already running"): a member of mesh2 (two node-admins, its mesh-primary not
-/// the fabric-primary) is killed; once mesh2's primary has run tickle round 1 for it, that primary is
+/// the fabric-primary) is killed; once mesh2's primary has run tickle ladder 1 for it, that primary is
 /// stopped, which hands mesh2's seat to its second admin. The new mesh-primary tickles on the window
-/// it has kept since before it took the seat (its round 1 names a `first_seen_ms` earlier than the
+/// it has kept since before it took the seat (its ladder 1 names a `first_seen_ms` earlier than the
 /// seat change by a probe delay or more, never a window opened at the seat), reaches TRUE OFFLINE,
 /// asks the provider, and its submit follows the one recovery to `complete`: a new node.id at the
 /// path over the same endpoint key. Must NOT happen: the window restarted at the seat change, the
@@ -1872,21 +1872,21 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let before = estate.node_value(NODE).await;
     estate.kill_node(NODE).await;
 
-    // Round 1 on the mesh-primary that holds the seat now. The ladder's unreached span ends the round
-    // (`round_end_span`), due by node-recovery.md steps 1-2: the silence (one floor after the last
+    // Ladder 1 on the mesh-primary that holds the seat now. The ladder's unreached span ends the ladder
+    // (`ladder_end_span`), due by node-recovery.md steps 1-2: the silence (one floor after the last
     // digest heard: offline.rs `silent_set` derives the mark from it), the loop's pass half a floor
-    // after the mark (on the gossip-interval grid: up to one interval late), then one tickle round:
+    // after the mark (on the gossip-interval grid: up to one interval late), then one tickle ladder:
     // one direct probe, then the probes through up to two peers at once, each to a killed process
     // and so spending its whole dial: the connection's idle timeout, the staleness floor (R-T8),
     // inside the call's 10 s budget. Then the export's 200 ms schedule and this cell's read of it
-    // (one gossip interval). The hold-down span is not the round's end: the loop folds the verdict at
-    // its first pass after the round ended, and a round of two whole dials starts on a pass and ends
+    // (one gossip interval). The hold-down span is not the ladder's end: the loop folds the verdict at
+    // its first pass after the ladder ended, and a ladder of two whole dials starts on a pass and ends
     // just past one, so that fold comes almost one interval after the verdict.
     let gossip = rdm_core::cadence::gossip_interval();
     let connect = floor.min(Duration::from_secs(10));
-    let round1_due = floor + gossip + gossip + floor / 2 + rdm_admin::offline::tickle_round(connect) + Duration::from_millis(200);
-    let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { round_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
-    assert_eq!(s(&round1["attributes"]["next"]), "hold-down", "{mp}'s round 1 finds no path to the killed {NODE}, and the hold-down opens next: {round1}");
+    let round1_due = floor + gossip + gossip + floor / 2 + rdm_admin::offline::tickle_ladder(connect) + Duration::from_millis(200);
+    let round1 = wait_for(&format!("{mp} runs tickle ladder 1 for {NODE}"), round1_due, || async { ladder_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
+    assert_eq!(s(&round1["attributes"]["next"]), "hold-down", "{mp}'s ladder 1 finds no path to the killed {NODE}, and the hold-down opens next: {round1}");
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
     let stopping = estate.submit_change(Change::Stop { node: Estate::path(&mp) }).await;
     assert_eq!(stopping.build_id().as_str(), birth_build, "no Build is minted");
@@ -1914,12 +1914,12 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 
     let spans = estate.spans();
     let taken_ns = start(&seat);
-    let new_round1 = tickle_span(&spans, &standby, &before["node_id"], 1).unwrap_or_else(|| panic!("{standby}'s tickle round 1 for {NODE}"));
+    let new_round1 = tickle_span(&spans, &standby, &before["node_id"], 1).unwrap_or_else(|| panic!("{standby}'s tickle ladder 1 for {NODE}"));
     let new_round2 = tickle_span(&spans, &standby, &before["node_id"], 2).unwrap_or_else(|| panic!("{standby}'s TRUE OFFLINE for {NODE}"));
     assert!(start(new_round1) > taken_ns, "{standby} tickles only once it holds the seat");
-    // The window it kept: the round runs on the instant it first saw the member silent, before the
+    // The window it kept: the ladder runs on the instant it first saw the member silent, before the
     // seat changed hands and a probe delay or more before it, never on a window opened at the seat.
-    // (The round's span is written when the round ends: the failed direct probe and via-peer probes
+    // (The ladder's span is written when the ladder ends: the failed direct probe and via-peer probes
     // take their call deadlines, so its time after the seat is not the wait before it.)
     let first_seen_ms = num_attr(new_round1, "first_seen_ms");
     assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby}'s window began a probe delay or more before it took the seat: first_seen {first_seen_ms} ms, seat at {} ms", taken_ns / 1_000_000);
@@ -2449,7 +2449,7 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
 
 /// CONTRACT (node-recovery.md "Lost data dir (R-FM2)", crit:e12.s87.1): when `mesh1.rpc.2`'s runtime
 /// exits and its `data_dir` is removed (`rm -rf` / unmounted), the mesh-primary proves `Exited` on
-/// two consecutive rounds, holds `RDM_DATA_DIR_GONE_FLOORS` (2) staleness floors while `data_dir`
+/// two consecutive ladders, holds `RDM_DATA_DIR_GONE_FLOORS` (2) staleness floors while `data_dir`
 /// remains absent, records `data-dir-lost` on the exited birth's status row
 /// (`rdm.node_admin.node.update.via-data-dir-lost`), and runs `node.delete -> node.create` over a
 /// newly allocated `data_dir`. The recovered birth has a NEW `node.id`, a NEW endpoint key

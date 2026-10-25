@@ -483,7 +483,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     Estate::complete(&mut stop).await;
     build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
     assert!(alive(pid), "the stopped process {pid} is parked, alive");
-    // No repair attempt follows the stop: the Build's attempt is the stop's after the reconciler's rounds have passed.
+    // No repair attempt follows the stop: the Build's attempt is the stop's after the reconciler's checklists have passed.
     tokio::time::sleep(Duration::from_secs(15)).await;
     let b = build_log::build_value(&estate.carrier().await, &birth_build).await;
     assert_eq!(b["attempt"].as_u64(), Some(attempt_no), "no repair attempt followed the stop: {b}");

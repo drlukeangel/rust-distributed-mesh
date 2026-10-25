@@ -27,7 +27,7 @@ pub enum NodeStatus {
     /// Commanded silence: its mesh executor is restarting this exact birth and owns bringing it
     /// back.
     Restarting,
-    /// True offline: the mesh primary's connect found no path on two rounds a staleness floor
+    /// True offline: the mesh primary's connect found no path on two ladders a staleness floor
     /// apart. Inferred by an observer, never announced by the node.
     Dead,
     /// Deleted: identity and name released; only the node's row carries it.
@@ -50,7 +50,7 @@ pub enum ScopeStatus {
     Degraded,
     /// A fabric state: every mesh is ready-for-traffic and the application does its work.
     StateSync,
-    /// A fabric state: the commit-state and open-traffic rounds run.
+    /// A fabric state: the commit-state and open-traffic check-ins run.
     StateCommit,
 }
 

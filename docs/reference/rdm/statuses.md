@@ -123,7 +123,7 @@ The state of the fabric: the value of a FabricStatus frame.
 | 0 | **`Pending`** | (not serialized) |  |  | `as_str() = "pending"` | Created; a mesh is not yet ready-for-traffic. |
 | 1 | **`StateSync`** | (not serialized) |  |  | `as_str() = "state-sync"` | Every mesh is ready-for-traffic; the application does its work. |
 | 2 | **`StateCommit`** | (not serialized) |  |  | `as_str() = "state-commit"` | The application answered state-synced; the scratchpads are published and traffic is opened. |
-| 3 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | Both rounds completed. |
+| 3 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | Both checklists completed. |
 
 <a id="t-rdm_admin-lifecycle-LifecycleState"></a>
 
@@ -246,7 +246,7 @@ serde: `rename_all = "kebab-case"`
 | 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** | `pending-reconnect` |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
 | 5 | **`Restarting`** | `restarting` |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |
-| 6 | **`Dead`** | `dead` |  |  | True offline: the mesh primary's connect found no path on two rounds a staleness floor |
+| 6 | **`Dead`** | `dead` |  |  | True offline: the mesh primary's connect found no path on two ladders a staleness floor |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: identity and name released; only the node's row carries it. |
 
 <a id="t-rdm_core-catalog-OpState"></a>
@@ -294,7 +294,7 @@ serde: `rename_all = "kebab-case"`
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final, its id never reissued. |
 | 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | The fabric primary has decided a peer mesh is reborn (`investigate`). |
 | 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its day-0 and seed |
-| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state round publishes what the scratchpads hold |
+| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: commit-state publishes what the scratchpads hold |
 
 <a id="t-rdm_core-views-ScopeStatus"></a>
 
@@ -314,7 +314,7 @@ serde: `rename_all = "kebab-case"`
 | 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
 | 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
-| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic rounds run. |
+| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic check-ins run. |
 
 <a id="t-rdm_admin-wiring-SyncState"></a>
 
@@ -327,8 +327,8 @@ The `sync_state` choice. A configuration with none is refused at start by name: 
 | # | variant · field | serde name | type | serde | doc |
 |---|---|---|---|---|---|
 | 0 | **`NoAppWork`** | (not serialized) |  |  | The embedding owes no application work in state-sync. RDM's own executables and test |
-| 1 | **`Hook`** | (not serialized) |  |  | The application's async function: called by the fabric-primary with the `SyncState` round |
-| 1.0 | `0` |  | `Arc<dyn Fn(StateSyncRound)->Pin<Box<dyn Future<Output = StateSyncAnswer> + Send>> + Send + Sync>` |  |  |
+| 1 | **`Hook`** | (not serialized) |  |  | The application's async function: called by the fabric-primary with the `SyncState` |
+| 1.0 | `0` |  | `Arc<dyn Fn(StateSyncHandoff)->Pin<Box<dyn Future<Output = StateSyncAnswer> + Send>> + Send + Sync>` |  |  |
 
 ## Status strings
 

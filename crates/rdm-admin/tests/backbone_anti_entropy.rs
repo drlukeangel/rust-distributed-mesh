@@ -10,7 +10,7 @@
 //! gate's cadence (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`), in a
 //! process of its own. Its Build state is wrapped
 //! (`Wiring::builds`) so the cell can make every read of the current Build (R-BI3, the read the
-//! admin's round makes each turn) take three backbone intervals, which is what a store read does
+//! admin's publication makes each turn) take three backbone intervals, which is what a store read does
 //! while the disk is held by another writer. The observer is a peer mesh's place on the backbone.
 
 use iroh::protocol::Router;
@@ -169,7 +169,7 @@ impl Capture {
 /// whose reads of the shared store take three backbone intervals each goes on publishing its mesh
 /// on the backbone every interval. A peer mesh's t of it stays under the track rung the whole time
 /// the store is held, so the fabric-primary never holds a live, serving mesh unheard. Must NOT
-/// happen: the publication waiting on a store read of the admin's round (the current Build, the exit
+/// happen: the publication waiting on a store read of the admin's publication (the current Build, the exit
 /// rows, the view's installation), so a held disk reads as a silent mesh.
 #[test]
 fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_every_interval() {

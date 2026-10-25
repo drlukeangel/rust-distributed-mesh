@@ -75,7 +75,7 @@ struct Actions {
     changed: tokio::sync::watch::Sender<u8>,
 }
 #[async_trait::async_trait]
-impl rdm_node::rounds::RoundActions for Actions {
+impl rdm_node::fabric_states::StateActions for Actions {
     async fn commit_state(&self, _: &rdm_core::PathName) -> Result<(), String> {
         self.commits.fetch_add(1, Ordering::SeqCst);
         self.changed.send_modify(|v| *v |= 1);
@@ -146,7 +146,7 @@ async fn broker(
 }
 
 #[test]
-fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_round_actions() {
+fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_state_actions() {
     let dir = std::env::temp_dir().join(format!("demo-app-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-app-channels").unwrap();
@@ -343,27 +343,27 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_ro
         .await
         .unwrap();
         assert_eq!(held, Some(healed));
-        // The ordinary broker's existing RoundActions seam runs before its directed check-in.
+        // The ordinary broker's existing StateActions seam runs before its directed check-in.
         let actions = Arc::new(Actions {
             commits: AtomicU32::new(0),
             opens: AtomicU32::new(0),
             changed: tokio::sync::watch::channel(0).0,
         });
-        node.own.set_round_actions(actions.clone());
+        node.own.set_state_actions(actions.clone());
         let mut done = actions.changed.subscribe();
         let birth = node.digest.node.clone();
         let build = NodeId::mint().to_string();
         for (kind, bit) in [
-            (rdm_node::rounds::RoundKind::StateCommit, 1),
-            (rdm_node::rounds::RoundKind::OpenTraffic, 2),
+            (rdm_node::fabric_states::StateCommand::StateCommit, 1),
+            (rdm_node::fabric_states::StateCommand::OpenTraffic, 2),
         ] {
-            let round = rdm_node::rounds::RoundKey {
+            let state_key = rdm_node::fabric_states::StateKey {
                 fabric_id: node.digest.fabric_id.clone(),
                 build_id: build.clone(),
                 attempt: 1,
                 kind,
             };
-            let req = kind.down(&round, birth.node_id.clone(), birth.incarnation.clone());
+            let req = kind.down(&state_key, birth.node_id.clone(), birth.incarnation.clone());
             let (out, _) = root
                 .node_rpc
                 .client

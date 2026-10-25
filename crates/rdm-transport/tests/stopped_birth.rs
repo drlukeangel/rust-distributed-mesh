@@ -219,7 +219,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
-        let round = || async { bb.publish(&p, bb.own_members(&p)).await };
+        let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
         // The mesh-primary's own digest, heard by the member directly.
@@ -234,7 +234,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
         // v1: the primary's projection lists mesh1.rpc.1 ready.
-        round().await;
+        publication().await;
         until("the member to hold the primary's first projection", || version_at_m().is_some()).await;
         let v1 = version_at_m().unwrap();
         // What the primary serves a topology read now: built before the stop.
@@ -254,7 +254,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert!(m.book.get(id.as_str()).is_none() && m.book.in_flight().contains(&stop), "a projection entry from before the stop does not end it");
 
         // v2: the primary's projection carries the stop and no longer lists the birth.
-        round().await;
+        publication().await;
         until("the member to hold the projection carrying the stop", || version_at_m().is_some_and(|v| v > v1)).await;
         let v2 = version_at_m().unwrap();
 
@@ -272,7 +272,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let start = LifecycleOp { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
         assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
         assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the primary holds the birth Pending");
-        round().await;
+        publication().await;
         until("the member to end the stop from the primary's projection", || !m.book.in_flight().contains(&stop)).await;
         let v3 = version_at_m().unwrap();
         assert!(v3 > v2, "the stop ended at a newer version than the one carrying it");
@@ -291,7 +291,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 4)));
         assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the birth's heartbeat moves no status at the primary");
         assert!(p.book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
-        round().await;
+        publication().await;
         until("the member to take ready-for-traffic from the projection", || m.book.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
         let v4 = version_at_m().unwrap();
 
@@ -327,7 +327,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
 /// real gossip, mesh1.rpc.2 (an own-mesh member holding its mesh-primary's seat) holds the primary's
 /// projection v1 listing mesh1.rpc.1 ready and takes the primary's `NodeStopped` event. No projection
 /// carrying the stop ever reaches it: the primary takes node.joined of the birth before its next
-/// round, and the member is parked through that round. Its top-up (a topology read of the primary)
+/// publication, and the member is parked through that publication. Its top-up (a topology read of the primary)
 /// installs the projection listing the birth `Pending`, at a version past the one the stop changed the
 /// subject at, of the same publisher: the stop is over, and the member holds the birth again with
 /// the projection's status. Must NOT happen: the stop standing forever at a member that never applied
@@ -351,7 +351,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
-        let round = || async { bb.publish(&p, bb.own_members(&p)).await };
+        let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
         let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_021);
@@ -364,7 +364,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
         // v1: the primary's projection lists mesh1.rpc.1 ready.
-        round().await;
+        publication().await;
         until("the member to hold the primary's first projection", || version_at_m().is_some()).await;
         let v1 = version_at_m().unwrap();
 
@@ -374,15 +374,15 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         until("the member to take NodeStopped", || m.book.in_flight().contains(&stop)).await;
         assert_eq!(version_at_m(), Some(v1), "no projection carrying the stop reached the member");
 
-        // node.joined at the mesh-primary before its next round; the member is parked through the round,
+        // node.joined at the mesh-primary before its next publication; the member is parked through the publication,
         // so the projection listing the birth again reaches it only through its top-up.
         let start = LifecycleOp { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
         assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
         m.stop().await;
-        round().await;
+        publication().await;
         let served = p.held_topology(&p.book.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
         let read_version = served.iter().find(|s| s.mesh == "mesh1").map(|s| s.topology_version).expect("the primary serves its own mesh");
-        assert!(read_version > v1, "the primary's round after node.joined moved its projection");
+        assert!(read_version > v1, "the primary's publication after node.joined moved its projection");
         for c in read_chunks(&served, "mesh1") {
             let _ = m.take_read_chunk(c, "mesh1");
         }

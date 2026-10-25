@@ -5,7 +5,7 @@
 This page owns node identity (the minted id, `endpoint_id`, `path.name`, incarnation and the
 display prefixes), the node, mesh and fabric rows and who writes each, the `NodeState` liveness
 enum, the hydration roster, local eviction and the stopped-node collector. Lifecycle states and
-rounds are [States](lifecycles/states.md#states); each workflow is its page in the
+check-ins are [States](lifecycles/states.md#states); each workflow is its page in the
 [lifecycle index](fabric-mesh-node-lifecycles.md); gossip is [gossip.md](gossip.md); the primaries are
 [elections](fabric-node-lifecycle-elections.md).
 
@@ -495,7 +495,7 @@ grants no readiness of its own (Q69). Its admission is the [Join schema](node-rp
 
 ### 4.4 Fabric, mesh and node readiness
 
-Fabric and mesh states, the checklist rounds, state-sync, state-commit and traffic opening are
+Fabric and mesh states, the checklists, state-sync, state-commit and traffic opening are
 [States](lifecycles/states.md#states); a node's own readiness is §5.
 
 ## 5. Readiness — when a node takes traffic
@@ -633,7 +633,7 @@ defines.
   aggregate it RECEIVED from every other mesh. No delete, restart or
   replace leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
   mesh.deleted is the one exception ([mesh delete](lifecycles/mesh-delete.md)).
-- **A node-admin roll replaces a non-primary admin first**, so the mesh keeps another listening
+- **A node-admin executable replacement replaces a non-primary admin first**, so the mesh keeps another listening
   admin before the current primary goes; the next primary is whatever the election resolves.
 - **A created node-admin adopts, it does not mint.** Only the bootstrap admin mints the fabric and
   its mesh; every later node-admin takes its mesh's held state from its maker's entry answer (Q56)

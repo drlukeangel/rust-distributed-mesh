@@ -236,32 +236,32 @@ A Status call.
 | 11.6 | `final_runtime` | `RuntimeFact` | `with = "crate::wire::runtime"` |  | The final mesh-primary's exact runtime, still running. |
 | 11.7 | `receipt_manifest` | `String` |  |  | A bounded reference (at most `MAX_RECEIPT_MANIFEST_BYTES`) to the other members' |
 | 12 | **`CommitState`** |  |  | `op() = "commit-state"` | Downward: the commanding authority tells the exact birth to publish what its scratchpad holds (`commit-state`; fabric-state-commit.md). The reply admits the command; completion is `Self::StateCommitted`. |
-| 12.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 12.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
 | 12.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
 | 12.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 12.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
-| 12.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
+| 12.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
+| 12.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
 | 12.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
-| 13 | **`StateCommitted`** |  |  | `op() = "state-committed"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for the state-commit round (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state. |
-| 13.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 13 | **`StateCommitted`** |  |  | `op() = "state-committed"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for state-commit (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state. |
+| 13.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
 | 13.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
 | 13.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 13.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
-| 13.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
+| 13.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
+| 13.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
 | 13.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
 | 14 | **`OpenTraffic`** |  |  | `op() = "open-traffic"` | Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is `Self::TrafficOpened`. |
-| 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
 | 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
 | 14.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 14.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
-| 14.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
+| 14.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
+| 14.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
 | 14.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
-| 15 | **`TrafficOpened`** |  |  | `op() = "traffic-opened"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for the open-traffic round (`traffic-opened`) after it completes traffic opening. |
-| 15.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 15 | **`TrafficOpened`** |  |  | `op() = "traffic-opened"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for open-traffic (`traffic-opened`) after it completes traffic opening. |
+| 15.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the command belongs to. |
 | 15.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
 | 15.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 15.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
-| 15.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
+| 15.3 | `build_id` | `String` |  |  | The Build the command belongs to. |
+| 15.4 | `attempt` | `u32` |  |  | The Build attempt that holds the command. |
 | 15.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
 | 16 | **`StartNode`** |  |  | `op() = "start-node"` | Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22. |
 | 16.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
@@ -436,12 +436,12 @@ The typed result of a Status call.
 | 38.0 | `read` | `String` |  |  | The read (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`). |
 | 38.1 | `bytes` | `u64` |  |  | The answer's encoded size, in bytes. |
 | 38.2 | `max` | `u64` |  |  | The Status reply bound, in bytes. |
-| 39 | **`RejectedStaleRound`** |  |  | `name() = "rejected-stale-round"` | A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the round the receiver holds for the |
-| 39.0 | `held` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the receiver holds for the mesh. |
-| 39.1 | `offered` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the call names. |
-| 40 | **`RejectedConflictingRound`** |  |  | `name() = "rejected-conflicting-round"` | A `DeleteMesh` or `MeshDeleted` names a round of the mesh the receiver does not hold and that is |
-| 40.0 | `held` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the receiver holds for the mesh. |
-| 40.1 | `offered` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the call names. |
+| 39 | **`RejectedStaleWorkflow`** |  |  | `name() = "rejected-stale-workflow"` | A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the workflow the receiver holds for the |
+| 39.0 | `held` | `MeshDeleteIdentity` → [`MeshDeleteIdentity`](#t-rdm_core-status-MeshDeleteIdentity) |  |  | The workflow the receiver holds for the mesh. |
+| 39.1 | `offered` | `MeshDeleteIdentity` → [`MeshDeleteIdentity`](#t-rdm_core-status-MeshDeleteIdentity) |  |  | The workflow the call names. |
+| 40 | **`RejectedConflictingWorkflow`** |  |  | `name() = "rejected-conflicting-workflow"` | A `DeleteMesh` or `MeshDeleted` names a workflow of the mesh the receiver does not hold and that is |
+| 40.0 | `held` | `MeshDeleteIdentity` → [`MeshDeleteIdentity`](#t-rdm_core-status-MeshDeleteIdentity) |  |  | The workflow the receiver holds for the mesh. |
+| 40.1 | `offered` | `MeshDeleteIdentity` → [`MeshDeleteIdentity`](#t-rdm_core-status-MeshDeleteIdentity) |  |  | The workflow the call names. |
 | 41 | **`RejectedIncompleteManifest`** |  |  | `name() = "rejected-incomplete-manifest"` | A `MeshDeleted` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest |
 | 41.0 | `missing` | `u32` |  |  | How many roster births, the final primary aside, hold no exact Exited receipt. |
 | 41.1 | `without_exit` | `Vec<String>` |  |  | `<path.name> <incarnation>` of each such birth, at most `MAX_WITHOUT_EXIT_BIRTHS` of |
@@ -2142,9 +2142,9 @@ The call a cut held first, as the decorator offered it.
 | 7 | **`CatchUp`** |  |  | A catch-up about to be sent to a neighbour. |
 | 7.0 | `node` | `String` |  | The sending node. |
 | 7.1 | `neighbour` | `String` |  | The neighbour. |
-| 8 | **`StateSync`** |  |  | The application's answer to a `sync_state` round, about to be returned. |
-| 8.0 | `build_id` | `String` |  | The round's Build. |
-| 8.1 | `attempt` | `u32` |  | The round's attempt. |
+| 8 | **`StateSync`** |  |  | The application's answer to a `sync_state` checklist, about to be returned. |
+| 8.0 | `build_id` | `String` |  | The checklist's Build. |
+| 8.1 | `attempt` | `u32` |  | The checklist's attempt. |
 | 9 | **`TopologyRead`** |  |  | A joining admin's topology read, about to be made. |
 | 9.0 | `node` | `String` |  | The joining admin. |
 | 9.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
@@ -2158,9 +2158,9 @@ The call a cut held first, as the decorator offered it.
 | 12 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
 | 12.0 | `node` | `String` |  | The declaring node. |
 | 12.1 | `state` | `String` |  | The state it declares. |
-| 13 | **`RoundAction`** |  |  | A node-admin's round action, about to run. |
+| 13 | **`StateAction`** |  |  | A node-admin's state action, about to run. |
 | 13.0 | `node` | `String` |  | The acting admin. |
-| 13.1 | `round` | `String` |  | The round, as its command names it. |
+| 13.1 | `command` | `String` |  | The checklist, as its command names it. |
 | 14 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
 | 14.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
 | 15 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
@@ -2259,17 +2259,17 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | The node takes no new work: its connections are being deleted. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
-<a id="t-rdm_core-status-MeshDeleteRound"></a>
+<a id="t-rdm_core-status-MeshDeleteIdentity"></a>
 
-### `MeshDeleteRound`
+### `MeshDeleteIdentity`
 
 `crates/rdm-core/src/status.rs` · struct · 3 fields · rdm-core
 
-The round of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it: its workflow identity
+The workflow identity of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it:
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `build_id` | `String` |  | The Build the round belongs to. |
+| 0 | `build_id` | `String` |  | The Build the workflow belongs to. |
 | 1 | `attempt` | `u32` |  | The Build attempt. |
 | 2 | `operation` | `String` |  | The operation key, `<op>:<mesh_id>`. |
 
@@ -2458,7 +2458,7 @@ serde: `rename_all = "kebab-case"`
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
 | 5 | **`Restarting`** |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |
-| 6 | **`Dead`** |  |  | True offline: the mesh primary's connect found no path on two rounds a staleness floor |
+| 6 | **`Dead`** |  |  | True offline: the mesh primary's connect found no path on two ladders a staleness floor |
 | 7 | **`Deleted`** |  |  | Deleted: identity and name released; only the node's row carries it. |
 
 <a id="t-rdm_core-views-NodeView"></a>
@@ -2864,7 +2864,7 @@ serde: `rename_all = "kebab-case"`
 | 3 | **`Dead`** |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
 | 5 | **`StateSync`** |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
-| 6 | **`StateCommit`** |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic rounds run. |
+| 6 | **`StateCommit`** |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic check-ins run. |
 
 <a id="t-rdm_core-topology-SourceVersion"></a>
 

@@ -3,7 +3,7 @@
 //! `fabric.delete` is the one Build that may interrupt the Build in progress (build.md §1): its
 //! acceptance record is the durable intent; once written, the interrupted Build opens no further
 //! operation and is never resumed. Operations already admitted at an executor finish or fail within
-//! their bounds, their launch evidence retained; a round the fabric-primary drives itself ends at the
+//! their bounds, their launch evidence retained; a checklist the fabric-primary drives itself ends at the
 //! acceptance; when every open attempt of the interrupted Build has ended its run receives `Failed`
 //! naming the delete, and the teardown runs mesh by mesh. Before the initial fabric first reaches
 //! ready-for-traffic, fabric.delete is admitted and its own mesh.delete and node.delete steps run exempt
@@ -46,7 +46,7 @@ fn start(sp: &Value) -> u64 {
 }
 
 /// An estate of the faulted node-admin whose testkit application is `app` (`never`: it takes the
-/// state-sync round and never answers, so the fabric never reaches ready-for-traffic).
+/// state-sync checklist and never answers, so the fabric never reaches ready-for-traffic).
 async fn estate_with(test: &str, app: Option<&str>) -> Estate {
     let sha = candidate_sha();
     let env: Vec<(&str, &str)> = app.map(|a| ("RDM_TEST_APP", a)).into_iter().collect();
@@ -185,13 +185,13 @@ fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
 
 /// CONTRACT (states.md "The initial fabric before ready-for-traffic": "fabric.delete is admitted before
 /// the first ready-for-traffic ... its own mesh.delete and node.delete steps, and only those, run exempt
-/// from this refusal"; build.md §1: "a round the fabric-primary drives itself ends at the acceptance, its
+/// from this refusal"; build.md §1: "a checklist the fabric-primary drives itself ends at the acceptance, its
 /// hook's future dropped"; fabric-delete.md "Receipts"): a two-mesh fabric whose application takes
 /// `sync_state` and never answers is held in state-sync. A standalone mesh.delete of mesh2 and node.delete
 /// of mesh2.rpc.1 are refused `fabric-not-ready`; fabric.delete is admitted, and a second fabric.delete
 /// answers the same Build. The teardown deletes both meshes, mesh2's primary by its node.delete, reports
 /// fabric.deleted, and leaves no runtime the fabric launched running; the application is never called
-/// again after the acceptance. What must NOT happen: the stalled fabric left undeletable, a round of
+/// again after the acceptance. What must NOT happen: the stalled fabric left undeletable, a checklist of
 /// state-sync opened for the delete, or a runtime left running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_held_in_state_sync_by_an_application_that_never_answers_is_deleted_with_every_receipt() {

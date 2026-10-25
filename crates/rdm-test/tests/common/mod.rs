@@ -248,7 +248,7 @@ pub use rdm_test::rig::*;
 
 /// The fabric `fabric`'s store under `store`, as its first state-commit left it: the fabric-primary
 /// published the Fabric row, so a node of the fabric opened on it writes to it directly
-/// (`StoreRoot::open`; states.md, Rounds). A cell that reads a node's rows from the store root runs
+/// (`StoreRoot::open`; states.md, Setting a state). A cell that reads a node's rows from the store root runs
 /// its node in a fabric past its first state-commit.
 pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
     let root = rdm_admin::store_root::StoreRoot::at(&store.join(fabric.to_string()));

@@ -100,7 +100,7 @@ peer makes one direct inner call and chooses no other target:
 The carrier's reply is `Forwarded { inner }` with the node's answer inside, or `InnerNotSent { reason }`
 when the carrier could not reach it. The tickle has no gossip of its own: the caller publishes
 nothing for a probe, an answer or a failure. The probed node re-publishes its presence on the
-channel it is on, the check-in it owes its primary ([states.md](states.md#the-round-checklist)),
+channel it is on, the check-in it owes its primary ([states.md](states.md#the-check-in-checklist)),
 and answers its current state; while its `before_ready` hook is Blocked it answers `Blocked`
 and re-publishes nothing.
 

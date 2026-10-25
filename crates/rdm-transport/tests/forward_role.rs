@@ -4,7 +4,7 @@
 //! CONTRACT: a node-admin of mesh1 that is not its primary hears a peer mesh's aggregate on the
 //! backbone and holds each new version of it, and puts nothing of it onto mesh1's channel: no
 //! forwarded full, no forwarded delta, and a member reached only through it holds no version of
-//! that source. The same admin given the seat forwards at its next round, and the member installs
+//! that source. The same admin given the seat forwards at its next publication, and the member installs
 //! the source: the channel carried nothing before because the admin held no seat.
 
 use iroh::protocol::Router;
@@ -93,7 +93,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let at = |seq: u64, moved: bool| -> Vec<MeshDigest> {
             ids.iter().enumerate().map(|(k, (id, b))| member(k as u32 + 1, id, b, seq, if moved && k == 0 { MemberStatus::ConnectionsDeleting } else { MemberStatus::ReadyForTraffic })).collect()
         };
-        // Rounds until the non-primary admin holds the source, then a change until it holds the next
+        // Publications until the non-primary admin holds the source, then a change until it holds the next
         // version: it hears both on the backbone.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut seq = 0;
@@ -115,14 +115,14 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2's next version");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        // Its own rounds publish nothing (no seat), and its mesh holds nothing of mesh2.
+        // Its own publications publish nothing (no seat), and its mesh holds nothing of mesh2.
         for _ in 0..5 {
             assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no seat publishes no aggregate");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(rpc_m.held_source_version("mesh2"), None, "a member reached only through a non-primary admin holds no version of mesh2 (it holds v{v2})");
 
-        // The same admin given the seat forwards at its next round: the member installs mesh2.
+        // The same admin given the seat forwards at its next publication: the member installs mesh2.
         admin_bb.set_mesh_primary(true);
         let installed = loop {
             seq += 1;

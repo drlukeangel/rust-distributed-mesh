@@ -1,5 +1,5 @@
 //! Hierarchical fabric membership over iroh-gossip (HyParView + Plumtree;
-//! never a hand-rolled delivery layer). rafka `gossip.md` §6:
+//! never a home-made delivery layer). rafka `gossip.md` §6:
 //!
 //! - each mesh has its own membership channel ([`mesh_channel`]); a member
 //!   publishes its [`MeshDigest`] there, and only there;
@@ -25,7 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, Primary, DEPARTED_RETENTION};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, StateHook, Seat, Primary, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -485,12 +485,12 @@ pub enum Frame {
         admin_api_base: Option<String>,
     },
     /// The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook`
-    /// (gossip.md, "Fabric round gossip hooks"): command intent, never completion. A node-admin
+    /// (gossip.md, "Fabric state gossip hooks"): command intent, never completion. A node-admin
     /// author publishes it on its own mesh channel and the backbone; a peer mesh's primary forwards
     /// it onto its own channel (`forwarded_by`), the authored fields unchanged.
     StateCommitting {
-        /// The round, the subject birth and the author.
-        hook: RoundHook,
+        /// The state key, the subject birth and the author.
+        hook: StateHook,
         /// The primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
@@ -499,24 +499,24 @@ pub enum Frame {
     /// its own mesh channel and the backbone; an ordinary node on its own mesh channel, and its
     /// mesh-admin carries it onto the backbone naming itself in `forwarded_by`.
     StateCommitted {
-        /// The round, the subject birth and the author.
-        hook: RoundHook,
+        /// The state key, the subject birth and the author.
+        hook: StateHook,
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
     },
     /// The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same
     /// channels as [`Frame::StateCommitting`].
     TrafficOpening {
-        /// The round, the subject birth and the author.
-        hook: RoundHook,
+        /// The state key, the subject birth and the author.
+        hook: StateHook,
         /// The primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
     /// The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as
     /// [`Frame::StateCommitted`].
     TrafficOpened {
-        /// The round, the subject birth and the author.
-        hook: RoundHook,
+        /// The state key, the subject birth and the author.
+        hook: StateHook,
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
     },
@@ -658,8 +658,8 @@ pub(crate) struct StatusReinforcement {
     sent: u32,
     next_at: Option<Instant>,
     /// The held fact was adopted from the previous publisher and has not been republished: it waits
-    /// for the new publisher's round to complete.
-    awaiting_round: bool,
+    /// for the new publisher's checklist to complete.
+    awaiting_checklist: bool,
 }
 
 impl StatusReinforcement {
@@ -672,34 +672,34 @@ impl StatusReinforcement {
         }
         let fact = StatusFact { status: status.to_string(), changed_at_rafka_ms: now_ms };
         self.held = Some(fact.clone());
-        self.awaiting_round = false;
+        self.awaiting_checklist = false;
         self.sent = 1;
         self.next_at = (self.sent < STATUS_SENDS).then(|| now + STATUS_EVERY);
         Some(fact)
     }
 
     /// Hold `fact` as heard from the previous publisher: no transition is invented and nothing is
-    /// sent until [`Self::republish`] says the new publisher's round completed.
+    /// sent until [`Self::republish`] says the new publisher's checklist completed.
     pub fn adopt(&mut self, fact: StatusFact) {
         self.held = Some(fact);
         self.sent = STATUS_SENDS;
         self.next_at = None;
-        self.awaiting_round = true;
+        self.awaiting_checklist = true;
     }
 
     /// Whether the held fact is adopted and not yet republished.
-    pub fn awaiting_round(&self) -> bool {
-        self.awaiting_round
+    pub fn awaiting_checklist(&self) -> bool {
+        self.awaiting_checklist
     }
 
     /// The adopted fact, sent for the first of its five sends at `now`: the same status and the
     /// same `changed_at_rafka_ms` the previous publisher sent, because the state did not change.
     /// Nothing when no adopted fact waits.
     pub fn republish(&mut self, now: Instant) -> Option<StatusFact> {
-        if !self.awaiting_round {
+        if !self.awaiting_checklist {
             return None;
         }
-        self.awaiting_round = false;
+        self.awaiting_checklist = false;
         self.sent = 1;
         self.next_at = (self.sent < STATUS_SENDS).then(|| now + STATUS_EVERY);
         self.held.clone()
@@ -796,11 +796,11 @@ impl StatusPublisher {
     /// The status as observed: a change is the frame to send at once. A publisher that holds the
     /// role for the first time and observes the status `heard` from the previous publisher adopts
     /// it: the lifecycle state did not change, so the fact keeps its old `changed_at_rafka_ms`. It
-    /// is silent until `round_complete` (every member of the publisher's checklist checked in for
-    /// this round); then the adopted fact is the frame to send, the first of its five sends, under
+    /// is silent until `checklist_complete` (every member of the publisher's checklist checked in for
+    /// this checklist); then the adopted fact is the frame to send, the first of its five sends, under
     /// this publisher. A status that differs from the adopted one is a change like any other.
     /// Without the role: nothing.
-    pub fn observe(&mut self, status: &str, heard: Option<StatusFact>, round_complete: bool, now: Instant, now_ms: u64) -> Option<Frame> {
+    pub fn observe(&mut self, status: &str, heard: Option<StatusFact>, checklist_complete: bool, now: Instant, now_ms: u64) -> Option<Frame> {
         if !self.role {
             return None;
         }
@@ -809,15 +809,15 @@ impl StatusPublisher {
                 self.schedule.adopt(h);
             }
         }
-        if self.schedule.awaiting_round() && self.schedule.held().is_some_and(|h| h.status == status) {
-            return round_complete.then(|| self.schedule.republish(now)).flatten().map(|f| self.frame(&f));
+        if self.schedule.awaiting_checklist() && self.schedule.held().is_some_and(|h| h.status == status) {
+            return checklist_complete.then(|| self.schedule.republish(now)).flatten().map(|f| self.frame(&f));
         }
         self.schedule.observe(status, now, now_ms).map(|f| self.frame(&f))
     }
 
-    /// Whether the publisher holds an adopted status it has not republished: its round is open.
-    pub fn awaiting_round(&self) -> bool {
-        self.role && self.schedule.awaiting_round()
+    /// Whether the publisher holds an adopted status it has not republished: its checklist is open.
+    pub fn awaiting_checklist(&self) -> bool {
+        self.role && self.schedule.awaiting_checklist()
     }
 
     /// The reinforcing send due at `now`: the same fact, the same instant, as the first send.
@@ -1866,7 +1866,7 @@ struct View {
     node: String,
     book: DigestBook,
     /// Hook receipt identities shared by local apply, mesh and backbone.
-    round_receipts: Arc<Mutex<crate::receive_order::RoundReceipts>>,
+    hook_receipts: Arc<Mutex<crate::receive_order::HookReceipts>>,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
@@ -1892,13 +1892,13 @@ struct View {
 /// What a node-admin does with a node's own completion frame heard on its mesh channel.
 pub type CompletionCarrier = Arc<dyn Fn(&Frame) -> CompletionCarry + Send + Sync>;
 
-/// What the existing command/round holder decided about carrying a completion onto the backbone.
+/// What the existing command/checklist holder decided about carrying a completion onto the backbone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionCarry {
     /// The completion was handed to the backbone publication task.
     Carried,
-    /// The mesh-admin's book no longer holds this round open.
-    ClosedRound,
+    /// The mesh-admin's book no longer holds this checklist open.
+    ClosedChecklist,
     /// A node-admin author publishes on the backbone itself.
     NodeAdmin,
     /// The publisher path does not identify an ordinary node author.
@@ -1912,7 +1912,7 @@ impl CompletionCarry {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Carried => "carried",
-            Self::ClosedRound => "closed-round",
+            Self::ClosedChecklist => "closed-checklist",
             Self::NodeAdmin => "node-admin",
             Self::NotOrdinary => "not-ordinary",
             Self::NotHeld => "not-held",
@@ -2027,7 +2027,7 @@ impl View {
 
     fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         if crate::receive_order::refuse_reserved(f, &self.current_name(), via) { return Vec::new(); }
-        if !self.round_receipts.lock().unwrap().admit(f) {
+        if !self.hook_receipts.lock().unwrap().admit(f) {
             return Vec::new();
         }
         match f.data() {
@@ -2068,7 +2068,7 @@ impl View {
                     _ => "traffic-opened",
                 };
                 let span = tracing::info_span!(
-                    "rdm.mesh.membership.update.via-round-frame",
+                    "rdm.mesh.membership.update.via-state-frame",
                     node = %self.current_name(),
                     kind,
                     subject_id = %hook.node_id,
@@ -2084,8 +2084,8 @@ impl View {
                 );
                 let _in = span.enter();
                 // Forwarding metadata never changes the fact's identity or its eligibility. The
-                // admin's carrier alone consults its open-round book; passive receipt needs no
-                // round evidence and drives no checklist (Q21: x).
+                // admin's carrier alone consults its open-checklist book; passive receipt needs no
+                // check-in evidence and drives no checklist (Q21: x).
                 let carried = if matches!(f.data(), Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
                     if via == "mesh-channel" {
                         self.completion_carrier.lock().unwrap().clone().map(|carry| carry(f).as_str()).unwrap_or("no-carrier")
@@ -2096,7 +2096,7 @@ impl View {
                     "not-a-check-in"
                 };
                 span.record("carried", carried);
-                tracing::info!("a fabric round hook was heard: evidence of the accepted command or check-in, never liveness, completion or a lifecycle state");
+                tracing::info!("a fabric state hook was heard: evidence of the accepted command or check-in, never liveness, completion or a lifecycle state");
                 Vec::new()
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
@@ -3052,9 +3052,9 @@ impl Membership {
     /// with: this node's own mesh too, as its primary last put it into the mesh (gossip.md §3.1: a
     /// version names one content; "A frame equal in revision to the held one but different in
     /// content is an inconsistency, refused by name"). A member the book heard since that
-    /// publication is served at the version the next round bumps to, never under this one. A mesh
+    /// publication is served at the version the next publication bumps to, never under this one. A mesh
     /// this node holds no published snapshot of is absent, but for its own mesh at its primary
-    /// before the first round.
+    /// before the first publication.
     pub fn held_topology(&self, own: &MeshDigest) -> Vec<SourceSnapshot> {
         // A held source is topology, served as published: whether its members are alive is the
         // reader's to learn (a read installs them as topology and refreshes no liveness).
@@ -3329,13 +3329,13 @@ pub struct TopUpDone {
 /// composition hands it one.
 pub type TopUpFetch = std::sync::Arc<dyn Fn(Membership, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
-/// Which of a backbone's adopted statuses still wait for their round to complete.
+/// Which of a backbone's adopted statuses still wait for their checklist to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Announced {
-    /// The mesh status still waits for its round to complete.
-    pub mesh_awaiting_round: bool,
-    /// The fabric status still waits for its round to complete.
-    pub fabric_awaiting_round: bool,
+    /// The mesh status still waits for its checklist to complete.
+    pub mesh_awaiting_checklist: bool,
+    /// The fabric status still waits for its checklist to complete.
+    pub fabric_awaiting_checklist: bool,
 }
 
 /// A node-admin's place on the backbone. What it hears there it holds; while
@@ -3356,7 +3356,7 @@ pub struct Backbone {
     wake: Arc<tokio::sync::Notify>,
     /// This admin's exact identity as a publisher: its path name and the birth that holds it.
     publisher: PublisherId,
-    /// Set when the seat is taken: the next round puts the full of every source into the Mesh.
+    /// Set when the seat is taken: the next publication puts the full of every source into the Mesh.
     full_due: Arc<AtomicBool>,
     /// The version counter of this Mesh's aggregate, and the complete projection it was last bumped on.
     version: Arc<Mutex<SourceVersion>>,
@@ -3375,7 +3375,7 @@ pub struct Backbone {
 /// out, as a stop's transport cut loses what gossip has not yet pushed. The announcements asked:
 /// - `stopping-aggregate`: the aggregate a node-admin that publishes its mesh's aggregate sends
 ///   once more before its stop's transport cut, itself stopping (node-stop.md step 4);
-/// - `aggregate-in-flight`: a publication round's aggregate of this admin's own mesh while it
+/// - `aggregate-in-flight`: a publication's aggregate of this admin's own mesh while it
 ///   carries a lifecycle operation in flight.
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
 
@@ -3538,9 +3538,9 @@ impl Backbone {
     /// its mesh's status is sent when it changed, and while it is the fabric primary the fabric's;
     /// a status that did not change sends nothing. A change is sent at once and reinforced by the
     /// status sender (five sends in all). A status adopted from the previous publisher is sent
-    /// only once that scope's round is complete (`mesh_round` / `fabric_round`), with its old
-    /// instant. The answer says which adopted statuses still wait for their round.
-    pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str, mesh_round: bool, fabric_round: bool) -> Announced {
+    /// only once that scope's checklist is complete (`mesh_checklist` / `fabric_checklist`), with its old
+    /// instant. The answer says which adopted statuses still wait for their checklist.
+    pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str, mesh_checklist: bool, fabric_checklist: bool) -> Announced {
         let (now, now_ms) = (Instant::now(), self.membership.clock.now_rafka_ms());
         let (first, announced): (Vec<Frame>, Announced) = {
             let view = &self.membership.view;
@@ -3552,8 +3552,8 @@ impl Backbone {
             let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
             mesh.author = view.book.seats.mesh(&self.mesh).and_then(owned);
             fabric.author = view.book.seats.fabric().and_then(owned);
-            let frames = [if mesh.author.is_some() { mesh.observe(mesh_status, heard_mesh, mesh_round, now, now_ms) } else { None }, if fabric.author.is_some() { fabric.observe(fabric_status, heard_fabric, fabric_round, now, now_ms) } else { None }].into_iter().flatten().collect();
-            (frames, Announced { mesh_awaiting_round: mesh.awaiting_round(), fabric_awaiting_round: fabric.awaiting_round() })
+            let frames = [if mesh.author.is_some() { mesh.observe(mesh_status, heard_mesh, mesh_checklist, now, now_ms) } else { None }, if fabric.author.is_some() { fabric.observe(fabric_status, heard_fabric, fabric_checklist, now, now_ms) } else { None }].into_iter().flatten().collect();
+            (frames, Announced { mesh_awaiting_checklist: mesh.awaiting_checklist(), fabric_awaiting_checklist: fabric.awaiting_checklist() })
         };
         if !first.is_empty() {
             self.wake.notify_one();
@@ -3611,12 +3611,12 @@ impl Backbone {
         }
     }
 
-    /// One publication round: this mesh's `members` (while its primary) on the backbone, as one
+    /// One publication: this mesh's `members` (while its primary) on the backbone, as one
     /// chunked snapshot at the Mesh's `topology_version` (gossip.md §3.1). The version bumps when
-    /// the normalized projection changed since the last round and never otherwise, so a quiet Mesh
+    /// the normalized projection changed since the last publication and never otherwise, so a quiet Mesh
     /// republishes the same version as passive anti-entropy. The same projection is this Mesh's
     /// own source: what its members need of it goes into the Mesh as a delta or a full. A status
-    /// is not part of a round: [`Backbone::announce_statuses`] sends one when it changes.
+    /// is not part of a publication: [`Backbone::announce_statuses`] sends one when it changes.
     /// Returns whether it published: `false` when this node does not hold the publisher role, and
     /// nothing was sent.
     pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) -> bool {
@@ -3672,13 +3672,13 @@ impl Backbone {
         true
     }
 
-    /// This Mesh's members as a publication round puts them into its aggregate: every member of
+    /// This Mesh's members as a publication puts them into its aggregate: every member of
     /// this Mesh the book heard within the staleness floor.
     pub fn own_members(&self, membership: &Membership) -> Vec<MeshDigest> {
         membership.book.current(membership.book.staleness_floor()).into_iter().filter(|d| d.node.name.mesh == self.mesh).collect()
     }
 
-    /// This Mesh's aggregate as a round publishes it: `members` with this mesh's own overlays and
+    /// This Mesh's aggregate as a publication puts it out: `members` with this mesh's own overlays and
     /// departures only (a peer mesh's travel in that mesh's aggregate).
     fn own_full(&self, membership: &Membership, members: Vec<MeshDigest>) -> Full {
         let (mut in_flight, departed) = membership.book.overlays_of(&self.mesh);
@@ -3692,13 +3692,13 @@ impl Backbone {
         Full::new(members, in_flight, departed)
     }
 
-    /// Resolves when the next publication round is due: at `deadline`, the anti-entropy timer, or
+    /// Resolves when the next publication is due: at `deadline`, the anti-entropy timer, or
     /// at once while this admin is its Mesh's publisher and the Mesh's normalized projection is no
     /// longer the one its `topology_version` was last bumped on (gossip.md, `Members`: "at once on a
     /// material change"). The projection is looked at when the book says something it carries
     /// moved (a member's birth or status, a member heard again, an overlay or a departure), never
     /// on a timer.
-    pub async fn round_wake(&self, membership: &Membership, deadline: tokio::time::Instant) {
+    pub async fn publication_wake(&self, membership: &Membership, deadline: tokio::time::Instant) {
         let sleep = tokio::time::sleep_until(deadline);
         tokio::pin!(sleep);
         let book = &membership.book;
@@ -3713,13 +3713,13 @@ impl Backbone {
                 let published = self.own.lock().unwrap().as_ref().map(|(v, _)| *v).unwrap_or(0);
                 let (moved, held) = {
                     let v = self.version.lock().unwrap();
-                    // A status event stamped a version no round has published yet: the projection
+                    // A status event stamped a version no publication has carried yet: the projection
                     // carrying it goes out at once.
                     (v.would_bump(&full) || published != v.version(), v.version())
                 };
                 if moved {
                     tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.current_name(), mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), departed = full.deleted().len())
-                        .in_scope(|| tracing::info!("this mesh's normalized projection moved since its last publication: the round publishes at once"));
+                        .in_scope(|| tracing::info!("this mesh's normalized projection moved since its last publication: it is published at once"));
                     return;
                 }
             }
@@ -3763,14 +3763,14 @@ impl Backbone {
     /// then broadcast on its own mesh channel only (the backbone carries it as the overlay of its
     /// mesh's aggregate):
     /// - this mesh's primary, for its own mesh: the version its projection takes with the event
-    ///   applied, observed and versioned under one hold, so its next round publishes exactly that
+    ///   applied, observed and versioned under one hold, so its next publication carries exactly that
     ///   version, carrying the event;
     /// - the fabric-primary stopping a deleted mesh's birth ([`Backbone::publishes_deleted_mesh_of`]):
     ///   from the stop on it is that mesh's publisher of record (gossip.md "Mesh delete"), so the
     ///   version is the deleted mesh's aggregate's with the stop listed, and that aggregate leaves on
     ///   the backbone at once, from this event (mesh-delete.md "Command, completion and gossip
     ///   messages": "F->>M: node.stop", then "F->>B: deleted mesh's aggregate: NodeStopped in
-    ///   in_flight"), never waiting for the round, which a delete applied right behind it would
+    ///   in_flight"), never waiting for the publication, which a delete applied right behind it would
     ///   find already departed;
     /// - otherwise (the executor of a peer mesh's node, the fabric-primary among them; nobody
     ///   publishes a live mesh on its behalf, R-RX4): this admin's own publisher at the version it
@@ -3811,7 +3811,7 @@ impl Backbone {
         (publisher, version)
     }
 
-    /// Publish a fabric round hook this admin authored: the backbone,
+    /// Publish a fabric state hook this admin authored: the backbone,
     /// its own mesh channel and its own view, once. The accepted command's hook, never a separately
     /// coordinated publication. An error names each channel the frame was not handed to, and why.
     pub async fn publish_command_hook(&self, f: &Frame) -> Result<()> {
@@ -4014,7 +4014,7 @@ pub struct DigestBook {
     /// departure. The member's own digest supersedes it; its departure or stop removes it.
     projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
     /// The lifecycle overlays that ended here, by complete operation identity and exact birth: a
-    /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
+    /// later copy of the same overlay (a snapshot built before the rejoin, the primary's publication
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
     ended_overlays: Arc<Mutex<std::collections::HashSet<crate::receive_order::LifecycleIdentity>>>,
     /// The path name of the node holding this book, named by the refusals it writes.
@@ -4504,7 +4504,7 @@ impl DigestBook {
     /// state": node ReadyForTraffic is set by "the node's mesh-primary" from "the node's node.started
     /// report, after every start gate"; gossip.md: "NodeRestarting stays until node.started of the same
     /// `(node.id, incarnation)` arrives"). The birth's status is ReadyForTraffic, and an open restart of
-    /// that exact birth is over; its projection says both on its next round. Only for a birth of this
+    /// that exact birth is over; its projection says both on its next publication. Only for a birth of this
     /// book's own mesh: a mesh-primary sets its own mesh's statuses. `false` when nothing moved.
     ///
     /// `name` is the birth's `path.name` as the report's decision named it, read only when this book
@@ -4676,7 +4676,7 @@ impl DigestBook {
     /// The mesh-primary took `node.joined` of the birth `op` names on its start (node-start.md step 2:
     /// "node.start clears NodeStopped at node.joined"; states.md: node pending is set by the node's
     /// mesh-primary from the node.joined report): the birth is held `Pending`, and its projection says
-    /// so on its next round. A stop of that exact birth ends first, and the birth is held again from
+    /// so on its next publication. A stop of that exact birth ends first, and the birth is held again from
     /// the latest digest heard of it, under `op`'s name (the row's, which the join canonicalized). With
     /// no stop held (a restart's start: its stop publishes no NodeStopped) the own-mesh birth this book
     /// holds of exactly that incarnation is set `Pending` as it stands; its restart stays open until
@@ -4750,7 +4750,7 @@ impl DigestBook {
 
     /// The mesh-primary applied its own mesh's member's report of `status` for its birth `incarnation`
     /// of `node_id` (node-status.md "Status report": "A node reports to its mesh's primary, which sets
-    /// its status"): held for the birth, so its projection carries it from its next round. Its
+    /// its status"): held for the birth, so its projection carries it from its next publication. Its
     /// node.started is [`Self::started`]. `false` when the birth is not of this book's own mesh or this
     /// book holds no digest of exactly that birth.
     pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rdm_core::MemberStatus) -> bool {
@@ -4776,7 +4776,7 @@ impl DigestBook {
     /// mesh `op` names, and sets that birth `status` (states.md "Who sets each state": node
     /// connections-deleting at "the admission of `node.connections.delete { scope: All }`; inside
     /// node.stop the visible status is stopping", node stopping at "the stop call's admission"): held
-    /// for the birth, so its projection carries it from its next round. No heartbeat says it (gossip.md
+    /// for the birth, so its projection carries it from its next publication. No heartbeat says it (gossip.md
     /// §3.1: a Digest "carries no status"). `false` when the birth is not of this book's own mesh or
     /// this book holds no digest of exactly that birth.
     pub fn admitted(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
@@ -4815,7 +4815,7 @@ impl DigestBook {
     /// statuses and publishes a complete projection under its own epoch before any delta";
     /// fabric-authority.md §7: a takeover hydrates the lifecycle state that exists, it is not a
     /// transition). Held for the birth whether or not its heartbeat is held yet: the projection carries
-    /// it from its next round and a heartbeat heard later takes it. Nothing else of the birth moves and
+    /// it from its next publication and a heartbeat heard later takes it. Nothing else of the birth moves and
     /// no restart closes. `Err` names why nothing is adopted: a birth of another mesh, this book's own
     /// birth or a predecessor at its own path.name, a departed or stopped birth, or another birth of
     /// the node this book holds. `Ok` carries
@@ -5150,7 +5150,7 @@ impl DigestBook {
     }
 
     /// Ticks each time an open lifecycle overlay is added or cleared, or a departure is accepted:
-    /// what a mesh primary's publication round wakes on when its aggregate's overlays moved.
+    /// what a mesh primary's publication wakes on when its aggregate's overlays moved.
     pub fn overlay_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.overlays.subscribe()
     }
@@ -5510,7 +5510,7 @@ impl DigestBook {
     }
 
     /// The digests this node received straight from their members (their own word, on the channel
-    /// they publish to) at or after `since`: the members that checked in since a round began. A
+    /// they publish to) at or after `since`: the members that checked in since a checklist began. A
     /// member known only from forwarded topology, or last heard before `since`, is not here.
     pub fn heard_direct_since(&self, since: Instant) -> Vec<MeshDigest> {
         let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(_, at, heard)| *heard == Heard::Direct && *at >= since).map(|(d, _, _)| d.clone()).collect();
@@ -6693,7 +6693,7 @@ mod tests {
     }
 
     /// CONTRACT: an overlay that ended stays ended: a restart node.started of its birth ended, the
-    /// primary re-applying the operation each round or the Build facts still naming it open (its
+    /// primary re-applying the operation each publication or the Build facts still naming it open (its
     /// `Complete` is not receipted yet), and a stop its mesh-primary's node.joined ended, re-sent by a
     /// snapshot built before it, open nothing. Must NOT happen: a started node held restarting, or a
     /// joined one stopped, again.
@@ -8153,7 +8153,7 @@ mod tests {
         let m = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![], &[]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
-        // Clear `full_due` after initial seat take so round 1 is a normal source full and round 2 is a delta.
+        // Clear `full_due` after initial seat take so publication 1 is a normal source full and publication 2 is a delta.
         bb.full_due.store(false, Ordering::Relaxed);
         let _ = racing.version_lock.set(bb.version.clone());
         let _ = racing.forwarder_lock.set(m.view.forwarder.clone());

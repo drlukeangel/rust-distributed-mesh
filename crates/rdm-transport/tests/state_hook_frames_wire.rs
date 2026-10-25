@@ -1,12 +1,12 @@
-//! Fixed bytes for the fabric round hook frames on the membership channels (R-W1: postcard,
-//! positional, append-only; gossip.md, "Fabric round gossip hooks"). The literals lock the
+//! Fixed bytes for the fabric state hook frames on the membership channels (R-W1: postcard,
+//! positional, append-only; gossip.md, "Fabric state gossip hooks"). The literals lock the
 //! type names and data field order independently of codec round trips; they are derived from the
 //! postcard rules by hand. Never regenerate an expectation from the Rust serializer to make a
 //! schema change pass.
 
 use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
-use rdm_core::{FabricId, IncarnationId, NodeId, RoundHook};
+use rdm_core::{FabricId, IncarnationId, NodeId, StateHook};
 use rdm_transport::membership::{forward_of, Frame};
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -14,8 +14,8 @@ fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
 }
 
-fn hook(operation: &str, publisher: &str) -> RoundHook {
-    RoundHook {
+fn hook(operation: &str, publisher: &str) -> StateHook {
+    StateHook {
         fabric_id: FabricId::parse("04raj09p3zp7").unwrap(),
         node_id: NodeId::parse("0123456789ab").unwrap(),
         incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(),
@@ -44,7 +44,7 @@ const SOME: &str = "01 0d 6d657368322e61646d696e2e31";
 /// forwarding primary. What must NOT happen: a field moved, a variant inserted before the end, or a
 /// self-describing encoding.
 #[test]
-fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
+fn fabric_state_hook_frames_match_the_frozen_wire_schema() {
     let fixtures = [
         (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("0f {SUBJECT} {COMMIT} {PUBLISHER} {NONE}")),
         (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("10 {SUBJECT} {COMMIT} {PUBLISHER} {SOME}")),
@@ -62,11 +62,11 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
         forwarded_by: None }.type_position(), 12);
 }
 
-/// CONTRACT: a peer mesh's primary forwards a round hook onto its own channel, the authored fields
+/// CONTRACT: a peer mesh's primary forwards a state hook onto its own channel, the authored fields
 /// unchanged and itself named in `forwarded_by`; the author's own mesh hears the original and
 /// forwards nothing. Receipt of a forwarded frame carries no liveness: only `forwarded_by` differs.
 #[test]
-fn a_peer_mesh_primary_forwards_round_hooks_unchanged_and_the_authors_mesh_does_not() {
+fn a_peer_mesh_primary_forwards_state_hooks_unchanged_and_the_authors_mesh_does_not() {
     for (original, kind) in [
         (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 14u8),
         (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 15),

@@ -90,7 +90,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let late_name = late.name.clone();
 
     // A lower NodeId never displaces a living holder: the incumbent keeps every seat, seen from
-    // both admins, for several gossip rounds.
+    // both admins, for several gossip intervals.
     for _ in 0..12 {
         for admin in [&incumbent_admin, &late_name] {
             let view = estate.node_views_at(admin).await.unwrap_or_else(|| panic!("{admin} does not answer node.get"));

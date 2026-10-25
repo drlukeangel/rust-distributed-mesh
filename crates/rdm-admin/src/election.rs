@@ -942,7 +942,7 @@ mod tests {
     /// CONTRACT (Part B1, elections §5 "a living holder keeps its seat; a lower-NodeId candidate that
     /// later becomes Ready never displaces it"): an rpc cohort whose seat record names a living birth
     /// keeps that holder against a lower Ready NodeId of the cohort, as the node-admin cohort does.
-    /// Must NOT happen: the cohort recomputed to its lowest Ready NodeId each round, so a seat that
+    /// Must NOT happen: the cohort recomputed to its lowest Ready NodeId each checklist, so a seat that
     /// node.primary.update moved to mesh1.rpc.2 falls back to mesh1.rpc.1 on the next projection.
     #[test]
     fn a_living_rpc_primary_stays_primary_over_a_lower_ready_node_id() {

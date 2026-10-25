@@ -314,9 +314,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // here, by name, before anything is bootstrapped.
     let listener_names = crate::deployment::endpoint::ListenerNames::read(&wiring.listeners)?;
     let fabric_hooks = wiring.fabric_hooks.clone();
-    // The embedding's own round action, if it binds one: run after this admin publishes its
+    // The embedding's own state action, if it binds one: run after this admin publishes its
     // scratchpad at commit-state (bound once the store root is open, below).
-    let embedding_round_actions = wiring.round_actions.take();
+    let embedding_state_actions = wiring.state_actions.take();
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
     // reads this one reader.
@@ -380,7 +380,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         _ => cfg.mesh.clone(),
     };
     let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
-    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, connections: open_connections, builds: journal, round_actions, finish_writes, writes_to } = storage.open(&scope, embedding_round_actions).await?;
+    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, connections: open_connections, builds: journal, state_actions, finish_writes, writes_to } = storage.open(&scope, embedding_state_actions).await?;
     storage_step.record("writes_to", writes_to.as_str());
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
@@ -988,7 +988,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     let fabric_primary = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone());
                     journal.read_while_fabric_primary(Arc::new(move || matches!((fabric_primary.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })));
                 }
-                // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
+                // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a sweep on every
                 // seat change.
                 {
                     let seats = membership.primaries().clone();
@@ -999,7 +999,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         loop {
                             // Held here while the admin is parked: its own wait, outside every lock.
                             let turn = park.turn("seat-rows").await;
-                            writer.round(&seats).await;
+                            writer.sweep(&seats).await;
                             drop(turn);
                             if changed.changed().await.is_err() {
                                 return;
@@ -1229,7 +1229,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // read by the Ready check and by a probe naming this admin.
                                 let before_ready_cell: crate::status_rpc::BeforeReadyCell =
                                     Arc::default();
-                                // This admin's re-publish of its presence, for a probe naming it (the round's down op): filled once its
+                                // This admin's re-publish of its presence, for a probe naming it (the checklist's down op): filled once its
                                 // digest exists, below.
                                 let republish: crate::status_rpc::Republish =
                                     Arc::new(std::sync::OnceLock::new());
@@ -1247,8 +1247,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 > = Arc::new(std::sync::OnceLock::new());
                                 let mesh_deleter: crate::mesh_delete::MeshDeleterSlot =
                                     Arc::new(std::sync::OnceLock::new());
-                                let rounds_slot: Arc<
-                                    std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>,
+                                let states_slot: Arc<
+                                    std::sync::OnceLock<Arc<crate::fabric_status::FabricStates>>,
                                 > = Arc::new(std::sync::OnceLock::new());
                                 let configs_slot: crate::node_config::NodeConfigsSlot =
                                     Arc::new(std::sync::OnceLock::new());
@@ -1287,7 +1287,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     mesh_deleter: mesh_deleter.clone(),
                                     hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                                     wake: records.wake.clone(),
-                                    rounds: rounds_slot.clone(), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(book.clone(), records.clone()))),
+                                    fabric_states: states_slot.clone(), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(book.clone(), records.clone()))),
                                     configs: configs_slot.clone(),
                                     republish: republish.clone(),
                                     configure: configure.clone(),
@@ -1317,8 +1317,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // The backbone holds the meshes each installed view names: the fabric-primary's
                             // publication of a deleted mesh reads them (mesh-delete.md step 7).
                             records.set_backbone(backbone.clone(), &*control.topology.read().await);
-                            // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
-                            // a fabric round is owed through it.
+                            // What this admin owes its authorities, shared with the fabric states: a mesh primary's completion of
+                            // a fabric checklist is owed through it.
                             let declarer = crate::status_declare::Declarer::with_first_ready(records.first_ready.clone());
                             declarer.fabric_recovery.set(crate::fabric_recovery::reader(book.clone(), records.clone()));
                             // As its mesh's primary, this admin records the Mesh state the fabric-primary
@@ -1340,11 +1340,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             if let Some(maker) = cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()) {
                                 let _ = declarer.maker.set(maker.node_id.clone());
                             }
-                            // One record of the round keys this node's action ran for, whichever role ran it
-                            // (states.md "The round checklist": once per round key), shared by the admin's round
+                            // One record of the state keys this node's action ran for, whichever role ran it
+                            // (states.md "The check-in checklist": once per state key), shared by the admin's checklist
                             // driver and the node's member path.
-                            let acted_record: Arc<rdm_node::rounds::ActedRecord> = Arc::default();
-                            let _ = rounds_slot.set(crate::fabric_rounds::FabricRounds::new(crate::fabric_rounds::RoundEnv {
+                            let acted_record: Arc<rdm_node::fabric_states::ActedRecord> = Arc::default();
+                            let _ = states_slot.set(crate::fabric_status::FabricStates::new(crate::fabric_status::StatesEnv {
                                 me: name.clone(),
                                 node_id: node_id.clone(),
                                 incarnation: incarnation.clone(),
@@ -1357,18 +1357,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 wake: records.wake.clone(),
                                 records: records.clone(),
                                 hooks: fabric_hooks,
-                                actions: round_actions.clone(),
+                                actions: state_actions.clone(),
                                 acted: acted_record.clone(),
                             }));
-                            rounds_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
-                            // A Build this admin accepts as the fabric-primary reaches its climb inside the acceptance:
+                            states_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
+                            // A Build this admin accepts as the fabric-primary reaches its change inside the acceptance:
                             // a resize puts the fabric back to pending, and the view the door's caller reads next holds it.
                             {
-                                let (rounds, me, book, records, fabric, fabric_id, provider, topology) = (rounds_slot.get().expect("set above").clone(), name.clone(), book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, control.topology.clone());
+                                let (fabric_states, me, book, records, fabric, fabric_id, provider, topology) = (states_slot.get().expect("set above").clone(), name.clone(), book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, control.topology.clone());
                                 let _ = control.resize.set(Arc::new(move || {
-                                    let (rounds, me, book, records, fabric, fabric_id, topology) = (rounds.clone(), me.clone(), book.clone(), records.clone(), fabric.clone(), fabric_id.clone(), topology.clone());
+                                    let (fabric_states, me, book, records, fabric, fabric_id, topology) = (fabric_states.clone(), me.clone(), book.clone(), records.clone(), fabric.clone(), fabric_id.clone(), topology.clone());
                                     Box::pin(async move {
-                                        if rounds.accepted().await {
+                                        if fabric_states.accepted().await {
                                             records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
                                         }
                                     })
@@ -2130,11 +2130,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         return;
                                                     }
                                                     declarer.owe_own(&me, &me_id, &incarnation, state, operation);
-                                                    declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
+                                                    declarer.sweep(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
                                                 })
                                             })
                                         };
-                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_cancel(before_ready_cancel.clone()).with_round_actions(round_actions.clone()).with_acted(acted_record.clone()).with_backbone(backbone.clone()));
+                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_cancel(before_ready_cancel.clone()).with_state_actions(state_actions.clone()).with_acted(acted_record.clone()).with_backbone(backbone.clone()));
                                         own.set_connections(connections.clone());
                                         // The app protocols this admin opens connections on: what a renewed member cert
                                         // is installed on, and what node.connections.delete closes, as on every node.
@@ -2170,11 +2170,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // A node's own `node.connections.deleted` / `node-left`, heard on this mesh's channel: this admin carries
                                     // it onto the backbone when it holds the command (gossip.md, node-connections-deleted, node-left).
                                     {
-                                        let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
+                                        let (commands, backbone, fabric_states) = (commands.clone(), backbone.clone(), states_slot.get().cloned().expect("the fabric states are built before the carrier"));
                                         membership.set_completion_carrier(Arc::new(move |f: &rdm_transport::membership::Frame| {
                                             use rdm_transport::membership::{CompletionCarry, Frame};
                                             if matches!(f.data(), Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
-                                                return rounds.mesh_book.carry_check_in(f, |f| {
+                                                return fabric_states.mesh_book.carry_check_in(f, |f| {
                                                     let (backbone, f) = (backbone.clone(), f.clone());
                                                     tokio::spawn(async move { backbone.carry_completion(f).await });
                                                 });
@@ -2201,7 +2201,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let declarer = declarer.clone();
                                         let (digest, topology, records, me_id, incarnation, client, resolver, book, authority, fabric_reads) =
                                             (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), book.clone(), authority.clone(), fabric_storage.clone());
-                                        let rounds = rounds_slot.clone();
+                                        let fabric_states = states_slot.clone();
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             loop {
@@ -2223,19 +2223,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if view.is_fabric_primary(&me_id) {
                                                     if let Err(e) = declarer.read_first_ready(&*fabric_reads, &view).await {
                                                         tracing::info_span!("rdm.node_admin.fabric.reject.via-ready-row-unreadable", node = %me, fabric_id = %view.fabric.id, status = view.fabric.status.name(), detail = %e)
-                                                            .in_scope(|| tracing::info!("the ready-for-traffic fact of the fabric could not be read from the fabric store: this round owes from the latch and the view"));
+                                                            .in_scope(|| tracing::info!("the ready-for-traffic fact of the fabric could not be read from the fabric store: this sweep owes from the latch and the view"));
                                                     }
                                                 }
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
-                                                // A completion owed for a round the accepted Build moved past is withdrawn before anything is sent.
-                                                if let Some(rounds) = rounds.get() {
-                                                    rounds.withdraw_superseded().await;
+                                                // A completion owed for a checklist the accepted Build moved past is withdrawn before anything is sent.
+                                                if let Some(fabric_states) = fabric_states.get() {
+                                                    fabric_states.withdraw_superseded().await;
                                                 }
                                                 rdm_node::node_rpc::feed_once(&book, &resolver, &me.to_string());
-                                                declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
+                                                declarer.sweep(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
                                                 drop(turn);
-                                                // One coalesced wake from the inputs, never a timer: a poke during the round is
-                                                // the stored permit, so the next round runs at once; a burst runs one.
+                                                // One coalesced wake from the inputs, never a timer: a poke during the sweep is
+                                                // the stored permit, so the next sweep runs at once; a burst runs one.
                                                 records.wake.woken().await;
                                             }
                                         }));
@@ -2378,7 +2378,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 .map(|s| crate::offline::marked_from(s, &marks))
                                                 .collect();
                                                 let client = Some(runner.node_rpc.client.clone());
-                                                // The one ladder's view of the carriers: this tick's, shared by its rounds.
+                                                // The one ladder's view of the carriers: this tick's, shared by its ladders.
                                                 let ladder_view = Arc::new(view.clone());
                                                 // What the tick watches decides "heard again" (`heard_against`, R-FM1).
                                                 let in_view: HashSet<String> = heard_against(&view, &watched);
@@ -2624,7 +2624,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // or its attempt's `Converged`, and no reader of the log sees that fact while the book still
                                     // holds the hold (a log on a plane other admins write converges at the derivation instead:
                                     // `LocalBuildLog::derive_on_every_fact`). A successor primary publishes the same overlays from the same facts. Derived
-                                    // once over the facts held before the hierarchy's first round, then on every fact.
+                                    // once over the facts held before the hierarchy's first turn, then on every fact.
                                     {
                                         let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
                                         // The Builds the book holds overlays of are read with the current Build and the new
@@ -2643,7 +2643,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     let roles_moved = Arc::new(tokio::sync::Notify::new());
                                     // The hierarchy decides this admin's roles: its mesh's primary forwards the other
                                     // meshes onto its mesh channel; the fabric primary publishes the fabric's status and
-                                    // climbs the fabric states. It joins the backbone through every admin it knows and
+                                    // changes the fabric states. It joins the backbone through every admin it knows and
                                     // its mesh channel through every member of its mesh it knows. It publishes no
                                     // Members aggregate: that is the anti-entropy's timer, below.
                                     {
@@ -2653,7 +2653,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
                                         let adapter = runner.builds.clone();
                                         let records = records.clone();
-                                        let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
+                                        let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
                                         let park = park_gate.clone();
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
@@ -2665,7 +2665,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let me = view_book.held_path_name().unwrap_or_else(|| me.clone());
                                                 // The current Build, read once per turn. A builds store that cannot be read is
                                                 // named once per distinct error and decides nothing this turn: no planned births,
-                                                // accepted meshes or round step are taken from a read that failed.
+                                                // accepted meshes or step are taken from a read that failed.
                                                 let current = match adapter.current().await {
                                                     Ok(c) => {
                                                         unreadable_named = None;
@@ -2675,7 +2675,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         let text = e.to_string();
                                                         if unreadable_named.as_deref() != Some(text.as_str()) {
                                                             tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "hierarchy", node = %me, error = %text)
-                                                                .in_scope(|| tracing::info!("the current Build could not be read: this turn takes no planned births, accepted meshes or round step from it"));
+                                                                .in_scope(|| tracing::info!("the current Build could not be read: this turn takes no planned births, accepted meshes or step from it"));
                                                             unreadable_named = Some(text);
                                                         }
                                                         None
@@ -2721,7 +2721,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     .collect();
                                                 writes_tx.send_if_modified(|held| std::mem::replace(held, written.clone()) != written);
                                                 let fabric_primary = t.is_fabric_primary(&seat_node_id);
-                                                // A role taken or given up this round is held from the anti-entropy until its
+                                                // A role taken or given up this turn is held from the anti-entropy until its
                                                 // seat is announced below: a role's first aggregate follows its seat record.
                                                 let announcing = if (mesh_primary, fabric_primary) != (was_mesh_primary, was_fabric_primary) { Some(roles.write().await) } else { None };
                                                 // The declarations held before this admin wrote rows (Q59 = x) are its first write
@@ -2751,9 +2751,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.set_adopted_degraded(false);
                                                 }
                                                 was_fabric_primary = fabric_primary;
-                                                // The fabric-primary's climb through the fabric states, one non-blocking turn per round
+                                                // The fabric-primary's change through the fabric states, one non-blocking step per turn
                                                 // of this loop; every other admin serves the state the holder published.
-                                                fabric_rounds.climb_step(crate::fabric_rounds::ClimbInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
+                                                fabric_states.change_step(crate::fabric_status::ChangeInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
                                                 // The election's result this admin holds when a primary changes: the mesh-primary
                                                 // first, then the fabric-primary (R-A2); its digest carries it and the rows record it.
                                                 for (seat, holder) in seat_announcements(&t, &mesh, (&seat_node_id, &seat_incarnation), &decided) {
@@ -2765,12 +2765,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 let heard = membership.book.current(membership.book.staleness_floor());
                                                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                                                // A status is sent when it changed, never per round (gossip.md §3.2).
+                                                // A status is sent when it changed, never per turn (gossip.md §3.2).
                                                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                                                // The fabric's status as the live records state it: a round that just cleared the adopted
+                                                // The fabric's status as the live records state it: a checklist that just cleared the adopted
                                                 // degraded must not be answered by the older projection `t`.
                                                 // The fabric-primary publishes the state it holds now, not the projection's last refresh:
-                                                // every state the climb enters is its own frame.
+                                                // every state the change enters is its own frame.
                                                 let held_state = records.fabric_state();
                                                 let fabric_status = |records: &Records| {
                                                     let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
@@ -2782,51 +2782,51 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 };
                                                 let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
-                                                // A status adopted from the previous publisher is republished only when its round is
+                                                // A status adopted from the previous publisher is republished only when its checklist is
                                                 // complete: the planned births checked in, every mesh primary reported.
-                                                if announced.mesh_awaiting_round || announced.fabric_awaiting_round {
-                                                    // An unreadable builds store steps no round: the adopted status waits, named above.
+                                                if announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist {
+                                                    // An unreadable builds store steps no checklist: the adopted status waits, named above.
                                                     if let Some(current) = &current {
-                                                        let planned = current.as_ref().map(|b| crate::round::planned(&b.topology, &mesh));
-                                                        // The round a new primary runs before it republishes the status it adopted (R-S3).
-                                                        let done = fabric_rounds.adopted_step(announced, crate::fabric_rounds::AdoptedInputs { view: &t, planned, book: &membership.book });
+                                                        let planned = current.as_ref().map(|b| crate::checklist::planned(&b.topology, &mesh));
+                                                        // The checklist a new primary runs before it republishes the status it adopted (R-S3).
+                                                        let done = fabric_states.adopted_step(announced, crate::fabric_status::AdoptedInputs { view: &t, planned, book: &membership.book });
                                                         if done.mesh || done.fabric {
                                                             announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
                                                         }
                                                     }
                                                 } else {
-                                                    fabric_rounds.adopted_end();
+                                                    fabric_states.adopted_end();
                                                 }
-                                                // The state just announced is the one the climb may move on from.
-                                                if records.set_published_fabric_state((fabric_primary && !announced.fabric_awaiting_round).then_some(held_state)) && fabric_primary {
-                                                    fabric_rounds.poke_climb();
+                                                // The state just announced is the one the change may move on from.
+                                                if records.set_published_fabric_state((fabric_primary && !announced.fabric_awaiting_checklist).then_some(held_state)) && fabric_primary {
+                                                    fabric_states.poke_change();
                                                 }
-                                                records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
+                                                records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_checklist);
                                                 // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
-                                                fabric_rounds.address_changed_mesh_primaries(&t, fabric_primary);
+                                                fabric_states.address_changed_mesh_primaries(&t, fabric_primary);
                                                 let addr = rdm_transport::membership::gossip_addr;
                                                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                                                 builds.join_admins(admins.clone()).await;
                                                 backbone.join_admins(admins).await;
-                                                // The round dials no member of its own mesh: a member joins through this admin, and a
+                                                // The turn dials no member of its own mesh: a member joins through this admin, and a
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).
                                                 drop(turn);
-                                                // The next round is due after one gossip interval, or at once when a checklist the
+                                                // The next turn is due after one gossip interval, or at once when a checklist the
                                                 // fabric-primary waits on, or the application's answer, moved, or when the view changes
                                                 // a role or a status it announces: this admin takes or loses a seat, or its mesh's
                                                 // status moves (gossip.md §3.2, a status change is sent at once).
-                                                let round_wake = tokio::time::sleep_until(tokio::time::Instant::now() + gossip_interval());
-                                                tokio::pin!(round_wake);
+                                                let publication_wake = tokio::time::sleep_until(tokio::time::Instant::now() + gossip_interval());
+                                                tokio::pin!(publication_wake);
                                                 loop {
                                                     tokio::select! {
-                                                        _ = &mut round_wake => break,
-                                                        _ = fabric_rounds.climb_due() => break,
+                                                        _ = &mut publication_wake => break,
+                                                        _ = fabric_states.change_due() => break,
                                                         _ = records.wake.report_notify.notified() => break,
                                                         _ = records.view_changed.notified() => {
                                                             let now = topology.read().await.clone();
                                                             let (mp, fp) = (now.is_mesh_primary(&mesh, &seat_node_id), now.is_fabric_primary(&seat_node_id));
                                                             let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                                                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status || announced.mesh_awaiting_round || announced.fabric_awaiting_round || records.peer_recovering() {
+                                                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status || announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist || records.peer_recovering() {
                                                                 break;
                                                             }
                                                         }
@@ -2837,9 +2837,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                     // The Members anti-entropy (gossip.md §3.2, "PERPETUAL TIMERS … Members anti-entropy —
                                     // the mesh primary on the backbone; also sent at once on a material change"): its own
-                                    // timer, never a step of the hierarchy's round. It reads the book and the roles the
-                                    // hierarchy decided, nothing else, so no store read or write of the round (the
-                                    // current Build, the exit rows, the view's installation, the climb) delays
+                                    // timer, never a step of the hierarchy's turn. It reads the book and the roles the
+                                    // hierarchy decided, nothing else, so no store read or write of the turn (the
+                                    // current Build, the exit rows, the view's installation, the change) delays
                                     // it: a peer's t of this mesh (mesh-investigation.md) is the publication's own
                                     // interval, never the store's. While this admin is its mesh's primary it publishes
                                     // its mesh's members on the backbone (and puts the same source into its own mesh);
@@ -2857,7 +2857,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 drop(turn);
                                                 tokio::select! {
-                                                    _ = backbone.round_wake(&membership, tokio::time::Instant::now() + rdm_transport::membership::backbone_gossip_interval()) => {}
+                                                    _ = backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::membership::backbone_gossip_interval()) => {}
                                                     _ = roles_moved.notified() => {}
                                                 }
                                             }
@@ -2911,7 +2911,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             gate: park_gate.clone(),
                                             me: name.clone(),
                                             me_id: node_id.clone(),
-                                            round: rdm_transport::membership::backbone_gossip_interval(),
+                                            interval: rdm_transport::membership::backbone_gossip_interval(),
                                             membership: membership.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),

@@ -100,7 +100,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let before = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await);
     // The initial fabric refuses a mesh delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     // The rows mesh1's primary writes are durable only once the fabric's first state-commit
-    // published them (states.md, Rounds: "Before state-commit, RDM holds its rows in the
+    // published them (states.md, Setting a state: "Before state-commit, RDM holds its rows in the
     // scratchpad"; R14 item 9): the fabric is ready-for-traffic under this Build before mesh1 goes.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_id = estate.fabric_view().await.id.to_string();
@@ -432,7 +432,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     };
     let mesh1_publications: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
     let mesh1_wakes: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-material-change").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
-    assert!(!mesh1_wakes.is_empty(), "mesh1's primary's round was woken by its own projection's move");
+    assert!(!mesh1_wakes.is_empty(), "mesh1's primary's checklist was woken by its own projection's move");
     for m in &members {
         let at = stopped_at(m);
         assert!(mesh1_publications.iter().any(|p| *p >= at), "mesh1's primary published a new version after {m}'s NodeStopped at {at}: publications {mesh1_publications:?}");

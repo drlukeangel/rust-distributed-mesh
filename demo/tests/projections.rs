@@ -249,7 +249,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         .unwrap();
 
         // Rows: the gateway writes its own kinds and the shared one; the compute writes the shared
-        // one and its own. Versions climb per subject.
+        // one and its own. Versions change per subject.
         let rows: Vec<(&str, u64, &str)> = vec![
             ("demo.principal/alice", 1, "alice@v1"),
             ("demo.path-config/root", 1, "path:/"),

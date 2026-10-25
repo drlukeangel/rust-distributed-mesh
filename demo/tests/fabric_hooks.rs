@@ -7,7 +7,7 @@
 //! The work is the testkit's op `0x74` (`BeforeReadyPull`), which stands in for a product's own op: the
 //! gateway counts each call it serves and answers with the count.
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::wiring::{FabricHooks, StateSyncRound, SyncState, TrafficOpenedNotice, Wiring};
+use rdm_admin::wiring::{FabricHooks, StateSyncHandoff, SyncState, TrafficOpenedNotice, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::before_ready::{BeforeReady, BeforeReadyCtx, BeforeReadyHook, HookOutcome};
@@ -30,7 +30,7 @@ fn config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// Where the hooks send their work: the admin's own Node RPC client and the gateway's node id, handed
-/// over once both exist. The fabric-primary calls `sync_state` from its own climb, so the hook waits for
+/// over once both exist. The fabric-primary calls `sync_state` from its own change, so the hook waits for
 /// the gateway it drives.
 type Gateway = tokio::sync::watch::Receiver<Option<(Arc<NodeRpcClient>, NodeId)>>;
 
@@ -119,7 +119,7 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
 }
 
 /// CONTRACT (fabric-node-hooks.md `sync_state`, `traffic_opened`; fabric-state-sync.md: the fabric
-/// leaves state-sync only on the application's `StateSynced` for the round): the fabric-primary's
+/// leaves state-sync only on the application's `StateSynced` for the checklist): the fabric-primary's
 /// `sync_state` hook asks the gateway, another node, for the work and answers `StateSynced` only once
 /// the gateway answered; the fabric then reaches ready-for-traffic, and the `traffic_opened` notice asks
 /// the gateway again. The gateway serves the work twice, the state-sync call first. Must NOT happen: the
@@ -134,18 +134,18 @@ fn sync_state_drives_work_on_the_gateway_and_traffic_opened_asks_it_again() {
         let answered: Arc<Mutex<Vec<(&'static str, u64)>>> = Default::default();
         let sync_state = {
             let (gateway_rx, answered) = (gateway_rx.clone(), answered.clone());
-            SyncState::hook(move |round: StateSyncRound| {
+            SyncState::hook(move |handoff: StateSyncHandoff| {
                 let (mut gateway_rx, answered) = (gateway_rx.clone(), answered.clone());
                 async move {
                     let served = work(&mut gateway_rx, "state-sync").await;
                     answered.lock().unwrap().push(("state-sync", served));
-                    round
+                    handoff
                 }
             })
         };
         let traffic_opened: TrafficOpenedNotice = {
             let (gateway_rx, answered) = (gateway_rx.clone(), answered.clone());
-            Arc::new(move |_round: StateSyncRound| {
+            Arc::new(move |_handoff: StateSyncHandoff| {
                 let (mut gateway_rx, answered) = (gateway_rx.clone(), answered.clone());
                 Box::pin(async move {
                     let served = work(&mut gateway_rx, "re-sync").await;
@@ -160,7 +160,7 @@ fn sync_state_drives_work_on_the_gateway_and_traffic_opened_asks_it_again() {
         )
         .await
         .unwrap();
-        // The Day-0 Build's attempt is claimed and the climb reaches state-sync, where the hook waits for
+        // The Day-0 Build's attempt is claimed and the change reaches state-sync, where the hook waits for
         // the gateway. Then this admin reconciles nothing more: the gateway below is launched by hand, so
         // no drift pass takes it for surplus.
         tokio::time::timeout(BOUND, async {
@@ -191,7 +191,7 @@ fn sync_state_drives_work_on_the_gateway_and_traffic_opened_asks_it_again() {
 
         let spans = capture.spans().unwrap();
         let named = |name: &str| spans.iter().filter(|s| s["name"] == name).count();
-        assert_eq!(named("rdm.node_admin.fabric.update.via-sync-state-hook"), 1, "sync_state is called once for the round");
+        assert_eq!(named("rdm.node_admin.fabric.update.via-sync-state-hook"), 1, "sync_state is called once for the checklist");
         assert_eq!(named("rdm.node_admin.fabric.update.via-traffic-opened-hook"), 1, "traffic_opened is told once");
         g.stop().await;
     });

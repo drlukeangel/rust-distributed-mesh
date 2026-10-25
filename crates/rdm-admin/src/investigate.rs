@@ -314,19 +314,19 @@ impl Ladder {
     }
 }
 
-/// A direct probe is answered within two rounds or the node-admin did not answer.
-pub(crate) fn direct_budget(round: Duration) -> Duration {
-    round * 2
+/// A direct probe is answered within two intervals or the node-admin did not answer.
+pub(crate) fn direct_budget(interval: Duration) -> Duration {
+    interval * 2
 }
 
 /// The carried probe outlasts the carrier's one inner call (made with `CallOptions::default`) by two
-/// rounds, so the carrier's answer, carrier-edge-lost included, reaches the origin before it gives
+/// intervals, so the carrier's answer, carrier-edge-lost included, reaches the origin before it gives
 /// up: an inner dial to a dead node-admin runs to the inner call's whole budget.
-pub(crate) fn carried_budget(round: Duration) -> Budget {
+pub(crate) fn carried_budget(interval: Duration) -> Budget {
     match CallOptions::default().budget {
-        Budget::Overall(inner) => Budget::Overall(inner + round * 2),
-        Budget::Split { send, reply } => Budget::Split { send: send + round * 2, reply },
-        Budget::Stream { send } => Budget::Stream { send: send + round * 2 },
+        Budget::Overall(inner) => Budget::Overall(inner + interval * 2),
+        Budget::Split { send, reply } => Budget::Split { send: send + interval * 2, reply },
+        Budget::Stream { send } => Budget::Stream { send: send + interval * 2 },
         // Owed is never a default (node-rpc.md §34): it has no bound to outlast.
         Budget::Owed => Budget::Owed,
     }
@@ -341,8 +341,8 @@ pub struct Watch {
     pub me: PathName,
     /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
     pub me_id: crate::model::NodeId,
-    /// The length of a backbone round.
-    pub round: Duration,
+    /// The length of a backbone interval.
+    pub interval: Duration,
     /// The admin's membership.
     pub membership: Membership,
     /// The admin's observed topology.
@@ -378,7 +378,7 @@ fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// Run the investigation for as long as the task lives: once per round, while this admin is the
+/// Run the investigation for as long as the task lives: once per interval, while this admin is the
 /// fabric primary and its view authorizes, every peer mesh it has heard on the backbone is stepped
 /// down its ladder.
 pub async fn run(w: Watch) {
@@ -390,7 +390,7 @@ pub async fn run(w: Watch) {
     // The role the ladder's state was built in: a decision taken as the fabric-primary (on a peer mesh) is
     // not the backbone rule's decision on the fabric seat's mesh once the seat has moved elsewhere.
     let mut ladder_role_fabric_primary: Option<bool> = None;
-    let mut wait = w.round;
+    let mut wait = w.interval;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
@@ -398,7 +398,7 @@ pub async fn run(w: Watch) {
             _ = w.records.wake.report_notify.notified() => {}
             _ = w.records.view_changed.notified(), if !was_fabric_primary => {}
         }
-        wait = w.round;
+        wait = w.interval;
         // Held here while the admin is parked: its own wait, outside every lock. The turn ends with
         // the pass.
         let _turn = w.gate.turn("peer-mesh-investigation").await;
@@ -474,8 +474,8 @@ pub async fn run(w: Watch) {
             tasks.push(investigate(&w, &inv, &view, mesh.clone(), unheard));
         }
         futures_util::future::join_all(tasks).await;
-        // The next wake: a receipt is looked for every round, and a rung is stepped when it falls
-        // due, not on the round after it.
+        // The next wake: a receipt is looked for every interval, and a rung is stepped when it falls
+        // due, not on the interval after it.
         for mesh in unheard_now {
             if let Some(due) = book.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
                 wait = wait.min(due);
@@ -523,19 +523,19 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
 }
 
 /// The fabric returns to ready when the mesh the fabric primary gave a new node-admin (the
-/// carrier-edge-lost verdict's, or the fully crashed mesh's) has reported for its round: its current
+/// carrier-edge-lost verdict's, or the fully crashed mesh's) has reported for its checklist: its current
 /// node-admin primary, a birth the decision did not find, declared the Mesh ready to this fabric
 /// primary after the decision (mesh-investigation.md step 7: "Only on that report, the fabric-primary
 /// clears the degraded health observation"). A ready primary of a newer birth in the view, with no
-/// report, is not this (`crate::round::recovered`).
+/// report, is not this (`crate::checklist::recovered`).
 pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) {
     for recovery in records.peer_recoveries() {
         let primary = view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
         let report = records.declared.lock().unwrap().report_of(&recovery.mesh, view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin));
-        if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
+        if crate::checklist::recovered(&recovery, primary.as_ref(), report.as_ref()) {
             records.close_peer_recovery(&recovery.mesh);
             tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = ?recovery.verdict_rafka_ms)
-                .in_scope(|| tracing::info!("the recovered mesh's primary reported its round complete: the fabric is ready again"));
+                .in_scope(|| tracing::info!("the recovered mesh's primary reported its checklist complete: the fabric is ready again"));
         }
     }
 }
@@ -770,11 +770,11 @@ impl TickleCalls for WatchCalls<'_> {
     }
 
     fn deadline(&self) -> Duration {
-        direct_budget(self.0.round)
+        direct_budget(self.0.interval)
     }
 
     async fn direct(&self, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-        let opts = CallOptions { budget: Budget::Overall(direct_budget(self.0.round)), ..CallOptions::default() };
+        let opts = CallOptions { budget: Budget::Overall(direct_budget(self.0.interval)), ..CallOptions::default() };
         let (out, _) = self.0.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), req, &opts).await;
         ProbeEnd::of(out)
     }
@@ -783,8 +783,8 @@ impl TickleCalls for WatchCalls<'_> {
         // A carrier this admin cannot reach ends the kick within one direct probe's budget (the
         // connect and send), as the probe's member Ping did; a carrier that took the kick has the whole
         // carried budget for its answer, carrier-edge-lost included (mesh-investigation.md steps 1, 3).
-        let budget = match carried_budget(self.0.round) {
-            Budget::Overall(reply) => Budget::Split { send: direct_budget(self.0.round), reply },
+        let budget = match carried_budget(self.0.interval) {
+            Budget::Overall(reply) => Budget::Split { send: direct_budget(self.0.interval), reply },
             other => other,
         };
         let opts = CallOptions { budget, ..CallOptions::default() };
@@ -911,7 +911,7 @@ mod tests {
     use ProbeOutcome::*;
     use std::time::Duration;
 
-    /// The ladder at the production cadences: a 30 s staleness floor, 2 s backbone rounds.
+    /// The ladder at the production cadences: a 30 s staleness floor, 2 s backbone intervals.
     fn ladder() -> Ladder {
         Ladder::new(Rungs::at(Duration::from_secs(30), Duration::from_secs(2)))
     }
@@ -928,19 +928,19 @@ mod tests {
     /// Walk the ruled timeline: `probes` are what probe 1 and probe 2 find.
     fn walk(l: &mut Ladder, probes: [ProbeOutcome; 2]) -> Vec<(u64, Step)> {
         let mut log = Vec::new();
-        for rounds in 0..=40 {
-            let mut asked = l.step("mesh2", tick(rounds));
-            // The driver asks again after a probe is recorded, as it does on the next round.
+        for intervals in 0..=40 {
+            let mut asked = l.step("mesh2", tick(intervals));
+            // The driver asks again after a probe is recorded, as it does on the next interval.
             let mut guard = 0;
             while !asked.is_empty() {
                 for s in asked.drain(..) {
                     if let Step::Probe { n, ticket, .. } = &s {
                         let found = probes[usize::from(*n) - 1];
-                        if let Some(stop) = l.probed("mesh2", *ticket, *n, found, ms(rounds)) {
-                            log.push((rounds, stop));
+                        if let Some(stop) = l.probed("mesh2", *ticket, *n, found, ms(intervals)) {
+                            log.push((intervals, stop));
                         }
                     }
-                    log.push((rounds, s));
+                    log.push((intervals, s));
                 }
                 guard += 1;
                 if guard > 1 {
@@ -955,7 +955,7 @@ mod tests {
         log.iter().filter(|(_, s)| f(s)).map(|(r, _)| *r).collect()
     }
 
-    /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a recovery at 30 rounds, with
+    /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a recovery at 30 intervals, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
     #[test]
     fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_fabric_primary() {
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn two_carrier_edge_lost_probes_decide_a_recovery_at_thirty_rounds() {
+    fn two_carrier_edge_lost_probes_decide_a_recovery_at_thirty_intervals() {
         let log = walk(&mut ladder(), [CarrierEdgeLost, CarrierEdgeLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Track { .. })), vec![2]);
         assert_eq!(at(&log, |s| matches!(s, Step::Probe { n: 1, .. })), vec![10]);
@@ -1039,13 +1039,13 @@ mod tests {
         n
     }
 
-    /// CONTRACT (R-CK1, mesh-investigation.md: "the thresholds below are elapsed time, not round
-    /// counts"; step 2 "the shared staleness mark"): the rungs are 20 s, 30 s, 40 s and 60 s of
+    /// CONTRACT (R-CK1, mesh-investigation.md: "the thresholds below are elapsed time, not
+    /// counts of intervals"; step 2 "the shared staleness mark"): the rungs are 20 s, 30 s, 40 s and 60 s of
     /// elapsed time unheard at the 30 s staleness floor, the silent mark being the staleness floor
     /// itself, and a changed backbone interval moves none of them. At the gate's 3 s floor they are
     /// 2 s, 3 s, 4 s and 6 s.
     #[test]
-    fn the_rungs_are_elapsed_time_from_the_staleness_floor_never_backbone_rounds() {
+    fn the_rungs_are_elapsed_time_from_the_staleness_floor_never_backbone_intervals() {
         let (twenty, thirty, forty, sixty) = (Duration::from_secs(20), Duration::from_secs(30), Duration::from_secs(40), Duration::from_secs(60));
         for backbone in [Duration::from_millis(500), Duration::from_secs(2), Duration::from_secs(5)] {
             let r = Rungs::at(thirty, backbone);
@@ -1057,7 +1057,7 @@ mod tests {
     }
 
     /// CONTRACT (R-CK1): one investigation chain for a silent peer mesh. Only a direct backbone
-    /// receipt starts or resets t: forwarded topology of the mesh arriving every round neither resets
+    /// receipt starts or resets t: forwarded topology of the mesh arriving every interval neither resets
     /// nor extends it, so the ladder walks probe 1, the mark, probe 2 and the decision at the same
     /// elapsed times whether it is stepped every 0.5 s or every 2 s; a fresh backbone receipt cancels
     /// it. With no probe answered the decision is a hold: nothing marks the mesh dead on silence.
@@ -1090,7 +1090,7 @@ mod tests {
             let mut k = 1u32;
             while every * k <= Duration::from_secs(70) {
                 let now = t0 + every * k;
-                // The peer mesh's topology forwarded onto this node's mesh channel, every round.
+                // The peer mesh's topology forwarded onto this node's mesh channel, every interval.
                 let mut fwd = rpc.clone();
                 fwd.digest_seq = u64::from(k) + 1;
                 book.record_topology_at(fwd, now);
@@ -1326,7 +1326,7 @@ mod tests {
         let mut next = ladder();
         assert!(!next.recovery_decided("mesh2"), "the next primary has decided nothing yet");
         let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, .. })), vec![30], "it decides once, from its own 30 rounds");
+        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, .. })), vec![30], "it decides once, from its own 30 intervals");
     }
 
     /// CONTRACT: two peer meshes unheard at once are two ladders; one mesh's probes, hold or

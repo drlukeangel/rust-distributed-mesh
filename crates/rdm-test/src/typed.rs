@@ -339,7 +339,7 @@ impl Estate {
         self.settles_to(meshes, std::time::Duration::from_secs(60)).await
     }
 
-    /// Wait until the fabric the admin holds is ready-for-traffic: the fabric climbs its states (sync, commit,
+    /// Wait until the fabric the admin holds is ready-for-traffic: the fabric changes its states (sync, commit,
     /// open traffic) after the nodes of a Build are ready, and writes its record at the commit. No stream
     /// announces it; `fabric.get` carries the state. The wait is where the estate records that its fabric
     /// has started: from then on a kill or terminate of one of its nodes is a test

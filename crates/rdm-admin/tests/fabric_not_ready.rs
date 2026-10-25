@@ -175,7 +175,7 @@ async fn a_mesh_delete_or_node_delete_before_the_fabric_first_reaches_ready_for_
 /// CONTRACT (R-PC1: "the initial accepted Build, which creates the fabric's nodes and brings it to
 /// ready-for-traffic, runs as usual"): while the fabric is pending or in state-sync, a `ReconcileFabric`
 /// that grows a mesh, an `AddNode` and a `CreateMesh` are each accepted as the next Build.
-/// What must NOT happen: the initial climb refused by the rule that guards it.
+/// What must NOT happen: the initial change refused by the rule that guards it.
 #[tokio::test]
 async fn the_initial_accepted_build_and_growth_are_admitted_before_the_fabric_first_reaches_ready_for_traffic() {
     for status in [ScopeStatus::Pending, ScopeStatus::StateSync, ScopeStatus::StateCommit] {
@@ -198,10 +198,10 @@ async fn the_initial_accepted_build_and_growth_are_admitted_before_the_fabric_fi
 }
 
 /// CONTRACT (states.md: "Once the fabric is ready-for-traffic these are admitted as usual"; "A resize or
-/// roll puts the fabric back to pending"): once the fabric has first reached ready-for-traffic a
+/// an executable replacement puts the fabric back to pending"): once the fabric has first reached ready-for-traffic a
 /// workflow is admitted, and stays admitted when a resize then puts the fabric back to pending or
 /// state-sync: the rows it published to the store root are no longer only in a scratchpad.
-/// What must NOT happen: a node.stop refused during a resize climb.
+/// What must NOT happen: a node.stop refused during a resize change.
 #[tokio::test]
 async fn a_workflow_is_admitted_once_the_fabric_has_reached_ready_for_traffic_and_stays_admitted_through_a_resize() {
     let r = rig(ScopeStatus::StateSync).await;

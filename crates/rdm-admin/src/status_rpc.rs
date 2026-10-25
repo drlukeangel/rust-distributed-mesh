@@ -117,7 +117,7 @@ pub struct ConnectionsDeletedReceipt {
     pub status_at_cut: crate::model::NodeStatus,
 }
 
-/// A mesh primary's round-complete report, as the fabric-primary received it.
+/// A mesh primary's checklist-complete report, as the fabric-primary received it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshReport {
     /// The birth of the node-admin that reported.
@@ -126,7 +126,7 @@ pub struct MeshReport {
     pub at: std::time::Instant,
 }
 
-/// Who sent a Mesh's round-complete report, as this admin could name it when it arrived: the birth
+/// Who sent a Mesh's checklist-complete report, as this admin could name it when it arrived: the birth
 /// its view held for the calling endpoint, or only that endpoint when its view held no birth for it
 /// yet (nothing inside the mesh checks who is calling, node-rpc.md §14, so such a report is taken).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -143,7 +143,7 @@ impl Declared {
         self.nodes.get(&(node_id.clone(), incarnation.clone())).copied()
     }
 
-    /// Hold `mesh`'s round-complete report from `reporter`, received `at`: one per reporter, so a
+    /// Hold `mesh`'s checklist-complete report from `reporter`, received `at`: one per reporter, so a
     /// report from one birth never displaces another's.
     pub fn record_report(&mut self, mesh: &str, reporter: Reporter, at: std::time::Instant) {
         self.reports.entry(mesh.to_string()).or_default().insert(reporter, at);
@@ -504,9 +504,9 @@ pub struct StatusAuthority {
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
     /// Wakes this admin's declarer: a view this authority changed, and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
-    /// This admin's rounds (commit-state, open-traffic); filled once the admin holds the handles
+    /// This admin's checklists (commit-state, open-traffic); filled once the admin holds the handles
     /// they act through.
-    pub rounds: Arc<OnceLock<Arc<crate::fabric_rounds::FabricRounds>>>,
+    pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
     /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
     /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
     /// waits on (build.md §5.3).
@@ -516,7 +516,7 @@ pub struct StatusAuthority {
     pub configs: crate::node_config::NodeConfigsSlot,
     /// This admin's re-publish of its presence on the channel it is on (its digest published, no
     /// re-join), filled once its digest exists: the check-in a probed birth owes (states.md "The
-    /// round checklist"), what the round's down op reads.
+    /// check-in checklist"), what the checklist's down op reads.
     pub republish: Republish,
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
@@ -698,7 +698,7 @@ pub(crate) fn event_key(e: &FabricEvent) -> String {
 /// event held as applied once and answered (`Applied` the first time, `AlreadyApplied` after). A refused
 /// write answers `NotReady` naming the store and holds nothing, so the same commit again is decided
 /// afresh. The fabric-primary's own ready-for-traffic event, written as it enters ready-for-traffic
-/// (`crate::fabric_rounds`), and the `ApplyFabricEvent` it sends its own mesh commit here alike.
+/// (`crate::fabric_status`), and the `ApplyFabricEvent` it sends its own mesh commit here alike.
 pub(crate) async fn commit_fabric_event(storage: &dyn crate::fabric_storage::FabricStorage, caches: &crate::record_cache::Caches, declared: &Mutex<Declared>, fabric_id: &FabricId, name: Option<&str>, event: &str) -> StatusReply {
     let base = name.map(|name| crate::fabric_storage::FabricRecord::new(crate::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: name.to_string() }));
     let written = caches.update_fabric(storage, fabric_id, base, |r| {
@@ -887,8 +887,8 @@ impl StatusAuthority {
         }
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
-        if let (Some(from), Some(rounds)) = (sender.as_ref(), self.rounds.get()) {
-            rounds.heard_from(&from.node_id);
+        if let (Some(from), Some(fabric_states)) = (sender.as_ref(), self.fabric_states.get()) {
+            fabric_states.heard_from(&from.node_id);
         }
         match req {
             StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
@@ -908,9 +908,9 @@ impl StatusAuthority {
                 return reply;
             }
             StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
-                return match self.rounds.get() {
-                    Some(rounds) => rounds.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
-                    None => rdm_core::reply::status::not_ready(format!("{me_name} has not yet built its rounds; {} is refused", req.op())),
+                return match self.fabric_states.get() {
+                    Some(fabric_states) => fabric_states.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
+                    None => rdm_core::reply::status::not_ready(format!("{me_name} has not yet built its checklists; {} is refused", req.op())),
                 };
             }
             StatusRequest::UpdateName { .. } => return self.update_name(req).await,
@@ -934,9 +934,9 @@ impl StatusAuthority {
             StatusRequest::GetNodes { select } => {
                 return match self.loads.as_ref() {
                     Some(loads) => {
-                        let planned = match self.rounds.get() {
-                            Some(rounds) => rounds.planned_paths().await,
-                            None => Err(format!("{me_name} holds no rounds yet: the current Build is not read")),
+                        let planned = match self.fabric_states.get() {
+                            Some(fabric_states) => fabric_states.planned_paths().await,
+                            None => Err(format!("{me_name} holds no checklists yet: the current Build is not read")),
                         };
                         {
                             let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.nodes_storage), &planned, select).await;
@@ -997,7 +997,7 @@ impl StatusAuthority {
             None => reply,
         };
         // A `ReadyForTraffic` Mesh declaration the authority took (applied now or already applied) is
-        // the mesh primary's round-complete report: the primary sends it only when its checklist is
+        // the mesh primary's checklist-complete report: the primary sends it only when its checklist is
         // complete. Whichever it was, the report is what this admin received now from that exact birth.
         // It is kept for the mesh the declaration names, from the birth that sent it (or its endpoint
         // while this admin's view holds no birth for it), never under the caller's own mesh.
@@ -1532,7 +1532,7 @@ impl StatusAuthority {
                         if let Some((invocation, seq)) = position {
                             span.record("invocation_id", invocation.to_string()).record("seq", seq);
                         }
-                        span.in_scope(|| tracing::info!("the node reported connections-deleting on its command's stream: this mesh-primary records it, and its projection carries it from its next round"));
+                        span.in_scope(|| tracing::info!("the node reported connections-deleting on its command's stream: this mesh-primary records it, and its projection carries it from its next checklist"));
                         frames.accepted().await;
                     }
                     Ok(NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }) => {
@@ -1815,8 +1815,8 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                     .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                 return Some(reply);
             }
-            // The check-in a probed birth owes (states.md "The round checklist": a new primary re-sends
-            // the round and members already done check in again): its presence re-published on the
+            // The check-in a probed birth owes (states.md "The check-in checklist": a new primary re-sends
+            // the checklist and members already done check in again): its presence re-published on the
             // channel it is on, its state answered; no transition, no re-join. A birth its authority
             // holds off its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87).
             if let Some(republish) = republish.get() {
@@ -2186,7 +2186,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
@@ -2253,7 +2253,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             caches: Default::default(),
             configs: Default::default(),
@@ -2330,7 +2330,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status,
             caches: Default::default(),
             configs: Default::default(),
@@ -2629,7 +2629,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
@@ -2708,7 +2708,7 @@ mod tests {
             mesh_deleter: Default::default(),
             hold_next_reply: Default::default(),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
@@ -2941,13 +2941,13 @@ mod tests {
         assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 
-    /// CONTRACT (node-rpc.md §14; round.rs `fabric_missing`: "a report counts only from the exact
+    /// CONTRACT (node-rpc.md §14; checklist.rs `fabric_missing`: "a report counts only from the exact
     /// birth that is the mesh's primary now"): a Mesh's `ReadyForTraffic` declaration is decided for
     /// the mesh it names, whoever sends it, and the fabric-primary keeps it as that mesh's report from
     /// the birth that sent it. A later declaration of the same mesh from another birth (a member, an
     /// old primary) never displaces the primary's report, and a declaration from a node of mesh1 is
     /// never kept as mesh1's report. What must NOT happen: the primary's report lost, which holds the
-    /// fabric round on `report-of-another-birth` with nothing owed to re-send it.
+    /// fabric checklist on `report-of-another-birth` with nothing owed to re-send it.
     #[tokio::test]
     async fn a_mesh_report_is_kept_for_the_mesh_it_names_and_the_birth_that_sent_it() {
         let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
@@ -3070,7 +3070,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
@@ -3170,7 +3170,7 @@ mod tests {
             mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
-            rounds: Default::default(), fabric_recovery: Default::default(),
+            fabric_states: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),

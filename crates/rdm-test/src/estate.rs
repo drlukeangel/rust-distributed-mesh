@@ -503,7 +503,7 @@ fn executable_dirs_env(dirs: &[PathBuf]) -> (&'static str, String) {
 /// anywhere in birth) stops the reaper and removes the root; the reaper does the same when the
 /// test binary dies without running any destructor.
 /// This estate's own root: test name, process and a per-process sequence, so a test that ends one
-/// estate and births another (a re-roll) never shares a root. The scope of the estate being
+/// estate and births another (a second estate) never shares a root. The scope of the estate being
 /// replaced deletes its own root when it drops, and only its own.
 /// The estate's one store root (R14 item 6, the process provider): `<estate root>/store`, handed to
 /// every node-admin the estate starts and, through each launch, to every node of the fabric.

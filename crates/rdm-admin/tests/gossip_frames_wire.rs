@@ -84,9 +84,9 @@ fn op(operation: &str) -> LifecycleOp {
     LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
 }
 
-fn round_hook(verb: &str) -> rdm_core::RoundHook {
+fn state_hook(verb: &str) -> rdm_core::StateHook {
     let fabric_id = fabric();
-    rdm_core::RoundHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3qcfk1kq47m9".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
+    rdm_core::StateHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3qcfk1kq47m9".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
 }
 
 fn publisher() -> PublisherId {
@@ -149,10 +149,10 @@ fn frames() -> Vec<Frame> {
         Frame::FabricStatus { fabric: fabric(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
         Frame::Concern { seat: rdm_core::Seat::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
         Frame::NewFabricPrimary { holder: rdm_core::Primary { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
-        Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
-        Frame::StateCommitted { hook: round_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },
-        Frame::TrafficOpening { hook: round_hook("open-traffic"), forwarded_by: None },
-        Frame::TrafficOpened { hook: round_hook("open-traffic"), forwarded_by: Some("mesh2.admin.1".into()) },
+        Frame::StateCommitting { hook: state_hook("commit-state"), forwarded_by: None },
+        Frame::StateCommitted { hook: state_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },
+        Frame::TrafficOpening { hook: state_hook("open-traffic"), forwarded_by: None },
+        Frame::TrafficOpened { hook: state_hook("open-traffic"), forwarded_by: Some("mesh2.admin.1".into()) },
     ]
 }
 

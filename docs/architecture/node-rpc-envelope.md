@@ -700,7 +700,7 @@ The request and reply ceilings and the request and reply variants, in their posi
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
 The [node stop pair](#node-stop-command-pair), the
-[fabric status rounds](#fabric-status-rounds) and the
+[fabric status command pairs](#fabric-status-command-pairs) and the
 [mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls.
 The lifecycle op pairs in States are carried by 0x1B as separate down (command) and up (completion) variants; enum definitions live only here. Dead is never sent.
 
@@ -795,7 +795,7 @@ pub enum WhichMesh {
 }
 
 // NodeSelect (Id, Mesh or Tags), TagFilter, NodeView, MeshView, FabricView, ConnectionsView, NodeStatus and
-// MeshDeleteRound are on the generated wire page with their fields.
+// MeshDeleteIdentity are on the generated wire page with their fields.
 
 pub enum NotPrimary {
     ReceiverNotPrimary { needed: String },
@@ -855,8 +855,8 @@ pub enum StatusReply {
     Connections { connections: ConnectionsView },
     UnknownMesh { mesh: String },
     ReadOverBound { read: String, bytes: u64, max: u64 },
-    RejectedStaleRound { held: MeshDeleteRound, offered: MeshDeleteRound },
-    RejectedConflictingRound { held: MeshDeleteRound, offered: MeshDeleteRound },
+    RejectedStaleWorkflow { held: MeshDeleteIdentity, offered: MeshDeleteIdentity },
+    RejectedConflictingWorkflow { held: MeshDeleteIdentity, offered: MeshDeleteIdentity },
     RejectedIncompleteManifest { missing: u32, without_exit: Vec<String>, reason: String },
     RejectedSourceFailed { source: String, op: String, cause: String },
     RejectedTags { reason: String },
@@ -882,38 +882,38 @@ pub enum RetryOn {
 
 `ConfigOverCap` is `crates/rdm-core/src/digest.rs::ConfigOverCap`.
 
-<a id="fabric-round-command-pairs"></a>
+<a id="fabric-status-command-pairs"></a>
 
-### Fabric status rounds
+### Fabric status command pairs
 
-The fabric statuses state-commit and ready-for-traffic are carried down in rounds on op
+The fabric statuses state-commit and ready-for-traffic are carried down on op
 0x1B: CommitState / OpenTraffic carry the status down, StateCommitted / TrafficOpened are
 the check-ins. The four bodies are [StatusRequest](#status-op-0x1b-rdm) positions 12 to 15.
 Who commands whom, when a check-in is owed and when a primary may report upward are the
-[round checklist](lifecycles/states.md#the-round-checklist). The payload's node_id/incarnation
+[check-in checklist](lifecycles/states.md#the-check-in-checklist). The payload's node_id/incarnation
 names the commanded or reporting subject; the target names the receiver of that particular
 directed call.
 
 CommitState/StateCommitted use operation `commit-state:<fabric_id>`;
-OpenTraffic/TrafficOpened use `open-traffic:<fabric_id>`. The round is scoped to the
+OpenTraffic/TrafficOpened use `open-traffic:<fabric_id>`. The state's command is scoped to the
 accepted Build, attempt and planned exact births. A successful admission reply is Applied or
 AlreadyApplied; completion is a separate upward call with its own target and trace context,
 also acknowledged Applied or AlreadyApplied. Status refusals are typed; an unmatched check-in is
 `RejectedUnmatchedCompletion` naming the field, the value held and the value reported. No missing reply is a completed check-in.
 
 These calls are forwardable and served while connections-deleting under Status's rules. Carried service
-emits `rdm.node_rpc.request.serve.via-carried-inner`. Upward completion preserves the round's
+emits `rdm.node_rpc.request.serve.via-carried-inner`. Upward completion preserves the command's
 trace id, with a new caller span. Subject action/checklist evidence is required in addition to
 generic RPC success.
 
-Command and completion hooks use the [round gossip frames](gossip.md#fabric-round-gossip-hooks).
+Command and completion hooks use the [state gossip frames](gossip.md#fabric-state-gossip-hooks).
 Who declares the fabric state is [States](lifecycles/states.md#who-sets-each-state); Rafka
-receives one outer traffic-opened integration notice after the completed rounds.
+receives one outer traffic-opened integration notice after the completed check-ins.
 
 ### Application state-sync handoff
 
 SyncState and StateSynced name the external RDM/Rafka integration messages, with the
-round fields `fabric_id: FabricId`, `build_id: String`, `attempt: u32`,
+fields `fabric_id: FabricId`, `build_id: String`, `attempt: u32`,
 `operation: String` (`state-sync:<fabric_id>`) and observability `context: CallContext`.
 SyncState hands state-sync to the application; StateSynced reports its requested work
 complete to the fabric-primary. It triggers state-commit, not ready-for-traffic.
@@ -975,7 +975,7 @@ the amendment, is refused by name.
 The workflow identity is `(mesh_id, build_id, attempt, operation)`; the operation is
 `mesh.delete:<mesh_id>`. DeleteMesh answers Applied or AlreadyApplied on admission; that reply is
 not mesh.deleted. The fabric-primary answers MeshDeleted Applied or AlreadyApplied after handoff
-validation. A stale/conflicting round or incomplete manifest is refused by name with a typed Status
+validation. A stale/conflicting workflow identity or incomplete manifest is refused by name with a typed Status
 refusal naming the mismatch; not-primary, stale-mesh, malformed and other Status refusals remain typed. Both
 calls are forwardable under Status rules. A lost handoff or missing exact receipt leaves the
 workflow incomplete, never successful.

@@ -16,7 +16,7 @@ A report is sent when owed and again only on an eligible event:
 
 - its primary's address changes to a deliverable exact instance;
 - a failed delivery gains a viable route;
-- the primary addresses this node with the round's down call.
+- the primary addresses this node with the state's down call.
 
 Typed replies, including named refusals, are terminal. One coalesced wake drives the
 work, never a timer. An unreachable target schedules no report. `node.get`

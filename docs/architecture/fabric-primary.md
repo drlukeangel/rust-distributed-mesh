@@ -7,7 +7,7 @@ Companion owners:
 - [`fabric-node-lifecycle-elections.md`](fabric-node-lifecycle-elections.md) for mesh-primary and fabric-primary election semantics;
 - [`build.md`](build.md) for the Build engine, Build storage and crash safety, lifecycle transition machinery and the RDM/Rafka boundary;
 - [`deployment-provider.md`](deployment-provider.md) for runtime adoption, provider control and the RuntimeFact;
-- [States](lifecycles/states.md#states) for fabric, mesh and node states and their rounds;
+- [States](lifecycles/states.md#states) for fabric, mesh and node states and setting them;
 - [`gossip.md`](gossip.md) for dissemination and repair.
 
 The central rules are:
@@ -138,7 +138,7 @@ accepted Build execution; it defines no additional state family.
 
 ## 4. Fabric creation (`fabric.create`)
 
-The creation sequence (mint the fabric, create each mesh's first node-admin, the status rounds, `fabric.created`) is [fabric.create](lifecycles/fabric-create.md). The identity order it follows is §1.1.
+The creation sequence (mint the fabric, create each mesh's first node-admin, the fabric's states, `fabric.created`) is [fabric.create](lifecycles/fabric-create.md). The identity order it follows is §1.1.
 
 ---
 
@@ -205,7 +205,7 @@ lifecycle fact changed
 
 ## 8. Fabric-primary takeover and complete-view recomputation
 
-A newly elected fabric-primary must already be able to act immediately; readiness prerequisites are lifecycle policy, and the election lives only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). It hydrates the fabric's current round and completion evidence and the **complete** Mesh view. Mesh observations alone cannot declare fabric readiness ([States](lifecycles/states.md#states)).
+A newly elected fabric-primary must already be able to act immediately; readiness prerequisites are lifecycle policy, and the election lives only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). It hydrates the fabric's current state's check-ins and completion evidence and the **complete** Mesh view. Mesh observations alone cannot declare fabric readiness ([States](lifecycles/states.md#states)).
 
 A successor reads the current Build from `builds.storage` ([build.md §4.2](build.md#42-hydration-of-the-accepted-topology)). Therefore it knows which meshes are required independently of which Mesh-status projections have arrived at that instant.
 
@@ -263,12 +263,12 @@ WRONG: derive([ReadyForTraffic]) -> Fabric ReadyForTraffic
 RIGHT: mesh2 is unknown -> HOLD
 ```
 
-The successor's one-shot recompute completion latch is set only after a complete-view hydration establishes the current Fabric result from its completed round evidence. A held partial attempt does not consume the one shot.
+The successor's one-shot recompute completion latch is set only after a complete-view hydration establishes the current Fabric result from its completed check-in evidence. A held partial attempt does not consume the one shot.
 
 ### 8.4 Fabric lifecycle evidence
 
-A successor re-sends the current round and rebuilds its checklist from fresh check-ins under
-[the round checklist](lifecycles/states.md#the-round-checklist). A complete Mesh view is control
+A successor re-sends the current state's command and rebuilds its checklist from fresh check-ins under
+[the check-in checklist](lifecycles/states.md#the-check-in-checklist). A complete Mesh view is control
 evidence, not readiness.
 
 ---
@@ -287,7 +287,7 @@ On fabric-primary succession:
 held Fabric identity
     + the current Build's meshes (from builds.storage)
     + complete current Mesh-status view
-    + current-round completion evidence
+    + current-state completion evidence
     -> publish the held fabric lifecycle fact as current fabric-primary
 ```
 
@@ -308,7 +308,7 @@ fabric-primary accepts Build B21 naming mesh M
     B21 is the current Build
 ```
 
-M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and climbs through state-sync, state-commit and ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and roll](lifecycles/states.md#resize-and-executable-replacement).
+M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and changes through state-sync, state-commit and ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and executable replacement](lifecycles/states.md#resize-and-executable-replacement).
 
 ### 10.2 Removing Mesh
 
@@ -323,7 +323,7 @@ Do not collapse these operations into one generic "re-entry" rule.
 | event | accepted topology changes? | primary changed? | lifecycle may change? | owner |
 |---|---:|---:|---:|---|
 | mesh-primary takeover | no | yes | **not by takeover itself** | the election + hydration |
-| fabric-primary takeover | no (the same active Build continues) | yes | hydrate current-round evidence and the accepted Build's complete Mesh set | the election + current-round completion evidence |
+| fabric-primary takeover | no (the same active Build continues) | yes | hydrate current-state evidence and the accepted Build's complete Mesh set | the election + current-state completion evidence |
 | node restart | no | maybe later | node lifecycle only unless another explicit event follows | Build + node lifecycle |
 | WAL reset | no | not inherently | yes, only through its explicit reset/re-entry contract | reset lifecycle path |
 | Mesh join | yes | yes/a new primary may appear | yes | Build + Mesh/Fabric lifecycle transition |
@@ -352,7 +352,7 @@ The node-admin storage interfaces, `fabric.storage` and `builds.storage`, Build 
 
 ### 13.1 Recovery's inputs
 
-A recovery's inputs follow the [storage and recovery owner](node-admin-lifecycle.md#7-rafka-storage-and-recovery). A live fabric-primary takeover uses held current records and the same accepted Build, and re-sends the current round under [the round checklist](lifecycles/states.md#the-round-checklist); no new Build or competing topology is minted because the primary changed.
+A recovery's inputs follow the [storage and recovery owner](node-admin-lifecycle.md#7-rafka-storage-and-recovery). A live fabric-primary takeover uses held current records and the same accepted Build, and re-sends the current state's command under [the check-in checklist](lifecycles/states.md#the-check-in-checklist); no new Build or competing topology is minted because the primary changed.
 
 ---
 

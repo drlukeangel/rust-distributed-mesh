@@ -53,7 +53,7 @@ O=$DEPLOY/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
 echo "[gate] head=$(git rev-parse HEAD) dirty=$(git status --porcelain | wc -l | tr -d ' ')" | tee -a $O
 D=$O.d; rm -rf $D; mkdir -p $D
 export I143_PREBUILT_ARTIFACTS="$D/artifacts.json"
-SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority node_primary_update mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary fabric_takeover rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance rounds owed_check_ins node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence backbone successor_adoption admins_lost_mid_build"
+SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority node_primary_update mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary fabric_takeover rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance fabric_states owed_check_ins node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence backbone successor_adoption admins_lost_mid_build"
 t0=$(date +%s)
 
 # 1. Build once: check, every bin, every test binary. Nothing compiles after this.
@@ -427,7 +427,7 @@ PRIORITY = [
     "node-admin-core:lib",
     "rdm-admin:lib",
     "accepted_topology",
-    "rounds",
+    "fabric_states",
     "shape_reconcile",
     "node_primary_update",
     "canonical_ids",

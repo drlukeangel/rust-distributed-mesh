@@ -14,7 +14,7 @@
 //! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
 //! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
 //!
-//! The store exists once the fabric's first state-commit published it (states.md, Rounds;
+//! The store exists once the fabric's first state-commit published it (states.md, Setting a state;
 //! node-identity-and-state.md §2.7, The write: "Before then `system.ops.nodes` and
 //! `system.ops.meshes` do not exist"). A node that opens a root holding no Fabric row yet holds
 //! every row it writes in its [`Scratchpad`] until its commit-state action publishes them; a node

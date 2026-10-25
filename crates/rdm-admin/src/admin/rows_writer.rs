@@ -33,8 +33,8 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 /// shared store root, written by that mesh's primary alone, for its own members alone (R14 item 2; the
 /// writer ladder, node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's
 /// primary's), and by the fabric-primary for the members of a mesh with no primary, as it writes their
-/// records (R13, `crate::node_rows::writes_for`). A round that writes no mesh writes nothing. The first
-/// round that writes its own mesh claims the mesh's name ([`crate::storage::claim_mesh`]) and
+/// records (R13, `crate::node_rows::writes_for`). A sweep that writes no mesh writes nothing. The first
+/// sweep that writes its own mesh claims the mesh's name ([`crate::storage::claim_mesh`]) and
 /// writes the Mesh row (node-identity-and-state.md §2.7): nothing else of the mesh is written until the
 /// claim wins, and a name another mesh's live row holds leaves the mesh's rows unwritten for the tenure,
 /// named. Then each member birth's endpoint, address and the primaries the book holds for it are
@@ -62,7 +62,7 @@ impl MeshRowsWriter {
         Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, claim: None }
     }
 
-    /// One round over the births `held` (every birth of the fabric this admin holds, itself
+    /// One sweep over the births `held` (every birth of the fabric this admin holds, itself
     /// included, each with the primaries its book holds for it), `writes` the meshes whose rows this
     /// admin writes now (its own mesh while it is its mesh-primary; a mesh with no primary while it is
     /// the fabric-primary), `departed` whether the book holds a node departed. Returns whether a row is
@@ -70,11 +70,11 @@ impl MeshRowsWriter {
     /// yet (its create's claim or its arrival writes it), which the caller retries on its own clock
     /// under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth or a
     /// primary change.
-    pub(crate) async fn round(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, departed: impl Fn(&NodeId) -> bool) -> bool {
+    pub(crate) async fn sweep(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, departed: impl Fn(&NodeId) -> bool) -> bool {
         if !writes.contains(&self.mesh) {
             self.claim = None;
         } else if self.claim.is_none() {
-            // A store that did not answer decides nothing: the next round asks again.
+            // A store that did not answer decides nothing: the next sweep asks again.
             self.claim = claim_mesh_name(&*self.meshes, &self.caches, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
             if self.claim.is_none() {
                 return true;
@@ -130,17 +130,17 @@ impl MeshRowsWriter {
     }
 }
 
-/// The mesh rows writer's loop: a round over what `book` holds of `fabric` each time a birth or a
+/// The mesh rows writer's loop: a sweep over what `book` holds of `fabric` each time a birth or a
 /// primary record changes there or `writes` (the meshes whose rows this admin writes) moves, each birth
-/// carrying the primaries the book holds for it. A row the store did not acknowledge is owed: the round
+/// carrying the primaries the book holds for it. A row the store did not acknowledge is owed: the sweep
 /// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
-/// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each round takes its
+/// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each sweep takes its
 /// turn of `park`.
 pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, park: crate::stop_gate::StopGate) {
     let mut births = book.birth_changes();
     let mut primaries = book.seats.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
-    let mut owed_rounds = 0u32;
+    let mut owed_sweeps = 0u32;
     loop {
         // Held here while the admin is parked: its own wait, outside every lock.
         let turn = park.turn("mesh-rows").await;
@@ -156,14 +156,14 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, book: DigestBook,
                 d
             })
             .collect();
-        let owed = writer.round(&held, &meshes, |id| book.is_deleted(id.as_str())).await;
-        owed_rounds = if owed { owed_rounds + 1 } else { 0 };
+        let owed = writer.sweep(&held, &meshes, |id| book.is_deleted(id.as_str())).await;
+        owed_sweeps = if owed { owed_sweeps + 1 } else { 0 };
         drop(turn);
         let again = async {
-            if owed_rounds == 0 {
+            if owed_sweeps == 0 {
                 std::future::pending::<()>().await
             }
-            tokio::time::sleep(pacing.after(owed_rounds)).await
+            tokio::time::sleep(pacing.after(owed_sweeps)).await
         };
         tokio::select! {
             changed = births.changed() => if changed.is_err() { return },
@@ -458,15 +458,15 @@ impl FabricRowsWriter {
         Self { me, identity, storage, claim: None }
     }
 
-    /// One round on the seat records `seats` holds: while the fabric seat names this birth, the claim
+    /// One sweep on the seat records `seats` holds: while the fabric seat names this birth, the claim
     /// of the fabric's name (which writes the identity row) until the store answers it.
-    pub(crate) async fn round(&mut self, seats: &rdm_transport::membership::SeatBook) {
+    pub(crate) async fn sweep(&mut self, seats: &rdm_transport::membership::SeatBook) {
         if !seats.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
             return;
         }
         let (storage, identity) = (&self.storage, &self.identity);
         if self.claim.is_none() {
-            // A store that did not answer decides nothing: the next round asks again.
+            // A store that did not answer decides nothing: the next sweep asks again.
             self.claim = claim_fabric_name(&**storage, identity, &self.me.0).await.ok().map(|c| c.map(|_| ()));
         }
     }

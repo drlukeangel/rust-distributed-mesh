@@ -155,7 +155,7 @@ impl Day0 {
         ready_event_on(&self.fabric().join("fabric").join("record.json"))
     }
 
-    /// Day 0 to the end of the fabric's first climb: the Fabric row published at state-commit, the admin saying it
+    /// Day 0 to the end of the fabric's first change: the Fabric row published at state-commit, the admin saying it
     /// reached ready-for-traffic, and, when `row` is set, the fabric event's row put on the root. Returns the
     /// running admin.
     fn day0_until_ready(&self, row: bool) -> Running {
@@ -169,7 +169,7 @@ impl Day0 {
             }
             assert!(
                 Instant::now() < until,
-                "the Day-0 admin did not finish its first climb in 30 s: the Fabric row published {published}, it said {said:?}, the ready-for-traffic rows on the root {:?}",
+                "the Day-0 admin did not finish its first change in 30 s: the Fabric row published {published}, it said {said:?}, the ready-for-traffic rows on the root {:?}",
                 self.ready_rows()
             );
             std::thread::sleep(Duration::from_millis(50));
@@ -183,7 +183,7 @@ fn first_ready_reasons(spans: &[serde_json::Value]) -> Vec<String> {
     spans.iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").map(|s| s["attributes"]["reason"].as_str().unwrap_or_default().to_string()).collect()
 }
 
-/// CONTRACT (fabric-ready-for-traffic.md: once the round's check-ins are in, "the fabric is
+/// CONTRACT (fabric-ready-for-traffic.md: once the checklist's check-ins are in, "the fabric is
 /// ready-for-traffic"; wire.md `ApplyFabricEvent`: "the fabric-primary applies a Fabric event at a mesh
 /// primary"; states.md, "Who sets each state": the fabric-primary sets the fabric's
 /// ready-for-traffic): the fabric-primary puts the ready-for-traffic fabric event on the fabric and
@@ -616,7 +616,7 @@ fn an_admin_started_on_a_prepared_root_holding_the_ready_for_traffic_row_knows_a
 /// STATE-COMMIT): a prepared root holding the Fabric row and no ready-for-traffic row is a fabric that
 /// has not first reached ready-for-traffic. An admin started on it, on the zero-contact recovery path,
 /// does not know at boot that the fabric reached it: by the time it reloads its Build it has said no
-/// first-ready from the store, and every first-ready it ever says is its own climb's
+/// first-ready from the store, and every first-ready it ever says is its own change's
 /// (`ready-for-traffic`). What must NOT happen: the Fabric row taken as the signal, so that a seat move or
 /// a caller's workflow is admitted while the fabric is in state-commit.
 #[test]
@@ -626,7 +626,7 @@ fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_
     let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
     assert_zero_contact_recovery(&spans);
     // By the time it reloads its Build it has said no first-ready: an ordering, read from the spans'
-    // starts (its own climb may say `ready-for-traffic` soon after, before this read sees the reload).
+    // starts (its own change may say `ready-for-traffic` soon after, before this read sees the reload).
     let reloaded_at = spans.iter().find(|s| s["name"] == BUILD_RELOADED).and_then(|s| s["start_unix_nano"].as_u64()).unwrap();
     let before: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready" && s["start_unix_nano"].as_u64().is_some_and(|t| t <= reloaded_at)).collect();
     assert!(before.is_empty(), "the admin knew at boot: {before:?}");

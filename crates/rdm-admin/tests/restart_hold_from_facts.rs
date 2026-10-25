@@ -2,10 +2,10 @@
 //! the admin's log (node-restart.md "Completion: node.restarted after the whole start completes"):
 //! the `NodeRestarting` pre-event opens it, and the `node.restart:<path>` `Complete` receipt or the
 //! attempt's `Converged` verdict (node-rpc-envelope.md: progress waits on no gossip) closes it, each
-//! inside the append that brings it, never at the next hierarchy round. A restart door reading the
+//! inside the append that brings it, never at the next hierarchy checklist. A restart door reading the
 //! book after that fact must not refuse a live node as still `restarting`.
 //!
-//! The admin under test is a real Day-0 admin (`admin::start_with`) whose rounds are stretched far
+//! The admin under test is a real Day-0 admin (`admin::start_with`) whose checklists are stretched far
 //! past the cell's bound (`RDM_GOSSIP_INTERVAL_MS`, `RDM_BACKBONE_INTERVAL_MS`), in a process of its
 //! own (the cadence is read once per process): nothing but the fact's own arrival can move the hold
 //! inside the bound. Each cell reads back the spans of its own `EvidenceCapture` and no other.
@@ -17,9 +17,9 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Far past any round this cell could see: the rounds are stretched to ten minutes.
+/// Far past any checklist this cell could see: the checklists are stretched to ten minutes.
 const STRETCHED_MS: &str = "600000";
-/// What "the fact moved the hold" is given before the cell fails: the rounds cannot run in it.
+/// What "the fact moved the hold" is given before the cell fails: the checklists cannot run in it.
 const NEVER: Duration = Duration::from_secs(20);
 
 fn evidence_dir(cell: &str) -> PathBuf {
@@ -29,14 +29,14 @@ fn evidence_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// Runs `cell` in its own process, started with the stretched rounds (the cadence is read once per
+/// Runs `cell` in its own process, started with the stretched checklists (the cadence is read once per
 /// process): `true` in the process that delegated, once the child passed; `false` in the child, which
 /// runs the cell.
 fn delegated(cell: &str) -> bool {
     let stretched = std::ffi::OsStr::new(STRETCHED_MS);
     let parent = crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", Some(stretched)), ("RDM_BACKBONE_INTERVAL_MS", Some(stretched))]);
     if !parent {
-        assert_eq!(rdm_core::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
+        assert_eq!(rdm_core::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the cadence it was started with");
     }
     parent
 }
@@ -56,10 +56,10 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// CONTRACT (node-restart.md "Completion"; membership.rs `restarts_from_facts`: "each is open here
 /// until its operation's `Complete` is receipted"): a restart's `NodeRestarting` receipt entering an
 /// admin's Build log opens the hold on that birth in the admin's book, and the restart's
-/// `node.restart:<path>` `Complete` receipt entering the log closes it, each with no hierarchy round
+/// `node.restart:<path>` `Complete` receipt entering the log closes it, each with no hierarchy checklist
 /// between the receipt and the book's overlay watch ticking. The close is spanned
 /// `rdm.mesh.membership.update.via-restart-closed-by-facts` naming the birth, the Build and the attempt.
-/// Must NOT happen: the hold outliving its `Complete` until a round re-derives it (the restart door
+/// Must NOT happen: the hold outliving its `Complete` until a checklist re-derives it (the restart door
 /// then refuses the live node `node-not-live`, status `restarting`).
 #[test]
 fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
@@ -106,13 +106,13 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
         let mut overlays = book.overlay_changes();
         overlays.borrow_and_update();
         builds.append_step_receipt(&receipt(op.operation.clone(), "NodeRestarting")).await.unwrap();
-        tokio::time::timeout(NEVER, overlays.changed()).await.expect("the NodeRestarting receipt entered the log and no hold opened: the hold waits on a round").unwrap();
+        tokio::time::timeout(NEVER, overlays.changed()).await.expect("the NodeRestarting receipt entered the log and no hold opened: the hold waits on a checklist").unwrap();
         assert_eq!(book.restart_of(node_id.as_str(), &incarnation).map(|o| o.operation), Some(op.operation.clone()), "the hold is the restart's, on the exact birth");
 
         // The restart's Complete enters the log: the hold closes, the overlay watch ticks.
         overlays.borrow_and_update();
         builds.append_step_receipt(&receipt(op.operation.clone(), "Complete")).await.unwrap();
-        tokio::time::timeout(NEVER, overlays.changed()).await.expect("the restart's Complete receipt entered the log and the hold stayed open: it waits on a round").unwrap();
+        tokio::time::timeout(NEVER, overlays.changed()).await.expect("the restart's Complete receipt entered the log and the hold stayed open: it waits on a checklist").unwrap();
         assert_eq!(book.restart_of(node_id.as_str(), &incarnation), None, "the restart is over when its Complete is receipted");
 
         running.leave().await;

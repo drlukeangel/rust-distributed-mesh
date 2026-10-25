@@ -2,7 +2,7 @@
 //! the authority answers by name.
 //!
 //! A declaration is a fact about this admin or its Mesh with a natural key; the declarer holds
-//! the ones not yet answered and resolves the authority from the current view at every round (the
+//! the ones not yet answered and resolves the authority from the current view at every sweep (the
 //! fabric-primary moves; the key does not). A declaration is sent when it becomes owed, and again
 //! only on an eligible event (R-S2): the authoritative destination changes to a deliverable birth,
 //! a failed delivery gains a viable route, or the authority addresses this admin with its down op
@@ -18,9 +18,9 @@
 //! A key is owed again when the authority is another node or a new incarnation of the same node.
 //! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
 //! When this admin no longer holds the seat that owes a key, the key is withdrawn: the seat's
-//! new holder owes it from its own view. A round completion is withdrawn too once the accepted
-//! Build has moved past its round (`FabricRounds::withdraw_superseded`, before each round of
-//! sends): the completion of a superseded round is never sent.
+//! new holder owes it from its own view. A state completion is withdrawn too once the accepted
+//! Build has moved past its checklist (`FabricStates::withdraw_superseded`, before each sweep of
+//! sends): the completion of a superseded checklist is never sent.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
 //! RejectedInvalidTransition        the authority holds a later state: done, named
 //! no answer                        the receiver's exit or removal is proven: owed to the birth the
@@ -47,12 +47,12 @@ use tracing::Instrument;
 
 /// What wakes the declarer: ONE notify, poked by its inputs (the topology, this admin's own
 /// digest status, the declare gate, the meshes it holds and a down op's receipt), and the
-/// authorities that addressed this admin since the last round. `Notify` stores one permit, so a
-/// poke during a round is not lost and a burst of pokes runs one round.
+/// authorities that addressed this admin since the last sweep. `Notify` stores one permit, so a
+/// poke during a sweep is not lost and a burst of pokes runs one sweep.
 #[derive(Debug, Default)]
 pub struct DeclareWake {
     notify: tokio::sync::Notify,
-    /// Wakes the hierarchy and peer-mesh investigation loops when a Mesh's round-complete report arrives.
+    /// Wakes the hierarchy and peer-mesh investigation loops when a Mesh's checklist-complete report arrives.
     pub(crate) report_notify: tokio::sync::Notify,
     addressed: Mutex<BTreeSet<NodeId>>,
     /// The same down ops, counted for a `before_ready` hook blocked on its authority's word.
@@ -88,13 +88,13 @@ impl DeclareWake {
     }
 
     /// The authorities that addressed this admin since the last call; a down op arriving after
-    /// the take is kept for the next round.
+    /// the take is kept for the next sweep.
     pub(crate) fn take_addressed(&self) -> BTreeSet<NodeId> {
         std::mem::take(&mut *self.addressed.lock().unwrap())
     }
 }
 
-pub use rdm_node::rounds::{eligible, Destination, Sent};
+pub use rdm_node::fabric_states::{eligible, Destination, Sent};
 
 /// How a reply ends a declaration: its name, and whether it finishes the key (applied, or refused for
 /// a fact the authority holds that this declaration can never move past).
@@ -127,15 +127,15 @@ pub(crate) enum Key {
     Mesh(String, MeshState),
     /// A fabric event at one mesh primary: `(receiver mesh, event)`.
     FabricEventAt(String, String),
-    /// A mesh primary's completion of a fabric round (`state-committed`, `traffic-opened`) to the
+    /// A mesh primary's completion of a fabric checklist (`state-committed`, `traffic-opened`) to the
     /// fabric-primary: `(completion/fabric/build/attempt)`.
-    Round(String),
+    Completion(String),
 }
 
 impl Key {
-    /// The completion of `round`: one key per round, so a round's completion is owed once.
-    pub(crate) fn round(round: &crate::fabric_state::RoundKey) -> Self {
-        Self::Round(format!("{}/{}/{}/{}", round.kind.completion(), round.fabric_id, round.build_id, round.attempt))
+    /// The completion of `state`: one key per state key, so its completion is owed once.
+    pub(crate) fn completion(state: &crate::fabric_state::StateKey) -> Self {
+        Self::Completion(format!("{}/{}/{}/{}", state.kind.completion(), state.fabric_id, state.build_id, state.attempt))
     }
 }
 
@@ -156,7 +156,7 @@ pub struct Pending {
     pub last: Option<String>,
     /// The last send; `None` until the first.
     pub sent: Option<Sent>,
-    /// The `traceparent` the declaration continues (a round's completion keeps the round's trace). A
+    /// The `traceparent` the declaration continues (a checklist's completion keeps the checklist's trace). A
     /// string, never a span: a stored span handle would hold its parents open and unexported.
     pub trace: Option<String>,
 }
@@ -237,9 +237,9 @@ impl Declarer {
         self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
     }
 
-    /// The authority asked again for `key`, a round completion it already answered: the round it
+    /// The authority asked again for `key`, a state completion it already answered: the checklist it
     /// holds is another tenure's (i146 Q45: a fabric-primary healed from a cut-off re-opens its
-    /// rounds), so the completion is owed again from its record ("Members already done check in
+    /// checklists), so the completion is owed again from its record ("Members already done check in
     /// again"). Whether it was owed again; a key not yet answered is left as it is.
     pub(crate) fn owe_again(&self, me: &PathName, key: &Key) -> bool {
         let Some((by, _, _)) = self.done.lock().unwrap().remove(key).map(|(o, by, inc)| (by, o, inc)) else { return false };
@@ -286,7 +286,7 @@ impl Declarer {
     }
 
     /// Owe this admin's own `state` to its mesh's primary, naming `operation` (a stop's Stopped names
-    /// the stop, node-stop.md step 4): the declaration [`Declarer::round`] sends.
+    /// the stop, node-stop.md step 4): the declaration [`Declarer::sweep`] sends.
     pub(crate) fn owe_own(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, state: NodeState, operation: Option<DeclaredOperation>) {
         if let Some(op) = &operation {
             self.own_operations.lock().unwrap().insert(state, op.clone());
@@ -325,7 +325,7 @@ impl Declarer {
             .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
                     Key::OwnState(..) => view.node_type_primary(&me.mesh, NodeKind::NodeAdmin),
-                    Key::Mesh(..) | Key::Round(..) => view.fabric_primary(),
+                    Key::Mesh(..) | Key::Completion(..) => view.fabric_primary(),
                     Key::FabricEventAt(mesh, _) => view.node_type_primary(mesh, NodeKind::NodeAdmin),
                 };
                 now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
@@ -358,7 +358,7 @@ impl Declarer {
 
     /// The declarations due now, each with the authority the view names for it. Pure over the
     /// declarer's state and the view: a send is due only on an eligible event ([`eligible`]).
-    /// The reachability a failed delivery waits on is observed here, every round, for every key.
+    /// The reachability a failed delivery waits on is observed here, every sweep, for every key.
     pub fn due(&self, me_id: &NodeId, view: &Topology, addressed: &BTreeSet<NodeId>) -> Vec<(Pending, crate::model::Node)> {
         let mut pending = self.pending.lock().unwrap();
         let mut due = Vec::new();
@@ -380,11 +380,11 @@ impl Declarer {
         due
     }
 
-    /// One round: send every declaration that is due to its authority as the view names it now.
+    /// One sweep: send every declaration that is due to its authority as the view names it now.
     /// When the view names this admin, the declaration goes through this admin's own door
     /// (`authority`), decided exactly as a peer's would be; no seat is assumed. `addressed` is
-    /// the authorities that sent this admin their down op since the last round.
-    pub async fn round(self: &Arc<Self>, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
+    /// the authorities that sent this admin their down op since the last sweep.
+    pub async fn sweep(self: &Arc<Self>, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
         self.withdraw_unowned(me, me_id, view);
         self.reowe_moved(me, view);
         for (p, target) in self.due(me_id, view, addressed) {
@@ -430,7 +430,7 @@ impl Declarer {
                     }
                     other => (format!("{}: {}", other.name(), other.code().name()), false, false),
                 };
-                // The end is recorded before the in-flight claim is released: a round that finds the
+                // The end is recorded before the in-flight claim is released: a sweep that finds the
                 // claim gone finds the key finished too ([`Declarer::still_due`]).
                 this.declared(&me, &p, &target, "node-rpc", addressed_now, outcome, finished, typed);
                 {
@@ -504,7 +504,7 @@ impl Declarer {
     pub(crate) fn withdraw_unowned(&self, me: &PathName, me_id: &NodeId, view: &Topology) {
         let holder = |key: &Key| match key {
             Key::OwnState(..) => None,
-            Key::Mesh(..) | Key::Round(..) => Some(view.node_type_primary(&me.mesh, NodeKind::NodeAdmin)),
+            Key::Mesh(..) | Key::Completion(..) => Some(view.node_type_primary(&me.mesh, NodeKind::NodeAdmin)),
             Key::FabricEventAt(..) => Some(view.fabric_primary()),
         };
         let lost: Vec<(Key, String)> = self
@@ -529,28 +529,28 @@ impl Declarer {
         }
     }
 
-    /// Withdraw the round completion `key`, owed or answered, because the accepted Build moved past the
-    /// round it completes (`superseded_by` says how). A completion withdrawn is forgotten whole, so a
+    /// Withdraw the state completion `key`, owed or answered, because the accepted Build moved past the
+    /// checklist it completes (`superseded_by` says how). A completion withdrawn is forgotten whole, so a
     /// successor fabric-primary is not owed it either.
-    pub(crate) fn withdraw_round(&self, me: &PathName, key: &Key, superseded_by: &str) {
+    pub(crate) fn withdraw_completion(&self, me: &PathName, key: &Key, superseded_by: &str) {
         self.requests.lock().unwrap().remove(key);
         self.done.lock().unwrap().remove(key);
         self.pending.lock().unwrap().remove(key);
         if let Some(f) = self.inflight.lock().unwrap().remove(key) {
             f.task.abort();
         }
-        tracing::info_span!("rdm.node_admin.status.remove.via-round-superseded", node = %me, key = ?key, superseded_by = %superseded_by)
-            .in_scope(|| tracing::info!("the accepted Build moved past the round this completion belongs to: withdrawn"));
+        tracing::info_span!("rdm.node_admin.status.remove.via-completion-superseded", node = %me, key = ?key, superseded_by = %superseded_by)
+            .in_scope(|| tracing::info!("the accepted Build moved past the checklist this completion belongs to: withdrawn"));
     }
 
-    /// Every round completion this admin holds, owed or answered, with the round it completes.
-    pub(crate) fn round_completions(&self) -> Vec<(Key, crate::fabric_state::RoundKey)> {
+    /// Every state completion this admin holds, owed or answered, with the checklist it completes.
+    pub(crate) fn state_completions(&self) -> Vec<(Key, crate::fabric_state::StateKey)> {
         self.requests
             .lock()
             .unwrap()
             .iter()
-            .filter(|(k, _)| matches!(k, Key::Round(_)))
-            .filter_map(|(k, (_, request, _))| crate::fabric_state::RoundOp::of(request).map(|op| (k.clone(), op.key())))
+            .filter(|(k, _)| matches!(k, Key::Completion(_)))
+            .filter_map(|(k, (_, request, _))| crate::fabric_state::StateOp::of(request).map(|op| (k.clone(), op.key())))
             .collect()
     }
 
@@ -569,12 +569,12 @@ impl Declarer {
     }
 }
 
-/// The span a declaration is sent under: a round's completion is a new caller span in the round's
+/// The span a declaration is sent under: a checklist's completion is a new caller span in the checklist's
 /// trace; any other declaration is sent under no span.
 fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
     match &p.trace {
         Some(traceparent) => {
-            let span = tracing::info_span!("rdm.node_admin.status.update.via-round-completion", key = ?p.key, to = %target.name, "otel.kind" = "internal");
+            let span = tracing::info_span!("rdm.node_admin.status.update.via-state-completion", key = ?p.key, to = %target.name, "otel.kind" = "internal");
             rdm_transport::set_parent(&span, traceparent);
             span
         }
@@ -582,12 +582,12 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
     }
 }
 
-/// The declarations an admin owes from its view and its own state, derived each round so a
+/// The declarations an admin owes from its view and its own state, derived each sweep so a
 /// successor or a restarted admin owes the same ones from the same facts. `own` is the state this
 /// admin holds of its own birth. `own_mesh_held` is the state this admin's own committed Mesh status
 /// row holds for its mesh, when it holds one.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_round_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
+pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_checklist_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, to its own mesh's primary, which sets its status from the report
     // (node-status.md "Status report"): its node.started once it is ready, and its ConnectionsDeleting once it
     // drains (a drain command, or the fabric shutdown freezing it): its heartbeat says neither.
@@ -608,12 +608,12 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     }
     let i_am_mesh_primary = view.is_mesh_primary(&me.mesh, me_id);
     let i_am_fabric_primary = view.is_fabric_primary(me_id);
-    // My Mesh's status, as its primary, to the fabric-primary: the report that its round is complete,
-    // owed only once every planned birth of the accepted Build checked in (`crate::round`), and only
+    // My Mesh's status, as its primary, to the fabric-primary: the report that its checklist is complete,
+    // owed only once every planned birth of the accepted Build checked in (`crate::checklist`), and only
     // while the state this admin holds for its mesh is not past ready-for-traffic: a primary holding
     // Leaving reports the Leaving it holds (below), never a backward move.
     let past_ready = matches!(own_mesh_held, Some(MeshState::Leaving | MeshState::Dead));
-    if i_am_mesh_primary && mesh_round_done && !past_ready {
+    if i_am_mesh_primary && mesh_checklist_done && !past_ready {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == me.mesh), mesh_ids.get(&me.mesh)) {
             if mesh.status == crate::model::ScopeStatus::ReadyForTraffic {
                 d.owe(Key::Mesh(id.clone(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::ReadyForTraffic });
@@ -623,7 +623,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     // My Mesh's Leaving, as its primary, to the fabric-primary: its own mesh row committed Leaving
     // when it admitted delete-mesh ("one commit stores the row, applies it, gossips it and answers
     // the op", states.md), reported upward as committed state like its ready-for-traffic, and not
-    // gated on a round: the fabric-primary's map holds the mesh's state it hands an admin it creates.
+    // gated on a checklist: the fabric-primary's map holds the mesh's state it hands an admin it creates.
     if i_am_mesh_primary && own_mesh_held == Some(MeshState::Leaving) {
         if let Some(Ok(mesh_id)) = mesh_ids.get(&me.mesh).map(|id| crate::model::MeshId::parse(id).map(|m| (id.clone(), m))) {
             let (key, mesh_id) = mesh_id;
@@ -707,15 +707,15 @@ mod tests {
         assert_eq!(left, vec![Key::OwnState(INC.into(), NodeState::ReadyForTraffic)], "the fabric event is the new fabric-primary's; its own birth stays owed");
     }
 
-    /// CONTRACT: a mesh primary's completion of a fabric round is owed to the fabric-primary the view
+    /// CONTRACT: a mesh primary's completion of a fabric checklist is owed to the fabric-primary the view
     /// names. Once the fabric-primary took it, a successor fabric-primary is owed it again (the
     /// checklist a new primary opens rebuilds from fresh check-ins), and a former mesh primary
     /// withdraws it whole.
     #[test]
-    fn a_round_completion_is_owed_again_to_a_successor_fabric_primary_and_withdrawn_with_the_mesh_primary() {
+    fn a_state_completion_is_owed_again_to_a_successor_fabric_primary_and_withdrawn_with_the_mesh_primary() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
-        let key = Key::Round("state-committed/fabric/bld/1".into());
+        let key = Key::Completion("state-committed/fabric/bld/1".into());
         d.owe_in(key.clone(), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt: 1, operation: "commit-state:f".into() }, Some("00-f16a8b75a1b2c3d4e5f60718293a4b5c-1111111111111111-01".into()));
         let first = view("mesh1.admin.1", "mesh1.admin.1");
         let holder = first.fabric_primary().unwrap().clone();
@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(d.owed(), 0, "the same holder, the same birth: nothing is owed again");
         d.reowe_moved(&me, &view("mesh1.admin.2", "mesh1.admin.2"));
         assert_eq!(d.owed(), 1, "a successor fabric-primary is owed the completion");
-        assert!(d.pending.lock().unwrap().get(&key).unwrap().trace.is_some(), "the completion keeps the round's trace");
+        assert!(d.pending.lock().unwrap().get(&key).unwrap().trace.is_some(), "the completion keeps the checklist's trace");
         d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh2.admin.1", "mesh1.admin.2"));
         assert_eq!(d.owed(), 1, "this admin is still its mesh's primary");
         let mut v = view("mesh2.admin.1", "mesh1.admin.2");
@@ -738,22 +738,22 @@ mod tests {
         assert_eq!(d.owed(), 0, "a former mesh primary withdraws the completion whole");
     }
 
-    /// CONTRACT (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the accepted Build,
-    /// attempt and planned exact births"): a round completion the accepted Build moved past is withdrawn
-    /// whole, owed or answered, and a successor fabric-primary is not owed it again. Another round's
-    /// completion is untouched. Must NOT happen: the completion of a superseded round kept owed and sent
+    /// CONTRACT (node-rpc-envelope.md, "Fabric status command pairs": "The state's command is scoped to the accepted Build,
+    /// attempt and planned exact births"): a state completion the accepted Build moved past is withdrawn
+    /// whole, owed or answered, and a successor fabric-primary is not owed it again. Another checklist's
+    /// completion is untouched. Must NOT happen: the completion of a superseded checklist kept owed and sent
     /// on every eligible event (gate red b24a4303, mesh_elections__sticky_seat: mesh2.admin.1 declared
-    /// the attempt-2 completion and was answered NotReady "round holds 3, reported 2").
+    /// the attempt-2 completion and was answered NotReady "checklist holds 3, reported 2").
     #[test]
-    fn a_round_completion_the_accepted_build_moved_past_is_withdrawn_whole_owed_or_answered() {
+    fn a_state_completion_the_accepted_build_moved_past_is_withdrawn_whole_owed_or_answered() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
         let d = Declarer::new();
         let fabric = FabricId::mint();
-        let round = |attempt: u32| crate::fabric_state::RoundKey { kind: crate::fabric_state::RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: "bld".into(), attempt };
+        let state_key = |attempt: u32| crate::fabric_state::StateKey { kind: crate::fabric_state::StateCommand::StateCommit, fabric_id: fabric.clone(), build_id: "bld".into(), attempt };
         let owe = |attempt: u32| {
-            let r = round(attempt);
-            d.owe_in(Key::round(&r), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt, operation: "commit-state:f".into() }, None);
-            Key::round(&r)
+            let r = state_key(attempt);
+            d.owe_in(Key::completion(&r), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap(), build_id: "bld".into(), attempt, operation: "commit-state:f".into() }, None);
+            Key::completion(&r)
         };
         let (owed_two, answered_three, current_four) = (owe(2), owe(3), owe(4));
         let first = view("mesh1.admin.1", "mesh1.admin.1");
@@ -761,12 +761,12 @@ mod tests {
         answered_by(&d, &answered_three, &holder);
         assert_eq!(d.owed(), 2, "attempts 2 and 4 are owed; attempt 3 was answered");
 
-        d.withdraw_round(&me, &owed_two, "the accepted Build bld is at attempt 4, past this round's attempt 2");
-        d.withdraw_round(&me, &answered_three, "the accepted Build bld is at attempt 4, past this round's attempt 3");
-        assert_eq!(d.owed_keys(), vec![current_four.clone()], "the superseded completions are no longer owed; the current round's is");
-        assert_eq!(d.answered(&answered_three), None, "an answered completion of a superseded round is forgotten whole");
+        d.withdraw_completion(&me, &owed_two, "the accepted Build bld is at attempt 4, past this checklist's attempt 2");
+        d.withdraw_completion(&me, &answered_three, "the accepted Build bld is at attempt 4, past this checklist's attempt 3");
+        assert_eq!(d.owed_keys(), vec![current_four.clone()], "the superseded completions are no longer owed; the current checklist's is");
+        assert_eq!(d.answered(&answered_three), None, "an answered completion of a superseded checklist is forgotten whole");
         d.reowe_moved(&me, &view("mesh1.admin.2", "mesh1.admin.2"));
-        assert_eq!(d.owed_keys(), vec![current_four], "a successor fabric-primary is not owed a superseded round's completion");
+        assert_eq!(d.owed_keys(), vec![current_four], "a successor fabric-primary is not owed a superseded checklist's completion");
     }
 
     #[test]
@@ -1118,7 +1118,7 @@ mod tests {
     /// reached ready-for-traffic, the fabric-primary owes the ready-for-traffic event to every mesh primary
     /// the view names, whatever status the fabric holds now: a mesh a resize adds while the fabric is back at
     /// pending is told too. Before the fabric first reached ready-for-traffic, nothing is owed.
-    /// Must NOT happen: a mesh created in a resize left with no row of the fact until the fabric climbs again.
+    /// Must NOT happen: a mesh created in a resize left with no row of the fact until the fabric changes again.
     #[test]
     fn the_fabric_primary_owes_the_event_to_a_mesh_a_resize_adds_while_the_fabric_is_back_at_pending() {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
@@ -1232,7 +1232,7 @@ mod tests {
     /// CONTRACT (states.md: "One commit stores the row, applies it, gossips it and answers the op";
     /// node-rpc-envelope.md: "`DeclareNodeState` and `DeclareMeshState` report committed state
     /// upward"): a mesh primary whose own Mesh status row is committed Leaving (delete-mesh admitted)
-    /// owes `DeclareMeshState(Leaving)` to the fabric-primary, whether or not its round is done, so
+    /// owes `DeclareMeshState(Leaving)` to the fabric-primary, whether or not its checklist is done, so
     /// the fabric-primary's map holds the mesh's Leaving and hands it to an admin it creates for the
     /// mesh. An admin that is not its mesh's primary owes none: the Mesh declaration is the seat's.
     #[test]
@@ -1250,7 +1250,7 @@ mod tests {
             vec![(Key::Mesh(mesh2.to_string(), MeshState::Leaving), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Leaving })],
             "the leaving mesh's primary owes its committed Leaving to the fabric-primary"
         );
-        // A primary holding its mesh's Leaving whose round is done (the admin created for a leaving
+        // A primary holding its mesh's Leaving whose checklist is done (the admin created for a leaving
         // mesh, handed Leaving) reports the state it holds, never ready-for-traffic: a backward
         // declaration the fabric-primary can only refuse.
         let d = Declarer::new();
@@ -1290,23 +1290,23 @@ mod tests {
         assert_eq!(d.owed(), 0, "the mesh seat is the retired birth's, not this admin's: the Mesh key is withdrawn");
     }
 
-    /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a round is kept as the
+    /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a sweep is kept as the
     /// one stored permit; and with nothing poked the declarer sleeps.
     #[tokio::test]
-    async fn a_burst_of_pokes_runs_one_round() {
+    async fn a_burst_of_pokes_runs_one_sweep() {
         let w = DeclareWake::new();
         for _ in 0..5 {
             w.poke();
         }
         tokio::time::timeout(std::time::Duration::from_secs(5), w.woken()).await.expect("the burst woke the declarer");
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), w.woken()).await.is_err(), "5 pokes ran one round, not five");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), w.woken()).await.is_err(), "5 pokes ran one sweep, not five");
         w.poke();
-        tokio::time::timeout(std::time::Duration::from_secs(5), w.woken()).await.expect("a poke after the round wakes it again");
+        tokio::time::timeout(std::time::Duration::from_secs(5), w.woken()).await.expect("a poke after the sweep wakes it again");
     }
 
-    /// CONTRACT: a down op taken in a round is gone from the next; one arriving after the take is kept.
+    /// CONTRACT: a down op taken in a sweep is gone from the next; one arriving after the take is kept.
     #[test]
-    fn the_down_ops_taken_by_a_round_are_not_taken_twice() {
+    fn the_down_ops_taken_by_a_sweep_are_not_taken_twice() {
         let w = DeclareWake::new();
         let a = NodeId::mint();
         w.addressed_by(Some(&a), None);

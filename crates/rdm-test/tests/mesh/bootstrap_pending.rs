@@ -292,7 +292,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
 /// clears degraded. Pending is handed once, to the admin that launched the mesh's first admin: the
 /// recovery admin is never handed Pending. What must NOT happen: a second certain Pending hand-off, any
 /// Pending hand-off after the fault, a republish under a new changed_at, degraded cleared before the new
-/// primary's round completed, a second MeshId for the mesh, or a new Build.
+/// primary's checklist completed, a second MeshId for the mesh, or a new Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id() {
     let cell = "recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id";
@@ -334,7 +334,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .await;
     assert_eq!(estate.mesh_view(&lost).await.id.expect("the lost mesh still has its id").to_string(), mesh_id, "the lost mesh recovered under its own MeshId");
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build");
-    // The successor primary reports its round; on that report the fabric-primary clears degraded: the
+    // The successor primary reports its checklist; on that report the fabric-primary clears degraded: the
     // fabric is ready-for-traffic again before the estate stops.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     estate.stop().await;
@@ -359,7 +359,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .expect("the fabric primary decided the recovery of the lost mesh's node-admin");
     assert_eq!(decision["attributes"]["fabric_status"], "degraded", "the decision marks the fabric degraded: {decision}");
 
-    // Step 7: the successor primary republishes the held MeshStatus, changed_at preserved, after its round.
+    // Step 7: the successor primary republishes the held MeshStatus, changed_at preserved, after its checklist.
     let scope = format!("mesh:{lost}");
     let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
     let held = sends
@@ -374,21 +374,21 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         assert_eq!(s(&sp["attributes"]["node"]), lost_admin, "the mesh's status is its own primary's: {sp}");
         assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), held, "the republish is the held MeshStatus, changed_at preserved: {sp}");
     }
-    let round_complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete")
+    let checklist_complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete")
         .into_iter()
         .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && sp["attributes"]["node"] == lost_admin.as_str() && start(sp) >= start(&decision))
         .map(start)
         .min()
-        .expect("the successor primary's round completed");
+        .expect("the successor primary's checklist completed");
     let first_republish = republished.iter().map(|sp| start(sp)).min().unwrap();
-    assert!(first_republish >= round_complete, "the held MeshStatus is republished only after the round completed: {first_republish} vs {round_complete}");
+    assert!(first_republish >= checklist_complete, "the held MeshStatus is republished only after the checklist completed: {first_republish} vs {checklist_complete}");
     let cleared = named(&spans, "rdm.node_admin.mesh.update.via-recovered")
         .into_iter()
         .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= start(&decision))
         .min_by_key(|sp| start(sp))
         .cloned()
         .expect("the fabric primary cleared degraded on the successor primary's report");
-    assert!(start(&cleared) >= round_complete, "degraded clears only on the new primary's report, after its round completed: {} vs {round_complete}", start(&cleared));
+    assert!(start(&cleared) >= checklist_complete, "degraded clears only on the new primary's report, after its checklist completed: {} vs {checklist_complete}", start(&cleared));
 
     let result = json!({
         "cell": cell,

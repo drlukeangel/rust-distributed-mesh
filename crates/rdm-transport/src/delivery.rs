@@ -812,9 +812,9 @@ impl Delivery {
         }
     }
 
-    /// One round of resending `id`'s owed response: `Err` ends the loop with its outcome, `Ok`
-    /// waits on what it returns before the next round.
-    async fn push_round(&self, id: &DeliveryId, attempt: u32, span: &tracing::Span) -> Result<(Arc<tokio::sync::Notify>, watch::Receiver<u64>), &'static str> {
+    /// One resend of `id`'s owed response: `Err` ends the loop with its outcome, `Ok`
+    /// waits on what it returns before the next resend.
+    async fn push_resend(&self, id: &DeliveryId, attempt: u32, span: &tracing::Span) -> Result<(Arc<tokio::sync::Notify>, watch::Receiver<u64>), &'static str> {
         let (reply_to, frames, kick) = {
             let mut st = self.inner.st.lock().unwrap();
             let Some(o) = st.owed.get_mut(id) else { return Err("acked") };
@@ -847,7 +847,7 @@ impl Delivery {
         tracing::info!(parent: span, attempt, frames = frames.len(), via, peer = %reply_to.fmt_short(), "owed response frames resent on a new stream");
         if let Some(conn) = conn {
             self.resend_frames(id, &conn, frames).instrument_in(span).await;
-            // Acked on that stream: the response is owed no longer, said now, not a round later.
+            // Acked on that stream: the response is owed no longer, said now, not a resend later.
             if !self.inner.st.lock().unwrap().owed.contains_key(id) {
                 return Err("acked");
             }
@@ -868,7 +868,7 @@ impl Delivery {
             self.inner.stats.responses_resent.fetch_add(1, Ordering::SeqCst);
         }
         // The caller's acks come back on this stream's other direction; read them until it ends or
-        // every frame this round resent is acked (frames written since go out on their own stream).
+        // every frame this resend sent again is acked (frames written since go out on their own stream).
         let mut acked = match self.inner.st.lock().unwrap().owed.get(id) {
             Some(o) => o.acked.subscribe(),
             None => return,
@@ -1001,7 +1001,7 @@ async fn push_loop(weak: std::sync::Weak<Inner>, id: DeliveryId, why: String, pa
         let Some(inner) = weak.upgrade() else { break "process-ended" };
         let d = Delivery { inner };
         attempt += 1;
-        let (kick, mut conns) = match d.push_round(&id, attempt, &span).await {
+        let (kick, mut conns) = match d.push_resend(&id, attempt, &span).await {
             Ok(w) => w,
             Err(outcome) => break outcome,
         };

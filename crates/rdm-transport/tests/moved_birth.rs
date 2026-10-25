@@ -56,9 +56,9 @@ async fn birth(key: &SecretKey, node_id: &NodeId, addr: SocketAddr) -> Birth {
 /// answers at an address the resolver no longer names for the node never takes part in the dial.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_reaches_a_restarted_birth_whose_old_port_another_process_took() {
-    const ROUNDS: usize = 12;
+    const CALLS: usize = 12;
     let mut failures = Vec::new();
-    for round in 0..ROUNDS {
+    for call in 0..CALLS {
         let key = SecretKey::generate();
         let node_id = NodeId::mint();
         let first = birth(&key, &node_id, "127.0.0.1:0".parse().unwrap()).await;
@@ -70,26 +70,26 @@ async fn a_client_reaches_a_restarted_birth_whose_old_port_another_process_took(
         let client = NodeRpcClient::new(cep, resolver.clone());
         let target = NodeTarget::ExactNode(node_id.clone());
         let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"before".to_vec() }, &CallOptions::default()).await;
-        assert!(matches!(out, RpcOutcome::Reply(_)), "round {round}: the first birth answers: {out:?}");
+        assert!(matches!(out, RpcOutcome::Reply(_)), "call {call}: the first birth answers: {out:?}");
 
         // The birth stops; another process (its own key) takes its port; the key restarts elsewhere.
         first.router.shutdown().await.unwrap();
         first.router.endpoint().close().await;
         drop(first);
         let foreign = birth(&SecretKey::generate(), &NodeId::mint(), old_port).await;
-        assert_eq!(foreign.record.transport_addr, old_port, "round {round}: the foreign process holds the old port");
+        assert_eq!(foreign.record.transport_addr, old_port, "call {call}: the foreign process holds the old port");
         let second = birth(&key, &node_id, "127.0.0.1:0".parse().unwrap()).await;
         assert_ne!(second.record.transport_addr, old_port);
         resolver.insert(second.record.clone());
 
         let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"after".to_vec() }, &CallOptions::default()).await;
         if !matches!(out, RpcOutcome::Reply(_)) {
-            failures.push(format!("round {round}: {out:?}"));
+            failures.push(format!("call {call}: {out:?}"));
         }
         foreign.router.shutdown().await.unwrap();
         second.router.shutdown().await.unwrap();
     }
-    assert!(failures.is_empty(), "{} of {ROUNDS} calls to the restarted birth failed:\n{}", failures.len(), failures.join("\n"));
+    assert!(failures.is_empty(), "{} of {CALLS} calls to the restarted birth failed:\n{}", failures.len(), failures.join("\n"));
 }
 
 /// A birth that dies: it lives on its own thread and runtime, and `kill` drops that runtime, which
@@ -130,9 +130,9 @@ impl DyingBirth {
 /// carries the dial nor takes the dial's first packets to the process on the old port.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_holding_an_open_connection_to_a_killed_birth_reaches_its_restart_whose_old_port_another_process_took() {
-    const ROUNDS: usize = 12;
+    const CALLS: usize = 12;
     let mut failures = Vec::new();
-    for round in 0..ROUNDS {
+    for call in 0..CALLS {
         let key = SecretKey::generate();
         let node_id = NodeId::mint();
         let first = DyingBirth::spawn(&key, &node_id).await;
@@ -144,7 +144,7 @@ async fn a_client_holding_an_open_connection_to_a_killed_birth_reaches_its_resta
         let client = NodeRpcClient::new(cep.clone(), resolver.clone());
         let target = NodeTarget::ExactNode(node_id.clone());
         let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"before".to_vec() }, &CallOptions::default()).await;
-        assert!(matches!(out, RpcOutcome::Reply(_)), "round {round}: the first birth answers: {out:?}");
+        assert!(matches!(out, RpcOutcome::Reply(_)), "call {call}: the first birth answers: {out:?}");
 
         // Killed: its runtime goes, its socket closes, the client is told nothing.
         first.kill();
@@ -152,20 +152,20 @@ async fn a_client_holding_an_open_connection_to_a_killed_birth_reaches_its_resta
         let held = cep.remote_info(key.public()).await.expect("the client holds the key");
         assert!(
             held.addrs().any(|a| matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active)),
-            "round {round}: the client holds an open path to the killed birth: {held:?}"
+            "call {call}: the client holds an open path to the killed birth: {held:?}"
         );
         let foreign = birth(&SecretKey::generate(), &NodeId::mint(), old_port).await;
-        assert_eq!(foreign.record.transport_addr, old_port, "round {round}: the foreign process holds the old port");
+        assert_eq!(foreign.record.transport_addr, old_port, "call {call}: the foreign process holds the old port");
         let second = birth(&key, &node_id, "127.0.0.1:0".parse().unwrap()).await;
         assert_ne!(second.record.transport_addr, old_port);
         resolver.insert(second.record.clone());
 
         let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"after".to_vec() }, &CallOptions::default()).await;
         if !matches!(out, RpcOutcome::Reply(_)) {
-            failures.push(format!("round {round}: {out:?}"));
+            failures.push(format!("call {call}: {out:?}"));
         }
         foreign.router.shutdown().await.unwrap();
         second.router.shutdown().await.unwrap();
     }
-    assert!(failures.is_empty(), "{} of {ROUNDS} calls to the restarted birth failed:\n{}", failures.len(), failures.join("\n"));
+    assert!(failures.is_empty(), "{} of {CALLS} calls to the restarted birth failed:\n{}", failures.len(), failures.join("\n"));
 }

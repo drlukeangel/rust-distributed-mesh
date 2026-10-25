@@ -26,7 +26,7 @@ pub struct LiveMesh {
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
     pub commands: Arc<rdm_admin::node_commands::CommandBook>,
-    /// Every round check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
+    /// Every state check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
     /// arrival order: the request as it came.
     pub check_ins: Arc<tokio::sync::watch::Sender<Vec<rdm_core::status::StatusRequest>>>,
 }
@@ -118,7 +118,7 @@ impl NodeObserver for LiveMesh {
                 nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 caches: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
-                hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
+                hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
                 republish: Default::default(), configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 book: Some(self.membership.book.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
@@ -228,7 +228,7 @@ pub const TEST_MESH_ID: &str = "meshd0000001";
 /// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
 /// the nodes' membership seed, and the observer over it. It is the launcher of every node a cell
 /// launches from its template, and owns their teardown: dropped, it stops every node launched under
-/// its data root and ends its publication rounds.
+/// its data root and ends its publications.
 pub struct AdminSide {
     pub observer: LiveMesh,
     pub seed: (String, SocketAddr),
@@ -250,8 +250,8 @@ pub struct AdminSide {
     /// data dirs and the fabric's store root: stops every node launched under it, before the
     /// admin's endpoint closes.
     reap: ReapOnDrop,
-    /// Its publication rounds as its mesh's primary (`None` for a silent admin side).
-    _rounds: Option<AbortOnDrop>,
+    /// Its publications as its mesh's primary (`None` for a silent admin side).
+    _publications: Option<AbortOnDrop>,
     /// Its own digest, published on the membership cadence (`None` for a silent admin side).
     _publisher: Option<AbortOnDrop>,
     _router: Router,
@@ -515,7 +515,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
     // open commands of this admin side.
     let commands = Arc::new(rdm_admin::node_commands::CommandBook::default());
-    // The round check-ins a node makes to this admin side as its commander are held in order and
+    // The state check-ins a node makes to this admin side as its commander are held in order and
     // acknowledged; the admin side keeps no checklist.
     let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
@@ -550,7 +550,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                     match &req {
                         R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rdm_admin::node_commands::refuse_reserved(&receiver, "", &req)),
                         R::NodeLeft { .. } => Ok(rdm_admin::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
-                        // The admin side serves round check-ins and declarations only: any other request
+                        // The admin side serves state check-ins and declarations only: any other request
                         // has no handler here, so not handled here (R24), decided by dispatch alone.
                         _ => Ok(rdm_admin::node_self::request_not_handled(&receiver, &req)),
                     }
@@ -596,27 +596,27 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
     // members' lifecycle, sets each member's status from what it reports (its node.started, its ConnectionsDeleting and
     // Leaving), and publishes its
-    // member projection on its own mesh channel each round and at once on a material change
-    // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status
+    // member projection on its own mesh channel at each publication and at once on a material change
+    // (gossip.md §3.1 `Members`, the admin's publication). Its members take every status
     // from that projection.
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
-    let (rounds, publisher) = if primary {
+    let (publications, publisher) = if primary {
         let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", rdm_core::PublisherId { node: name.to_string(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
         backbone.set_mesh_primary(true);
         if name == "mesh1.admin.1" {
             backbone.hold_primary(rdm_core::Seat::MeshPrimary, rdm_core::Primary { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 });
         }
-        let rounds = {
+        let publications = {
             let (backbone, membership) = (backbone.clone(), membership.clone());
             AbortOnDrop(tokio::spawn(async move {
                 loop {
                     backbone.publish(&membership, backbone.own_members(&membership)).await;
-                    backbone.round_wake(&membership, tokio::time::Instant::now() + rdm_transport::membership::gossip_interval()).await;
+                    backbone.publication_wake(&membership, tokio::time::Instant::now() + rdm_transport::membership::gossip_interval()).await;
                 }
             }))
         };
         let cell = digest_cell.clone();
-        (Some(rounds), Some(AbortOnDrop(membership.publish_every(rdm_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))))
+        (Some(publications), Some(AbortOnDrop(membership.publish_every(rdm_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))))
     } else {
         (None, None)
     };
@@ -634,7 +634,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         rows,
         digest: digest_cell,
         reap: ReapOnDrop(std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()))),
-        _rounds: rounds,
+        _publications: publications,
         _publisher: publisher,
         _router: router,
     }

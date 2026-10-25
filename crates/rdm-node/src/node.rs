@@ -67,7 +67,7 @@ pub struct RunningNode {
     /// Cancelled when this birth is retired (stop-node, its process stopping): the
     /// `before_ready` hook and any pull it has in flight end.
     pub cancel: rdm_transport::Retirement,
-    /// The surface that serves this birth's lifecycle and round commands
+    /// The surface that serves this birth's lifecycle and state commands
     /// (`crate::node_self`).
     pub own: Arc<crate::node_self::NodeSelf>,
     before_ready: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
@@ -466,7 +466,7 @@ async fn start_booted(
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
     // Before the fabric's first state-commit the file backend holds the node's connections rows in
-    // its scratchpad; its commit-state action publishes them (states.md, Rounds).
+    // its scratchpad; its commit-state action publishes them (states.md, Setting a state).
     let node_storage = storage.open(launch).await.map_err(|e| anyhow!("{e}"))?;
     step.record("writes_to", node_storage.writes_to.as_str());
     let base_storage = node_storage.connections.clone();
@@ -695,7 +695,7 @@ async fn start_booted(
                                 Arc::new(
                                     crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_cancel(cancel.clone())
-                                        .with_round_actions(node_storage.round_actions.clone()),
+                                        .with_state_actions(node_storage.state_actions.clone()),
                                 )
                             };
                             own.set_connections(connections.clone());
@@ -1429,7 +1429,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 /// `node.connections.get` of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
-/// re-publishes its presence on the channel it is on (the check-in it owes, states.md "The round
+/// re-publishes its presence on the channel it is on (the check-in it owes, states.md "The check-in
 /// checklist") and answers its current state; no transition: a birth its authority holds off
 /// its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87), never by a probe. While its `before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
@@ -1465,7 +1465,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(reply);
             }
             if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
-                // A member checks in with the primary that commanded it (fabric-state-commit.md, round
+                // A member checks in with the primary that commanded it (fabric-state-commit.md, checklist
                 // sequence: "M->>N: commit-state", "N->>M: state-committed"): the caller, which a new
                 // primary is before this node hears it take the seat. Only a caller no projection this
                 // node holds names is checked in at the node-admin its seat book names.
@@ -1473,10 +1473,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone()).or_else(|| me.membership.primaries().mesh(&mesh).map(|held| held.node_id));
                 let reply = match commander {
                     None => rdm_core::reply::status::not_ready(format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.membership.held_name(&me.digest.node.name), peer.endpoint_id)),
-                    Some(commander) => me.own.serve(Some(&commander), None, &req).await.expect("a round op"),
+                    Some(commander) => me.own.serve(Some(&commander), None, &req).await.expect("a state op"),
                 };
-                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("a round command naming this node was decided"));
+                tracing::info_span!("rdm.node_admin.status.update.via-state-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a state command naming this node was decided"));
                 return Ok(reply);
             }
             // node-left is never sent: refused by name as a node-admin refuses it, never sent on to one.
@@ -1516,8 +1516,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                         return Ok(reply);
                     }
-                    // The check-in a probed birth owes (states.md "The round checklist": a new primary
-                    // re-sends the round and members already done check in again): its presence
+                    // The check-in a probed birth owes (states.md "The check-in checklist": a new primary
+                    // re-sends the checklist and members already done check in again): its presence
                     // re-published on the channel it is on, its current state answered; no transition.
                     // A birth its authority holds off its mesh is commanded back through
                     // `node.mesh.join` (node-tickle.md, Q87), never by a probe.

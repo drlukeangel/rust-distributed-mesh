@@ -262,7 +262,7 @@ pub(crate) async fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, Strin
 }
 
 /// The local OS clock, for a read that measures time elapsed since a local event (a tickle
-/// round's spacing): never a stamp another node reads, which is rafka-time.
+/// checklist's spacing): never a stamp another node reads, which is rafka-time.
 pub(crate) fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -320,19 +320,19 @@ pub struct Records {
     pub unreachable: crate::offline::UnreachableMarks,
     /// Per peer mesh the fabric primary gave a new node-admin (the investigation's carrier-edge-lost
     /// verdict, or the fully crashed mesh's proof): the fabric is `degraded` from that moment until
-    /// each such mesh's new primary has reported its round.
+    /// each such mesh's new primary has reported its checklist.
     pub(crate) peer_recovery: Mutex<BTreeMap<String, PeerRecovery>>,
     /// The fabric-primary role was taken while the fabric was `degraded`: the new holder adopted
-    /// the status and keeps it until every mesh primary reports for its round (`crate::round`).
+    /// the status and keeps it until every mesh primary reports for its checklist (`crate::checklist`).
     pub(crate) adopted_degraded: std::sync::atomic::AtomicBool,
     /// This admin, as its mesh's primary, may declare its Mesh ready: it holds no adopted status
-    /// waiting for its round (`crate::round`). Withdrawn when the role ends.
+    /// waiting for its checklist (`crate::checklist`). Withdrawn when the role ends.
     pub(crate) declare_gate: std::sync::atomic::AtomicBool,
     /// What wakes the declarer (`crate::status_declare`): poked by the topology, this admin's own
     /// digest status, the declare gate, the meshes this admin holds and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
     /// Poked each time the installed view changes: the hierarchy loop wakes on it to act on a
-    /// seat taken or a status that routing reads at once, not on its next round.
+    /// seat taken or a status that routing reads at once, not on its next checklist.
     pub view_changed: tokio::sync::Notify,
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
@@ -343,7 +343,7 @@ pub struct Records {
     /// computes none until its entry read has (ruling R-A2).
     pub(crate) entering: std::sync::atomic::AtomicBool,
     /// The fabric state this admin projects: authoritative on the fabric-primary, the last
-    /// published state on every other admin (`crate::fabric_rounds`).
+    /// published state on every other admin (`crate::fabric_status`).
     pub(crate) fabric_state: Mutex<crate::fabric_state::FabricState>,
     /// Whether the fabric this admin projects has first reached ready-for-traffic: set by the first
     /// `set_fabric_state(ReadyForTraffic)` and never cleared (states.md, "The initial fabric before
@@ -354,7 +354,7 @@ pub struct Records {
     /// The state-sync the application last reported failed (Q158), for the Build and attempt it was
     /// called for: the drive fails that Build on its `fabric-change` step (`None`: none reported).
     pub(crate) state_sync_failed: Mutex<Option<StateSyncFailure>>,
-    /// The fabric state the fabric-primary last put in a FabricStatus frame. The climb enters the
+    /// The fabric state the fabric-primary last put in a FabricStatus frame. The change enters the
     /// next state only after the current one went out, so every state is its own frame.
     pub(crate) published_fabric_state: Mutex<Option<crate::fabric_state::FabricState>>,
     /// The accepted Build's planned births per mesh: the nodes a mesh's readiness is counted over.
@@ -363,7 +363,7 @@ pub struct Records {
     /// The meshes whose last heard MeshStatus is ready-for-traffic. A mesh's lifecycle is pending,
     /// ready-for-traffic, leaving, dead (states.md): a ready mesh that loses a node is not pending
     /// again, so its projection holds ready while it has a primary, and the primary that takes over
-    /// adopts that state and runs its round (R-S3).
+    /// adopts that state and runs its checklist (R-S3).
     pub(crate) heard_ready: Mutex<BTreeSet<String>>,
     /// Each MeshStatus Dead held, by its fact (mesh name, publisher, changed_at), bound to the mesh id
     /// it is about: the id the publisher's own digest names when the fact is first held. Dead is a
@@ -378,7 +378,7 @@ pub struct Records {
     /// This admin's own logical node, set once at start: the projection knows the mesh it authors
     /// the status of (a mesh primary restates no heard status as its own, gossip.md MeshStatus).
     pub(crate) me: std::sync::OnceLock<NodeId>,
-    /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
+    /// Moves each time the installed view changed: what a checklist waits on to see a target reachable again.
     pub(crate) view_tick: tokio::sync::watch::Sender<u64>,
     /// The writer of the node rows of each mesh this admin writes for (`crate::node_rows`): the
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
@@ -535,7 +535,7 @@ impl Records {
     }
 
     /// The fabric-primary's own ready-for-traffic row (states.md, "Who sets each state": "The
-    /// fabric-primary declares fabric state through the completed rounds"): put on the fabric store as the
+    /// fabric-primary declares fabric state through the completed check-ins"): put on the fabric store as the
     /// first act of entering ready-for-traffic, before the fabric state latches and the door admits
     /// anything, so the fact is durable before anything acts on it.
     /// Committed as an `ApplyFabricEvent` at this admin is (`crate::status_rpc::commit_fabric_event`):
@@ -687,7 +687,7 @@ impl Records {
         }
     }
 
-    /// Every peer mesh the fabric primary gave a new node-admin that has not yet reported its round.
+    /// Every peer mesh the fabric primary gave a new node-admin that has not yet reported its checklist.
     pub fn peer_recoveries(&self) -> Vec<PeerRecovery> {
         self.peer_recovery.lock().unwrap().values().cloned().collect()
     }
@@ -710,7 +710,7 @@ impl Records {
 
     /// The fabric primary `me` gives `recovery.mesh` a new node-admin and, at that same moment, authors
     /// the fabric `degraded` (mesh-investigation.md step 6; R-DG1: on either arm), until that mesh's new
-    /// primary reports its round (step 7: [`crate::investigate::restore_peer_recovery`]). The one place
+    /// primary reports its checklist (step 7: [`crate::investigate::restore_peer_recovery`]). The one place
     /// the recovery is opened and the one span that says so, `verdict` naming the arm:
     /// `carrier-edge-lost` (the ladder's verdict, `replace`: a new decision replaces an earlier one's
     /// recovery of the mesh) or `fully-crashed` (the create admitted on the provider's proof, which keeps
@@ -731,7 +731,7 @@ impl Records {
         true
     }
 
-    /// Close the recovery of `mesh`: its new primary reported its round.
+    /// Close the recovery of `mesh`: its new primary reported its checklist.
     pub fn close_peer_recovery(&self, mesh: &str) {
         self.peer_recovery.lock().unwrap().remove(mesh);
     }

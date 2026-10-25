@@ -749,10 +749,10 @@
           "dir": "target/i143-acceptance/2803-detect/process/two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin"
         },
         {
-          "name": "elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status",
+          "name": "elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status",
           "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status/estate cargo test -p rdm-test --test main peer_mesh_investigation::elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status/estate cargo test -p rdm-test --test main peer_mesh_investigation::elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status"
         },
         {
           "name": "a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does",

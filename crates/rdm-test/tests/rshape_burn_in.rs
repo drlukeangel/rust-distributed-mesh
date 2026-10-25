@@ -6615,9 +6615,9 @@ fn soak_seconds() -> u64 {
     env("RDM_RSHAPE_SOAK_SECONDS").parse().unwrap_or_else(|e| panic!("REFUSED: RDM_RSHAPE_SOAK_SECONDS is not a u64: {e}"))
 }
 
-/// One offline-tickle round at its longest (the driver derives its unheard windows from it).
-fn tickle_round() -> Duration {
-    rdm_admin::offline::tickle_round_at_default_budget()
+/// One offline-tickle ladder at its longest (the driver derives its unheard windows from it).
+fn tickle_ladder() -> Duration {
+    rdm_admin::offline::tickle_ladder_at_default_budget()
 }
 
 /// Whether this host can drop UDP between loopback ports; `Err` names why it cannot.
@@ -6677,7 +6677,7 @@ async fn soak_run(cell: &str, story: Story) {
     let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
     let day0 = estate.node_values().await;
     let per_mesh = [(NodeClass::NodeAdmin, shape.node_admin), (NodeClass::Compute, shape.compute), (NodeClass::Gateway, shape.gateway), (NodeClass::Broker, shape.broker)];
-    let mut cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_round());
+    let mut cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_ladder());
     if story.profile == SoakProfile::Floors {
         // Past the hung-hold floors (`RDM_HUNG_HOLD_FLOORS` staleness floors, node-recovery.md R-FM1) by two.
         let floors: u32 = std::env::var("RDM_HUNG_HOLD_FLOORS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
