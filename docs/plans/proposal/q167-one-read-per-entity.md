@@ -17,6 +17,29 @@ The singular adds two things only: the `NOT_FOUND` code and a non-list return ty
 per entity "not there" is the empty list, and a caller that asked for one id reads the length. That
 is the shape of AWS `Describe*` (ids or filters in, a list out) and of `kubectl get <kind> -l`.
 
+### Against Kubernetes
+
+Kubernetes keeps a get by name (`GET nodes/{name}`, 404 when absent) beside the list
+(`GET nodes`, a `NodeList`), for three reasons RDM does not have: the list carries its own metadata
+(the collection's `resourceVersion`, a `continue` token) to start a watch and to page; the get is one
+point read of one key where a list is a range scan with the selector applied after; and `get` and
+`list` are separate permission verbs, only `get` restrictable to named resources. RDM has no watch,
+no paging, reads from the admin's in-memory view where an `ids` filter is a point lookup, and has no
+permission model. What is left is the error code, and the empty list says it.
+
+| Kubernetes | This proposal |
+|---|---|
+| plural resource names, `kubectl get nodes` | `nodes.get`, `meshes.get`, `builds.get` |
+| label selector `-l`, empty when none | `tags`, all or any, empty when none |
+| field selector `metadata.name=x` on a list, empty when absent | `ids`, empty when absent |
+| namespace as a scope flag, `--all-namespaces` | `mesh` filter; no filter is the whole fabric |
+| subresource `nodes/{name}/proxy`, the parent required | `connections.get { node }` |
+| no read of one field; the object is read | R-RD3 |
+| `get` by name, 404 | omitted (above) |
+| `spec` and `status` on one object | desired in the current Build's `NodeSpec`, observed in the node row: the Build is the only topology writer |
+| `limit` and `continue` on a list | R-RD6: not until telemetry shows the bound hit |
+| `rollout history`, Events as their own resource | the Build history with each Build's receipts inside it |
+
 ## 2. Today, measured three ways
 
 | | Pages (Q165, open) | Ruling (Q167 row) | Code (Q165) |
@@ -45,7 +68,9 @@ because the Build topic does not. It is not a caller read and this proposal does
   the admin does not hold, is the empty list (the `unknown-mesh` refusal goes). A filter that cannot
   be meant (a non-canonical id, a label outside the tag grammar, more than 32 labels) is
   `INVALID_ARGUMENT`, naming the field. An answer past the reply bound is `ReadOverBound`,
-  `RESOURCE_EXHAUSTED`, as today; the caller narrows the filter. No paging is added to a Status read.
+  `RESOURCE_EXHAUSTED`, as today; the caller narrows the filter. An AND of filters makes an empty
+  answer say less (`{ ids: [x], mesh: m }` empty is "x absent" or "x not in m"); a caller that must
+  tell them apart drops the mesh filter and reads the row's mesh (a consumer-guide line, §5.3).
 - **R-RD3, a property's read is its row's field.** `node.tags.get`, `node.config.get`,
   `node.cert.get`, `mesh.config.get` and `fabric.config.get` name fields of the entity's row and have
   no wire request of their own; the names go from the typed-objects list and the row headings
@@ -58,6 +83,15 @@ because the Build topic does not. It is not a caller read and this proposal does
 - **R-RD5, the row keeps its content.** `FabricView` carries its meshes and `MeshView` names its
   nodes as today: a row's content is not a second read, and the view types do not change (the
   durable format).
+- **R-RD6, no paging until telemetry shows the bound hit.** The 64 KiB reply bound holds about 150
+  node rows at the test fixture's size and about 12 at the maximal row (2 KiB config, 32 labels of
+  64 bytes, listeners, executable path and sha, cert); the largest estates in the record are 141 and
+  142 nodes. A whole-fabric `nodes.get` past the bound is refused `ReadOverBound` by name and the
+  caller reads by mesh, which is how a fabric is organized. Builds stream in chunks and never meet
+  the bound. The trigger for paging is a `ReadOverBound` span on a real fabric that no mesh or tag
+  filter brings under the bound; the shape when it comes is Kubernetes' `limit` and `continue`, one
+  appended request variant carrying them and one appended reply carrying the token, the mechanism
+  Q98 used. Nothing is reserved for it now.
 
 ## 4. The reads
 
@@ -172,9 +206,12 @@ the Members projection and node.topology.get carry no executable.`
 
 consumer-guide.md: line 31 → `The read calls follow one rule: one read per entity, optional filters
 combined with AND, a list in a stable order, empty when nothing matches.`; the table at lines 33 to
-39 becomes §4's table; line 69 `node.tags.get, or the tags field of its node row` → `the tags field
-of its node row (nodes.get)`; line 70 `fabric.nodes.get { tags } or mesh.nodes.get { tags } (Q165)`
-→ `nodes.get { tags }, with mesh for one mesh's`.
+39 becomes §4's table, followed by two lines: `A read past the 64 KiB reply bound is refused
+ReadOverBound (RESOURCE_EXHAUSTED); read by mesh.` and `Filters combine with AND, so { ids: [x],
+mesh: m } answers empty when x is absent or when x is in another mesh; to tell them apart, read
+{ ids: [x] } and look at the row's mesh.`; line 69 `node.tags.get, or the tags field of its node
+row` → `the tags field of its node row (nodes.get)`; line 70 `fabric.nodes.get { tags } or
+mesh.nodes.get { tags } (Q165)` → `nodes.get { tags }, with mesh for one mesh's`.
 
 fabric-mesh-node-lifecycles.md: line 100 `| [node.get](…) | Reading a node |` → `| [nodes.get](…) |
 Reading nodes |`; line 101 `| [node.connections.get](…) | Reading a node's held connections |` →
