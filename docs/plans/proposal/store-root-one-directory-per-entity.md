@@ -71,13 +71,18 @@ line per fact, one appender.
   providers put the root on one host kernel (the process provider's directory, the container
   provider's bind mount), where a single `write` on `O_APPEND` to a regular file lands whole and in
   order; R14 item 5's filesystem contract is restated for it. A reader folds a file line by line: a
-  blank line is skipped. A line is a torn fragment, skipped and counted in the open's span with its
-  offset, only when it positively says so: its `len` prefix reads and the line is shorter than `len`,
-  or the line is too short to carry a `len` prefix at all (under 24 bytes). Every other line must
-  have exactly `len` bytes, parse, and match its `crc32`; one that does not is corruption, and the
-  open is refused by name naming the file and the offset, never an older line shown as current. A
-  damaged acknowledged record is therefore refused, not skipped: invalid JSON alone proves nothing
-  (Architect 1, 2026-10-25). Because every line opens with its own newline, a fragment another writer appends
+  blank line is skipped. A line is skipped only when a later line attests it: a
+  `fragment/1` record naming the fragment's offset and byte count, itself a whole line with its own
+  `len` and `crc32`. Whoever discovers a fragment attests it, knowing its exact bytes: the opener of a
+  file whose tail is torn (shorter than its `len`, or without its closing newline) first appends a
+  newline and then the attestation; a writer whose short write it re-reads as cut short attests its
+  own fragment before appending the whole line again. Two openers attesting one tail write two
+  attestations of the same bytes, which is harmless. Every line not attested as a fragment must have
+  exactly `len` bytes, parse, and match its `crc32`; one that does not is corruption, and the open is
+  refused by name naming the file and the offset, never an older line shown as current. No field of a
+  damaged line, `len` included, authorizes skipping it: a `len` corrupted upward in an acknowledged
+  record is refused, not read as a short fragment (Architect 1, 2026-10-25). Fragments are counted in
+  the open's span. Because every line opens with its own newline, a fragment another writer appends
   after is a line of its own and swallows nothing. A short write (fewer bytes written than the line)
   is indeterminate, as a cut call is (Node RPC §34): the writer's object may already be complete but
   for its newline, and any later opening newline completes it. Before its next append the writer
@@ -85,7 +90,7 @@ line per fact, one appender.
   terminated (another writer's newline did it), so it fsyncs and proceeds, appending nothing; its
   object whole without a newline at the end of the file, so it appends one newline alone, fsyncs and
   proceeds, and if another writer's line landed in between the lone newline is a blank line, skipped;
-  or its object absent or cut short, so it appends the whole line again. The writer knows its own
+  or its object absent or cut short, so it attests the fragment and appends the whole line again. The writer knows its own
   write by its bytes, which end in its `crc32`. Under either schedule, the other writer first or the
   retry first, the record is folded once (Architect 1, 2026-10-25). Corruption is refused rather
   than skipped because a skipped whole record exposes the line before it as current; a fragment is
@@ -108,7 +113,10 @@ line per fact, one appender.
   is corrected to the code): there is no claim line, so there is no window between a lock and a
   line. The name is released at Deleted or Dead by the name's holder, and the next claimant inserts
   the lock again over a Deleted or Withdrawn latest line, which `claim_against` decides before the
-  take. Recovery across a crash: a lock whose claimant's latest record line is Deleted, Dead or
+  take. Every removal of a name lock, the holder's own release as much as a reclamation, runs under
+  the name's mutex below and re-reads the lock inside it, removing it only when its content still
+  names the claimant the remover expects; a holder whose release was delayed past a reclamation
+  finds another claimant's lock and leaves it (Architect 1, 2026-10-25). Recovery across a crash: a lock whose claimant's latest record line is Deleted, Dead or
   Withdrawn is a release not finished, and the next claimant finishes it under the name's
   reclamation mutex: an `flock(LOCK_EX)` on `locks/name/<name>.reclaim`, a file that is only ever an
   anchor and is never removed, held across the same host kernel both providers give and dropped by
@@ -295,9 +303,13 @@ connections.jsonl, the view the fold's latest line per key.`
   the verdict; and a Deleted, Dead or Withdrawn line appended by a holder that died before the
   release, reclaimed under the mutex; two reclaimers of one name, the second paused before its
   removal, the first claiming and the second then finding a live claimant and leaving its lock
-  intact; a reclaimer dying inside the mutex and the next reclaimer proceeding; a previously
-  acknowledged record damaged so its JSON no longer parses, the reopen refused by name and not its
-  predecessor shown; a lock naming a live claimant never removed by another.
+  intact; a holder's release delayed past a reclamation, taking the mutex, finding the reclaimer's
+  lock and leaving it; a reclaimer dying inside the mutex and the next reclaimer proceeding; a
+  previously acknowledged record damaged so its JSON no longer parses, and another with only its
+  `len` corrupted upward, each reopen refused by name and not its predecessor shown; a torn tail
+  attested at open and then skipped by every later fold while a later writer's lines are read; a
+  short write cut short by another writer's line, attested by its writer and the record appended once
+  more; a lock naming a live claimant never removed by another.
 - The path-asserting tests move to §4: `store_root.rs` (9 assertions), `build_state.rs` (11),
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
