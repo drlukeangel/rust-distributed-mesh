@@ -64,16 +64,20 @@ line per fact, one appender.
   so the one place a record disappears today goes. Retention of a file's lines is nobody's until
   Luke rules it; this proposal introduces no compaction and assumes none.
 - **R-SR3, one append protocol for every file.** A line is `\n` + one JSON object + `\n`: JSONL,
-  readable by ordinary tooling. The object carries `format`, `key`, the whole record, and last a
-  `crc32` of the object's bytes before that field. A writer appends one line in one `write` on a
+  readable by ordinary tooling. The object's first field is `len`, the line's byte count between its
+  newlines; then `format`, `key`, the whole record, and last a `crc32` of the object's bytes before
+  that field. A writer appends one line in one `write` on a
   descriptor opened `O_APPEND`, then `fsync`s, and reports success only after the fsync. Both
   providers put the root on one host kernel (the process provider's directory, the container
   provider's bind mount), where a single `write` on `O_APPEND` to a regular file lands whole and in
   order; R14 item 5's filesystem contract is restated for it. A reader folds a file line by line: a
-  blank line is skipped; a line that does not parse as JSON is a torn fragment, skipped and counted
-  in the open's span with its offset; a line that parses and whose `crc32` does not match is
-  corruption, and the open is refused by name naming the file and the offset, never an older line
-  shown as current. Because every line opens with its own newline, a fragment another writer appends
+  blank line is skipped. A line is a torn fragment, skipped and counted in the open's span with its
+  offset, only when it positively says so: its `len` prefix reads and the line is shorter than `len`,
+  or the line is too short to carry a `len` prefix at all (under 24 bytes). Every other line must
+  have exactly `len` bytes, parse, and match its `crc32`; one that does not is corruption, and the
+  open is refused by name naming the file and the offset, never an older line shown as current. A
+  damaged acknowledged record is therefore refused, not skipped: invalid JSON alone proves nothing
+  (Architect 1, 2026-10-25). Because every line opens with its own newline, a fragment another writer appends
   after is a line of its own and swallows nothing. A short write (fewer bytes written than the line)
   is indeterminate, as a cut call is (Node RPC §34): the writer's object may already be complete but
   for its newline, and any later opening newline completes it. Before its next append the writer
@@ -105,8 +109,14 @@ line per fact, one appender.
   line. The name is released at Deleted or Dead by the name's holder, and the next claimant inserts
   the lock again over a Deleted or Withdrawn latest line, which `claim_against` decides before the
   take. Recovery across a crash: a lock whose claimant's latest record line is Deleted, Dead or
-  Withdrawn is a release not finished, and the next claimant finishes it, releasing and taking in
-  one step, which is idempotent and replays safely; a lock whose claimant birth is proven exited
+  Withdrawn is a release not finished, and the next claimant finishes it under the name's
+  reclamation mutex: an `flock(LOCK_EX)` on `locks/name/<name>.reclaim`, a file that is only ever an
+  anchor and is never removed, held across the same host kernel both providers give and dropped by
+  the kernel if its holder dies. Inside it the reclaimer re-reads the lock, checks that its claimant
+  is still the one whose latest line is Deleted, Dead or Withdrawn, removes that lock, inserts its
+  own, and releases the mutex; a second reclaimer blocks on the mutex, then re-reads and finds a live
+  claimant, and leaves it. The persistent claim is the file because it outlives processes; the
+  transient exclusion is the flock because it must not (Architect 1, 2026-10-25); a lock whose claimant birth is proven exited
   with no record line of that birth under the name is a claim not finished, and the executor
   resuming that attempt adopts it (the lock names the attempt), while any other claimant waits for
   the attempt's verdict, which releases it. A lock naming a live claimant, or a claimant whose latest
@@ -283,8 +293,11 @@ connections.jsonl, the view the fold's latest line per key.`
   nothing; the two crash boundaries of a name (R-SR5): a lock taken by a birth that died before any
   record line, adopted by the executor resuming its attempt and refused to any other claimant until
   the verdict; and a Deleted, Dead or Withdrawn line appended by a holder that died before the
-  release, released and taken by the next claimant in one step and replayable; a lock naming a live
-  claimant never removed by another.
+  release, reclaimed under the mutex; two reclaimers of one name, the second paused before its
+  removal, the first claiming and the second then finding a live claimant and leaving its lock
+  intact; a reclaimer dying inside the mutex and the next reclaimer proceeding; a previously
+  acknowledged record damaged so its JSON no longer parses, the reopen refused by name and not its
+  predecessor shown; a lock naming a live claimant never removed by another.
 - The path-asserting tests move to §4: `store_root.rs` (9 assertions), `build_state.rs` (11),
   `rdm-admin/storage.rs` (6), `store_root_boot.rs` (4), `rdm-node/storage.rs` (2),
   `elections/fabric_takeover.rs` (2), `estate.rs`, `node/node_stop.rs`, `elections/node_primary_update.rs`,
