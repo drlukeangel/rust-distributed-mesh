@@ -154,6 +154,35 @@ async fn a_claim_past_the_open_attempt_is_not_open_and_names_the_next() {
     assert_eq!(p_seat.door.claim("mesh1.admin.3", &id, 4).await, BuildClaimReply::Lost { holder: "mesh1.admin.2".into() });
 }
 
+/// CONTRACT (build.md §5.2: a second claimant of one attempt loses and runs nothing; R-BI7 caveat 3:
+/// one attempt in flight per mesh): a claim of an attempt the store already holds for an executor of
+/// another mesh is `Lost`, and the in-flight row it took in its own executor's mesh is released, so
+/// that mesh is free for the Build's next attempt once the held attempt ends. A lost claim whose
+/// holder acts in the same mesh leaves the row: it is the held attempt's, released at its verdict.
+/// Must NOT happen: a lost claim that holds a mesh its attempt never acts in, refusing every later
+/// attempt there build-in-progress (a successor fabric-primary whose first read had not yet seen the
+/// attempt its predecessor claimed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_lost_to_an_executor_of_another_mesh_leaves_its_own_mesh_free_for_the_next_attempt() {
+    let id = BuildId::mint();
+    let executor = birth("mesh1.admin.2", false);
+    let (_p, p_seat, p_builds) = primary(&id, 0, Arc::new(AttemptContexts::in_memory()), &executor).await;
+    let first = p_seat.door.claim("mesh1.admin.1", &id, 1).await;
+    assert!(matches!(first, BuildClaimReply::Won { .. }), "{first:?}");
+    // The same attempt, claimed again for an admin of mesh2 by a log that had not seen the first claim.
+    assert_eq!(p_seat.door.claim("mesh2.admin.1", &id, 1).await, BuildClaimReply::Lost { holder: "mesh1.admin.1".into() });
+    assert_eq!(p_seat.door.claims.in_flight("mesh2").await.unwrap(), None, "the lost claim holds no row in mesh2, where its attempt never acts");
+    // Lost to a holder of the same mesh: the row is the held attempt's and stays.
+    assert_eq!(p_seat.door.claim("mesh1.admin.2", &id, 1).await, BuildClaimReply::Lost { holder: "mesh1.admin.1".into() });
+    let held = p_seat.door.claims.in_flight("mesh1").await.unwrap().expect("mesh1's row of the held attempt stands");
+    assert_eq!((held.attempt, held.claimant.as_str()), (1, "mesh1.admin.1"));
+    // Attempt 1 hands off to mesh2.admin.1, and its verdict releases mesh1's row, as the drive does.
+    p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
+    p_seat.door.claims.release_in_flight("mesh1", &held).await.unwrap();
+    let next = p_seat.door.claim("mesh2.admin.1", &id, 2).await;
+    assert!(matches!(next, BuildClaimReply::Won { .. }), "the next attempt takes mesh2: {next:?}");
+}
+
 /// CONTRACT: `Won` carries the attempt's context from the fabric-primary's local record; an
 /// attempt with no record of its own inherits the previous attempt's; an attempt nothing knows
 /// starts a new trace (an empty context).

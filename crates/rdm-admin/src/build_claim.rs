@@ -116,8 +116,10 @@ impl AttemptContexts {
 /// `BuildInProgress` naming it and its claimant, the same attempt another claimant took answers `Lost`
 /// naming it (Q142), and nothing is written. Then the claim key `(build_id, lane, attempt)` is recorded
 /// on `builds`, the record of what the store decided: `Won` carries the attempt's context. An attempt that is not open
-/// releases the row taken for it; a claim `Lost` to another executor of the same attempt leaves the
-/// row, which names the attempt, to its verdict. Who may claim is the caller's rule
+/// releases the row taken for it. A claim `Lost` to an executor of the same mesh leaves the row, which
+/// names the attempt, to its verdict; one `Lost` to an executor of another mesh releases the row it took
+/// here, because that attempt's verdict releases only its executor's mesh, and the loser runs nothing
+/// (build.md §5.2). Who may claim is the caller's rule
 /// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this.
 pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str) -> BuildClaimReply {
     let lane = claim.mesh.as_deref();
@@ -153,7 +155,16 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
                 Ok(context) => BuildClaimReply::Won { context },
                 Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id)),
             },
-            Ok(ClaimOutcome::Lost { holder }) => rdm_core::reply::build_claim::lost(holder),
+            // The held attempt acts in its executor's mesh, and its verdict releases that mesh's row
+            // alone: a row this claim took in another mesh holds that mesh for nothing.
+            Ok(ClaimOutcome::Lost { holder }) => {
+                if holder.parse::<PathName>().is_ok_and(|h| h.mesh != mesh) {
+                    if let Err(e) = claims.release_in_flight(mesh, &row).await {
+                        return rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is held by {holder} and the in-flight row of mesh {mesh} taken for this claim could not be released: {e}", claim.attempt, claim.build_id));
+                    }
+                }
+                rdm_core::reply::build_claim::lost(holder)
+            }
             Ok(ClaimOutcome::NotOpen { next }) => {
                 if let Err(e) = claims.release_in_flight(mesh, &row).await {
                     return rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is not open (next {next:?}) and the in-flight row of mesh {mesh} taken for it could not be released: {e}", claim.attempt, claim.build_id));
