@@ -308,7 +308,29 @@ per_exe(){
         elif [ "$pkg" = "rafka-node-rpc-testkit" ] && [ "$b" = "main" ]; then
             echo "$name:$b sh:${c%)} --test-threads=8)" >> $D/jobs
         elif [ "$pkg" = "rdm-test" ] && [ "$b" = "main" ]; then
-            echo "$name:$b sh:${c%)} --test-threads=8 $SCENARIO_SKIP)" >> $D/jobs
+            # rdm-test:main's own modules run as RDM_TEST_MAIN_SHARDS parallel jobs, dealt by test count:
+            # as one job its ~220 cells were the gate's longest pole (~120 s) while the box sat idle.
+            bin=$(echo "$c" | grep -o '/[^ ]*/target/debug/deps/main-[0-9a-f]*' | head -1)
+            i=0
+            python3 - "$bin" "${RDM_TEST_MAIN_SHARDS:-4}" $SCENARIO_SKIP <<'PY' | while read -r filters; do
+import subprocess,sys
+binp,n=sys.argv[1],int(sys.argv[2])
+skip={a[:-2] for a in sys.argv[3:] if a.endswith("::")}
+names=[l.rsplit(": ",1)[0] for l in subprocess.run([binp,"--list"],capture_output=True,text=True).stdout.splitlines() if l.endswith(": test")]
+count={}
+for x in names:
+    m=x.split("::",1)[0] if "::" in x else None
+    if m is None or m in skip: continue
+    count[m]=count.get(m,0)+1
+shards=[[0,[]] for _ in range(n)]
+for m,k in sorted(count.items(),key=lambda kv:-kv[1]):
+    s=min(shards,key=lambda s:s[0]); s[0]+=k; s[1].append(m+"::")
+for s in shards:
+    if s[1]: print(" ".join(s[1]))
+PY
+                echo "$name:$b$i sh:${c%)} --test-threads=8 $SCENARIO_SKIP $filters)" >> $D/jobs
+                i=$((i+1))
+            done
         else
             echo "$name:$b sh:$c" >> $D/jobs
         fi
@@ -461,4 +483,6 @@ if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" |
 if grep -q '^FAIL' "$O"; then
     step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept" "target/i143-testkit"'
 fi
+# A fast gate with no FAIL records its tree: the land script does not gate an identical tree again.
+[ "$GATE" = fast ] && ! grep -q "^FAIL" $O && echo "$(git rev-parse HEAD^{tree}) $(date -Is) $SHA" >> $DEPLOY/green-trees
 echo "DONE $(( $(date +%s)-t0 ))s" | tee -a $O

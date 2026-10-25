@@ -30,7 +30,9 @@ NC=$(python3 $L/scripts/name-check.py origin/main HEAD 2>&1); [ -n "$NC" ] && { 
 # A tree whose gate went red is never gated again: a red is a defect to fix, not a roll to repeat.
 TREE=$(git rev-parse HEAD^{tree}); RED=$DEPLOY/red-trees
 if grep -q "^$TREE " "$RED" 2>/dev/null; then echo "REFUSED: this exact tree was red ($(grep "^$TREE " "$RED" | tail -1 | cut -d' ' -f2-)); fix the red, do not re-gate it"; exit 4; fi
-OUT=$(bash $L/scripts/rdm-gate-at.sh $L fast 9>&- 2>&1); echo "$OUT" | grep -E "FAIL|DONE" | tail -6
+# A tree the fast gate already passed is the same code on the same main: it lands without a second gate.
+if grep -q "^$TREE " "$DEPLOY/green-trees" 2>/dev/null; then OUT="green tree $(grep "^$TREE " "$DEPLOY/green-trees" | tail -1 | cut -d' ' -f2-)"; echo "$OUT"
+else OUT=$(bash $L/scripts/rdm-gate-at.sh $L fast 9>&- 2>&1); echo "$OUT" | grep -E "FAIL|DONE" | tail -6; fi
 # The landing's timings row goes to the ledger whatever the gate's verdict, with the tree it measured.
 TROW=$(echo "$OUT" | grep "^TIMINGS" | tail -1); echo "$TROW"; echo "$(date -Is) $B $(git rev-parse --short HEAD) $TROW" >> $DEPLOY/timings-ledger.txt
 if echo "$OUT" | grep -q FAIL; then echo "$TREE $(date -Is) $B $(echo "$OUT" | grep FAIL | head -3 | tr '\n' ' ')" >> "$RED"; echo "NOT LANDED: gate red; this tree is recorded and will not be gated again"; exit 2; fi
