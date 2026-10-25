@@ -9,6 +9,7 @@
 //! - `old-attempt`: answers `StateSynced` naming attempt 0, an attempt older than any claimed.
 //! - `hold`: takes the round and holds its answer at the admin's fault cut `state-sync` (armed at
 //!   boot) until the fault door releases it, then answers `StateSynced` for the round.
+//! - `fail:<reason>`: holds like `hold`, then reports its work failed naming `<reason>` (Q158).
 //!
 //! `traffic_opened` is the one notice after the open-traffic round; it only records a span.
 //!
@@ -19,7 +20,7 @@
 //! launch, reports them at its join and its row publishes them.
 
 use crate::admin_faults::{AdminFaults, CutSpec, Probe};
-use rdm_admin::wiring::{FabricHooks, StateSyncRound, SyncState};
+use rdm_admin::wiring::{FabricHooks, StateSyncAnswer, StateSyncFailed, StateSyncRound, SyncState};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -61,6 +62,8 @@ pub enum Mode {
     OldAttempt,
     /// Hold the answer at the fault cut `state-sync` until the door releases it, then answer.
     Hold,
+    /// Hold like [`Mode::Hold`], then report the work failed, naming the reason (Q158).
+    Fail(String),
 }
 
 /// The fault cut a `hold` application parks its answers at.
@@ -77,7 +80,8 @@ impl Mode {
             ("foreign-build", "") => Ok(Self::ForeignBuild),
             ("old-attempt", "") => Ok(Self::OldAttempt),
             ("hold", "") => Ok(Self::Hold),
-            _ => Err(format!("RDM_TEST_APP `{v}` is not answer[:<ms>], never, foreign-build, old-attempt or hold")),
+            ("fail", reason) if !reason.trim().is_empty() => Ok(Self::Fail(reason.into())),
+            _ => Err(format!("RDM_TEST_APP `{v}` is not answer[:<ms>], never, foreign-build, old-attempt, hold or fail:<reason>")),
         }
     }
 
@@ -88,6 +92,7 @@ impl Mode {
             Self::ForeignBuild => "foreign-build".into(),
             Self::OldAttempt => "old-attempt".into(),
             Self::Hold => "hold".into(),
+            Self::Fail(reason) => format!("fail:{reason}"),
         }
     }
 }
@@ -95,7 +100,7 @@ impl Mode {
 /// The hooks of this application in `mode`, held at the cuts of `faults` (the admin's own). A `hold`
 /// application arms its cut here, at boot, before any round can reach it.
 pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String> {
-    if mode == Mode::Hold {
+    if matches!(mode, Mode::Hold | Mode::Fail(_)) {
         faults.arm(STATE_SYNC_CUT, CutSpec::StateSync)?;
     }
     let sync_mode = mode.clone();
@@ -105,11 +110,11 @@ pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String
         let span = tracing::info_span!("rdm.testkit.app.update.via-sync-state", mode = %mode.label(), fabric_id = %round.fabric_id, build_id = %round.build_id, attempt = round.attempt, operation = %round.operation, "otel.kind" = "internal");
         tracing::info_span!(parent: &span, "rdm.testkit.app.update.via-sync-state-taken", mode = %mode.label(), build_id = %round.build_id, attempt = round.attempt, "otel.kind" = "internal").in_scope(|| tracing::info!("the application took the round"));
         async move {
-            match mode {
+            let answer: StateSyncAnswer = match mode {
                 Mode::Answer(work) => {
                     tokio::time::sleep(work).await;
                     tracing::info!(work_ms = work.as_millis() as u64, "the application finished its state-sync work: state-synced");
-                    round
+                    Ok(round)
                 }
                 Mode::Never => {
                     tracing::info!("the application takes the round and never answers");
@@ -117,18 +122,24 @@ pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String
                 }
                 Mode::ForeignBuild => {
                     tracing::info!("the application answers state-synced for another Build");
-                    StateSyncRound { build_id: "b5zscevkjkja".into(), ..round }
+                    Ok(StateSyncRound { build_id: "b5zscevkjkja".into(), ..round })
                 }
                 Mode::OldAttempt => {
                     tracing::info!("the application answers state-synced for attempt 0");
-                    StateSyncRound { attempt: 0, ..round }
+                    Ok(StateSyncRound { attempt: 0, ..round })
                 }
                 Mode::Hold => {
                     faults.hold(Probe::StateSync { build_id: round.build_id.clone(), attempt: round.attempt }).await;
                     tracing::info!("the fault door released the held round: state-synced");
-                    round
+                    Ok(round)
                 }
-            }
+                Mode::Fail(reason) => {
+                    faults.hold(Probe::StateSync { build_id: round.build_id.clone(), attempt: round.attempt }).await;
+                    tracing::info!(reason = %reason, "the fault door released the held call: the application reports its work failed");
+                    Err(StateSyncFailed { reason })
+                }
+            };
+            answer
         }
         .instrument(span)
     });

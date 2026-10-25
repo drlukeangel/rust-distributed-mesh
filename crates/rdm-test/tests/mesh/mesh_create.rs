@@ -72,12 +72,12 @@ fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> 
 }
 
 /// The executor of the last attempt of `build` (the Build view's JSON) that ran a step. The Build put the
-/// fabric back to pending, so it is Complete only after its own climb (Q154): its last attempt, claimed
+/// fabric back to pending, so it is Complete only once its ready-for-traffic state is set (Q154): its last attempt, claimed
 /// once the fabric is ready-for-traffic, is the one after that run and runs no step.
 fn last_run_executor(build: &Value) -> String {
     let last = build["attempt"].as_u64().expect("the Build's attempt");
     let stepped = build["steps"].as_array().into_iter().flatten().filter_map(|r| r["attempt"].as_u64()).max().expect("the Build ran steps");
-    assert_eq!(stepped + 1, last, "the attempt after the Build's last run is the climb's Complete and runs no step: {build:#}");
+    assert_eq!(stepped + 1, last, "the attempt after the Build's last run is the Complete after the fabric's change and runs no step: {build:#}");
     s(&build["attempt_executors"][stepped.to_string()])
 }
 
@@ -95,7 +95,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // mesh2 is created on a fabric past its first state-commit, so its rows are written to the store
     // (node-identity-and-state.md §2.7: "the scratchpad before state-commit, the store after"), where
     // mesh2's own primary finds the row the fabric-primary's claim wrote. The Build is Complete only after
-    // the fabric's climb from it (Q154; build.md §10); the wait records that the fabric has started.
+    // the fabric's change from it (Q154; build.md §10); the wait records that the fabric has started.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     // {mesh1} -> {mesh1, mesh2}

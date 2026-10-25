@@ -25,7 +25,7 @@ fn owner() -> Owner {
 }
 
 /// CONTRACT: after a restart is accepted at the attempt after the accepted Build's Complete (the Build's
-/// run, then its climb's Complete, Q154), its reply stream carries no `Complete` while that attempt is
+/// run, then its Complete after the fabric's change, Q154), its reply stream carries no `Complete` while that attempt is
 /// held mid-flight, and ends `Complete` once the hold is released, with the Build, as the
 /// fabric-primary's log holds it, `complete` at that attempt. The accepted call names the opened
 /// attempt, and the Build reports that attempt.
@@ -66,7 +66,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The create put the fabric back to pending, so its Build is Complete at the attempt after its run,
-    // claimed once the fabric climbed (Q154): the restart opens the attempt after that one.
+    // claimed once the fabric's ready-for-traffic state was set (Q154): the restart opens the attempt after that one.
     let attempt = estate.attempt_of_build(&build_id).await as u32 + 1;
     let mut restart = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
     let opened = restart.accepted().clone();

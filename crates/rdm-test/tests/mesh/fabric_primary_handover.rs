@@ -275,7 +275,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
 
     // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's. The run that ran
     // `op` ends converged, or, its operations all done while the fabric it put back to pending has not
-    // climbed, handed back to the fabric-primary, which completes the Build after the climb (Q154).
+    // changed, handed back to the fabric-primary, which completes the Build after the change (Q154).
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
     let converged = |build: &str, op: &str| -> String {
         let r = reconciles

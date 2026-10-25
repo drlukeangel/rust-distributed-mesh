@@ -66,20 +66,20 @@ fn paths(build: &Value, mesh: &str) -> Vec<String> {
     build["topology"]["meshes"][mesh]["nodes"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect()).unwrap_or_default()
 }
 
-/// Read `stream` until its Build is Blocked naming the fabric's climb (its operations all done, Q154),
+/// Read `stream` until its Build is Blocked naming the fabric's change (its operations all done, Q154),
 /// bounded by `within`; a terminal before it is a defect of the cell.
-async fn blocked_on_the_climb(stream: &mut rdm_client::BuildStream, within: Duration) {
+async fn blocked_on_the_fabric_change(stream: &mut rdm_client::BuildStream, within: Duration) {
     let build = stream.build_id().to_string();
     let deadline = tokio::time::Instant::now() + within;
     loop {
         let frame = tokio::time::timeout_at(deadline, stream.next())
             .await
-            .unwrap_or_else(|_| panic!("Build {build} reported no Blocked naming the fabric's climb within {within:?}"))
-            .unwrap_or_else(|| panic!("the stream of Build {build} ended before it reported Blocked naming the fabric's climb"))
-            .unwrap_or_else(|e| panic!("the stream of Build {build} broke before it reported Blocked naming the fabric's climb: {e}"));
+            .unwrap_or_else(|_| panic!("Build {build} reported no Blocked naming the fabric's change within {within:?}"))
+            .unwrap_or_else(|| panic!("the stream of Build {build} ended before it reported Blocked naming the fabric's change"))
+            .unwrap_or_else(|e| panic!("the stream of Build {build} broke before it reported Blocked naming the fabric's change: {e}"));
         match frame {
             rdm_client::BuildFrame::Blocked { step, .. } if step == "fabric-change" => return,
-            rdm_client::BuildFrame::Complete { .. } | rdm_client::BuildFrame::Failed { .. } | rdm_client::BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming the fabric's climb"),
+            rdm_client::BuildFrame::Complete { .. } | rdm_client::BuildFrame::Failed { .. } | rdm_client::BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming the fabric's change"),
             _ => {}
         }
     }
@@ -156,12 +156,12 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
     // acceptance and is never silent, so no investigation looks at it.
     signal(stopped, "-STOP");
-    // The Build is Complete only after its own climb (Q154), whose rounds wait for every member's
-    // check-in, the stopped admin's too: it misses the Build's acceptance and every operation, and is
-    // back once the Build is Blocked on the climb, before its Complete.
+    // The Build is Complete only once its ready-for-traffic state is set (Q154), and a fabric state is set
+    // only when every member has checked in, the stopped admin too: it misses the Build's acceptance and every operation, and is
+    // back once the Build is Blocked on the fabric's change, before its Complete.
     let mut r4_stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 3, 4)]))).await;
     let r4 = r4_stream.build_id().to_string();
-    blocked_on_the_climb(&mut r4_stream, Duration::from_secs(30)).await;
+    blocked_on_the_fabric_change(&mut r4_stream, Duration::from_secs(30)).await;
     assert_eq!(current_build(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");

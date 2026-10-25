@@ -286,11 +286,11 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })), "the Build ends Complete: {followed:?}");
 
     let receipts = Builds::new(carrier.clone()).get(&build_id).await.expect("build.get");
-    // The Build put the fabric back to pending, so it is Complete only after its own climb (Q154): its run
+    // The Build put the fabric back to pending, so it is Complete only once its ready-for-traffic state is set (Q154): its run
     // hands back to the fabric-primary, and the one attempt after it, claimed once the fabric is
     // ready-for-traffic, completes it and runs no step. The close opened none: every step ran in the
     // attempt the watcher watched.
-    assert_eq!(receipts.attempt, attempt + 1, "the close opened no second attempt; the one after the run is the climb's Complete: {receipts:?}");
+    assert_eq!(receipts.attempt, attempt + 1, "the close opened no second attempt; the one after the run is the Complete after the fabric's change: {receipts:?}");
     assert!(receipts.steps.iter().all(|r| r.attempt == attempt), "every step ran in attempt {attempt}, the one the watcher watched: {receipts:?}");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
     let all = keys.len();
@@ -631,7 +631,7 @@ async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, St
 }
 
 /// Whether `frame` is a Blocked frame of a step in flight: the Build's own Blocked naming the fabric's
-/// climb, which a Build that put the fabric back to pending reports once its operations are done
+/// change, which a Build that put the fabric back to pending reports once its operations are done
 /// (Q154; states.md "Resize and roll"), is no birth's.
 fn birth_blocked(frame: &BuildFrame) -> bool {
     matches!(frame, BuildFrame::Blocked { step, .. } if step != "fabric-change")

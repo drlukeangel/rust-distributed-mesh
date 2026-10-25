@@ -219,6 +219,8 @@ struct Adopted {
 enum Progress {
     Waiting,
     Answered(StateSyncRound),
+    /// The application reported its work failed, naming why (Q158).
+    Failed(String),
 }
 
 struct SyncRun {
@@ -608,9 +610,25 @@ impl FabricRounds {
         let run = climb.sync.as_ref().expect("started above");
         let answered = match &*run.progress.lock().unwrap() {
             Progress::Waiting => None,
-            Progress::Answered(a) => Some(a.clone()),
+            Progress::Answered(a) => Some(Ok(a.clone())),
+            Progress::Failed(reason) => Some(Err(reason.clone())),
         };
-        let Some(answer) = answered else {
+        // A failure the application reports is the call's answer (Q158; states.md "Resize and roll": "a
+        // state's check-in or a hook that reports failure fails the Build on that step"): the drive fails
+        // the Build it was called for on its `fabric-change` step, and the fabric stays in state-sync,
+        // the failure named.
+        let answer = match answered {
+            None => None,
+            Some(Ok(answer)) => Some(answer),
+            Some(Err(reason)) => {
+                let sent = &run.sent;
+                self.env.records.set_state_sync_failed(crate::admin::StateSyncFailure { build_id: sent.build_id.clone(), attempt: sent.attempt, operation: sent.operation.clone(), reason: reason.clone() });
+                let what = format!("sync_state reported the application's work failed for build {} attempt {}: {reason}", sent.build_id, sent.attempt);
+                self.block(climb, &[Missing { who: "application".into(), why: "state-sync-failed" }], &what, &me);
+                return;
+            }
+        };
+        let Some(answer) = answer else {
             let what = format!("sync_state awaits the application's state-synced for build {} attempt {}", run.sent.build_id, run.sent.attempt);
             self.block(climb, &[Missing { who: "application".into(), why: "no-state-synced" }], &what, &me);
             return;
@@ -1312,8 +1330,8 @@ fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections:
     out
 }
 
-/// The `sync_state` call: the application's function with the round fields, its answer held for
-/// the climb to judge. No application work answers at once, naming why.
+/// The `sync_state` call: the application's function with the call's fields, its answer (or the
+/// failure it reports by name, Q158) held for the fabric's change to judge. No application work answers at once, naming why.
 async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncRound, progress: Arc<Mutex<Progress>>, parent: tracing::Span) {
     let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-hook", node = %me, build_id = %sent.build_id, attempt = sent.attempt, operation = %sent.operation, reason = tracing::field::Empty, outcome = tracing::field::Empty, "otel.kind" = "internal");
     tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-called", node = %me, build_id = %sent.build_id, attempt = sent.attempt, operation = %sent.operation, bound = matches!(hook, Some(SyncState::Hook(_))), "otel.kind" = "internal")
@@ -1321,23 +1339,30 @@ async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncRo
     let answer = async {
         match hook {
             Some(SyncState::Hook(f)) => {
-                let answer = f(sent.clone()).await;
-                tracing::Span::current().record("outcome", "state-synced");
-                answer
+                match f(sent.clone()).await {
+                    Ok(answer) => {
+                        tracing::Span::current().record("outcome", "state-synced");
+                        Progress::Answered(answer)
+                    }
+                    Err(failed) => {
+                        tracing::Span::current().record("outcome", "failed").record("reason", failed.reason.as_str());
+                        Progress::Failed(failed.reason)
+                    }
+                }
             }
             Some(SyncState::NoAppWork) => {
                 tracing::Span::current().record("reason", "no-app-work").record("outcome", "state-synced");
-                sent.clone()
+                Progress::Answered(sent.clone())
             }
             None => {
                 // Refused at start; unreachable.
-                std::future::pending::<StateSyncRound>().await
+                std::future::pending::<Progress>().await
             }
         }
     }
     .instrument(span)
     .await;
-    *progress.lock().unwrap() = Progress::Answered(answer);
+    *progress.lock().unwrap() = answer;
 }
 
 /// The blocker a builds store that could not be read names: the store's own error, never read as
@@ -1480,7 +1505,7 @@ mod tests {
             let calls = calls.clone();
             SyncState::Hook(Arc::new(move |round: StateSyncRound| {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async move { round })
+                Box::pin(async move { Ok(round) })
             }))
         };
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

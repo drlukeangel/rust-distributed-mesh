@@ -203,7 +203,7 @@ async fn a_two_mesh_fabric_rolls_every_member_onto_the_set_at_its_path_over_its_
     assert!(moved, "the stream ended FabricPrimaryMoved at the fabric-primary's own replacement, and the same build_id completed at the new fabric-primary: {frames:?}");
     // Complete only after the climb: the fabric-primary holds the fabric ready-for-traffic under the roll now.
     let (fp, status, accepted) = fabric_at_its_primary(&estate).await;
-    assert_eq!((status, accepted.as_deref()), (ScopeStatus::ReadyForTraffic, Some(build.as_str())), "the roll completed only after the fabric climbed under it ({fp})");
+    assert_eq!((status, accepted.as_deref()), (ScopeStatus::ReadyForTraffic, Some(build.as_str())), "the roll completed only after the fabric changed under it ({fp})");
 
     replaced_on(&estate, &before, &next, |_| true).await;
     let receipts = estate.carrier().await.get(&rdm_client::BuildId::parse(&build).unwrap()).await.unwrap_or_else(|e| panic!("build.get {build}: {e}")).steps;
@@ -482,7 +482,7 @@ async fn a_roll_is_refused_by_name_before_the_fabric_is_ready_and_for_each_defec
     let estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &set, &sha, &["rpc_node"], &[("RDM_TEST_APP", "hold")]).await.expect("the faulted-admin binding set is accepted");
     let door = Door::at(&estate, "mesh1.admin.1").await;
     let shape = [("mesh1", 2, 1)];
-    // The first Build is Complete only after its own climb (Q154), which the application holds: it is
+    // The first Build is Complete only once its ready-for-traffic state is set (Q154), which the application holds: it is
     // followed to its Complete once the hold is released.
     let first_stream = estate.submit_shape("fabric1", &shape).await;
     let first = first_stream.build_id().to_string();
@@ -495,7 +495,7 @@ async fn a_roll_is_refused_by_name_before_the_fabric_is_ready_and_for_each_defec
     assert!(detail.contains("roll") && detail.contains("state-sync"), "the detail names the roll and the state: {detail}");
 
     door.release("state-sync").await;
-    tokio::time::timeout(SETTLE, estate.follow(first_stream)).await.unwrap_or_else(|_| panic!("the first Build {first} reached no Complete within {SETTLE:?} after its state-sync round was released"));
+    tokio::time::timeout(SETTLE, estate.follow(first_stream)).await.unwrap_or_else(|_| panic!("the first Build {first} reached no Complete within {SETTLE:?} after its state-sync was released"));
     estate.until_fabric_ready(SETTLE).await;
     let mut mismatched = next.clone();
     mismatched.bindings.iter_mut().filter(|b| b.launch_id == "rpc_node").for_each(|b| b.sha256 = "0".repeat(64));

@@ -173,7 +173,7 @@ are separate facts.
 
 ## Resize and roll
 
-A resize or roll puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own climb, as fabric.create's is: while the fabric climbs, the Build reports Blocked naming the climb, never Complete; a round or hook that fails fails the Build on that step. During a bin roll, a member still on its
+A resize or roll puts the fabric back to pending; meshes already serving stay ready-for-traffic. Its Build is Complete only when the fabric is ready-for-traffic again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; while the fabric awaits the application's answer the Build reports Blocked naming the blocker, never Complete; a state's check-in or a hook that reports failure fails the Build on that step. During a bin roll, a member still on its
 old binary/identity does not satisfy its planned replacement. A new binary requires
 a replacement node with a new NodeId and incarnation; node.restart retains the same
 process and binary. The mesh cannot report

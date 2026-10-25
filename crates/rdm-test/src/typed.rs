@@ -612,7 +612,7 @@ impl Estate {
     }
 
     /// `build.create` of the fabric reconciled to `meshes`, each `(name, node_admin, rpc_node)`, accepted:
-    /// the stream of the Build, for a cell that acts while the Build runs (its climb held, Q154).
+    /// the stream of the Build, for a cell that acts while the Build runs (its fabric change held, Q154).
     pub async fn submit_shape(&self, fabric: &str, meshes: &[(&str, u32, u32)]) -> BuildStream {
         let desired = FabricDesired { fabric: fabric.into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired { name: (*m).into(), node_admin: *a, rpc_node: *r, broker: 0, gateway: 0, compute: 0 }).collect() };
         self.submit(&BuildSpec::Fabric(desired)).await

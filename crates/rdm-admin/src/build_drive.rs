@@ -95,10 +95,15 @@ pub trait Gate: Send + Sync {
         Ok(crate::accepted::Recorded::new())
     }
     /// Whether the fabric holds ready-for-traffic now: a Build that put the fabric back to pending is
-    /// `Complete` only after the fabric's climb (Q154; states.md "Resize and roll"). A gate with no
-    /// climb holds it.
+    /// `Complete` only once the fabric's ready-for-traffic state is set from its change (Q154; states.md
+    /// "Resize and roll"). A gate with no fabric change holds it.
     fn fabric_ready(&self) -> bool {
         true
+    }
+    /// The failure the application reported for the state-sync called for attempt `attempt` of Build
+    /// `build_id` (Q158): `(operation, reason)`. A gate with no fabric change holds none.
+    fn state_sync_failed(&self, _build_id: &BuildId, _attempt: u32) -> Option<(String, String)> {
+        None
     }
 }
 
@@ -718,10 +723,11 @@ fn is_roll(p: &BuildProjection) -> bool {
 
 /// Whether `p`'s Build puts the fabric back to pending (states.md "Resize and roll"; Q154): every Build a
 /// change was submitted for, a resize and a roll alike, except fabric.delete, after which the fabric
-/// never climbs. Day 0's Build carries no change and is not one of them (Q154: day 0 unchanged). A Build
+/// is never ready-for-traffic again. Day 0's Build carries no change and is not one of them (Q154: "day 0
+/// and the roll unchanged"). A Build
 /// whose topology the change left as it was puts nothing back, and the fabric it finds ready-for-traffic
 /// holds it.
-fn climbs(p: &BuildProjection) -> bool {
+fn changes_the_fabric(p: &BuildProjection) -> bool {
     p.submitted_change.as_ref().is_some_and(|c| !matches!(c, crate::accepted::TopologyChange::DeleteFabric))
 }
 
@@ -979,9 +985,9 @@ impl DriveEnv {
             plan.hand_off_to = Some(me.to_string());
         }
         // The last run of a Build that put the fabric back to pending hands back here rather than
-        // ending `Complete` while the fabric has not climbed (Q154; states.md "Resize and roll"; proposal
-        // roll.md step 8): the next pass waits for the climb.
-        if climbs(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
+        // ending `Complete` while the fabric's ready-for-traffic state is not set (Q154; states.md "Resize
+        // and roll"; proposal roll.md step 8): the next pass waits for it.
+        if changes_the_fabric(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready() {
             plan.hand_off_to = Some(me.to_string());
         }
         Ok(plan)
@@ -1052,15 +1058,38 @@ impl DriveEnv {
                 if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
                 }
-                // A Build that put the fabric back to pending, its work all done, is Complete only after
-                // the fabric's climb from it (Q154; states.md "Resize and roll": "while the fabric climbs,
-                // the Build reports Blocked naming the climb, never Complete"; proposal roll.md step 8):
-                // no attempt is claimed until the fabric holds ready-for-traffic, and the reconcile loop
-                // drives the Build again.
-                if climbs(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
-                    let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only after the fabric's climb to ready-for-traffic");
-                    self.blocked(drive, p.attempt, "", "fabric-change", &why);
-                    return self.stalled(&me, drive, why);
+                // A Build that put the fabric back to pending, its work all done, is Complete only once
+                // the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
+                // roll": "while the fabric changes, the Build reports Blocked naming the change, never
+                // Complete"; proposal roll.md step 8): no attempt is claimed until the fabric holds
+                // ready-for-traffic, and the reconcile loop drives the Build again. Waiting is not
+                // failure; a state-sync the application reports failed fails the Build on that step (Q158:
+                // "a state's check-in or a hook that reports failure fails the Build on that step"): the
+                // next attempt is claimed and ends `Failed` on `fabric-change`, its reason the application's.
+                if changes_the_fabric(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
+                    let Some((operation, reason)) = self.gate.state_sync_failed(&id, p.attempt) else {
+                        let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");
+                        self.blocked(drive, p.attempt, "", "fabric-change", &why);
+                        return self.stalled(&me, drive, why);
+                    };
+                    let (attempt, executor, context) = match self.claim_next(&me, drive, &p, handed_to.take(), &crashed).await {
+                        Ok(c) => c,
+                        Err(end) => return end,
+                    };
+                    let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %executor, node = %me, outcome = "failed", reason = %reason);
+                    if let Some(tp) = &context.traceparent {
+                        rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
+                    }
+                    let why = crate::build_run::bounded_reason(format!("{me}: the application reported the state-sync of Build {id} attempt {} failed: {reason}", p.attempt));
+                    let code = rdm_core::outcome::Code::Unknown;
+                    async {
+                        self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: why.clone(), code } }).await;
+                        self.release_mesh(&id, attempt, &executor).await;
+                    }
+                    .instrument(dspan)
+                    .await;
+                    drive.finish(rdm_core::reply::build::failed(id.to_string(), attempt, operation, "fabric-change".into(), why, code));
+                    return DriveEnd::Terminal;
                 }
                 match self.update_primaries_first(&me, drive, &p).await {
                     Ok(true) => continue,

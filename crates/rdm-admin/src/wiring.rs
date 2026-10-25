@@ -111,6 +111,26 @@ pub struct StateSyncRound {
     pub context: CallContext,
 }
 
+/// The application's report that its `sync_state` work failed, by name (Q158; build.md: hooks
+/// "report failure through the lifecycle receipt path"): the Build the fabric changes for fails on
+/// its `fabric-change` step, `reason` carried on its `Failed`. Waiting is not failure: an
+/// application still working answers nothing, and the Build stays Blocked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSyncFailed {
+    /// Why the work failed, named by the application.
+    pub reason: String,
+}
+
+/// The application's answer to `sync_state`: `Ok` is its `StateSynced` for the call's fields, `Err`
+/// its failure by name.
+pub type StateSyncAnswer = Result<StateSyncRound, StateSyncFailed>;
+
+impl From<StateSyncRound> for StateSyncAnswer {
+    fn from(synced: StateSyncRound) -> Self {
+        Ok(synced)
+    }
+}
+
 /// The `sync_state` choice. A configuration with none is refused at start by name: an application
 /// that forgets to register must not get a fabric that skips its day 0 and seed.
 #[derive(Clone)]
@@ -119,18 +139,23 @@ pub enum SyncState {
     /// estates choose this on purpose; state-sync completes at once, naming `no-app-work`.
     NoAppWork,
     /// The application's async function: called by the fabric-primary with the `SyncState` round
-    /// fields; the answer is its `StateSynced`.
-    Hook(Arc<dyn Fn(StateSyncRound) -> Pin<Box<dyn Future<Output = StateSyncRound> + Send>> + Send + Sync>),
+    /// fields; the answer is its `StateSynced`, or its failure by name ([`StateSyncFailed`]).
+    Hook(Arc<dyn Fn(StateSyncRound) -> Pin<Box<dyn Future<Output = StateSyncAnswer> + Send>> + Send + Sync>),
 }
 
 impl SyncState {
-    /// The application's `sync_state` function.
-    pub fn hook<F, Fut>(f: F) -> Self
+    /// The application's `sync_state` function. It answers its `StateSynced` (a [`StateSyncRound`])
+    /// or a [`StateSyncAnswer`], whose `Err` reports the work failed by name.
+    pub fn hook<F, Fut, A>(f: F) -> Self
     where
         F: Fn(StateSyncRound) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = StateSyncRound> + Send + 'static,
+        Fut: Future<Output = A> + Send + 'static,
+        A: Into<StateSyncAnswer> + 'static,
     {
-        Self::Hook(Arc::new(move |round| Box::pin(f(round))))
+        Self::Hook(Arc::new(move |fields| {
+            let answer = f(fields);
+            Box::pin(async move { answer.await.into() })
+        }))
     }
 }
 
