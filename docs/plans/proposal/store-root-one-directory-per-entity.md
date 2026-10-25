@@ -64,16 +64,18 @@ Eleven top-level entries for five stores. What the picture shows:
   the object it describes. The root carries a layout marker, `<root>/layout`, and a root without it
   or with another value is refused by name. The fabrics' name index stays at `<store_dir>/fabrics/<name>`
   above the roots as R-FN1 ruled it: it answers which root a name is before any root is opened.
-- **R-SR2, storage is append-only and every write is the whole record.** The latest write of a key is
-  the entity's current state (storage-whole-records.md: one cached object, one writer, one whole
-  write; Rafka already stores each object as a topic of whole records). No record is ever removed. A
-  delete appends the record marked Deleted (a node) or Dead (a mesh); a create withdrawn before the
-  node ran appends the record marked Withdrawn, and a name claim wins over a Withdrawn row as over a
-  Deleted one, so the only place a record disappears today (`node_rows.rs` `release_record`,
-  `remove_node`) goes. Whether a backend keeps earlier writes is the backend's and is promised to no
-  reader: Rafka's topic keeps them until compaction, the file backend keeps the latest. Locks keep
+- **R-SR2, every write is the whole record and no record is ever removed.** The latest write of a
+  key is the entity's current state (storage-whole-records.md: one cached object, one writer, one
+  whole write; Rafka stores each object as a topic of whole records). A delete appends the record
+  marked Deleted (a node) or Dead (a mesh); a create withdrawn before the node ran appends the record
+  marked Withdrawn, and a name claim wins over a Withdrawn row as over a Deleted one, so the only
+  place a record disappears today (`node_rows.rs` `release_record`, `remove_node`) goes. Locks keep
   their take and release (the in-flight row); indexes are derived and follow their record (Luke,
-  Architect 1, 2026-10-25).
+  Architect 1, 2026-10-25). **Whether the file backend keeps every earlier write of a record is
+  §6's second question.** Today it writes the latest by temp, fsync and rename, and the history a
+  reader uses is elsewhere: the Build journal, the primary-moves sequence, the connections raw log
+  and the node record's own per-birth facts. Nothing reads an earlier version of a record. Rafka's
+  topic is append-only by nature; what it retains is Rafka's.
 
 ## 4. The layout
 
@@ -258,6 +260,22 @@ node-primary-update.md line 52: `(its own connections/<node>/ rows are its own, 
   state-commit publish from the scratchpad to §4's keys.
 
 ## 6. Arms
+
+Two questions, the second only if the first is A.
+
+**Question 2 (R-SR2's file backend).** Does the file backend keep every earlier write of a record?
+
+- **2a (recommended): the latest write only**, as today. The contract promises the latest whole
+  record and no removal, which every backend meets; a record's history is the facts it carries and
+  the journals that exist for history. Keeping versions adds a per-record sequence, a reader's fold
+  to the latest, and growth with no retention rule, for a reader that does not exist (less
+  machinery, prove it with telemetry).
+- **2b (Architect 1): every write appends**, `nodes/<id>/record/<seq>`, earlier entries remain, the
+  latest supplies the current state, an index may name it but never replaces the history; plus a
+  cell that writes several versions, reopens the store, finds every version and reads the latest as
+  current. The cost is 2a's list; the gain is a disk history of records nobody reads today.
+
+**Question 1 (the layout).**
 
 - **A (recommended): R-SR1 and R-SR2**, the layout of §4, the delta of §5, R14 item 1 and R-ML2 item 4 amended.
 - **B: today's layout**, with `status/` deleted, `connections-by-destination/` moved under
