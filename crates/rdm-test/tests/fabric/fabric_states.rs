@@ -586,10 +586,23 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     for n in &nodes {
         let name = s(&n["name"]);
         let mesh = name.split('.').next().unwrap().to_string();
-        let record: Value = serde_json::from_slice(&std::fs::read(root.join(format!("nodes/{mesh}/records/{}.json", s(&n["node_id"])))).unwrap()).unwrap();
-        let birth = record["record"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
         let want: &[&str] = if name != "mesh1.admin.1" { &["Pending", "ReadyForTraffic"] } else { &["ReadyForTraffic"] };
-        assert_eq!(birth["declared"], json!(want), "{name}'s record holds the states its join and its ready recorded: {record}");
+        // A mesh-primary's own ReadyForTraffic has no Applied reply to be durable before (states.md:51): its
+        // writer records it on its own record after the view shows it, so the cell reads until it is there.
+        let read = || {
+            let record: Value = serde_json::from_slice(&std::fs::read(root.join(format!("nodes/{mesh}/records/{}.json", s(&n["node_id"])))).unwrap()).unwrap();
+            let birth = record["record"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
+            (birth["declared"].clone(), record)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let (declared, record) = loop {
+            let (declared, record) = read();
+            if declared == json!(want) || std::time::Instant::now() > deadline {
+                break (declared, record);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(declared, json!(want), "{name}'s record holds the states its join and its ready recorded within 30 s: {record}");
     }
     // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
     // meshes' attempt claims are there before state-commit, beside the declarations.
