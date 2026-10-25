@@ -946,3 +946,52 @@ async fn a_mesh_primary_move_and_a_mesh_delete_during_the_initial_state_sync_are
     eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.tags.create mesh2.rpc.1 status=state-sync", s(&node_rejects[0]["trace_id"]));
 }
 
+
+/// CONTRACT (states.md: "The fabric enters state-sync when every planned mesh is ready-for-traffic."; gossip.md
+/// §3.2: timers only for heartbeat and anti-entropy): the Day-0 Build's change enters state-sync when its
+/// attempt is claimed; a Build adding a member to a ready mesh puts the fabric back to pending, and the
+/// fabric-primary enters state-sync when the last planned member's ready-for-traffic is applied, and
+/// announces that member's node-type primary then, never on its next gossip interval. The estate runs at
+/// the default gossip interval (2 s), so a wait on that interval is a gap of up to 2 s; the bound is a
+/// quarter of it. Must NOT happen: the fabric, or the node-type primary's announcement, waiting for the
+/// gossip interval after the claim or the member's ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fabric_enters_state_sync_and_announces_the_node_type_primary_at_the_last_planned_members_ready() {
+    let test = "the_fabric_enters_state_sync_and_announces_the_node_type_primary_at_the_last_planned_members_ready";
+    let gossip = Duration::from_millis(2000);
+    let sha = candidate_sha();
+    let env = [("RDM_TEST_APP", "answer:0"), ("RDM_GOSSIP_INTERVAL_MS", "2000"), ("RDM_BACKBONE_INTERVAL_MS", "2000"), ("RDM_STALENESS_MS", "30000")];
+    let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &env).await.expect("the faulted-admin binding set is accepted");
+    // The Day-0 Build's change ends first: the admin alone, whose attempt's claim is the last thing the fabric waits on.
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    let build = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await.build_id.to_string();
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(build.as_str()), Duration::from_secs(60)).await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let ready = named(&spans, "rdm.node_admin.status.update.via-declaration")
+        .into_iter()
+        .filter(|d| d["attributes"]["op"] == "declare-node-state" && d["attributes"]["state"] == "ReadyForTraffic" && d["attributes"]["sender"] == "mesh1.rpc.1" && d["attributes"]["outcome"] == "applied")
+        .min_by_key(|d| start(d))
+        .expect("mesh1.rpc.1's ready-for-traffic was applied by its mesh-primary");
+    let (_, change) = change_of(&spans, &build);
+    let entered = change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "state-sync").unwrap_or_else(|| panic!("the fabric entered state-sync under {build}"));
+    let announced = named(&spans, "rdm.mesh.seat.update.via-announcement")
+        .into_iter()
+        .filter(|a| a["attributes"]["seat"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && s(&a["attributes"]["node"]).starts_with("mesh1.admin."))
+        .min_by_key(|a| start(a))
+        .expect("the mesh-primary announced mesh1's rpc_node primary");
+    // The Day-0 Build: the first Build whose change entered state-sync, and its attempt's claim.
+    let day0 = named(&spans, "rdm.node_admin.fabric.update.via-change").into_iter().filter(|r| r["attributes"]["build_id"] != build.as_str()).min_by_key(|r| start(r)).map(|r| s(&r["attributes"]["build_id"])).expect("the Day-0 Build's change");
+    let (_, day0_change) = change_of(&spans, &day0);
+    let day0_entered = day0_change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "state-sync").expect("the Day-0 change entered state-sync");
+    let day0_claimed = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|c| c["attributes"]["build_id"] == day0.as_str() && c["attributes"]["outcome"] == "won").min_by_key(|c| start(c)).expect("the Day-0 Build's attempt was claimed");
+    let ms = |from: &Value, to: &Value| (start(to) as i128 - start(from) as i128) / 1_000_000;
+    let (to_state_sync, to_announced, claim_to_state_sync) = (ms(ready, entered), ms(ready, announced), ms(day0_claimed, day0_entered));
+    estate.artifact("gaps.json", &json!({ "ready_to_state_sync_ms": to_state_sync, "ready_to_announced_ms": to_announced, "day0_claim_to_state_sync_ms": claim_to_state_sync, "gossip_interval_ms": gossip.as_millis() as u64 }));
+    eprintln!("ready -> state-sync {to_state_sync} ms, ready -> rpc_node-primary announced {to_announced} ms, Day-0 claim -> state-sync {claim_to_state_sync} ms (gossip interval {} ms)", gossip.as_millis());
+    let bound = (gossip / 4).as_millis() as i128;
+    assert!(claim_to_state_sync < bound, "the Day-0 fabric entered state-sync {claim_to_state_sync} ms after its Build's attempt was claimed, not within {bound} ms: it waited for the gossip interval");
+    assert!(to_state_sync < bound, "the fabric entered state-sync {to_state_sync} ms after mesh1.rpc.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
+    assert!(to_announced < bound, "the rpc_node primary was announced {to_announced} ms after mesh1.rpc.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
+    estate.record_trace_url(&s(&entered["trace_id"]));
+}

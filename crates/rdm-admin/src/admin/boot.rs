@@ -2727,6 +2727,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let records = records.clone();
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
                                         let stop = stop_gate.clone();
+                                        let claim_door = claim_slot.clone();
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
@@ -2735,6 +2736,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
                                                 let turn = stop.turn("hierarchy").await;
                                                 let me = view_digest_view.held_path_name().unwrap_or_else(|| me.clone());
+                                                // A claim this admin's door wins from here on, during the turn included, ends the
+                                                // turn's wait: the attempt it opens is the one state-sync names.
+                                                let door = claim_door.get().cloned();
+                                                let mut claimed = door.as_ref().map(|d| Box::pin(d.claimed.notified()));
+                                                if let Some(c) = claimed.as_mut() {
+                                                    c.as_mut().enable();
+                                                }
                                                 // The current Build, read once per turn. A builds store that cannot be read is
                                                 // named once per distinct error and decides nothing this turn: no planned births,
                                                 // accepted meshes or step are taken from a read that failed.
@@ -2886,10 +2894,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The turn dials no member of its own mesh: a member joins through this admin, and a
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).
                                                 drop(turn);
-                                                // The next turn is due after one gossip interval, or at once when a checklist the
-                                                // fabric-primary waits on, or the application's answer, moved, or when the view changes
-                                                // a role or a status it announces: this admin takes or loses a seat, or its mesh's
-                                                // status moves (gossip.md §3.2, a status change is sent at once).
+                                                // The next turn is due after one gossip interval, or at once when what the turn
+                                                // decides on moved: a checklist the fabric-primary waits on, or the application's
+                                                // answer; an attempt claimed; or the view changes a member's status or a primary,
+                                                // its mesh's or a node type's (this admin's own roles among them), or a mesh's status.
+                                                // The fabric enters state-sync when every planned mesh is ready-for-traffic, and a
+                                                // status change is sent at once (states.md; gossip.md §3.2: timers only for
+                                                // heartbeat and anti-entropy).
+                                                let decides = |v: &Topology| (v.members().map(|n| (n.name.clone(), n.status, n.is_primary, n.is_fabric_primary)).collect::<Vec<_>>(), v.meshes.iter().map(|m| (m.name.clone(), m.status)).collect::<Vec<_>>());
+                                                let decided_on = decides(&t);
                                                 let publication_wake = tokio::time::sleep_until(tokio::time::Instant::now() + gossip_interval());
                                                 tokio::pin!(publication_wake);
                                                 loop {
@@ -2897,11 +2910,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         _ = &mut publication_wake => break,
                                                         _ = fabric_states.change_due() => break,
                                                         _ = records.wake.report_notify.notified() => break,
+                                                        _ = async { match claimed.as_mut() { Some(c) => c.as_mut().await, None => std::future::pending().await } } => break,
                                                         _ = records.view_changed.notified() => {
                                                             let now = topology.read().await.clone();
-                                                            let (mp, fp) = (now.is_mesh_primary(&mesh, &seat_node_id), now.is_fabric_primary(&seat_node_id));
-                                                            let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                                                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status || announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist || records.peer_recovering() {
+                                                            if decides(&now) != decided_on || announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist || records.peer_recovering() {
                                                                 break;
                                                             }
                                                         }
