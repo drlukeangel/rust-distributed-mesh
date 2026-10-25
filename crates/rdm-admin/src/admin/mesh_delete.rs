@@ -382,7 +382,7 @@ impl AdminRunner {
         let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
         let path = crate::mesh_delete::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id.log(), attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
-        let created = self.create_deleting_mesh_admin(build_id, attempt, &path, &key.mesh_id).instrument(span.clone()).await;
+        let created = self.create_deleting_mesh_admin(build_id, attempt, &path, &key.mesh_id, &lost).instrument(span.clone()).await;
         span.record("outcome", if created.is_ok() { "created" } else { "failed" });
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
@@ -397,23 +397,38 @@ impl AdminRunner {
     /// admin is handed its mesh's state. Never Pending for a mesh past it: the state only moves
     /// forward (states.md, "pending -> ready-for-traffic -> leaving -> dead"), and a mesh that is
     /// leaving is never told it is pending. A fabric-primary that holds no state for the mesh
-    /// creates nothing: no state is assumed.
-    async fn create_deleting_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId) -> Result<(), String> {
+    /// creates nothing: no state is assumed. The admin runs the executable the row of the lost
+    /// predecessor `predecessor` (the amendment's `predecessor`) records: the create is the mesh's
+    /// recovery (build.md, "One node.create is recovery"), and a recovery runs the executable its
+    /// exited birth's row records, never the recovering admin's (node-recovery.md "Retained", Q157).
+    /// A predecessor whose row records none refuses the create by name; nothing is launched.
+    async fn create_deleting_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId, predecessor: &RosterBirth) -> Result<(), String> {
         let state = self.records.declared.lock().unwrap().meshes.get(mesh_id).copied().ok_or_else(|| {
             format!("{}: this fabric-primary holds no declared state for {} ({mesh_id}), so the admin created for it could be handed none; nothing is created under an assumed state", self.held_name(), path.mesh)
         })?;
+        let executable = self.predecessor_executable(path, predecessor).await?;
         match self.revise_predecessor(path).await {
             crate::seat_revision::FenceOutcome::Clear { gone: None } => {}
             other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
         }
         let hand_off = self.mesh_state_hook(path, state)?;
-        let template = self.with_issuing_material(self.create_template(path, None).await?, &path.mesh).await?;
+        let template = self.with_issuing_material(self.template_bound(path, executable, "row").await?, &path.mesh).await?;
         let held_runtimes = self.held_runtimes().await;
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for(NodeKind::NodeAdmin), data_dir: None, held_runtimes };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(path.clone(), (created.node, created.handle));
         Ok(())
+    }
+
+    /// The executable the row of `predecessor`, the lost final primary the admin `path` replaces,
+    /// records (read by its node id: the `Deleted` row keeps it). A row that records none, or no row,
+    /// refuses the create by name.
+    async fn predecessor_executable(&self, path: &PathName, predecessor: &RosterBirth) -> Result<rdm_core::binding::Binding, String> {
+        let node_id = NodeId::parse(&predecessor.node_id).map_err(|e| format!("the roster names {} by node id `{}`, which does not parse: {e}", predecessor.node, predecessor.node_id))?;
+        let store = self.records.contacts.get().ok_or_else(|| format!("node.create:{path}: {} holds no node rows, so the executable of the predecessor {} {} cannot be read; nothing is launched", self.held_name(), predecessor.node, predecessor.incarnation_id))?;
+        let row = store.node(&node_id).await.map_err(|e| format!("node.create:{path}: the row of the predecessor {} ({node_id}) could not be read for its executable: {e}", predecessor.node))?;
+        row.and_then(|r| r.executable).ok_or_else(|| format!("node.create:{path}: the row of the predecessor {} {} records no executable, so the admin created for {} has none to run; nothing is launched", predecessor.node, predecessor.incarnation_id, path.mesh))
     }
 
     /// The resume after the leaving mesh's final primary `adm.final_primary` was lost and `held`

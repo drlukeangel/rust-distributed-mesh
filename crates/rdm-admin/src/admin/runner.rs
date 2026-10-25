@@ -305,6 +305,13 @@ impl AdminRunner {
             let binding = built_in_binding(node.kind, &t.executable, self.fabric_provider).await.map_err(|e| format!("node.create:{node}: {e}"))?;
             return Ok(LaunchTemplate { binding: Some(binding), ..t });
         };
+        self.template_bound(node, binding, from).await
+    }
+
+    /// The template a node.create of `node` launches `binding` from, the binding `from` names (the
+    /// Build, a row): re-hashed now, a missing file and a hash that differs refused by name and nothing
+    /// launched.
+    pub(crate) async fn template_bound(&self, node: &PathName, binding: rdm_core::binding::Binding, from: &str) -> Result<LaunchTemplate, String> {
         verify_binding(&binding, node.kind, self.fabric_provider, from).await.map_err(|e| format!("node.create:{node}: the executable the {from} names is refused; nothing is launched: {e}"))?;
         tracing::info!(launch_id = %binding.launch_id, executable = %binding.executable.display(), sha256 = %binding.sha256, from, "launching from the explicit executable binding");
         let executable = binding.executable.clone();
