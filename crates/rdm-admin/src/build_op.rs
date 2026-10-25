@@ -128,7 +128,7 @@ impl BuildDoor {
             // A reserved position (the removed count forms and executable-set change) decodes as an unknown
             // variant (`Build::decode_request`); a caller that builds the value in process is answered the
             // same, `Malformed(UnknownVariant)` (node-rpc.md §26), nothing accepted.
-            BuildChange::Reserved0 | BuildChange::Reserved1 | BuildChange::Reserved2 | BuildChange::Reserved4 | BuildChange::Reserved14 => return Err(BuildReply::Malformed { kind: rdm_core::outcome::MalformedKind::UnknownVariant }),
+            BuildChange::Reserved0 | BuildChange::Reserved1 | BuildChange::Reserved2 | BuildChange::Reserved4 | BuildChange::Reserved14 => return Err(rdm_core::reply::build::malformed(rdm_core::outcome::MalformedKind::UnknownVariant)),
             // The complete topology (proposal executable-bindings-at-create.md rule 1): a topology Build,
             // its `based_on` checked against the current Build at the door.
             BuildChange::Reconcile { based_on, nodes } => topology(TopologyChange::Reconcile { based_on: based_on.clone(), nodes: nodes.clone() }).await,
