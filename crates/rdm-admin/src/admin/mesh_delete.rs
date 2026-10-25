@@ -259,7 +259,20 @@ impl AdminRunner {
                     Some(n) => {
                         self.delete_member_in_process(build_id, attempt, n).await?;
                     }
-                    None => self.delete_silent_admin(build_id, attempt, key, mesh, b, &held).await?,
+                    None => {
+                        // An admin node investigation reaches is not lost (Q111): the next attempt hands it the
+                        // workflow, and nothing of it is deleted here.
+                        let seen = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
+                        if let Some(n) = seen {
+                            if matches!(crate::seat_revision::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
+                                return Err(RunEnd::Incomplete(format!("{outer}: {mesh}'s node-admin {} {} answers, so it is not lost; the next attempt hands the workflow to the admin the election names", b.node, b.incarnation_id)));
+                            }
+                        }
+                        // Every other birth as an unreached birth: its runtime resolved as node investigation
+                        // resolves it and inspected at TerminateRuntime's instant; a runtime not resolved here
+                        // fails that step by name (Q160).
+                        self.delete_lost_birth(build_id, attempt, b).await?;
+                    }
                 }
             }
         }
@@ -417,8 +430,36 @@ impl AdminRunner {
         let fact = handle.fact().ok_or_else(|| format!("{outer} is refused: the new final primary {} has no exact runtime handle", primary.name))?;
         let me = self.held_name();
         let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {me} holds no durable runtime rows of the lost final primary {} {}", adm.final_primary.node, adm.final_primary.incarnation_id))?;
-        let row = self.roster_birth_row(&**store, &adm.final_primary).await.map_err(|e| format!("{outer} is refused: the lost final primary's runtime cannot be read: {e}"))?;
+        let mut row = self.roster_birth_row(&**store, &adm.final_primary).await.map_err(|e| format!("{outer} is refused: the lost final primary's runtime cannot be read: {e}"))?;
         let lost = adm.final_primary.clone();
+        // Under an in-force fabric.delete the lost primary's verdict is node investigation's (fabric-recovery.md
+        // "Nothing alive": reached, or an admin answering, refuses; any other verdict proceeds; mesh-delete.md
+        // "Resume after the primary's loss" step 1 refuses only `reached`): its runtime is resolved as
+        // investigation resolves it, its digest first, then its durable runtime row. With neither held the
+        // verdict is `unproven`, no refusal, and the resume proceeds to the lost birth's node.delete, whose
+        // `TerminateRuntime` has no runtime to inspect or terminate: the delete's step fails by name, no
+        // receipt manufactured, the intent retained (fabric-recovery.md step 4, Q160; fabric-delete.md "Failure").
+        let in_force = self.builds.read_build(&key.build_id).await.is_ok_and(|p| p.deletes_fabric());
+        if in_force && row.is_none() {
+            let steps = self.builds.read_build(&key.build_id).await.map_err(|e| format!("{outer}: the Build {} could not be read for its receipts: {e}", key.build_id))?.steps;
+            let exited = crate::mesh_delete::exit_receipts(&steps, outer, std::slice::from_ref(&lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone()));
+            if !exited {
+                let record = lost.record()?;
+                match crate::node_investigation::birth_runtime(&self.book, Some(&**store), &record).await {
+                    Ok(b) => row = Some(crate::storage::RuntimeRow { node_id: record.node_id.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
+                    Err(why) => {
+                        let step = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+                        let reason = format!(
+                            "node.delete:{} {step}: the lost final primary {} {}'s verdict is unproven ({why}), so the resume proceeds to its node.delete, and that delete has no runtime to inspect or terminate: the step fails by name and no receipt is manufactured (Q160)",
+                            lost.node, lost.node, lost.incarnation_id
+                        );
+                        tracing::info_span!("rdm.node_admin.node.delete.via-unproven-runtime", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %outer, node = %lost.node, incarnation_id = %lost.incarnation_id, step, reason = %reason)
+                            .in_scope(|| tracing::info!("the lost birth's runtime is not known here: its delete's step fails by name"));
+                        return Err(RunEnd::failed(reason));
+                    }
+                }
+            }
+        }
         crate::mesh_delete::resume_after_loss(&*self.builds, &*self.provider, row.as_ref(), key, &me.to_string(), adm, held, &RuntimeProof::of(&fact), || async move { self.delete_lost_birth(&key.build_id, key.attempt, &lost).await.map(|_| ()) }).await.map(|_| ())
     }
 

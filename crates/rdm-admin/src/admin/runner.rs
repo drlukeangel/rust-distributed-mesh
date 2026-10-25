@@ -662,7 +662,20 @@ impl AdminRunner {
     pub(crate) async fn delete_unreached_as(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, explicit: bool) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
         let (unreached, handle) = match self.exited_birth("node.delete", node, from).await {
             Ok(resolved) => resolved,
-            Err(e) => receipted_exit(builds, build_id, node, from).await.ok_or(e)?,
+            Err(e) => match receipted_exit(builds, build_id, node, from).await {
+                Some(resolved) => resolved,
+                // An explicit delete of a birth whose runtime is not resolved here has nothing to inspect or
+                // terminate: its TerminateRuntime fails by name and no receipt is manufactured
+                // (fabric-recovery.md step 4, Q160; fabric-delete.md "Failure").
+                None if explicit => {
+                    let step = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+                    let reason = format!("node.delete:{node} {step}: the runtime of {} at {} is not resolved here, so none can be inspected or terminated: the step fails by name and no receipt is manufactured (Q160): {e}", from.node_id, from.incarnation.as_str());
+                    tracing::info_span!("rdm.node_admin.node.delete.via-unproven-runtime", build_id = %build_id.log(), attempt, node = %node, incarnation_id = %from.incarnation.as_str(), step, reason = %reason)
+                        .in_scope(|| tracing::info!("the birth's runtime is not known here: its delete's step fails by name"));
+                    return Err(crate::executor::RunEnd::failed(reason));
+                }
+                None => return Err(e.into()),
+            },
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: unreached, handle, unreached: true };
