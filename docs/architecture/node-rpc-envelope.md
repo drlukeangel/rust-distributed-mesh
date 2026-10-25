@@ -356,7 +356,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `path`, `mesh`, `node_type` | the create spec | nothing: immutable for the node's life. `node.name.update` carries the name only, so the path cannot move by construction | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready-for-traffic (R-CR1) | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim) and on replace (from the retained predecessor row at the cutover rename) | `node.tags.create { label \| [labels] }` adds; `node.tags.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tags.created` / `node.tags.deleted` |
-| `config` | the create spec | `node.config.update { map }`, the whole map replaced ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
+| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time; a Build whose spec names a different map applies it the same way (build.md §1) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
 | `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
@@ -373,7 +373,8 @@ last value, `admin_api_base` included. It is a field of the node record, and the
 carries the live copy (the `config` map). RDM never reads it; it is capped in keys and bytes and
 refused by name past either ([cap and budget](gossip.md#31-frame-catalog)). The
 [config update sequence](lifecycles/node-config-update.md) is a single call, not a Build. A
-node created at a path.name seeds its config from the previous row at that path.name; a rejoining
+node's first config is its create spec's, written to its row at the claim; a node recovered or
+replaced at a path.name inherits the config of the row it takes over, with its tags; a rejoining
 node gets it back in its join answer.
 
 ### Open typed object questions
