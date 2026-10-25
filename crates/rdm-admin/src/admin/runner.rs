@@ -1126,13 +1126,18 @@ impl AdminRunner {
         self.pipeline(&template).delete_own(&req).await.map_err(crate::executor::RunEnd::from)?;
         self.handles.lock().unwrap().remove(&record.name);
         let (drives, provider, id) = (self.drives.clone(), self.provider.clone(), build_id.clone());
+        // The callers read the terminal within the node's connections-delete bound, as every in-flight
+        // handler finishes within it before the node leaves (RDM_CONNECTIONS_DELETE_DEADLINE_MS).
+        let deadline = self.template.connections_delete_deadline;
         let grace = crate::deployment::pipeline::Timeouts::default().stop_grace;
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-own-runtime", node = %record.name, node_id = %record.node_id, build_id = %build_id.log(), attempt, outcome = tracing::field::Empty);
         // Its own task: the run, and the drive pass it runs under, end with the Build's terminal, and
         // only after the callers read it does the runtime end.
         tokio::spawn(
             async move {
-                drives.until_read(&id).await;
+                if tokio::time::timeout(deadline, drives.until_read(&id)).await.is_err() {
+                    tracing::info!(deadline_ms = deadline.as_millis() as u64, "a caller of the Build had not read its terminal within the connections-delete bound: the runtime ends");
+                }
                 // Said before the provider is asked: the runtime this admin runs in ends with it.
                 tracing::info!("node.deleted was this admin's last reply and its callers read the Build's terminal: its own runtime ends through the provider");
                 if let Err(e) = provider.terminate(&handle, crate::deployment::provider::TerminationMode::Graceful { grace }).await {
