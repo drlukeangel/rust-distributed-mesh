@@ -108,6 +108,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         let joins: Vec<&serde_json::Value> = issued
             .iter()
             .filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["incarnation_id"] == inc.as_str() && sp["attributes"]["outcome"] == "issued")
+            .copied()
             .collect();
         assert!(!joins.is_empty(), "no issuance span for {node} {inc}");
         let held_issue = joins
