@@ -1,9 +1,9 @@
-# Proposal: the store root, one directory per entity (R-SR1)
+# Proposal: the store root, one directory per entity (R-SR1, R-SR2)
 
 **Status:** proposal, 2026-10-25. Asks Luke's yes on one rule for RDM's file backend's layout of the
 fabric's shared store root, and on the amendment of R14 item 1 and R-ML2 item 4 that it needs.
-Storage layout only: no read, no wire frame and no trait change. Rafka binds the same traits to its
-own topics and is untouched. It proves nothing about `connections.get`: a store read's contract,
+Storage layout and one write rule: no read, no wire frame, and one trait change (`NodesStorage`
+loses `remove_node`, R-SR2). Rafka binds the same traits to its own topics and is untouched. It proves nothing about `connections.get`: a store read's contract,
 which facts are retained against live and how complete the by-destination index is at the instant
 of a read, is the reads proposal's (Q167, R-RD7), not a consequence of where a directory sits.
 
@@ -64,6 +64,16 @@ Eleven top-level entries for five stores. What the picture shows:
   the object it describes. The root carries a layout marker, `<root>/layout`, and a root without it
   or with another value is refused by name. The fabrics' name index stays at `<store_dir>/fabrics/<name>`
   above the roots as R-FN1 ruled it: it answers which root a name is before any root is opened.
+- **R-SR2, storage is append-only and every write is the whole record.** The latest write of a key is
+  the entity's current state (storage-whole-records.md: one cached object, one writer, one whole
+  write; Rafka already stores each object as a topic of whole records). No record is ever removed. A
+  delete appends the record marked Deleted (a node) or Dead (a mesh); a create withdrawn before the
+  node ran appends the record marked Withdrawn, and a name claim wins over a Withdrawn row as over a
+  Deleted one, so the only place a record disappears today (`node_rows.rs` `release_record`,
+  `remove_node`) goes. Whether a backend keeps earlier writes is the backend's and is promised to no
+  reader: Rafka's topic keeps them until compaction, the file backend keeps the latest. Locks keep
+  their take and release (the in-flight row); indexes are derived and follow their record (Luke,
+  Architect 1, 2026-10-25).
 
 ## 4. The layout
 
@@ -162,8 +172,10 @@ node record.
   `nodes/by-tag/`; `FileMeshStorage` records at `meshes/<id>/record`, the claim and the in-flight row
   at `meshes/by-name/<name>/` (`mesh-records/`, `mesh-names/` and `meshes/<name>/claims/` go); the
   `MeshStorage` and `NodesStorage` traits unchanged, their name-keyed `take_in_flight`,
-  `release_in_flight`, `in_flight` and `claim_against` included; `nodes_answer` and the rebuild read
-  by the record's `mesh` field.
+  `release_in_flight`, `in_flight` and `claim_against` included, except `remove_node`, which goes
+  (R-SR2): `release_record` writes the record Withdrawn and releases the name, `claim_against` yields
+  the name over a Withdrawn row as over a Deleted one, and the header states R-SR2; `nodes_answer`
+  and the rebuild read by the record's `mesh` field.
 - `rdm-admin/src/fabric_storage.rs`: `SEAT_MOVES_DIR` → `fabric/primary-moves`, the row format
   `primary-move/1`; `REFUSED_TRANSFERS_DIR` and the retired-directory constants go with their checks.
 - `rdm-admin/src/build_state.rs`: `FileJournal` at `builds/<build id>/`, one directory per Build;
@@ -233,6 +245,8 @@ node-primary-update.md line 52: `(its own connections/<node>/ rows are its own, 
   `fabric/primary-moves/`; `demo/tests/connections.rs:86` asserts `fabric/record.json`, unchanged.
 - New: a root without `layout`, and one with another value, is refused by name at open, naming the
   path and the value; a populated root in the new layout, every index directory present, reopens;
+  a create withdrawn before its node ran leaves its record Withdrawn and a later claim of the name
+  wins over it (R-SR2); no test of the nodes store removes a record;
   a recreated mesh's `mesh2.admin.1` claim wins over the Deleted row at `nodes/by-name/` and its
   records sit at the new MeshId; a delayed release of an attempt on the old mesh against the
   re-created mesh's name finds the in-flight row naming another attempt and removes nothing (the
@@ -245,7 +259,7 @@ node-primary-update.md line 52: `(its own connections/<node>/ rows are its own, 
 
 ## 6. Arms
 
-- **A (recommended): R-SR1**, the layout of §4, the delta of §5, R14 item 1 and R-ML2 item 4 amended.
+- **A (recommended): R-SR1 and R-SR2**, the layout of §4, the delta of §5, R14 item 1 and R-ML2 item 4 amended.
 - **B: today's layout**, with `status/` deleted, `connections-by-destination/` moved under
   `connections/` and the layout marker added: the writer map stays on disk, two conventions stay,
   Builds stay under `fabric/` and `meshes/`.
