@@ -91,11 +91,21 @@ pub fn gateway_of(estate: &impl ContainerEstate) -> Result<String, String> {
 /// A container's address on its Fabric's network.
 pub fn address_of(estate: &impl ContainerEstate, id: &str) -> Result<String, String> {
     let network = network_of(estate);
-    let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{network}\").IPAddress}}}}"), id])?;
-    if ip.is_empty() {
+    running_address(&network, id)?.ok_or_else(|| format!("container {id} holds no address on {network}"))
+}
+
+/// A container's address on `network`, read with its running state in one daemon read.
+pub fn running_address(network: &str, id: &str) -> Result<Option<String>, String> {
+    let format = format!("{{{{.State.Running}}}} {{{{with index .NetworkSettings.Networks \"{network}\"}}}}{{{{.IPAddress}}}}{{{{end}}}}");
+    running_address_in(network, id, &docker(&["inspect", "--type", "container", "--format", &format, id])?)
+}
+
+fn running_address_in(network: &str, id: &str, read: &str) -> Result<Option<String>, String> {
+    let (_running, ip) = read.trim().split_once(' ').unwrap_or((read.trim(), ""));
+    if ip.trim().is_empty() {
         Err(format!("container {id} holds no address on {network}"))
     } else {
-        Ok(ip)
+        Ok(Some(ip.trim().to_string()))
     }
 }
 
@@ -238,11 +248,14 @@ pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fa
         let id = estate.container_of(n).await.ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
         members.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
     }
+    let network = network_of(estate);
     let mut unheard = Vec::new();
     for (n, id) in estate.live_containers().into_iter().filter(|(n, _)| !nodes.contains(n)) {
-        unheard.push(Member { node: n, ip: address_of(estate, &id)?, id });
+        if let Some(ip) = running_address(&network, &id)? {
+            unheard.push(Member { node: n, ip, id });
+        }
     }
-    with_tools(Silenced { network: network_of(estate), gateway, members, unheard, host_cut: true, tools: Default::default() })
+    with_tools(Silenced { network, gateway, members, unheard, host_cut: true, tools: Default::default() })
 }
 
 /// Cut the containers of `a` from the containers of `b`: in each container of `a`, every packet to and
@@ -641,6 +654,42 @@ impl ExactContainer {
                 return Err(Refusal::NotAcknowledged { id: self.id.clone(), fault, status: now.status });
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A container the daemon listed running that exits before its address is read (a birth's
+    /// runtime being terminated) keeps its endpoint with the address released: Docker 29 renders it
+    /// `invalid IP`. It holds no address and is heard by no one, so the silence writes no rule for
+    /// it; a running container that holds no address is refused by name; every address the ruleset
+    /// names is an address.
+    #[test]
+    fn a_container_that_exits_before_its_address_is_read_takes_no_rule_and_every_rule_names_an_address() {
+        let net = "rafka-8ndbz2p393dm";
+        assert_eq!(running_address_in(net, "a", "true 10.231.0.7\n"), Ok(Some("10.231.0.7".to_string())));
+        assert_eq!(running_address_in(net, "b", "false invalid IP"), Ok(None), "an exited container holds no address");
+        assert_eq!(running_address_in(net, "c", "false "), Ok(None), "an exited container holds no address");
+        assert!(running_address_in(net, "d", "true invalid IP").is_err(), "a running container without an address is refused");
+        assert!(running_address_in(net, "e", "true ").is_err(), "a running container off the network is refused");
+
+        // The soak's listing at the failed unheard step: the third container listed had exited.
+        let listed = [("mesh1.gateway.1", "true 10.231.0.31"), ("mesh1.broker.1", "true 10.231.0.30"), ("mesh1.gateway.1", "false invalid IP"), ("mesh1.admin.1", "true 10.231.0.2")];
+        let mut unheard = Vec::new();
+        for (i, (node, read)) in listed.iter().enumerate() {
+            if let Some(ip) = running_address_in(net, &i.to_string(), read).expect("a listed container's read") {
+                unheard.push(Member { node: node.to_string(), id: i.to_string(), ip });
+            }
+        }
+        let silenced = Silenced { network: net.into(), gateway: "10.231.0.1".into(), members: Vec::new(), unheard, host_cut: true, tools: Default::default() };
+        let rules = silenced.install_rules();
+        for line in rules.lines().filter(|l| l.starts_with("-A ")) {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let at = words.iter().position(|w| *w == "-s" || *w == "-d").unwrap_or_else(|| panic!("a rule names an address: {line}"));
+            assert!(words[at + 1].parse::<std::net::IpAddr>().is_ok() && words[at + 2].starts_with('-'), "line names no address: {line}\n{rules}");
         }
     }
 }
