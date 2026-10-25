@@ -560,6 +560,14 @@ async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_unt
     // fabric cannot reach state-commit.
     until_fabric(&estate, ScopeStatus::StateSync, Some(first.as_str()), Duration::from_secs(60)).await;
     door.wait_held("state-sync").await;
+    // mesh1.rpc.1, born before mesh2.rpc.1, learns of it from the MembersDelta its mesh-primary
+    // forwards on the change (gossip.md §3.3), not from the admin's view the cell settled on: the
+    // origination waits until mesh1.rpc.1's own resolver holds the destination.
+    wait_for("mesh1.rpc.1's own resolver holds mesh2.rpc.1", Duration::from_secs(30), || async {
+        let r = estate.probe(&["resolve", "--target", "path:mesh1.rpc.1", "--query", "path:mesh2.rpc.1"]);
+        (r["reply"]["resolution"] == "found").then_some(())
+    })
+    .await;
     let held = estate.probe(&["originate", "--target", "path:mesh1.rpc.1", "--destination", "path:mesh2.rpc.1", "--key", "held-before-commit"]);
     estate.artifact("originate-before-state-commit.json", &held);
     assert_eq!(held["call_outcome"].as_str(), Some("reply"), "mesh1.rpc.1 originated its connection to mesh2.rpc.1 during state-sync: {held}");
