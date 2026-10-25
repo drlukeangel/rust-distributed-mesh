@@ -932,6 +932,12 @@ impl Estate {
         self.bootstrap.as_ref().map(|c| c.id())
     }
 
+    /// The process ids of the node-admins this estate started after day 0 ([`Self::restart_admin_with`]),
+    /// in the order it started them.
+    pub fn restarted_pids(&self) -> Vec<u32> {
+        self.restarted.iter().map(Child::id).collect()
+    }
+
     /// The bootstrap admin's data dir.
     pub fn bootstrap_data_dir(&self, mesh: &str) -> PathBuf {
         self.root.join(format!("{mesh}.admin.1"))
@@ -948,6 +954,48 @@ impl Estate {
     /// [`Self::restart_admin`] with more operator environment (the recovery flags
     /// `RDM_MESH_PRIMARY` and `RDM_FABRIC_PRIMARY`).
     pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> rdm_client::PathName {
+        let (exe, env) = self.admin_launch(data_dir, operator_env);
+        let (child, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
+        self.restarted.push(child);
+        let name = birth.name.clone();
+        self.hold_printed(birth);
+        name
+    }
+
+    /// A node-admin started on `data_dir` as [`Self::restart_admin_with`] starts one, for a launch the
+    /// cell expects to be refused: its exit status and everything it wrote to stderr. A launch still
+    /// running after `within` is killed and named by the panic.
+    pub fn admin_launch_refused(&self, data_dir: &Path, operator_env: &[(&str, &str)], within: Duration) -> (std::process::ExitStatus, String) {
+        let (exe, env) = self.admin_launch(data_dir, operator_env);
+        let mut cmd = Command::new(&exe);
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap_or_else(|e| panic!("spawn the node-admin on {}: {e}", data_dir.display()));
+        let mut stderr = child.stderr.take().unwrap();
+        let read = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = stderr.read_to_string(&mut s);
+            s
+        });
+        let until = Instant::now() + within;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= until {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the node-admin launched on {} was not refused within {within:?}: it still ran (pid {})", data_dir.display(), child.id());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        (status, read.join().unwrap_or_default())
+    }
+
+    /// The executable and environment of a node-admin a person starts on `data_dir` of this estate:
+    /// the environment a person gives one (provider, store, binaries, evidence, the fabric root) and `operator_env`.
+    fn admin_launch<'a>(&self, data_dir: &Path, operator_env: &[(&'a str, &str)]) -> (PathBuf, Vec<(&'a str, String)>) {
         let mut env = vec![
             ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
             ("RDM_DATA_DIR", data_dir.display().to_string()),
@@ -970,11 +1018,7 @@ impl Estate {
                 binary("rdm-node-admin")
             }
         };
-        let (child, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
-        self.restarted.push(child);
-        let name = birth.name.clone();
-        self.hold_printed(birth);
-        name
+        (exe, env)
     }
 
     /// Hold the birth an admin this estate started printed: the typed objects learn it at their next

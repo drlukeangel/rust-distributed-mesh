@@ -16,7 +16,7 @@
 
 use crate::build_log;
 use rdm_client::{BuildFrame, BuildId, BuildStream, CallEnd, Change, LaunchKind as NodeKind, MeshCounts, PathName, ScopeStatus};
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -521,4 +521,322 @@ async fn the_fabric_primary_left_after_fabric_deleted_is_deleted_by_an_outside_n
     }
     assert!(!running(pid), "the fabric-primary's runtime exited within {OWN_DELETE_BOUND:?} of its node.delete: {replies:?}");
     estate.stop().await;
+}
+
+/// The staleness floor of this run (`RDM_STALENESS_MS`, the gate's 3 s).
+fn floor() -> Duration {
+    Duration::from_millis(std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000))
+}
+
+/// A build id as the spans carry it (`bid_xxxx-xxxx-xxxx` written bare).
+fn bare(id: &str) -> String {
+    id.trim_start_matches("bid_").replace('-', "")
+}
+
+/// The pid of `node`'s launched runtime, the one the estate reads running.
+fn runtime_pid(estate: &Estate, node: &str) -> u32 {
+    let pids: Vec<u32> = estate.live_runtimes().into_iter().filter(|(dir, _)| of_node(dir, node)).map(|(_, pid)| pid).collect();
+    assert_eq!(pids.len(), 1, "{node} has one running runtime: {:?}", estate.live_runtimes());
+    pids[0]
+}
+
+/// Whether `pid` runs: a process whose state is not a zombie.
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'))
+}
+
+/// Hold (`STOP`) or release (`CONT`) the process `pid`, acknowledged by the state the OS shows.
+fn signal(pid: u32, sig: &str) {
+    assert!(std::process::Command::new("kill").args([&format!("-{sig}"), &pid.to_string()]).status().unwrap().success(), "kill -{sig} {pid}");
+    let stopped = || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit(')').next().unwrap_or("").trim_start().starts_with('T'));
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < until && stopped() != (sig == "STOP") {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(stopped(), sig == "STOP", "the OS shows {pid} {}", if sig == "STOP" { "stopped" } else { "running" });
+}
+
+/// The environment of a person's adoption launch at `name`: the fabric id, its mesh, the custody.
+fn adoption_env(estate: &Estate, name: &str, custody: &[(&'static str, String)]) -> Vec<(&'static str, String)> {
+    let mut env: Vec<(&'static str, String)> = vec![("RDM_NODE_NAME", name.into()), ("RDM_FABRIC_ID", estate.fabric_id.clone()), ("RDM_MESH", "mesh1".into())];
+    env.extend(custody.iter().cloned());
+    env
+}
+
+fn fabrics_on(store: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()
+}
+
+/// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "If no not-yet-deleted mesh remains, the remaining
+/// work is the dead fabric-primary's own node.delete from outside, and nothing is created"; fabric-delete.md
+/// step 4: "A separate call from outside the fabric runs node.delete of the fabric-primary ... the caller
+/// takes its word"): a one-mesh fabric's sole node-admin, the fabric-primary, deletes mesh1 under
+/// fabric.delete; once mesh1's MeshDeleted is durable it is held by its fault door at its claim of the
+/// delete's next attempt, before fabric.deleted, and killed. The delete is in force, no node-admin is
+/// alive and no not-yet-deleted mesh remains. Two staleness floors on, nothing has been created and no
+/// runtime of the fabric runs; a person's adoption launch at a new path.name in mesh1 is refused by name,
+/// naming the outside caller's node.delete, and claims and creates nothing; the store holds the one
+/// fabric. The remaining work is the outside caller's node.delete of the dead fabric-primary, whose
+/// runtime has exited. What must NOT happen: a node created after the delete's acceptance, an adoption
+/// launch admitted, a claim of the delete's next attempt or a recorded transition, a second fabric, or a
+/// runtime left running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_delete_from_outside_and_creates_nothing() {
+    let shape = [("mesh1", 1, 1)];
+    let mut estate = ready_fabric("the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_delete_from_outside_and_creates_nothing", &shape).await;
+    let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
+    let door = Door::at(&estate, "mesh1.admin.1").await;
+    door.arm("deleted", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": format!("mesh.delete:{mesh_id}")})).await;
+    let accepted_ns = now_ns();
+    let delete = delete_admitted(&estate).await;
+    let id = delete.build_id().to_string();
+    let held = door.wait_held("deleted").await;
+    assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's MeshDeleted: {held}");
+    // mesh1's MeshDeleted made durable; the fabric-primary is held at its claim of the next attempt, before fabric.deleted.
+    door.arm("next", json!({"kind": "claimed-attempt"})).await;
+    door.release("deleted").await;
+    let next = door.wait_held("next").await;
+    assert_eq!(next["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at its next attempt's claim: {next}");
+    build_log::build_fact(&estate.carrier_at(&path("mesh1.admin.1")).await, &id, "mesh1's MeshDeleted", SETTLE, |b| {
+        b.steps.iter().any(|r| r.operation == format!("mesh.delete:{mesh_id}") && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED)
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"));
+    let before = receipts_at(&estate, "mesh1.admin.1", &id).await;
+    assert_eq!(count(&before, |o| o.starts_with("fabric.delete:"), "Complete"), 0, "fabric.deleted is not reported yet: {:?}", listed(&before));
+    let fp_pid = estate.bootstrap_pid().expect("the fabric-primary's pid");
+    let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
+    let store = rdm_test::estate::estate_store_dir(&estate.root);
+    let fabrics_before = fabrics_on(&store);
+    drop(delete);
+    estate.kill_bootstrap();
+
+    // Nothing inside the fabric is left to create anything.
+    tokio::time::sleep(floor() * 2).await;
+    assert_eq!(estate.live_runtimes(), vec![], "no runtime of the fabric runs");
+    // A person's adoption launch at a new path.name in the deleted mesh is refused by name.
+    let env = adoption_env(&estate, "mesh1.admin.2", &custody);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (status, err) = estate.admin_launch_refused(&estate.root.join("adopted-mesh1.admin.2"), &env, SETTLE);
+    assert!(!status.success(), "the adoption launch with no mesh left is refused: {status:?} {err}");
+    assert!(
+        err.contains("refusing to start") && err.contains("no not-yet-deleted mesh remains") && err.contains("node.delete from outside") && err.contains("nothing is created"),
+        "the refusal names the outside caller's node.delete: {err}"
+    );
+    // The outside caller's node.delete of the dead fabric-primary takes its word: its runtime has exited,
+    // and nothing else of the fabric is left to delete.
+    assert!(!alive(fp_pid), "the dead fabric-primary's runtime has exited");
+    assert_eq!(estate.live_runtimes(), vec![], "no runtime of the fabric runs beside it");
+    assert_eq!(fabrics_on(&store), fabrics_before, "no second fabric on the store");
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let after = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| start(sp) >= accepted_ns).cloned().collect() };
+    assert!(after("rdm.node_admin.fabric.update.via-adoption-claim").is_empty(), "nothing claimed the delete's next attempt");
+    assert!(after("rdm.node_admin.primary.update.via-fabric-delete-transition").is_empty(), "no transition was recorded");
+    let created: Vec<&Value> = spans.iter().filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns).collect();
+    assert!(created.is_empty(), "nothing is created after the delete's acceptance: {created:?}");
+}
+
+/// CONTRACT (Q160; fabric-recovery.md step 4: "The executor takes the fabric-primary role and the lost
+/// mesh's mesh-primary role by one winning claim and one recorded transition at the next revision, keeping
+/// its own mesh's ... its own mesh is deleted last, it reports fabric.deleted alive"; "If the executor is
+/// lost, the next one in ..." the workflow; fabric-delete.md "Failure": "Once a runtime's deletion receipt
+/// is durable, nothing recovers it for being absent"): on a two-mesh fabric whose mesh1 holds one
+/// node-admin, the fabric-primary, and mesh2 two, fabric.delete's executor is held by its fault door at
+/// mesh2's mesh.delete and killed. From the backbone, mesh2.admin.1 takes both roles and deletes mesh1 in
+/// process; it is held by its own fault door once mesh1's members are deleted, before mesh1's MeshDeleted,
+/// and killed. mesh2.admin.2, the one node-admin left, claims the delete's next attempt, records its own
+/// transition and finishes the teardown: mesh1 deleted once, then its own mesh2 last, fabric.deleted
+/// reported, the one runtime left for the outside caller's node.delete. What must NOT happen: the teardown
+/// left unfinished, a mesh deleted twice, a node created after the acceptance, or a member's runtime left
+/// running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_the_next_which_finishes_it() {
+    let shape = [("mesh1", 1, 1), ("mesh2", 2, 1)];
+    let mut estate = ready_fabric("the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_the_next_which_finishes_it", &shape).await;
+    let mesh1_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
+    let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
+    let door = Door::at(&estate, "mesh1.admin.1").await;
+    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh2_id}")})).await;
+    let executor = Door::at(&estate, "mesh2.admin.1").await;
+    executor.arm("midway", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": format!("mesh.delete:{mesh1_id}")})).await;
+    let accepted_ns = now_ns();
+    let delete = delete_admitted(&estate).await;
+    let id = delete.build_id().to_string();
+    let held = door.wait_held("roster").await;
+    assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's mesh.delete: {held}");
+    estate.kill_bootstrap();
+
+    let midway = executor.wait_held("midway").await;
+    assert_eq!(midway["hit"]["build_id"].as_str(), Some(id.as_str()), "the backbone executor is held midway, at mesh1's MeshDeleted: {midway}");
+    let first = receipts_at(&estate, "mesh2.admin.1", &id).await;
+    assert_eq!(count(&first, |_| true, "PrimariesTaken"), 1, "the backbone executor recorded its transition: {:?}", listed(&first));
+    estate.kill_pid(runtime_pid(&estate, "mesh2.admin.1"));
+
+    let fp = delete_followed(&estate, delete, "mesh2.admin.2").await;
+    assert_eq!(fp, "mesh2.admin.2", "the next executor is the fabric-primary that finishes the delete");
+    let receipts = receipts_at(&estate, &fp, &id).await;
+    assert_eq!(count(&receipts, |o| o == format!("mesh.delete:{mesh1_id}"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| o == format!("mesh.delete:{mesh2_id}"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh2 is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
+    let taken: Vec<u32> = receipts.steps.iter().filter(|r| r.step == "PrimariesTaken").map(|r| r.attempt).collect();
+    assert!(taken.len() == 2 && taken[0] < taken[1], "one recorded transition per executor, the next at a later attempt: {:?}", listed(&receipts));
+    let deleted: Vec<String> = receipts.steps.iter().filter(|r| r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED).map(|r| r.operation.clone()).collect();
+    assert_eq!(deleted.last().map(String::as_str), Some(format!("mesh.delete:{mesh2_id}").as_str()), "the executor's own mesh2 is deleted last: {deleted:?}");
+    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp} is left, for its separate node.delete");
+    estate.stop().await;
+    nothing_recreated_under_the_delete(&estate.spans(), accepted_ns, &fp);
+}
+
+/// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "the adoption launch is created at a new path.name
+/// of the node-admin type in an existing, not-yet-deleted mesh ... It claims the delete's next attempt ...
+/// continues the teardown, reports fabric.deleted while alive"; "a claim and a provider's exit evidence
+/// release no mesh row by themselves"): a one-mesh fabric's sole node-admin, the fabric-primary, accepts
+/// fabric.delete, is held at mesh1's mesh.delete and killed. A person's adoption launch at mesh1.admin.2
+/// takes over and deletes mesh1's members; it is held by a boot cut at mesh1's MeshDeleted and killed, so
+/// again no node-admin is alive. A second launch at mesh1.admin.3 claims the delete's next attempt and
+/// finishes it: mesh1 deleted once, fabric.deleted reported, the one runtime left for the outside caller's
+/// node.delete, one fabric on the store. What must NOT happen: the second launch refused while mesh1 is not
+/// yet deleted, a mesh deleted twice, a create after the acceptance other than each launch's claim of its
+/// own path.name, a second fabric, or a member's runtime left running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it() {
+    let shape = [("mesh1", 1, 2)];
+    let mut estate = ready_fabric("an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it", &shape).await;
+    let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
+    let door = Door::at(&estate, "mesh1.admin.1").await;
+    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh_id}")})).await;
+    let accepted_ns = now_ns();
+    let delete = delete_admitted(&estate).await;
+    let id = delete.build_id().to_string();
+    let held = door.wait_held("roster").await;
+    assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh1's mesh.delete: {held}");
+    let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
+    let store = rdm_test::estate::estate_store_dir(&estate.root);
+    let fabrics_before = fabrics_on(&store);
+    // The first launch is held, from its first line, once its teardown reaches mesh1's MeshDeleted.
+    let faults = estate.root.join("faults");
+    std::fs::create_dir_all(&faults).unwrap();
+    let midway = json!([{"id": "midway", "kind": "receipt", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": format!("mesh.delete:{mesh_id}")}]);
+    std::fs::write(faults.join("mesh1.admin.2.boot.json"), serde_json::to_vec(&midway).unwrap()).unwrap();
+    estate.kill_bootstrap();
+
+    let env = adoption_env(&estate, "mesh1.admin.2", &custody);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let first = estate.restart_admin_with(&estate.root.join("adopted-mesh1.admin.2"), &env);
+    assert_eq!(first.to_string(), "mesh1.admin.2", "the first launch is born at its new path.name");
+    estate.enter(&first).await;
+    let first_door = Door::at(&estate, "mesh1.admin.2").await;
+    let at = first_door.wait_held("midway").await;
+    assert_eq!(at["hit"]["build_id"].as_str(), Some(id.as_str()), "the first launch is held midway, at mesh1's MeshDeleted: {at}");
+    let first_pid = *estate.restarted_pids().last().expect("the first launch's pid");
+    estate.kill_pid(first_pid);
+
+    let env = adoption_env(&estate, "mesh1.admin.3", &custody);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let data_dir = estate.root.join("adopted-mesh1.admin.3");
+    let second = estate.restart_admin_with(&data_dir, &env);
+    assert_eq!(second.to_string(), "mesh1.admin.3", "the second launch is born at its new path.name");
+    estate.enter(&second).await;
+    let fp = delete_followed(&estate, delete, "mesh1.admin.3").await;
+    assert_eq!(fp, "mesh1.admin.3", "the second launch is the fabric-primary that finishes the delete");
+    let receipts = receipts_at(&estate, &fp, &id).await;
+    assert_eq!(count(&receipts, |o| o.starts_with("mesh.delete:"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
+    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !dir.starts_with(&data_dir)).collect::<Vec<_>>(), vec![], "only the second launch {fp} is left, for its separate node.delete");
+    assert!(!alive(first_pid), "the lost first launch is not running");
+    assert_eq!(fabrics_on(&store), fabrics_before, "no second fabric on the store");
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let claims: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-adoption-claim").into_iter().filter(|sp| start(sp) >= accepted_ns).collect();
+    assert!(claims.len() == 2 && claims.iter().all(|c| c["attributes"]["outcome"] == "won" && c["attributes"]["build_id"].as_str() == Some(bare(&id).as_str())), "each launch's claim of the delete's next attempt won: {claims:#?}");
+    let created: Vec<&Value> = spans
+        .iter()
+        .filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns)
+        .filter(|sp| !(sp["attributes"]["moment"] == "claim" && ["mesh1.admin.2", "mesh1.admin.3"].contains(&sp["attributes"]["subject"].as_str().unwrap_or_default())))
+        .collect();
+    assert!(created.is_empty(), "nothing is created after the delete's acceptance but each launch itself: {created:?}");
+}
+
+/// CONTRACT (Q160; fabric-recovery.md step 4: "a returning fabric-primary's writes carry its superseded
+/// revision and every reader ignores them, its Build calls are refused StaleClaim, and it stops on its
+/// first read after the heal (Q109)"): on a two-mesh fabric whose mesh1 holds one node-admin, the
+/// fabric-primary, fabric.delete's executor is held by its fault door before mesh2's AcceptedRoster is
+/// durable and paused (SIGSTOP). From the backbone, mesh2.admin.1 wins the delete's next attempt, records
+/// the transition, takes both roles and is held by its own fault door as it starts deleting mesh1 in
+/// process. The fabric-primary is resumed (SIGCONT) and its door released: its roster write of attempt 1
+/// lands. It reads the transfer (its view names mesh2.admin.1 the fabric-primary) and its drive of the
+/// delete ends on that read; the executor is released and finishes the teardown, mesh1 and the returned
+/// fabric-primary deleted, mesh2 last, fabric.deleted reported. The delete's receipts as every reader folds
+/// them hold no receipt of the superseded attempt that the transition did not hold, and every call carrying
+/// the superseded attempt was refused StaleClaim. What must NOT happen: the returning fabric-primary's
+/// write read as the delete's progress, its call run, its drive claiming or dispatching after the read,
+/// the teardown left unfinished, or a runtime left beside the executor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_and_stops_on_its_first_read_after_resuming() {
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
+    let mut estate = ready_fabric("a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_and_stops_on_its_first_read_after_resuming", &shape).await;
+    let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
+    let door = Door::at(&estate, "mesh1.admin.1").await;
+    door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh2_id}")})).await;
+    let executor = Door::at(&estate, "mesh2.admin.1").await;
+    executor.arm("in-process", json!({"kind": "receipt", "step": "NodeDeleting", "operation": "node.delete:mesh1.rpc.1"})).await;
+    let accepted_ns = now_ns();
+    let delete = delete_admitted(&estate).await;
+    let id = delete.build_id().to_string();
+    let held = door.wait_held("roster").await;
+    assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's mesh.delete: {held}");
+    let paused = estate.bootstrap_pid().expect("the fabric-primary's pid");
+    signal(paused, "STOP");
+
+    let in_process = executor.wait_held("in-process").await;
+    assert_eq!(in_process["hit"]["build_id"].as_str(), Some(id.as_str()), "the executor is held deleting mesh1 in process: {in_process}");
+    let transferred = receipts_at(&estate, "mesh2.admin.1", &id).await;
+    let taken: Vec<u32> = transferred.steps.iter().filter(|r| r.step == "PrimariesTaken").map(|r| r.attempt).collect();
+    assert_eq!(taken.len(), 1, "the executor recorded one transition: {:?}", listed(&transferred));
+    let superseded: Vec<String> = transferred.steps.iter().filter(|r| r.attempt < taken[0]).map(|r| format!("{} {} #{}", r.operation, r.step, r.attempt)).collect();
+
+    let resumed_ns = now_ns();
+    signal(paused, "CONT");
+    door.release("roster").await;
+    wait_for("the resumed fabric-primary reads mesh2.admin.1 as fabric-primary", SETTLE, || async {
+        (estate.fabric_view_at(&path("mesh1.admin.1")).await.and_then(|v| v.fabric_primary).map(|p| p.to_string()).as_deref() == Some("mesh2.admin.1")).then_some(())
+    })
+    .await;
+    executor.release("in-process").await;
+
+    let fp = delete_followed(&estate, delete, "mesh2.admin.1").await;
+    assert_eq!(fp, "mesh2.admin.1", "the backbone executor is the fabric-primary that finishes the delete");
+    let receipts = receipts_at(&estate, &fp, &id).await;
+    let of_superseded: Vec<String> = receipts.steps.iter().filter(|r| r.attempt < taken[0]).map(|r| format!("{} {} #{}", r.operation, r.step, r.attempt)).collect();
+    assert_eq!(of_superseded, superseded, "the returning fabric-primary's writes are ignored: only the superseded attempt's receipts the transition held are read");
+    assert_eq!(count(&receipts, |o| o.starts_with("mesh.delete:"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 2, "each mesh is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
+    assert!(!alive(paused), "the returned fabric-primary is deleted with its mesh");
+    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp} is left, for its separate node.delete");
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let of_returned = |sp: &&Value| sp["attributes"]["node"] == "mesh1.admin.1" && start(sp) >= resumed_ns && sp["attributes"]["build_id"].as_str() == Some(bare(&id).as_str());
+    let stopped: Vec<&Value> = spans
+        .iter()
+        .filter(of_returned)
+        .filter(|sp| sp["name"] == "rdm.node_admin.build.reject.via-seat-yielded" || sp["name"] == "rdm.node_admin.build.reject.via-not-fabric-primary" || (sp["name"] == "rdm.node_admin.build.update.via-drive" && sp["attributes"]["outcome"] == "seat-lost"))
+        .collect();
+    assert!(!stopped.is_empty(), "the returned fabric-primary's drive of the delete stops on its read of the transfer");
+    let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(of_returned).filter(|sp| sp["attributes"]["outcome"] == "won").collect();
+    assert!(claimed.is_empty(), "the returned fabric-primary claims nothing after it resumes: {claimed:#?}");
+    let stale: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-stale-claim").into_iter().filter(|sp| start(sp) >= resumed_ns && sp["attributes"]["build_id"].as_str() == Some(bare(&id).as_str())).collect();
+    for sp in &stale {
+        assert!(sp["attributes"]["attempt"].as_str().and_then(|a| a.parse::<u32>().ok()).is_some_and(|a| a < taken[0]), "a StaleClaim refusal names a superseded attempt: {sp}");
+    }
+    let ran: Vec<&Value> = spans
+        .iter()
+        .filter(|sp| sp["name"] == "rdm.node_admin.build.update.via-reconcile" && start(sp) >= resumed_ns && sp["attributes"]["build_id"].as_str() == Some(bare(&id).as_str()))
+        .filter(|sp| sp["attributes"]["attempt"].as_str().and_then(|a| a.parse::<u32>().ok()).is_some_and(|a| a < taken[0]))
+        .collect();
+    assert!(ran.is_empty(), "no run of a superseded attempt starts after the resume: {ran:#?}");
+    eprintln!("stale-claim refusals after the resume: {}", stale.len());
 }
