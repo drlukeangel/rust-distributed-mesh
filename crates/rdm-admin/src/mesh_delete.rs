@@ -669,6 +669,31 @@ where
     Ok((admitted.roster, known))
 }
 
+/// The roster of `mesh` (`mesh_id`) captured from its node rows on the store, every birth that was a
+/// member when this Build's delete began: each row's newest birth, or, on the row a create's claim wrote
+/// before any fact of its birth (lifecycles/node-create.md step 1: the name is claimed before the
+/// deployment is recorded and launched), the birth that claim allocated, so a create admitted before
+/// the delete and still in flight is a birth the delete deletes (build.md §1); a row of another mesh of
+/// that name left out; a `Deleted` row only when this Build's own node.delete of that exact birth deleted it (its
+/// `NodeDeleting` receipt names it), never a birth an earlier Build deleted. In path order.
+pub fn stored_roster(rows: &[crate::storage::NodeRow], mesh: &str, mesh_id: &MeshId, steps: &[BuildStepReceipt]) -> Vec<RosterBirth> {
+    let deleting = crate::deployment::pipeline::RetireStep::NodeDeleting.name();
+    let began = |r: &crate::storage::NodeRow, inc: &crate::model::IncarnationId| {
+        let op = format!("node.delete:{}", r.name);
+        steps.iter().filter(|s| s.operation == op && s.step == deleting && s.outcome == StepOutcome::Complete).filter_map(|s| s.output.clone().and_then(|v| serde_json::from_value::<LifecycleOp>(v).ok())).any(|o| o.node_id == r.node_id && o.incarnation == *inc)
+    };
+    let mut roster: Vec<RosterBirth> = rows
+        .iter()
+        .filter(|r| r.mesh_id.as_ref().is_none_or(|id| id == mesh_id) && r.name.mesh == mesh)
+        .filter_map(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone())).map(|inc| (r, inc)))
+        .filter(|(r, inc)| r.status != crate::model::NodeStatus::Deleted || began(r, inc))
+        .map(|(r, inc)| RosterBirth { node: r.name.to_string(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
+        .collect();
+    roster.sort();
+    roster.dedup();
+    roster
+}
+
 /// The records the leave's member workflows act on (R11: the leave acts on the immutable accepted
 /// roster's exact births; mesh-delete.md "Failure/certainty behavior": "No timeout or gossip absence
 /// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
@@ -1821,6 +1846,36 @@ mod tests {
             verdict: None,
             data_dir: None,
         }
+    }
+
+    /// CONTRACT (lifecycles/mesh-delete.md step 1: the fabric-primary "captures the exact roster once";
+    /// lifecycles/node-create.md step 1: the row writer claims the name before the deployment is recorded
+    /// and launched; build.md §1: an operation admitted before fabric.delete's acceptance finishes or
+    /// fails within its bound and its launch evidence is retained): a roster captured from a mesh's node
+    /// rows while a create holds its claim (the claim row, its birth allocated and no birth fact written
+    /// yet) holds that create's birth, by the incarnation its claim allocated, beside every member's
+    /// newest birth. What must NOT happen: the claimed birth left out, so its launched runtime is no
+    /// birth of the delete and is never deleted.
+    #[test]
+    fn a_roster_captured_from_the_node_rows_holds_the_birth_a_create_in_flight_claimed() {
+        use crate::storage::{Allocation, BirthFacts, NodeRow};
+        let mesh_id = MeshId::mint();
+        let joined = |name: &str| {
+            let name: crate::model::PathName = name.parse().unwrap();
+            let mut row = NodeRow::new(name.clone(), NodeId::mint(), crate::model::NodeStatus::ReadyForTraffic);
+            row.mesh_id = Some(mesh_id.clone());
+            row.births.push(BirthFacts::new(crate::model::IncarnationId::mint(), name));
+            row
+        };
+        let (admin, rpc) = (joined("mesh1.admin.1"), joined("mesh1.rpc.1"));
+        let claimed_inc = crate::model::IncarnationId::mint();
+        let mut claim = NodeRow::new("mesh1.rpc.2".parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::Pending);
+        claim.allocated = Some(Allocation { build_id: BuildId::mint(), operation: "node.create:mesh1.rpc.2".into(), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
+        let roster = stored_roster(&[admin.clone(), rpc.clone(), claim.clone()], "mesh1", &mesh_id, &[]);
+        let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { node: r.name.to_string(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
+        let mut want = vec![of(&admin, &admin.births[0].incarnation_id), of(&rpc, &rpc.births[0].incarnation_id), of(&claim, &claimed_inc)];
+        want.sort();
+        assert_eq!(roster, want, "the create in flight's claimed birth is a birth of the roster");
     }
 
     /// CONTRACT: the handoff of a running leave goes to the admin that sent `delete-mesh` last: a

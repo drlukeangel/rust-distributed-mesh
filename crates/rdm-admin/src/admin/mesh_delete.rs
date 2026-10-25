@@ -291,27 +291,28 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// The roster of `mesh` (`mesh_id`) captured from its node rows on the store, every birth that was a
-    /// member when this Build's delete began: each row's newest birth, a row of another mesh of that name
-    /// left out; a `Deleted` row only when this Build's own node.delete of that exact birth deleted it (its
-    /// `NodeDeleting` receipt names it), never a birth an earlier Build deleted. In path order.
+    /// The roster of `mesh` (`mesh_id`) captured from its node rows on the store
+    /// ([`crate::mesh_delete::stored_roster`]). A birth a create's claim allocated and no fact of which is
+    /// written is a birth of the roster while the provider finds its launch running, held here by its exact
+    /// handle ([`AdminRunner::claimed_launch`]); a launch the provider proves never started, or started and
+    /// exited, left no runtime for the delete to delete, and its birth is no birth of the roster. A launch
+    /// that cannot be found refuses the capture by name.
     async fn stored_roster(&self, mesh: &str, mesh_id: &MeshId, steps: &[BuildStepReceipt]) -> Result<Vec<RosterBirth>, String> {
         let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node rows of {mesh} from", self.held_name()))?;
         let rows = store.nodes(mesh).await.map_err(|e| format!("the node rows of {mesh} could not be read: {e}"))?;
-        let deleting = crate::deployment::pipeline::RetireStep::NodeDeleting.name();
-        let began = |r: &crate::storage::NodeRow, inc: &crate::model::IncarnationId| {
-            let op = format!("node.delete:{}", r.name);
-            steps.iter().filter(|s| s.operation == op && s.step == deleting && s.outcome == StepOutcome::Complete).filter_map(|s| s.output.clone().and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v).ok())).any(|o| o.node_id == r.node_id && o.incarnation == *inc)
-        };
-        let mut roster: Vec<RosterBirth> = rows
-            .iter()
-            .filter(|r| r.mesh_id.as_ref().is_none_or(|id| id == mesh_id) && r.name.mesh == mesh)
-            .filter_map(|r| r.newest_birth().map(|b| (r, b.incarnation_id.clone())))
-            .filter(|(r, inc)| r.status != NodeStatus::Deleted || began(r, inc))
-            .map(|(r, inc)| RosterBirth { node: r.name.to_string(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
-            .collect();
-        roster.sort();
-        roster.dedup();
+        let mut roster = crate::mesh_delete::stored_roster(&rows, mesh, mesh_id, steps);
+        for row in rows.iter().filter(|r| r.births.is_empty() && r.allocated.is_some()) {
+            let Some(b) = roster.iter().find(|b| b.node_id == row.node_id.to_string()).cloned() else { continue };
+            let birth = b.birth().map_err(|e| format!("the roster birth {}: {e}", b.node))?;
+            match self.claimed_launch(&b.record()?, &birth).await? {
+                Some((crate::deployment::provider::Found::Running(_), _)) | None => {}
+                Some((found, _)) => {
+                    tracing::info_span!("rdm.node_admin.mesh.resolve.via-claimed-birth-gone", mesh = %mesh, mesh_id = %mesh_id, member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, found = found.name())
+                        .in_scope(|| tracing::info!("the launch the create's claim records left no runtime: its birth is no birth of the roster"));
+                    roster.retain(|x| *x != b);
+                }
+            }
+        }
         Ok(roster)
     }
 

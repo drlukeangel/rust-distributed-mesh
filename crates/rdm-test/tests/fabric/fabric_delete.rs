@@ -287,9 +287,12 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
 /// is accepted, and once mesh1.admin.2's log holds the acceptance the fabric-primary is killed. Fabric
 /// recovery's executor, mesh1.admin.2, holds the fabric-primary's roles and reads the delete as current:
 /// the growth's attempt ends once its executor's exit is read and reads `Failed` naming the delete,
-/// mesh1.rpc.2's create is never run again, and its launched runtime is deleted with the fabric, which
-/// reports fabric.deleted. What must NOT happen: the growth resumed, the lost fabric-primary re-created
-/// (no node.create after the acceptance), or the outstanding runtime left running.
+/// mesh1.rpc.2's create is never run again, and its launched runtime, a birth of mesh1's roster by its
+/// claim, is deleted with the fabric under its own node.delete receipt (fabric-delete.md "Receipts"),
+/// or, when it ended on its own before the roster was captured, is proven exited by the provider's find
+/// and is no birth of the roster; the fabric reports fabric.deleted. What must NOT happen: the growth resumed, the lost fabric-primary
+/// re-created (no node.create after the acceptance), or the outstanding runtime left running or left to
+/// exit on its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor() {
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
@@ -316,11 +319,18 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     assert_eq!(count(&grown, |o| o == "node.create:mesh1.rpc.2", "Complete"), 0, "the outstanding create is never run again: {:?}", listed(&grown));
     let receipts = receipts_at(&estate, &fp, &id).await;
     torn_down(&receipts, 2);
+    let deleted = count(&receipts, |o| o == "node.delete:mesh1.rpc.2", "Complete");
     let left: Vec<u32> = estate.live_runtimes().into_iter().map(|(_, pid)| pid).collect();
     assert!(!left.contains(&launched[0]), "the outstanding runtime of mesh1.rpc.2 is captured and deleted: {left:?}");
     assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp} is left, for its separate node.delete");
     estate.stop().await;
-    nothing_recreated_under_the_delete(&estate.spans(), accepted_ns, &fp);
+    let spans = estate.spans();
+    // The launch never joins (its launcher is lost holding DeployRuntime), and the runtime may end on its
+    // own before mesh1's roster is captured: then the provider's find proves it exited and no runtime is
+    // left for the delete (deployment-provider.md §2, "Find is for the launcher's successor").
+    let gone = named(&spans, "rdm.node_admin.mesh.resolve.via-claimed-birth-gone").into_iter().filter(|sp| sp["attributes"]["member"] == "mesh1.rpc.2" && sp["attributes"]["found"] == "exited").count();
+    assert_eq!(deleted + gone, 1, "the outstanding birth of mesh1.rpc.2, claimed and launched before the acceptance, is either a birth of mesh1's roster whose delete is receipted once ({deleted}) or a launch the provider proves exited at the capture ({gone}): {:?}", listed(&receipts));
+    nothing_recreated_under_the_delete(&spans, accepted_ns, &fp);
 }
 
 /// CONTRACT (lifecycles/fabric-delete.md "Numbered end-to-end sequence"; build.md §1: "a successor

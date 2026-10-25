@@ -398,6 +398,45 @@ impl AdminRunner {
         }
     }
 
+    /// The launch the create's claim on `node`'s row records for the exact birth `incarnation` (the row's
+    /// allocation: the birth's deployment), as the provider finds it from the launch record in the
+    /// birth's data dir (deployment-provider.md §2: "an executor lost at any point of the spawn leaves
+    /// `find` a record to read"; "Find is for the launcher's successor"; lifecycles/node-create.md: exact
+    /// provider proof of a runtime's state, even for a deployment that never joined). A runtime that runs
+    /// is held here by its exact handle, as an adopted one is, so the birth's delete acts on that runtime
+    /// and proves its exit through it. `Ok(None)` when the row holds no claim of this birth. One
+    /// `via-claimed-launch` span.
+    pub(crate) async fn claimed_launch(&self, node: &Node, incarnation: &IncarnationId) -> Result<Option<(crate::deployment::provider::Found, Node)>, String> {
+        use tracing::Instrument;
+        let Some(store) = self.records.contacts.get() else { return Ok(None) };
+        let row = store.node(&node.node_id).await.map_err(|e| format!("the row of {} ({}) could not be read for the launch its claim records: {e}", node.name, node.node_id))?;
+        let Some((row, allocated)) = row.filter(|r| r.name == node.name).and_then(|r| r.allocated.clone().filter(|a| a.incarnation == *incarnation).map(|a| (r, a))) else { return Ok(None) };
+        let data_dir = self.template.data_root.join(format!("{}-{}", node.name, node.node_id));
+        let executable = row.executable.as_ref().map(|b| b.executable.clone()).unwrap_or_default();
+        let spec = crate::deployment::provider::ResolvedNodeLaunch { secrets: Default::default(), withhold: Vec::new(), node: node.name.clone(), deployment_id: allocated.deployment_id.clone(), executable, args: vec![], env: Default::default(), data_dir: data_dir.clone(), transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
+        let span = tracing::info_span!(
+            "rdm.node_admin.runtime.resolve.via-claimed-launch",
+            node = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %incarnation.as_str(),
+            deployment_id = %allocated.deployment_id,
+            build_id = %allocated.build_id.log(),
+            operation = %allocated.operation,
+            reader = %self.held_name(),
+            outcome = tracing::field::Empty,
+        );
+        let found = self.provider.find(&spec).instrument(span.clone()).await.map_err(|e| format!("the launch of {} at deployment {} could not be found: {e}", node.name, allocated.deployment_id))?;
+        span.record("outcome", found.name());
+        span.in_scope(|| tracing::info!("the birth's runtime is the launch its create's claim records, as the provider finds it"));
+        let mut record = node.clone();
+        record.deployment_id = Some(allocated.deployment_id.clone());
+        record.data_dir = Some(data_dir.to_string_lossy().into_owned());
+        if let crate::deployment::provider::Found::Running(handle) = &found {
+            self.handles.lock().unwrap().insert(node.name.clone(), (record.clone(), handle.clone()));
+        }
+        Ok(Some((found, record)))
+    }
+
     pub(crate) async fn handle_for(&self, node: &Node) -> Result<(Node, DeploymentHandle), String> {
         if let Some((rec, h)) = self.handles.lock().unwrap().get(&node.name).cloned() {
             if node.incarnation_id.is_none() || rec.incarnation_id == node.incarnation_id {
@@ -406,7 +445,20 @@ impl AdminRunner {
         }
         let me = self.held_name();
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?;
-        let (published, data_dir, held) = self.published_runtime(node, &incarnation).await?;
+        let (published, data_dir, held) = match self.published_runtime(node, &incarnation).await {
+            Ok(resolved) => resolved,
+            // A birth launched by a create that never reached its join publishes no runtime fact and has
+            // no runtime row: its runtime is the launch its claim records, as the launcher's successor
+            // finds it ([`Self::claimed_launch`]).
+            Err(e) => {
+                return match self.claimed_launch(node, &incarnation).await {
+                    Ok(Some((crate::deployment::provider::Found::Running(handle), record))) => Ok((record, handle)),
+                    Ok(Some((found, _))) => Err(format!("{e}; the launch its create's claim records is {}, so no runtime of it runs", found.name())),
+                    Ok(None) => Err(e),
+                    Err(why) => Err(format!("{e}; {why}")),
+                };
+            }
+        };
         let refuse = |reason: &str, detail: String| {
             let span = match reason {
                 "unpublished" => tracing::info_span!("rdm.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %me, detail = %detail),
