@@ -93,7 +93,13 @@ pub(crate) struct Run {
 /// cut holds, and wait for the Build to complete on a later attempt.
 pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: Rpc1) -> Run {
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    // The one node-admin the fabric-primary creates for a deleting mesh no admin of which survives
+    // (mesh-delete.md resume step 2) is a create RDM originates at a new path.name, which no request,
+    // entry or row names an executable for (`admin/mesh_delete.rs` `create_deleting_mesh_admin`): it
+    // launches the launch set's `node_admin`. That case keeps the launch set (`RDM_EXECUTABLE_BINDINGS`)
+    // until the create names its executable; the others name every path's.
+    let (set, required) = (binding_set(&sha), ["rpc_node"]);
+    let mut estate = if mesh2_admins > 1 { Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &set, &sha, &required).await } else { Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &set, &sha, &required).await }.expect("the faulted-admin binding set is accepted");
     let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2)]);
     let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, mesh2_admins), (NodeKind::RpcNode, 2)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1.clone(), mesh2] }).await;

@@ -531,7 +531,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
 async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_births_declaration() {
     let test = "a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_births_declaration";
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
@@ -953,7 +953,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary() {
     let test = "a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary";
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(SETTLE).await;
@@ -972,7 +972,8 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     // The old holder holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &holder_s).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node_s, "state": "ReadyForTraffic"})).await;
-    let restarted = frames(nodes.create(&rdm_client::NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.expect("the create was accepted")).await;
+    let (based_on, request) = estate.create_node_request("mesh2", NodeKind::RpcNode).await;
+    let restarted = frames(nodes.create_named(based_on, request).await.expect("the create was accepted")).await;
     assert!(
         matches!(restarted.last(), Some(Frame::Failed { reason, .. }) if reason.contains("WaitForNodeReady") && reason.contains("it took no node.started")),
         "the first start's wait for readiness fails naming the node.started its primary never took: {restarted:?}"
@@ -1066,7 +1067,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admitted_again_and_completes() {
     let test = "a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admitted_again_and_completes";
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(SETTLE).await;

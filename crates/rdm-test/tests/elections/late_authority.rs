@@ -16,7 +16,7 @@
 //!   retires births A launched, through its own `node.restart` and `node.delete`, from their published
 //!   runtimes, with A's receipts nowhere.
 
-use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeSpec, NodeStatus};
+use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -70,7 +70,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
     for _ in 0..30 {
-        Estate::workflow("node.create of a node-admin in mesh1", estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }).await).await;
+        Estate::workflow("node.create of a node-admin in mesh1", estate.create_node("mesh1", NodeKind::NodeAdmin).await).await;
         let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
         let born = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.name != incumbent_admin).cloned().unwrap();
         if born.node_id.to_string() < incumbent.node_id.to_string() {

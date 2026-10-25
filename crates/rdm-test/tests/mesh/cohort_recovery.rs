@@ -474,7 +474,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped() {
     let cell = "a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped";
     let sha = rdm_test::faults::candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let before = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
@@ -489,7 +489,7 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     let cut = "recipe:create";
     door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create:mesh1.rpc.3"})).await;
     let rpc1: rdm_client::PathName = Estate::path("mesh1.rpc.1");
-    let stream = estate.nodes_obj().await.recipe(vec![rdm_core::build::RecipeStep::Stop { node: rpc1 }, rdm_core::build::RecipeStep::Create { node: Estate::path("mesh1.rpc.3"), executable: None }]).await.unwrap_or_else(|e| panic!("the recipe is accepted: {e}"));
+    let stream = estate.nodes_obj().await.recipe(vec![rdm_core::build::RecipeStep::Stop { node: rpc1 }, rdm_core::build::RecipeStep::Create { node: Estate::path("mesh1.rpc.3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the recipe is accepted: {e}"));
     let held = door.wait_held(cut).await;
 
     // The fault: every runtime of the fabric, at once, inside the Build.

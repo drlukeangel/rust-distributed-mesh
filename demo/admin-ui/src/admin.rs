@@ -1,18 +1,41 @@
 //! The node-admin this UI reads and drives, over Node RPC: RDM serves no HTTP API
 //! (rdm-crate-and-test-layout.md §2), so the UI enters at the birth a node-admin printed at start
 //! (`RDM_NODE_ADMIN_BIRTH`, the JSON after `RDM_NODE_BIRTH=`) and calls the typed objects there.
+//!
+//! Every Build the UI submits names each path's executable (proposal executable-bindings-at-create.md
+//! rule 1): the UI is the door, expanding its counts into the complete topology, built from the current
+//! Build `fabric.get` names and every node's row (`fabric.nodes.get`), each held path on the executable
+//! its row records and each created path on the consumer's executable of its kind, found beside the
+//! UI's own executable (`rshape-node-admin`, `rshape-gateway`, `rshape-compute`, `rshape-broker`). A
+//! grow takes the lowest free ordinal of the kind; a shrink drops the highest ordinal that is not the
+//! kind's primary.
 
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{
-    birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, BuildSpec, Builds, CallEnd, Change, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
-    MeshDesired, MeshNode, NodeSelector, NodeSpec, NodeView, Nodes, Peers,
+    birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, Builds, CallEnd, Change, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
+    MeshDesired, MeshNode, NodeSelector, NodeStatus, NodeView, Nodes, Peers, ProviderKind,
 };
-use std::sync::Arc;
+use rdm_core::binding::{sha256_file, Binding};
+use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// The node-admin the UI enters at, and the peers it reaches over Node RPC.
+/// The node-admin the UI enters at, the peers it reaches over Node RPC, and the executable of each
+/// kind the UI's Builds name.
 pub struct Admin {
     peers: Arc<Peers>,
     entry: PathName,
+    executables: BTreeMap<NodeKind, PathBuf>,
+}
+
+/// The consumer's executable of each kind found in `dir`.
+fn executables_in(dir: &std::path::Path) -> BTreeMap<NodeKind, PathBuf> {
+    [(NodeKind::NodeAdmin, "rshape-node-admin"), (NodeKind::Gateway, "rshape-gateway"), (NodeKind::Compute, "rshape-compute"), (NodeKind::Broker, "rshape-broker")]
+        .into_iter()
+        .map(|(kind, name)| (kind, dir.join(name)))
+        .filter(|(_, path)| path.is_file())
+        .collect()
 }
 
 impl Admin {
@@ -24,10 +47,90 @@ impl Admin {
         Ok(Some(Admin::at(&birth).await?))
     }
 
-    /// The admin of `birth`.
+    /// The admin of `birth`, its Builds naming the consumer's executables beside the UI's own.
     pub async fn at(birth: &MeshNode) -> Result<Admin, String> {
         let peers = Arc::new(Peers::at(birth).await?);
-        Ok(Admin { peers, entry: birth.name.clone() })
+        let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(executables_in)).unwrap_or_default();
+        Ok(Admin { peers, entry: birth.name.clone(), executables: beside })
+    }
+
+    /// This admin, its Builds naming `executables` by kind.
+    pub fn with_executables(mut self, executables: BTreeMap<NodeKind, PathBuf>) -> Self {
+        self.executables = executables;
+        self
+    }
+
+    /// The topology a request is built from: the current Build `fabric.get` names, and every live
+    /// path the rows hold (`fabric.nodes.get`) with the executable its row records.
+    async fn current(&self) -> Result<Current, CallEnd> {
+        let fabric = self.fabric().await?;
+        let unread = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason };
+        let based_on = fabric.build_id.as_deref().ok_or_else(|| unread("fabric.get names no current Build".into()))?;
+        let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabric.get names {based_on}, not a Build id: {e}")))?;
+        let rows = Fabrics::new(self.carrier()).nodes().await?;
+        let mut current = Current { based_on, paths: BTreeMap::new(), primaries: BTreeSet::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
+        for row in rows.into_iter().filter(|n| !n.name.old && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
+            if row.is_primary {
+                current.primaries.insert(row.name.clone());
+            }
+            let executable = match row.executable {
+                Some(b) => b,
+                None => self.binding(row.kind, &current.image)?,
+            };
+            current.paths.insert(row.name, config(row.kind, executable));
+        }
+        Ok(current)
+    }
+
+    /// The binding a created node of `kind` runs: the consumer's executable of the kind, hashed once,
+    /// in `image`. A kind with no executable is refused `executable-missing` before anything is sent.
+    fn binding(&self, kind: NodeKind, image: &Option<String>) -> Result<Binding, CallEnd> {
+        let executable = self.executables.get(&kind).cloned().ok_or_else(|| missing(format!("the UI has no `{}` executable: a {} path cannot be named (named: {:?})", kind.name(), kind.name(), self.executables.keys().map(|k| k.name()).collect::<Vec<_>>())))?;
+        static HASHED: OnceLock<Mutex<BTreeMap<PathBuf, String>>> = OnceLock::new();
+        let known = HASHED.get_or_init(Default::default).lock().unwrap().get(&executable).cloned();
+        let sha256 = match known {
+            Some(sha) => sha,
+            None => {
+                let sha = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
+                HASHED.get_or_init(Default::default).lock().unwrap().insert(executable.clone(), sha.clone());
+                sha
+            }
+        };
+        Ok(Binding { launch_id: kind.name().into(), executable, sha256, image: image.clone() })
+    }
+
+    /// The complete topology with each of `meshes` resized to its counts; a mesh it leaves out is left
+    /// out (its mesh.delete) when `whole`, kept otherwise.
+    fn resized(&self, current: &Current, meshes: &[MeshDesired], whole: bool) -> Result<Vec<(PathName, PathConfig)>, CallEnd> {
+        let mut paths = current.paths.clone();
+        if whole {
+            paths.retain(|p, _| meshes.iter().any(|m| m.name == p.mesh));
+        }
+        for m in meshes {
+            for (kind, want) in [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::RpcNode, m.rpc_node), (NodeKind::Broker, m.broker), (NodeKind::Gateway, m.gateway), (NodeKind::Compute, m.compute)] {
+                let mut have: Vec<u32> = paths.keys().filter(|p| p.mesh == m.name && p.kind == kind).map(|p| p.ordinal).collect();
+                have.sort_unstable();
+                let keep = current.primaries.iter().find(|p| p.mesh == m.name && p.kind == kind).map(|p| p.ordinal);
+                while (have.len() as u32) < want {
+                    let ordinal = (1..).find(|o| !have.contains(o)).expect("a free ordinal");
+                    have.push(ordinal);
+                    have.sort_unstable();
+                    paths.insert(PathName::new(&m.name, kind, ordinal), config(kind, self.binding(kind, &current.image)?));
+                }
+                while (have.len() as u32) > want {
+                    let drop = have.iter().rev().copied().find(|o| Some(*o) != keep).or_else(|| have.last().copied()).expect("a member to drop");
+                    have.retain(|o| *o != drop);
+                    paths.remove(&PathName::new(&m.name, kind, drop));
+                }
+            }
+        }
+        Ok(paths.into_iter().collect())
+    }
+
+    /// The counts `current` holds of `mesh`.
+    fn counts_of(current: &Current, mesh: &str) -> MeshDesired {
+        let of = |kind: NodeKind| current.paths.keys().filter(|p| p.mesh == mesh && p.kind == kind).count() as u32;
+        MeshDesired { name: mesh.into(), node_admin: of(NodeKind::NodeAdmin), rpc_node: of(NodeKind::RpcNode), broker: of(NodeKind::Broker), gateway: of(NodeKind::Gateway), compute: of(NodeKind::Compute) }
     }
 
     fn carrier(&self) -> BuildCarrier {
@@ -66,9 +169,22 @@ impl Admin {
         Builds::new(self.carrier()).get(id).await
     }
 
-    /// node.create of a `kind` node in `mesh`.
+    /// node.create of a `kind` node in `mesh`, at the lowest free ordinal of its kind.
     pub async fn spawn(&self, mesh: &str, kind: NodeKind) -> Result<Accepted, CallEnd> {
-        Ok(Nodes::new(self.carrier()).create(&NodeSpec { mesh: mesh.to_string(), kind }).await?.accepted().clone())
+        let current = self.current().await?;
+        if !current.paths.keys().any(|p| p.mesh == mesh) {
+            return Err(CallEnd::Rejected { reason: "unknown-mesh".into(), detail: format!("the fabric holds no mesh {mesh}") });
+        }
+        let mut grown = Self::counts_of(&current, mesh);
+        match kind {
+            NodeKind::NodeAdmin => grown.node_admin += 1,
+            NodeKind::RpcNode => grown.rpc_node += 1,
+            NodeKind::Broker => grown.broker += 1,
+            NodeKind::Gateway => grown.gateway += 1,
+            NodeKind::Compute => grown.compute += 1,
+        }
+        let nodes = self.resized(&current, &[grown], false)?;
+        Ok(Nodes::new(self.carrier()).create_named(current.based_on, nodes).await?.accepted().clone())
     }
 
     /// node.restart of `node`.
@@ -83,13 +199,20 @@ impl Admin {
 
     /// build.create reconciling the fabric to `desired`.
     pub async fn build_fabric(&self, desired: FabricDesired) -> Result<Accepted, CallEnd> {
-        let s = Builds::new(self.carrier()).create(&BuildSpec::Fabric(desired)).await?;
+        let current = self.current().await?;
+        let nodes = self.resized(&current, &desired.meshes, true)?;
+        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
     /// build.create of a new mesh with `desired`'s counts.
     pub async fn create_mesh(&self, desired: MeshDesired) -> Result<Accepted, CallEnd> {
-        let s = Builds::new(self.carrier()).create(&BuildSpec::CreateMesh(desired)).await?;
+        let current = self.current().await?;
+        if current.paths.keys().any(|p| p.mesh == desired.name) {
+            return Err(CallEnd::Rejected { reason: "mesh-already-exists".into(), detail: format!("the fabric holds mesh {} already", desired.name) });
+        }
+        let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?;
+        let s = self.carrier().create(Change::Reconcile { based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
 
@@ -98,4 +221,30 @@ impl Admin {
         let s = self.carrier().create(Change::RemoveMesh { mesh: mesh.to_string() }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
     }
+}
+
+/// A path the UI cannot name an executable for, refused before anything is sent.
+fn missing(detail: String) -> CallEnd {
+    CallEnd::Rejected { reason: "executable-missing".into(), detail }
+}
+
+/// The container provider's runtime image every node container runs from.
+const CONTAINER_IMAGE: &str = "rafka-node-runtime:empty";
+
+/// What a request is built from: the current Build, every live path with its config, and the primaries.
+struct Current {
+    based_on: BuildId,
+    paths: BTreeMap<PathName, PathConfig>,
+    primaries: BTreeSet<PathName>,
+    image: Option<String>,
+}
+
+/// The config of a path of `kind` on `executable`: its storage by kind, written out (node-admins and
+/// brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement, no tags.
+fn config(kind: NodeKind, executable: Binding) -> PathConfig {
+    let storage = match kind {
+        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
+        NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
+    };
+    PathConfig { storage, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default() }
 }

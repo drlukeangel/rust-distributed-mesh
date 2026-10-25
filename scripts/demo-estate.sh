@@ -6,7 +6,7 @@
 # the UI reads flames from JAEGER_QUERY_URL (default: Jaeger on .99).
 #
 #   scripts/demo-estate.sh up     [<root dir>]   bring it up; prints the UI's URL; the root holds the logs,
-#                                                evidence, store and the binding set
+#                                                evidence and store
 #   scripts/demo-estate.sh stream [<root dir>]   the data-plane proof: five `demo/echo` streams, four across
 #                                                the meshes, through the originate door (rdm-rpc-probe stream)
 #   scripts/demo-estate.sh down   [<root dir>]   stop the UI and every role process of that root
@@ -31,21 +31,13 @@ up() {
   ROOT=${ROOT:-$HERE/target/demo-estate-$(date -u +%Y%m%dT%H%M%S)}
   mkdir -p "$ROOT/evidence" "$ROOT/store" "$ROOT/no-built-ins"
   echo "$ROOT" > "$CURRENT"
-  local candidate; candidate=$(git -C "$HERE" rev-parse HEAD)
-  # The binding set node-admin launches from (rdm_core::binding): every role kind bound to the consumer's
-  # executable by sha256; nothing falls back to a built-in.
-  python3 - "$BIN" "$candidate" "$ROOT/executable-bindings.json" <<'EOF'
-import hashlib, json, sys
-bin_dir, sha, out = sys.argv[1], sys.argv[2], sys.argv[3]
-kinds = {"node_admin": "rshape-node-admin", "gateway": "rshape-gateway", "compute": "rshape-compute", "broker": "rshape-broker"}
-def h(p): return hashlib.sha256(open(p, "rb").read()).hexdigest()
-bindings = [{"launch_id": k, "executable": f"{bin_dir}/{f}", "sha256": h(f"{bin_dir}/{f}")} for k, f in kinds.items()]
-json.dump({"candidate": {"sha": sha, "build": ""}, "launch_ids": list(kinds), "bindings": bindings}, open(out, "w"), indent=2)
-EOF
+  # The Day-0 node-admin is the consumer's and records what it runs; every other node is created by a Build
+  # the UI submits naming each path's executable (the consumer's, beside the UI in $BIN, by sha256). Nothing
+  # is launched from a directory without a sha: RDM_BIN_DIR is an empty one.
   export RDM_EVIDENCE_DIR=$ROOT/evidence
   MESH_SPAWN_TYPE=process RDM_FABRIC=fabric1 RDM_MESH=mesh1 \
   RDM_DATA_DIR=$ROOT/mesh1.admin.1 RDM_STORE_DIR=$ROOT/store RDM_ESTATE_ROOT=$ROOT \
-  RDM_EXECUTABLE_BINDINGS=$ROOT/executable-bindings.json RDM_EXECUTABLE_CANDIDATE=$candidate RDM_BIN_DIR=$ROOT/no-built-ins \
+  RDM_BIN_DIR=$ROOT/no-built-ins \
   RDM_NODE_ADMIN_API_BIND=127.0.0.1:0 \
     setsid nohup "$BIN/rshape-node-admin" > "$ROOT/admin1.log" 2>&1 < /dev/null &
   echo $! > "$ROOT/admin1.pid"

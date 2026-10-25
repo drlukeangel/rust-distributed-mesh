@@ -39,7 +39,7 @@ fn arm_at_birth(estate: &Estate, admin: &str, id: &str, spec: Value) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes() {
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(owner("joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
+    let mut estate = Estate::bootstrap_on(owner("joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
         .await
         .expect("the faulted-admin binding set is accepted");
     Door::at(&estate, "mesh1.admin.1").await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;

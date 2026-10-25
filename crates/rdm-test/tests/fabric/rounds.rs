@@ -45,7 +45,7 @@ fn start(sp: &Value) -> u64 {
 
 async fn estate_with(test: &str, app: &str) -> Estate {
     let sha = candidate_sha();
-    Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_TEST_APP", app)])
+    Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_TEST_APP", app)])
         .await
         .expect("the faulted-admin binding set is accepted")
 }
@@ -53,7 +53,7 @@ async fn estate_with(test: &str, app: &str) -> Estate {
 /// [`estate_with`] whose launch ids also bind the product role binaries (broker, gateway, compute).
 async fn estate_with_roles(test: &str, app: &str) -> Estate {
     let sha = candidate_sha();
-    Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[("RDM_TEST_APP", app)])
+    Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[("RDM_TEST_APP", app)])
         .await
         .expect("the faulted-admin binding set is accepted")
 }

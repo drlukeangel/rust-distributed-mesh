@@ -10,7 +10,8 @@
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeSelector, NodeSpec, NodeStatus, Nodes, PathName, ScopeStatus};
+use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeSelector, NodeStatus, Nodes, PathName, ScopeStatus};
+use rdm_test::executables::{Current, Executables};
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{bin_dir, named, Estate};
 use rdm_transport::{NodeRpcClient, ResolvedNode, StaticResolver};
@@ -171,10 +172,20 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let day_zero = BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names {day_zero}, not a Build id: {e}"));
         Estate::until_complete(&mut carrier.resubmit(&day_zero, 1).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
 
-        let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: LaunchKind::RpcNode }).await).await;
+        // Each create names its path and the executable it runs (proposal executable-bindings-at-create.md
+        // rule 1): the complete topology with one more rpc node, read from the admin now.
+        let executables = Executables::testkit("process");
+        let one_more = || async {
+            let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
+            let nodes = current.with_one_more("mesh1", LaunchKind::RpcNode, &executables);
+            (current.based_on, nodes)
+        };
+        let (based_on, request) = one_more().await;
+        let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create_named(based_on, request).await).await;
         until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
         // A stop moves the stopped node's cohort seat to a secondary of its type: a second rpc node.
-        Estate::workflow("node.create of a second rpc node in mesh1", nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: LaunchKind::RpcNode }).await).await;
+        let (based_on, request) = one_more().await;
+        Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
         until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
         until_fabric_ready(&fabrics).await;
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;

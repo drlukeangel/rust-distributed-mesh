@@ -199,7 +199,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
 /// broker, two gateways and a compute node, ready for traffic.
 async fn role_fabric(test: &str) -> Estate {
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[]).await.expect("the faulted-admin binding set with the role kinds is accepted");
+    let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[]).await.expect("the faulted-admin binding set with the role kinds is accepted");
     let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let want: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| ["admin.1", "admin.2", "broker.1", "gateway.1", "gateway.2", "compute.1"].map(|n| format!("{m}.{n}"))).collect();
@@ -330,7 +330,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
 async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed() {
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_external(owner("a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed"), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner("a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed"), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, SETTLE).await;

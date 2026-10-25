@@ -2,7 +2,7 @@
 //! estate (node-admin / compute / gateway / broker = 2 / 2 / 3 / 3 x 2 meshes) is born from empty
 //! provider state on the four executables of an independent consumer workspace
 //! (`demo`, built by `scripts/i143-rshape-build-consumer.sh`, bound
-//! explicitly through `Estate::bootstrap_external`), and typed opaque work is routed through it.
+//! explicitly through `Estate::bootstrap_on`), and typed opaque work is routed through it.
 //!
 //! Run by `scripts/i143-acceptance-gate.sh i143-rshape-{composition,fast}-{process,container}`,
 //! which exports `I143_ACCEPTANCE_DIR` (each cell's `result.json` and evidence views go there) and
@@ -326,7 +326,7 @@ async fn birth(cell: &str, shape: Shape) -> Born {
     let provider_before = provider_actions(&bound, &rdm_test::estate::estate_root(cell));
     assert_eq!(provider_before, json!({"processes": [], "containers": []}), "empty provider state: nothing of this estate runs a bound executable before it is born");
     let dir = cell_dir(cell);
-    let mut estate = Estate::bootstrap_external(owner(cell, shape), "fabric1", "mesh1", &set, &candidate, &["broker", "gateway", "compute"]).await.unwrap_or_else(|e| panic!("the consumer's binding set is refused: {e}"));
+    let mut estate = Estate::bootstrap_on(owner(cell, shape), "fabric1", "mesh1", &set, &candidate, &["broker", "gateway", "compute"]).await.unwrap_or_else(|e| panic!("the consumer's binding set is refused: {e}"));
     estate.set_seed(seed());
     Born { dir, candidate, set, bound, estate, provider_before, started_ms }
 }
@@ -1513,6 +1513,14 @@ async fn build_now(e: &Estate, id: &str) -> Value {
 /// naming the fabric-primary it sees; `build-in-progress` naming the Build in flight; a topology rule's own
 /// name (`unknown-node`, `node-not-live`, `unheard-mesh`) with its detail; or `ended` with how the call ended
 /// without a reply. The first item of the call is read as `BuildCarrier::open` reads it.
+/// `node.create` of one more `kind` node in `mesh` as the complete topology read at `admin`, the path
+/// named on the estate's executable for it.
+async fn created(e: &Estate, admin: &str, mesh: &str, kind: LaunchKind) -> BuildChange {
+    let current = rdm_test::executables::Current::read(&e.carrier_at(&path_of(admin)).await).await.unwrap_or_else(|end| panic!("the current topology at {admin}: {end}"));
+    let nodes = current.with_one_more(mesh, kind, &e.executables);
+    BuildChange::Reconcile { based_on: current.based_on, nodes }
+}
+
 async fn ask(e: &Estate, admin: &str, change: BuildChange) -> Value {
     let carrier = e.carrier_at(&path_of(admin)).await;
     let req = BuildRequest::Create { submit: BuildSubmit::Change(change) };
@@ -1671,12 +1679,13 @@ impl Write {
         }
     }
 
-    /// The Build change the call submits.
-    fn change(&self) -> BuildChange {
+    /// The Build change the call submits to the admin `admin`: a create is the complete topology with
+    /// the path added on its executable, read there now (proposal executable-bindings-at-create.md rule 1).
+    async fn change(&self, e: &Estate, admin: &str) -> BuildChange {
         match self {
             Self::Restart(n) => BuildChange::Restart { node: path_of(n) },
             Self::Delete(n) => BuildChange::RemoveNode { node: path_of(n) },
-            Self::Create { mesh, kind } => BuildChange::AddNode { mesh: mesh.clone(), node_kind: *kind },
+            Self::Create { mesh, kind } => created(e, admin, mesh, *kind).await,
         }
     }
 }
@@ -1911,7 +1920,7 @@ impl Run {
     /// never followed). Anything but `Started` is the finding; nothing retries it.
     async fn write(&mut self, f: &Formed, st: &Stable, what: &str, w: Write) -> String {
         let t0 = now_ms();
-        let v = ask(&f.estate, &st.fp_name(), w.change()).await;
+        let v = ask(&f.estate, &st.fp_name(), w.change(&f.estate, &st.fp_name()).await).await;
         assert_eq!(v["reply"], "started", "{what}: the fabric-primary {} refused {} {}: {v}", st.fp_name(), w.op(), w.subject());
         let build_id = s(&v["build_id"]);
         // `Started` names the attempt the call opened (a delete or a create that accepts a new Build: its first).
@@ -2318,8 +2327,9 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts and the deletes of a replace's predecessor the cell sent");
     // The formation's `build.create` may be refused while the Day-0 Build still reconciles: the estate's submit
     // waits that out (`Estate::try_submit`); those are recorded, not counted against the probes. They are the
-    // refused create spans whose change is the fabric reconcile.
-    let formation = |sp: &&&Value| s(&sp["attributes"]["change"]).contains("\"reconcile_fabric\"");
+    // refused create spans of a complete-topology request that began before the formation was accepted.
+    let formed_at = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]) == f.build_id).filter_map(|sp| sp["start_unix_nano"].as_u64()).min().unwrap_or(u64::MAX);
+    let formation = |sp: &&&Value| s(&sp["attributes"]["change"]).contains("\"reconcile\"") && sp["start_unix_nano"].as_u64().is_some_and(|t| t < formed_at);
     let formation_rejections = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).filter(formation).count();
     let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && !formation(sp)).count();
     // A write the cell sent to see it refused reaches a door only at the fabric-primary: a non-writer refuses it
@@ -5816,7 +5826,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let mut roles: BTreeSet<String> = f.shape.names().into_iter().filter(|n| launch_id(n) != "node_admin").collect();
     let spawn = a.write(&mut f, &st, "C9 cut: add a gateway to the near mesh", Write::Create { mesh: near_mesh.to_string(), kind: LaunchKind::Gateway }).await;
     assert_ne!(spawn, formation, "an added node changes the topology: a new accepted Build");
-    let v = ask(&f.estate, &near_fp, BuildChange::AddNode { mesh: near_mesh.clone(), node_kind: LaunchKind::Gateway }).await;
+    let v = ask(&f.estate, &near_fp, created(&f.estate, &near_fp, &near_mesh, LaunchKind::Gateway).await).await;
     assert_eq!((v["reply"].as_str(), v["current_build_id"].as_str()), (Some("build-in-progress"), Some(spawn.as_str())), "a topology Build while the first is in flight is refused naming that Build: {v}");
     a.refused_writes.push(json!({"sent_to": near_fp, "reply": v["reply"], "path": near_mesh, "route": "create", "t_ms": now_ms()}));
     let joined = wait_for(&format!("{added} ready on the near side under the cut"), Duration::from_secs(120), || async {

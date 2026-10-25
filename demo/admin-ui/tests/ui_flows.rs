@@ -24,6 +24,18 @@ impl BuildEvents for Timeline {
     }
 }
 
+/// The executables the UI's Builds name in these cells: one stub that exits, for the node-admin and the
+/// rpc node, so a Build is accepted on a file whose hash it names (a request naming no executable for a
+/// path it creates is refused at acceptance) and what it launches ends at once, as nothing here is about
+/// the nodes it creates.
+fn stubs(dir: &std::path::Path) -> std::collections::BTreeMap<rdm_core::NodeKind, std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let stub = dir.join("stub-node");
+    std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    [(rdm_core::NodeKind::NodeAdmin, stub.clone()), (rdm_core::NodeKind::RpcNode, stub)].into_iter().collect()
+}
+
 /// A Day-0 node-admin in this process, and the UI's typed client entered at its birth once its view names
 /// it the fabric-primary of a ready-for-traffic fabric.
 async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
@@ -37,7 +49,7 @@ async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     .expect("a readable environment");
     let running = start_with(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
     let birth = running.digest.lock().unwrap().node.clone();
-    let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth"));
+    let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(stubs(dir)));
     // The admin takes the UI's commands once its view names it the fabric-primary and the initial fabric
     // first reached ready-for-traffic (before that every command is refused fabric-not-ready).
     let until = std::time::Instant::now() + Duration::from_secs(20);

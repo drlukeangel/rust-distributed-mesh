@@ -261,7 +261,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     assert_eq!(before, json!({"processes": [], "containers": []}), "nothing runs a bound executable before the cell starts");
     let mut refusals = Vec::new();
     for pl in planted(&sha, &scratch) {
-        let outcome = Estate::bootstrap_external(owner(cell, "external-binding"), "fabric1", "mesh1", &pl.set, &pl.candidate, &pl.required).await;
+        let outcome = Estate::bootstrap_on(owner(cell, "external-binding"), "fabric1", "mesh1", &pl.set, &pl.candidate, &pl.required).await;
         let err = match outcome {
             Ok(_) => panic!("planted `{}` was accepted; the rule `{}` must refuse it", pl.name, pl.rule),
             Err(e) => e,
@@ -275,7 +275,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let _ = std::fs::remove_dir_all(&scratch);
 
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
-    let mut estate = Estate::bootstrap_external(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
+    let mut estate = Estate::bootstrap_on(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
     let names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1", "mesh1.compute.1"].iter().map(|n| n.to_string()).collect();
     estate.settled_named(&names).await;

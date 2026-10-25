@@ -13,7 +13,7 @@
 //! `FetchBuildFacts` (`build_log`).
 
 use crate::build_log;
-use rdm_client::{BuildSpec, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{BuildSpec, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
 use rdm_admin::lifecycle::HookPhase;
@@ -133,7 +133,7 @@ impl Run {
 
     /// `node.create` of a `kind` node in `mesh`, accepted: the stream of the Build that runs it.
     async fn spawn(&self, mesh: &str, kind: NodeKind) -> WorkflowStream {
-        self.estate.nodes_obj().await.create(&NodeSpec { mesh: mesh.into(), kind }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in {mesh}: {e}"))
+        self.estate.create_node(mesh, kind).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in {mesh}: {e}"))
     }
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
@@ -382,7 +382,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     std::fs::create_dir_all(&dir).unwrap();
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
     let run = Run { estate, root, doors: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
@@ -764,7 +764,8 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let ack = door.arm(id, spec.clone()).await;
     let request = {
         let nodes = Nodes::new(run.estate.carrier_at(&path(&door.name)).await);
-        tokio::spawn(async move { nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await })
+        let (based_on, request) = run.estate.create_node_request("mesh1", NodeKind::RpcNode).await;
+        tokio::spawn(async move { nodes.create_named(based_on, request).await })
     };
     let held = door.wait_held(id).await;
     let build_id = held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string();

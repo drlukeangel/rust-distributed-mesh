@@ -5,14 +5,18 @@
 //! runtime itself.
 //!
 //! ```text
-//! POST   /api/nodes/spawn          {mesh, kind}  -> AddNode
+//! POST   /api/nodes/spawn          {mesh, kind}  -> Reconcile: the topology with the next path of that kind
 //! POST   /api/nodes/{name}/restart               -> RestartNode
 //! DELETE /api/nodes/{name}                       -> RemoveNode
 //! POST   /api/bootstrap   [{meshes: [{name, node_admin, rpc_node?, gateway?, compute?, broker?}]}] -> one Build to that
-//!                                                   shape (no body: the MN shape)
-//! POST   /api/meshes      {name, node_admin, rpc_node?, gateway?, compute?, broker?} -> CreateMesh
+//!                                                   shape (no body: the MN shape), Reconcile
+//! POST   /api/meshes      {name, node_admin, rpc_node?, gateway?, compute?, broker?} -> Reconcile: the topology
+//!                                                   with the new mesh
 //! DELETE /api/meshes/{name}                      -> RemoveMesh
 //! ```
+//!
+//! The counts are the UI's vocabulary: it expands them into named paths, each on its executable
+//! (`crate::admin::Admin`), before the typed call.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

@@ -32,7 +32,7 @@
 //! the host cannot, cells 6-7 are a named skip, a failure under
 //! `RDM_REQUIRE_NETFAULT=1` (CI).
 
-use rdm_client::{BuildSpec, Builds, FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::Value;
@@ -403,7 +403,8 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // longer hears): what is asserted is the isolated admin's own refusal, never where the call ended.
     let lone_path: PathName = lone_name.parse().unwrap();
     let asked_at = now_ns();
-    let _ = Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await;
+    let request = estate.shape_change(&shape("fabric2", 3)).await;
+    let _ = estate.carrier_at(&lone_path).await.create(request).await;
     wait_for(&format!("the isolated {lone_name} refuses build.create as not the fabric-primary"), Duration::from_secs(15), || {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
@@ -467,7 +468,8 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // The Build submitted at the fabric-primary the healed fabric names completes.
     let healed = estate.node_values().await;
     let fp_path: PathName = s(&healed.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the healed fabric names a fabric-primary: {healed:?}"))["name"]).parse().unwrap();
-    let mut grow = Builds::new(estate.carrier_at(&fp_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create at the fabric-primary {fp_path} was refused: {e}"));
+    let at_fp = estate.carrier_at(&fp_path).await;
+    let mut grow = at_fp.create(estate.shape_change_at(&at_fp, &shape("fabric2", 3)).await).await.unwrap_or_else(|e| panic!("build.create at the fabric-primary {fp_path} was refused: {e}"));
     Estate::until_complete(&mut grow).await;
     let mut want: BTreeSet<String> = pre_cut.clone();
     want.insert("mesh1.rpc.3".into());

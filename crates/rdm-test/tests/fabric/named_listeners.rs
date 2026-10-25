@@ -35,7 +35,7 @@ async fn estate_on(test: &str, provider: &str) -> Estate {
             b.image = Some(rdm_test::estate::RUNTIME_IMAGE.into());
         }
     }
-    Estate::bootstrap_external_with_env(owner(test, provider), "fabric1", "mesh1", &set, &sha, &["broker", "gateway", "compute"], &[])
+    Estate::bootstrap_on_with_env(owner(test, provider), "fabric1", "mesh1", &set, &sha, &["broker", "gateway", "compute"], &[])
         .await
         .expect("the faulted-admin binding set with the role kinds is accepted")
 }

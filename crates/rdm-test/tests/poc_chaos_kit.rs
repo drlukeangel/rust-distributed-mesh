@@ -104,7 +104,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     let mut o = owner("poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it");
     o.rung = "fault-door".into();
     let sha = candidate_sha();
-    let mut estate = Estate::bootstrap_external(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("faulted-admin binding set accepted");
+    let mut estate = Estate::bootstrap_on(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("faulted-admin binding set accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 

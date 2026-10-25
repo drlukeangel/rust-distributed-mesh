@@ -50,7 +50,7 @@ fn start(sp: &Value) -> u64 {
 async fn estate_with(test: &str, app: Option<&str>) -> Estate {
     let sha = candidate_sha();
     let env: Vec<(&str, &str)> = app.map(|a| ("RDM_TEST_APP", a)).into_iter().collect();
-    Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &env).await.expect("the faulted-admin binding set is accepted")
+    Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &env).await.expect("the faulted-admin binding set is accepted")
 }
 
 /// A fabric at `shape` that reached ready-for-traffic.

@@ -77,7 +77,7 @@ async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> 
 /// differs.
 async fn faulted_fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     born_at(estate, shape, settle).await
 }
 
@@ -2704,7 +2704,7 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     use rdm_client::binding::{sha256_file, Binding};
     let sha = candidate_sha();
     let set_a = binding_set(&sha);
-    let estate = Estate::bootstrap_external(owner("a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery"), "fabric1", "mesh1", &set_a, &sha, &["rpc_node"])
+    let estate = Estate::bootstrap_on(owner("a_create_steps_executable_reaches_the_provider_at_every_admin_and_through_recovery"), "fabric1", "mesh1", &set_a, &sha, &["rpc_node"])
         .await
         .expect("binding set A is accepted");
     let rpc_a = set_a.bindings.iter().find(|b| b.launch_id == "rpc_node").cloned().expect("set A binds rpc_node");

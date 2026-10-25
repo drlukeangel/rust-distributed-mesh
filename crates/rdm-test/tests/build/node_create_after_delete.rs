@@ -3,7 +3,7 @@
 //! at `2a641bf6` (its 97th round, a hand-off of mesh2's seat) saw the create reconciled against a view
 //! that still held the deleted admin, plan no operation and complete, and nothing re-created the path
 //! in the 150 s it waited (i143 PRD, e10.s2 "The fifth run").
-use rdm_client::{LaunchKind as NodeKind, NodeSpec, NodeStatus};
+use rdm_client::{LaunchKind as NodeKind, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -56,7 +56,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     let mut deleting = estate.nodes_obj().await.delete(&path.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {path}: {e}"));
     let delete = Estate::complete(&mut deleting).await.build_id.to_string();
     // At once, inside the window: the create is submitted on the delete's completion, before any view read.
-    let mut creating = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::NodeAdmin }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh2: {e}"));
+    let mut creating = estate.create_node("mesh2", NodeKind::NodeAdmin).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh2: {e}"));
     let create = Estate::complete(&mut creating).await.build_id.to_string();
 
     let born = estate

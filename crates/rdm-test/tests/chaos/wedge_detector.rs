@@ -298,7 +298,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 // ---------------------------------------------------------------------------------------------
 
 use crate::build_log;
-use rdm_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
 use rdm_admin::lifecycle::HookPhase;
@@ -506,7 +506,7 @@ impl Run {
 
     /// `node.create` of a `kind` node in mesh1, accepted: the stream of the Build that runs it.
     async fn spawn(&self, kind: NodeKind) -> WorkflowStream {
-        self.estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in mesh1: {e}"))
+        self.estate.create_node("mesh1", kind).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in mesh1: {e}"))
     }
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
@@ -605,7 +605,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         }
         Trigger::SpawnRequest => {
             let nodes = Nodes::new(run.estate.carrier_at(&path(&door.name)).await);
-            let task = tokio::spawn(async move { nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await });
+            let (based_on, request) = run.estate.create_node_request("mesh1", NodeKind::RpcNode).await;
+            let task = tokio::spawn(async move { nodes.create_named(based_on, request).await });
             (String::new(), Triggered::Request(task))
         }
     };
@@ -938,7 +939,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     std::fs::create_dir_all(&dir).unwrap();
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
     let run = Run { estate, root, doors: Default::default(), evidence: Default::default(), rows: Default::default(), holds: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: two admins first.

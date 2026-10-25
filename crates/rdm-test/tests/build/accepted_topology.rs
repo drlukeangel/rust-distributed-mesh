@@ -23,7 +23,7 @@
 //! 8. A restart changes no topology: it is an attempt of the accepted Build, under the same id.
 
 use crate::build_log;
-use rdm_client::{BuildId, BuildSpec, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus};
+use rdm_client::{BuildId, BuildSpec, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -106,14 +106,14 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 2, 3)]))).await;
     let a = stream.build_id().to_string();
     assert_eq!(current_build(&estate).await, a, "the Build is current on acceptance, before it converges");
-    let refused = estate.builds_obj().await.create(&BuildSpec::Fabric(fabric_of(&[("mesh1", 2, 4)]))).await;
+    let refused = estate.carrier().await.create(estate.shape_change(&fabric_of(&[("mesh1", 2, 4)])).await).await;
     assert!(matches!(&refused, Err(CallEnd::BuildInProgress { current }) if current.as_str() == a), "a second change while {a} reconciles is refused build-in-progress, naming it: {:?}", refused.as_ref().err());
     estate.follow(stream).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let built = build_log::build_value(&estate.carrier().await, &a).await;
     assert_eq!(paths(&built, "mesh1"), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"], "{built}");
-    assert_eq!(built["submitted_change"]["kind"], "reconcile_fabric", "the change is kept as history: {built}");
+    assert_eq!(built["submitted_change"]["kind"], "reconcile", "the change is kept as history: the complete topology the request named: {built}");
 
     // 3. The accepted Build is never history; Day 0's is.
     let refused = estate.builds_obj().await.delete(&BuildId::parse(&a).unwrap()).await;
@@ -124,7 +124,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(current_build(&estate).await, a, "forget is history administration only");
 
     // 4. An admin born later hydrates the current Build, not the history.
-    let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh1: {e}"));
+    let mut spawn = estate.create_node("mesh1", NodeKind::NodeAdmin).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh1: {e}"));
     let c = Estate::complete(&mut spawn).await.build_id.to_string();
     let nodes = Estate::values(&estate.settled_views(&[("mesh1", 3, 3)]).await);
     let late = nodes.iter().find(|n| n["name"] == "mesh1.admin.3").cloned().unwrap();

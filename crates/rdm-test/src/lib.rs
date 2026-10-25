@@ -52,6 +52,8 @@ pub mod soak;
 #[allow(missing_docs)]
 pub mod typed;
 #[allow(missing_docs)]
+pub mod executables;
+#[allow(missing_docs)]
 pub mod wedge;
 
 // ── Chaos Kit Fault Backends (from former rafka-chaos) ──

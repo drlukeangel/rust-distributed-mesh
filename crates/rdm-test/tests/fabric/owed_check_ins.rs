@@ -37,7 +37,7 @@ fn start(sp: &Value) -> u64 {
 
 async fn estate_with(test: &str, app: &str) -> Estate {
     let sha = candidate_sha();
-    Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_TEST_APP", app)])
+    Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_TEST_APP", app)])
         .await
         .expect("the faulted-admin binding set is accepted")
 }

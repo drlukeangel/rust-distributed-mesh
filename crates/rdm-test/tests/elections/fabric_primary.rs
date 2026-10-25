@@ -33,7 +33,7 @@
 //! decision (mesh-investigation.md step 5, "No member answers") the new fabric primary runs the create
 //! of that mesh's first node-admin in process, and nothing else of that mesh.
 
-use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, PathName};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
@@ -102,7 +102,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     estate.enter(&fp.parse().unwrap()).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     // Control is back at the restored fabric-primary: it accepts a change and completes it.
-    let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the restored fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let mut spawn = estate.create_node("mesh2", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the restored fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     Estate::complete(&mut spawn).await;
     estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 4)], Duration::from_secs(60)).await;
 

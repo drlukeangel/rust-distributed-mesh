@@ -312,6 +312,15 @@ impl Nodes {
         self.workflow(WorkflowKind::Create, BuildChange::AddNode { mesh: spec.mesh.clone(), node_kind: spec.kind }).await
     }
 
+    /// `node.create` of the paths `nodes` adds to the topology Build `based_on` accepted, each named by
+    /// its `path.name` with its config, the executable included (proposal executable-bindings-at-create.md
+    /// rule 1): `nodes` is the complete topology, `build.create { Change(Reconcile { based_on, nodes }) }`.
+    /// The stream is `Started`, then the step events of the create, ending `Complete` or
+    /// `Failed { step, reason }`.
+    pub async fn create_named(&self, based_on: BuildId, nodes: Vec<(PathName, rdm_core::meta::PathConfig)>) -> Result<WorkflowStream, CallEnd> {
+        self.workflow(WorkflowKind::Create, BuildChange::Reconcile { based_on, nodes }).await
+    }
+
     /// `node.stop` of `node`.
     pub async fn stop(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await

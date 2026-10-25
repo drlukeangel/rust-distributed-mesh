@@ -31,7 +31,7 @@ fn s(v: &Value) -> String {
 /// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready.
 async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let sha = candidate_sha();
-    let estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
+    let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", shape).await;
     estate.settles_to(shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;

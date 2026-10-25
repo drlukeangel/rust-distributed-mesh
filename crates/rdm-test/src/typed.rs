@@ -557,28 +557,107 @@ impl Estate {
         u64::from(self.builds_obj().await.get(&BuildId::parse(build_id).unwrap_or_else(|e| panic!("build.get of {build_id}: {e}"))).await.unwrap_or_else(|e| panic!("build.get of {build_id}: {e}")).attempt)
     }
 
-    /// `build.create` of `spec`, accepted: the stream of the Build that runs it. A cell that does not
-    /// test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to its
-    /// terminal frame, and a cell follows each Build it started (`Estate::follow`) before it submits the
-    /// next, so a refusal here, a Build in progress included, is a defect of the cell and panics naming
-    /// the spec and the refusal.
+    /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The harness names every
+    /// path ([`crate::executables`]): a shape of counts (`Fabric`, `Preset`, `CreateMesh`) is expanded
+    /// against the current topology into the complete topology, each created path on its executable,
+    /// and submitted as `Change::Reconcile`; a `Roll` (landing 3's) is submitted as it is. A cell that
+    /// does not test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to
+    /// its terminal frame, and a cell follows each Build it started (`Estate::follow`) before it submits
+    /// the next, so a refusal here, a Build in progress included, is a defect of the cell and panics
+    /// naming the spec and the refusal.
     pub async fn submit(&self, spec: &BuildSpec) -> BuildStream {
-        match Builds::new(self.carrier().await).create(spec).await {
-            Ok(stream) => stream,
-            Err(e) => panic!("the fabric-primary refused build.create {spec:?}: {e}"),
-        }
+        let (meshes, whole) = match spec {
+            BuildSpec::Fabric(d) => (d.meshes.clone(), true),
+            BuildSpec::Preset { preset, fabric } => (preset.desired(fabric).meshes, true),
+            BuildSpec::CreateMesh(m) => (vec![m.clone()], false),
+            BuildSpec::Roll(_) => {
+                return match Builds::new(self.carrier().await).create(spec).await {
+                    Ok(stream) => stream,
+                    Err(e) => panic!("the fabric-primary refused build.create {spec:?}: {e}"),
+                }
+            }
+        };
+        self.submit_named(&format!("{spec:?}"), |current, executables| current.resized(&meshes, whole, executables)).await
     }
 
     /// `build.create` of `change` (a change of the accepted Build the carrier carries without a
-    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A cell
-    /// that does not test a refusal never has a submit refused: the Build it started itself is followed to
-    /// its terminal frame (`Estate::follow`) before the next change is submitted, so a refusal here, a
-    /// Build in progress included, is a defect of the cell and panics naming the change and the refusal.
+    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A count
+    /// change (`ReconcileFabric`, `ReconcileMesh`, `AddNode`, `CreateMesh`) is expanded into the complete
+    /// topology with every created path named, as [`Self::submit`] expands a shape. A cell that does not
+    /// test a refusal never has a submit refused: the Build it started itself is followed to its terminal
+    /// frame (`Estate::follow`) before the next change is submitted, so a refusal here, a Build in
+    /// progress included, is a defect of the cell and panics naming the change and the refusal.
     pub async fn submit_change(&self, change: Change) -> BuildStream {
-        match self.carrier().await.create(change.clone()).await {
-            Ok(stream) => stream,
-            Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
+        let what = format!("{change:?}");
+        let mesh = |m: &rdm_client::MeshCounts| MeshDesired { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute };
+        match change {
+            Change::ReconcileFabric { meshes, .. } => {
+                let meshes: Vec<MeshDesired> = meshes.iter().map(mesh).collect();
+                self.submit_named(&what, |current, executables| current.resized(&meshes, true, executables)).await
+            }
+            Change::ReconcileMesh { mesh: m } | Change::CreateMesh { mesh: m } => {
+                let meshes = vec![mesh(&m)];
+                self.submit_named(&what, |current, executables| current.resized(&meshes, false, executables)).await
+            }
+            Change::AddNode { mesh, node_kind } => self.submit_named(&what, |current, executables| current.with_one_more(&mesh, node_kind, executables)).await,
+            change => match self.carrier().await.create(change.clone()).await {
+                Ok(stream) => stream,
+                Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
+            },
         }
+    }
+
+    /// The current topology read (the current Build at the fabric-primary, its accepted topology and
+    /// every node's row): what a complete-topology request is built from. A read that fails is a
+    /// defect of the cell, named.
+    pub async fn current(&self) -> crate::executables::Current {
+        crate::executables::Current::read(&self.carrier().await).await.unwrap_or_else(|e| panic!("the current topology could not be read: {e}"))
+    }
+
+    /// `build.create { Change(Reconcile) }` of the complete topology `nodes` builds from the current
+    /// read, accepted. A request built from a read another Build overtook is refused
+    /// `based-on-not-current` and read again (the caller re-reads, proposal executable-bindings-at-create.md
+    /// rule 1); any other refusal is a defect of the cell, named with `what`.
+    pub async fn submit_named(&self, what: &str, nodes: impl Fn(&crate::executables::Current, &crate::executables::Executables) -> Vec<(PathName, rdm_core::meta::PathConfig)>) -> BuildStream {
+        let mut tries = 0;
+        loop {
+            let current = self.current().await;
+            let change = Change::Reconcile { based_on: current.based_on.clone(), nodes: nodes(&current, &self.executables) };
+            match self.carrier().await.create(change.clone()).await {
+                Ok(stream) => return stream,
+                Err(CallEnd::Rejected { reason, .. }) if reason == "based-on-not-current" && tries < 3 => tries += 1,
+                Err(e) => panic!("the fabric-primary refused {what} as {change:?}: {e}"),
+            }
+        }
+    }
+
+    /// The complete-topology request (`Change::Reconcile`) of the fabric shape `desired`, read now at the
+    /// admin the estate asks, every created path named: for a cell that submits it itself, at an admin it
+    /// names, or that asserts a refusal.
+    pub async fn shape_change(&self, desired: &FabricDesired) -> Change {
+        self.shape_change_at(&self.carrier().await, desired).await
+    }
+
+    /// [`Self::shape_change`], read through `carrier`.
+    pub async fn shape_change_at(&self, carrier: &BuildCarrier, desired: &FabricDesired) -> Change {
+        let current = crate::executables::Current::read(carrier).await.unwrap_or_else(|e| panic!("the current topology could not be read through {}: {e}", carrier.fabric_primary()));
+        let nodes = current.resized(&desired.meshes, true, &self.executables);
+        Change::Reconcile { based_on: current.based_on, nodes }
+    }
+
+    /// `node.create` of one more `kind` node in `mesh`, at the lowest free ordinal of its kind, on the
+    /// estate's executable for it: the complete topology with the path added
+    /// ([`rdm_client::Nodes::create_named`]). Not accepted: how the call ended.
+    pub async fn create_node(&self, mesh: &str, kind: NodeKind) -> Result<WorkflowStream, CallEnd> {
+        let (based_on, nodes) = self.create_node_request(mesh, kind).await;
+        self.nodes_obj().await.create_named(based_on, nodes).await
+    }
+
+    /// The `based_on` and complete topology of [`Self::create_node`], for a cell that submits it itself.
+    pub async fn create_node_request(&self, mesh: &str, kind: NodeKind) -> (BuildId, Vec<(PathName, rdm_core::meta::PathConfig)>) {
+        let current = self.current().await;
+        let nodes = current.with_one_more(mesh, kind, &self.executables);
+        (current.based_on, nodes)
     }
 
     /// Reconcile the fabric to `desired`: `build.create`, awaited to the stream's `Complete`.

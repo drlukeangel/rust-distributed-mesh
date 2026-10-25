@@ -433,12 +433,12 @@ where
 
 /// The environment variable naming an external consumer's built executable directory. When it is
 /// set, every node-admin and node of a run launches from the consumer's executables through
-/// [`Estate::bootstrap_external`]; the built-in set is refused.
+/// [`Estate::bootstrap_on`]; the testkit binaries are refused.
 pub const ENV_CONSUMER_BIN_DIR: &str = "RDM_RSHAPE_CONSUMER_BIN_DIR";
 
 fn refuse_built_ins_in_consumer_mode(what: &str) {
     if let Ok(d) = std::env::var(ENV_CONSUMER_BIN_DIR) {
-        panic!("REFUSED {what}: {ENV_CONSUMER_BIN_DIR}={d} selects an external consumer's executables, which launch only through Estate::bootstrap_external with an explicit binding set; the built-in binaries are never a fallback");
+        panic!("REFUSED {what}: {ENV_CONSUMER_BIN_DIR}={d} selects an external consumer's executables, which launch only through Estate::bootstrap_on with an explicit binding set; the testkit binaries are never a fallback");
     }
 }
 
@@ -458,25 +458,39 @@ pub fn binding_set_from_build_manifest(manifest: &Path, bin_dir: &Path, containe
     Ok(BindingSet { candidate: rdm_client::binding::Candidate { sha, build: v["consumer_source_sha256"].as_str().unwrap_or_default().to_string() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
 }
 
-/// The explicit executable bindings an estate launches from (the external-consumer seam): the
-/// validated set, the file node-admin reads it from, and the candidate it was validated against.
+/// The explicit executable set an estate launches from (the external-consumer seam, the faulted
+/// node-admin): the validated set, the file it is written to, and the candidate it was validated
+/// against. Every Build the estate submits names each created path's executable from the set
+/// ([`crate::executables`]); `launch_set` hands the set to every node-admin as its launch set as well
+/// (`RDM_EXECUTABLE_BINDINGS`), which only the cells of `Change::Roll` still do
+/// ([`Estate::bootstrap_external`]).
 #[derive(Debug, Clone)]
 pub struct ExternalLaunch {
     pub validated: Validated,
     pub file: PathBuf,
     pub candidate: String,
+    /// The set is every node-admin's launch set too (`RDM_EXECUTABLE_BINDINGS`).
+    pub launch_set: bool,
+    /// The fabric's provider is the container provider.
+    pub container: bool,
 }
 
 impl ExternalLaunch {
     /// The environment every node-admin of the estate gets.
     fn env(&self) -> Vec<(&'static str, String)> {
-        vec![
-            (ENV_EXECUTABLE_BINDINGS, self.file.display().to_string()),
-            (ENV_EXECUTABLE_CANDIDATE, self.candidate.clone()),
-            // Nothing is launched from a built-in directory in this mode: an empty one makes any
-            // fallback fail rather than quietly run a built-in.
-            ("RDM_BIN_DIR", self.file.parent().expect("a file in the estate root").join("no-built-ins").display().to_string()),
-        ]
+        // Nothing is launched from a directory without a sha in this mode: an empty one makes any
+        // fallback fail rather than quietly run a testkit binary. A container node-admin reads the
+        // set's executables at their host paths, so under the container provider it is their
+        // directory, which a launched admin mounts read-only (`RDM_BIN_DIR`).
+        let bin_dir = match (self.launch_set, self.container) {
+            (false, true) => self.validated.executable_dirs().into_iter().next().expect("the set binds an executable"),
+            _ => self.file.parent().expect("a file in the estate root").join("no-built-ins"),
+        };
+        let mut env = vec![("RDM_BIN_DIR", bin_dir.display().to_string())];
+        if self.launch_set {
+            env.extend([(ENV_EXECUTABLE_BINDINGS, self.file.display().to_string()), (ENV_EXECUTABLE_CANDIDATE, self.candidate.clone())]);
+        }
+        env
     }
 
     fn admin_exe(&self) -> PathBuf {
@@ -604,6 +618,9 @@ pub struct Estate {
     bootstrap: Option<Child>,
     /// The explicit executable bindings this estate runs from, if it was born with any.
     pub external: Option<ExternalLaunch>,
+    /// Where each created path's executable comes from: every Build the estate submits names it
+    /// (`crate::executables`).
+    pub executables: crate::executables::Executables,
     /// The seed of the run, recorded in the estate manifest once the run has one.
     seed: Option<u64>,
     /// Admins this estate restarted on their own data dirs.
@@ -638,25 +655,44 @@ impl Estate {
         Self::born(owner, fabric, mesh, None, extra_env).await
     }
 
-    /// Start the first node-admin of `fabric` from an explicit executable binding set: every
-    /// launch of the estate (this admin, every node, every restart) runs the executable its
-    /// launch id is bound to and nothing falls back to a built-in. The set is validated against
-    /// `candidate_sha`, the launch ids the run `required` and the provider's image BEFORE any
-    /// file is made or any process started; a refusal is returned by name with nothing launched.
+    /// Start the first node-admin of `fabric` on the set's `node_admin`, and name every created
+    /// path's executable from the set (proposal executable-bindings-at-create.md §2: the bootstrap
+    /// admin is itself alone and records what it runs; every other node is created by a request naming
+    /// its executable): nothing the estate launches is taken from a directory with no sha. The set is
+    /// validated against `candidate_sha`, the launch ids the run `required` and the provider's image
+    /// BEFORE any file is made or any process started; a refusal is returned by name with nothing
+    /// launched.
+    pub async fn bootstrap_on(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str]) -> Result<Self, BindingError> {
+        Self::bootstrap_on_with_env(owner, fabric, mesh, set, candidate_sha, required, &[]).await
+    }
+
+    /// [`Estate::bootstrap_on`], the first node-admin also given `extra_env` (what an embedding's
+    /// application reads, such as the testkit application's `RDM_TEST_APP`).
+    pub async fn bootstrap_on_with_env(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str], extra_env: &[(&str, &str)]) -> Result<Self, BindingError> {
+        let validated = Self::validated(&owner, set, candidate_sha, required)?;
+        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string(), false)), extra_env).await)
+    }
+
+    /// Start the first node-admin of `fabric` from an explicit executable binding set handed to every
+    /// node-admin as its launch set (`RDM_EXECUTABLE_BINDINGS`): the cells of `Change::Roll`, which
+    /// landing 3 of executable-bindings-at-create removes with the operation. Every other cell starts with [`Estate::bootstrap_on`].
     pub async fn bootstrap_external(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str]) -> Result<Self, BindingError> {
         Self::bootstrap_external_with_env(owner, fabric, mesh, set, candidate_sha, required, &[]).await
     }
 
-    /// [`Estate::bootstrap_external`], the first node-admin also given `extra_env` (what an
-    /// embedding's application reads, such as the testkit application's `RDM_TEST_APP`).
+    /// [`Estate::bootstrap_external`], the first node-admin also given `extra_env`.
     pub async fn bootstrap_external_with_env(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str], extra_env: &[(&str, &str)]) -> Result<Self, BindingError> {
-        let image = if owner.provider == "container" { ProviderImage::Container(RUNTIME_IMAGE) } else { ProviderImage::Process };
-        let validated = set.validate(&Expect { candidate_sha, required, provider_image: image })?;
+        let validated = Self::validated(&owner, set, candidate_sha, required)?;
         // The file is written under the estate root once `born` makes it.
-        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string())), extra_env).await)
+        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string(), true)), extra_env).await)
     }
 
-    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>, extra_env: &[(&str, &str)]) -> Self {
+    fn validated(owner: &Owner, set: &BindingSet, candidate_sha: &str, required: &[&str]) -> Result<Validated, BindingError> {
+        let image = if owner.provider == "container" { ProviderImage::Container(RUNTIME_IMAGE) } else { ProviderImage::Process };
+        set.validate(&Expect { candidate_sha, required, provider_image: image })
+    }
+
+    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String, bool)>, extra_env: &[(&str, &str)]) -> Self {
         let artifacts = artifacts_root().join(&owner.feature).join(&owner.test);
         let _ = std::fs::remove_dir_all(&artifacts);
         let evidence = artifacts.join("spans");
@@ -666,12 +702,17 @@ impl Estate {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(estate_store_dir(&root)).unwrap();
         let scope = EstateScope::begin(&root);
-        let external = external.map(|(validated, candidate)| {
+        let container = owner.provider == "container";
+        let external = external.map(|(validated, candidate, launch_set)| {
             let file = root.join("executable-bindings.json");
             std::fs::write(&file, serde_json::to_vec_pretty(validated.set()).unwrap()).unwrap();
             std::fs::create_dir_all(root.join("no-built-ins")).unwrap();
-            ExternalLaunch { validated, file, candidate }
+            ExternalLaunch { validated, file, candidate, launch_set, container }
         });
+        let executables = match &external {
+            Some(x) => crate::executables::Executables::Set(x.validated.set().clone()),
+            None => crate::executables::Executables::testkit(&owner.provider),
+        };
 
         let mut env = vec![
             ("MESH_SPAWN_TYPE", owner.provider.clone()),
@@ -705,7 +746,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, executables, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), _scope: scope };
         estate.hold_printed(birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
@@ -737,7 +778,7 @@ impl Estate {
                 "product": o.product, "feature": o.feature, "subfeature": o.subfeature,
                 "rung": o.rung, "provider": o.provider, "test": o.test,
                 "seed": self.seed, "entry_admin": self.admin.to_string(),
-                "executable_bindings": self.external.as_ref().map(|x| json!({ "mode": "explicit", "binding_file": x.file, "receipt": x.validated.receipt() })).unwrap_or_else(|| json!({ "mode": "built-in" })),
+                "executable_bindings": self.external.as_ref().map(|x| json!({ "mode": "explicit", "binding_file": x.file, "receipt": x.validated.receipt() })).unwrap_or_else(|| json!({ "mode": "testkit" })),
             }),
         );
     }

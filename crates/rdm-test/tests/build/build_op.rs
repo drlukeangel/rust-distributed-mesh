@@ -15,7 +15,7 @@
 
 use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
-use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
+use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
 use rdm_admin::build_state::{BuildFact, StepOutcome};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
@@ -122,7 +122,7 @@ async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> B
 async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> (BuildCarrier, Vec<BuildFrame>) {
     let carrier = estate.carrier().await;
     let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
-    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape");
+    let mut stream = carrier.create(estate.shape_change_at(&carrier, &desired).await).await.expect("the fabric-primary accepts the shape");
     let frames = until_complete(&mut stream).await;
     estate.settles_to(shape, Duration::from_secs(90)).await;
     caller.learn().await;
@@ -274,7 +274,7 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let grown = FabricDesired { fabric: FABRIC.into(), meshes: [("mesh1", 2, 1), ("mesh2", 2, 3)].iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
-    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts the change");
+    let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the change");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let first = stream.next().await.expect("a frame").expect("the stream reads its first frame");
     assert!(!matches!(first, BuildFrame::Complete { .. } | BuildFrame::Failed { .. }), "the Build is still running when its connection closes: {first:?}");
@@ -396,7 +396,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
@@ -444,7 +444,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     let test = "a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
@@ -526,7 +526,7 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
 
     // The Build retires mesh1; the seat leaves with it, by a planned handover inside the Build.
     let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
-    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(keep)).await.expect("the fabric-primary accepts the retire");
+    let mut stream = carrier.create(estate.shape_change_at(&carrier, &keep).await).await.expect("the fabric-primary accepts the delete of mesh1");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let new_seat = loop {
         match stream.next().await {
@@ -671,7 +671,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     let knob = rdm_test::before_ready_knob_dir(&estate.root);
     rdm_test::write_before_ready_knob(&estate.root, BLOCKED, A).unwrap();
     let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
-    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts the grown shape");
+    let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
     let (before_a, (step, reason)) = next_blocked(&mut stream).await;
     assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
     assert!(reason.contains(BLOCKED) && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
@@ -741,7 +741,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
         fabric: FABRIC.into(),
         meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])],
     };
-    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts mesh2");
+    let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts mesh2");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let held = door.wait_held("cut").await;
     assert_eq!(s(&held["hit"]["build_id"]), build_id.as_str(), "{held}");
@@ -828,7 +828,7 @@ async fn a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_cl
     let test = "a_restored_fabric_primary_reads_the_create_mesh_receipt_and_does_not_claim_the_mesh_again";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
@@ -859,7 +859,7 @@ async fn a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_
     let test = "a_restored_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its_natural_key_and_receipts_it";
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: the claim of mesh2's name landed and `create-mesh:mesh2`'s own receipt is not durable.
@@ -904,7 +904,7 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     // One worker: a hash held on it holds every task of the admin, its endpoint's included, so the
     // cell fails whenever the hash runs on a worker, never only when a woken task happens to sit in
     // the hashing worker's LIFO slot (with ~20 workers the defect needs that; R24's gate had it).
-    let mut estate = Estate::bootstrap_external_with_env(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"], &[("TOKIO_WORKER_THREADS", "1")])
+    let mut estate = Estate::bootstrap_on_with_env(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"], &[("TOKIO_WORKER_THREADS", "1")])
         .await
         .expect("the padded binding set is accepted");
     let caller = Caller::of(&estate).await;
@@ -938,7 +938,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
     async fn at_cut(cut: &str) {
         let test = format!("an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it_{cut}");
         let sha = candidate_sha();
-        let mut estate = Estate::bootstrap_external(owner(&test), FABRIC, "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.unwrap();
+        let mut estate = Estate::bootstrap_on(owner(&test), FABRIC, "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.unwrap();
         let caller = Caller::of(&estate).await;
         let carrier = born(&estate, &caller, &SHAPE).await;
         let node = secondary_node(&estate).await;

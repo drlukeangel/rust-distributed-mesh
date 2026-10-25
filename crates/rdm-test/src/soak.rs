@@ -43,7 +43,7 @@ use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
 use crate::scenario::Operation as ProofOp;
 use crate::sim::Scheduler;
 use crate::wedge::{judge, Control, Evidence, Family, FaultAck, Primitive, Progress as WedgeProgress, Reconciliation, Recovery, Release, Routing};
-use rdm_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeSpec, NodeView, PathName, ScopeStatus, WorkflowStream};
+use rdm_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeView, PathName, ScopeStatus, WorkflowStream};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1322,7 +1322,7 @@ impl Driver {
         match action {
             Action::Grow { mesh, class } => {
                 let kind = class.kind_name();
-                let spawn = self.estate.nodes_obj().await.create(&NodeSpec { mesh: mesh.clone(), kind: launch_kind(*class) }).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
+                let spawn = self.estate.create_node(&mesh, launch_kind(*class)).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
                 entry["accepted"] = accepted_json(spawn.accepted());
                 entry["build"] = self.await_build(spawn).await?;
             }
@@ -1591,7 +1591,7 @@ impl Driver {
         if relocate_control(&mut self.estate, &self.known).await.is_none() {
             return Err(broken("control-api-answers", format!("after node.delete {path}, no admin answers fabric.get: {:?}", self.known.iter().map(|a| a.name.as_str()).collect::<Vec<_>>())));
         }
-        let spawn = self.estate.nodes_obj().await.create(&NodeSpec { mesh: mesh.clone(), kind }).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
+        let spawn = self.estate.create_node(&mesh, kind).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
         entry["regrow"] = accepted_json(spawn.accepted());
         let build = spawn.accepted().build_id.to_string();
         self.await_build(spawn).await?;
