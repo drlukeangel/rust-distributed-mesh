@@ -101,8 +101,8 @@ fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
 }
 
 /// CONTRACT: a complete holder that has never observed a Direct fact toward the destination
-/// dials it (connections.md section 7); once a Direct fact stands but is Failed or Disconnected,
-/// the reconnect series owns the retry and no route is offered.
+/// dials it (connections.md section 7); once a Direct Failed fact stands, the reconnect series owns
+/// the retry (section 9.1) and no route is offered.
 #[test]
 fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_does_not() {
     let (mut held, own, _carrier, dest) = estate();
@@ -111,6 +111,28 @@ fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_do
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
     assert!(held.holds_direct_fact(&own.name, &dest.name));
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
+}
+
+/// CONTRACT (connections.md section 9.1: a reconnect series exists only when the latest Direct is
+/// Failed; section 1.2: only Failed is this source's failure evidence): a Direct this node dropped
+/// (`node.connections.delete`'s Disconnected, as node.stop and node.restart write) leaves no series
+/// to retry it, so the next new call dials the destination again; a Failed one after it waits for its
+/// series. Must NOT happen: a dropped Direct answering NoActiveRoute to every later call.
+#[test]
+fn a_dropped_direct_is_dialled_again_and_only_a_failed_one_waits_for_its_series() {
+    let (mut held, own, _carrier, dest) = estate();
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Disconnected, 30)).unwrap();
+    assert!(held.holds_direct_fact(&own.name, &dest.name));
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "a drop is no failure: nothing else dials it again");
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 40)).unwrap();
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute, "the series owns a Failed Direct's retry");
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 50)).unwrap();
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Disconnected, 60)).unwrap();
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "a later drop supersedes the series' Failed");
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Refused, 70)).unwrap();
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "an acceptor's Refused is no failure of this source");
 }
 
 #[test]

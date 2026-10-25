@@ -206,11 +206,14 @@ impl NodeConnection {
     }
 }
 
-/// One key's latest stamp, and its entry only when that entry is an active Direct fact.
+/// One key's latest stamp, its entry only when that entry is an active Direct fact, and whether
+/// that entry is a Direct Failed one (connections.md section 9.1: the only latest Direct a reconnect
+/// series stands on).
 #[derive(Debug, Clone)]
 struct Cell {
     stamp: u64,
     active: Option<NodeConnection>,
+    failed: bool,
 }
 
 /// The held connections projection: active Direct facts fleet-wide, plus this node's own active
@@ -272,8 +275,9 @@ impl ConnectionsHeld {
                 self.own_proxies.remove(&(entry.destination.name.clone(), entry.alpn.clone()));
             }
         }
+        let failed = entry.kind == ConnectionKind::Direct && entry.state == ConnectionState::Failed;
         let active = entry.is_active_direct().then_some(entry);
-        self.cells.insert(key, Cell { stamp, active });
+        self.cells.insert(key, Cell { stamp, active, failed });
         Ok(())
     }
 
@@ -389,6 +393,14 @@ impl ConnectionsHeld {
     pub fn holds_direct_fact_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> bool {
         let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
         self.cells.contains_key(&key)
+    }
+
+    /// Whether the latest Direct fact `source -> destination` on `alpn` is Failed: the one state a
+    /// reconnect series stands on (connections.md section 9.1). `false` when none is held, and when
+    /// the latest is Connected, a drop (Disconnected) or an acceptor's Refused.
+    pub fn latest_direct_failed_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> bool {
+        let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
+        self.cells.get(&key).is_some_and(|c| c.failed)
     }
 
     /// Every active Direct fact on the default ALPN whose destination is `destination`, sorted by
@@ -555,11 +567,14 @@ pub fn resolve_for_carriers(
         // current one: the dial is the only thing to try.
         Some(Some(edge)) if held.names_superseded_destination(edge) => EffectiveRoute::Direct { known: false },
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
-        // No Direct fact was ever observed toward this destination: nothing says it is
-        // unreachable, so the node calls it by its transport key and address (connections.md §7).
-        Some(None) if !held.holds_direct_fact_for(own, destination, alpn) => EffectiveRoute::Direct { known: false },
-        // A Direct fact that stands but is not active (Failed or Disconnected): its reconnect
-        // series owns the retry, and no new call dials over it.
+        // No Direct fact was ever observed toward this destination, or the latest one is a drop
+        // (Disconnected: a connection this node closed, as node.connections.delete does at every
+        // node.stop and node.restart) or an acceptor's Refused: nothing says it is unreachable and
+        // no reconnect series stands on it (connections.md §9.1), so the node calls it by its
+        // transport key and address (§7).
+        Some(None) if !held.latest_direct_failed_for(own, destination, alpn) => EffectiveRoute::Direct { known: false },
+        // The latest Direct fact is Failed: its reconnect series owns the retry, and no new call
+        // dials over it.
         Some(None) => EffectiveRoute::NoActiveRoute,
         None => EffectiveRoute::Direct { known: false },
     };
