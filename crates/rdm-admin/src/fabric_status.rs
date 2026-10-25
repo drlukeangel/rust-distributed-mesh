@@ -402,9 +402,10 @@ impl FabricStates {
     /// A resize or an executable replacement puts the fabric back to pending: the accepted Build's topology is no longer
     /// the one the fabric changes under, so its planned births must check in again and the checklists
     /// run again. A new attempt of the same Build changes no topology and moves nothing here.
-    /// A Build whose request names, for a path, the executable that path's row already records is
-    /// neither: its topology, each path's executable resolved against the rows
-    /// ([`crate::accepted::same_on_the_rows`]), is the one the fabric changes under, which holds it.
+    /// A Build whose request names, for a path, the executable that path's row already records, or changes
+    /// only a held path's storage, placement or tags, is neither: its paths, and each path's executable
+    /// resolved against the rows ([`crate::accepted::same_on_the_rows`]), are the ones the fabric changes
+    /// under, which holds it.
     /// Returns whether the fabric was put back; the move waits until the state it leaves went out.
     async fn resized(&self, change: &mut Change, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
         match &change.tracked {
@@ -422,7 +423,7 @@ impl FabricStates {
             Some(held) if *held != build.topology => {
                 if self.same_on_the_rows(held, &build.topology).await {
                     tracing::info_span!("rdm.node_admin.fabric.update.via-executables-recorded", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), attempt = build.attempt, state = self.env.records.fabric_state().as_str(), "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the Build names, for each path, the executable its row records: no resize and no executable replacement, and the fabric stays where it is"));
+                        .in_scope(|| tracing::info!("the Build holds the same paths, each on the executable its row records: no resize and no executable replacement, and the fabric stays where it is"));
                     change.tracked = Some(build.topology.clone());
                     change.tracked_build = Some(build.build_id.clone());
                     return false;
@@ -494,8 +495,8 @@ impl FabricStates {
         }
     }
 
-    /// Whether `next` is `held` with each path's executable resolved against what the node rows record
-    /// ([`crate::accepted::same_on_the_rows`]). Rows this admin cannot read hold nothing: the two differ.
+    /// Whether `next` holds `held`'s paths with each path's executable resolved against what the node rows
+    /// record ([`crate::accepted::same_on_the_rows`]). Rows this admin cannot read hold nothing: the two differ.
     async fn same_on_the_rows(&self, held: &FabricTopology, next: &FabricTopology) -> bool {
         let Some(rows) = self.env.records.contacts.get() else {
             return false;
@@ -2302,8 +2303,6 @@ mod tests {
         ToPending,
         /// Neither: the fabric stays ready-for-traffic.
         Stays,
-        /// No page names it: the row records what the fabric did and asserts nothing about it.
-        Unpaged,
     }
 
     /// CONTRACT (states.md "Resize and executable replacement": "A resize or an executable replacement puts the
@@ -2317,9 +2316,10 @@ mod tests {
     /// unchanged request, a tags-only and a placement-only request (`PlacementMeta` declares no constraint) are
     /// neither a resize nor a replacement: the fabric stays ready-for-traffic. A path added or removed (a
     /// resize) and another executable (a replacement, the Day-0 admin's included) put it back to pending. A
-    /// storage-only change of a held path is named by no page: its row records what happened. Must NOT
-    /// happen: a request naming what a node already runs reset the fabric to pending for a Build with nothing
-    /// to do (Rafka 141).
+    /// storage-only change of a held path is neither (proposal executable-bindings-at-create.md rule 5: a
+    /// storage or placement change re-births a path only "with its executable"): the fabric stays
+    /// ready-for-traffic. Must NOT happen: a request naming what a node already runs, or changing only a
+    /// held path's storage, reset the fabric to pending for a Build with nothing to do (Rafka 141).
     #[tokio::test]
     async fn a_reconcile_puts_the_fabric_back_to_pending_only_for_a_resize_or_an_executable_replacement() {
         use crate::accepted::{compile_against, MeshTopology, Recorded, RecordedRow, TopologyChange};
@@ -2358,7 +2358,7 @@ mod tests {
                 r.push(("mesh1.rpc.2".parse().unwrap(), c));
             }, Back::ToPending),
             ("a removed path (a resize)", None, |r| r.retain(|(p, _)| p.to_string() != "mesh1.rpc.1"), Back::ToPending),
-            ("storage only", None, |r| at(r, "mesh1.rpc.1").storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, Back::Unpaged),
+            ("storage only", None, |r| at(r, "mesh1.rpc.1").storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, Back::Stays),
         ];
         let mut red = Vec::new();
         for (what, admin_entry, edit, want) in rows {
@@ -2408,10 +2408,8 @@ mod tests {
                     continue;
                 }
             };
-            match want {
-                Back::Unpaged => eprintln!("reconcile matrix, {what}: no page names it; the fabric {got:?} (the compiled topology {} the accepted one)", if changed { "differs from" } else { "is" }),
-                want if want != got => red.push(format!("{what}: the pages say {want:?}, the fabric {got:?} (the compiled topology {} the accepted one)", if changed { "differs from" } else { "is" })),
-                _ => {}
+            if want != got {
+                red.push(format!("{what}: the pages say {want:?}, the fabric {got:?} (the compiled topology {} the accepted one)", if changed { "differs from" } else { "is" }));
             }
         }
         assert!(red.is_empty(), "Reconcile variant rows that differ from the pages:\n  {}", red.join("\n  "));

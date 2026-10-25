@@ -20,8 +20,9 @@
 //! Every row (states.md "Resize and executable replacement"; Q154, Q158): the Build is Complete within
 //! the bound and the fabric holds ready-for-traffic after it; a resize or a replacement puts the fabric
 //! back to pending at its acceptance, and a request that is neither (the same executables, the unchanged
-//! request, tags only) leaves it ready-for-traffic, read from the `via-state-reset` spans. A storage-only
-//! change of a held path is named by no page: its row records what the fabric did. Must NOT happen: a
+//! request, tags only, storage only: proposal executable-bindings-at-create.md rule 5 re-births a path
+//! for a storage or placement change only "with its executable") leaves it ready-for-traffic, read from
+//! the `via-state-reset` spans. Must NOT happen: a
 //! Build never Complete (Pending at attempt 1 with no step) after a request that changed nothing the
 //! fabric runs (Rafka 141).
 
@@ -44,7 +45,6 @@ fn owner(test: &str, rung: &str) -> Owner {
 enum Back {
     ToPending,
     Stays,
-    Unpaged,
 }
 
 /// The request a caller builds from the current read: every path of the current Build's accepted
@@ -103,7 +103,7 @@ async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request
 }
 
 /// After the estate stopped: each row's Build put the fabric back to pending (a `via-state-reset` span
-/// naming it) exactly when the pages say; an unpaged row's outcome is recorded as an artifact.
+/// naming it) exactly when the pages say; every row's outcome is recorded as an artifact.
 fn resets_as_the_pages_say(estate: &Estate, rows: &[(String, String, Back)]) {
     let spans = estate.spans();
     let reset = |id: &str| spans.iter().any(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-reset" && sp["attributes"]["build_id"] == id);
@@ -112,7 +112,7 @@ fn resets_as_the_pages_say(estate: &Estate, rows: &[(String, String, Back)]) {
     for (what, id, back) in rows {
         let got = if reset(id) { Back::ToPending } else { Back::Stays };
         seen.push(json!({ "variant": what, "build_id": id, "pages": format!("{back:?}"), "fabric": format!("{got:?}") }));
-        if *back != Back::Unpaged && *back != got {
+        if *back != got {
             red.push(format!("{what} (Build {id}): the pages say {back:?}, the fabric {got:?}"));
         }
     }
@@ -131,7 +131,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
 
     let (based_on, mut r, _) = verbatim(estate).await;
     at(&mut r, &rpc1).storage = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
-    row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Unpaged, rows).await;
+    row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Stays, rows).await;
 
     let (based_on, mut r, _) = verbatim(estate).await;
     r.push((rpc2.parse().unwrap(), rdm_test::executables::created_config(NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode))));

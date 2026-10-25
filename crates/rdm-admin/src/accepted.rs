@@ -820,22 +820,21 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, topol
     Ok(out)
 }
 
-/// Whether `next` is the topology `held` is, each path's executable resolved against what its live row
-/// records (`recorded`): an entry that names an executable runs it, one that names none runs what its row
-/// records. The two hold the same paths with the same configs, and at every path the same executable
-/// (by sha256, as a replacement is planned: [`paths_owed_replacement`]). An entry that names the
-/// executable its row already records is no executable replacement, and no resize (states.md "Resize
-/// and executable replacement"); an entry naming another one is, and so is a path added or removed.
+/// Whether `next` is neither a resize nor an executable replacement of `held` (states.md "Resize and
+/// executable replacement"), each path's executable resolved against what its live row records
+/// (`recorded`): an entry that names an executable runs it, one that names none runs what its row records.
+/// The two hold the same meshes (by name and id) with the same paths, and at every path the same
+/// executable (by sha256, as a replacement is planned: [`paths_owed_replacement`]). An entry that names
+/// the executable its row already records is no executable replacement; an entry naming another one is,
+/// and a path or mesh added or removed is a resize. A path's storage, placement and tags are neither: a
+/// storage or placement change re-births a path only with its executable (proposal
+/// executable-bindings-at-create.md rule 5), so a request changing only those leaves the fabric where it is.
 pub fn same_on_the_rows(held: &FabricTopology, next: &FabricTopology, recorded: &Recorded) -> bool {
-    let unnamed = |t: &FabricTopology| {
-        let mut t = t.clone();
-        for c in t.meshes.values_mut().flat_map(|m| m.path_config_by_path.values_mut()) {
-            c.executable = None;
-        }
-        t
-    };
+    fn paths(t: &FabricTopology) -> Vec<(&str, &MeshId, &BTreeSet<PathName>)> {
+        t.meshes.iter().map(|(name, m)| (name.as_str(), &m.mesh_id, &m.nodes)).collect()
+    }
     let runs = |t: &FabricTopology, p: &PathName| target_executable(t, p).map(|b| b.sha256.clone()).or_else(|| recorded.get(p).and_then(|r| r.sha256.clone()));
-    unnamed(held) == unnamed(next) && next.meshes.values().flat_map(|m| m.nodes.iter()).all(|p| runs(held, p) == runs(next, p))
+    paths(held) == paths(next) && next.meshes.values().flat_map(|m| m.nodes.iter()).all(|p| runs(held, p) == runs(next, p))
 }
 
 /// The members of `topology` whose live row does not record the sha256 of the executable their entry
