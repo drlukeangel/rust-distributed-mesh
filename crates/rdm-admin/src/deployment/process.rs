@@ -444,8 +444,9 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
 enum OnDisk {
     /// The record names this launch and its process runs: its pid and start token.
     Running(u32, Option<u64>),
-    /// The record names this launch and its process is gone (or the pid names another process now).
-    Exited,
+    /// The record names this launch and its process is gone (or the pid names another process now):
+    /// the pid and start token the record names.
+    Exited(u32, Option<u64>),
     /// No record names this launch: none was written, or it names another launch.
     NeverLaunched,
 }
@@ -471,7 +472,7 @@ fn find_on_disk(spec: &ResolvedNodeLaunch) -> Result<OnDisk, DeployError> {
     let start = v.get("start").and_then(|s| s.as_u64());
     #[cfg(unix)]
     if !ProcessDeploymentProvider::runs(pid, &spec.executable) || start.is_some_and(|s| process_start_token(pid) != Some(s)) {
-        return Ok(OnDisk::Exited);
+        return Ok(OnDisk::Exited(pid, start));
     }
     Ok(OnDisk::Running(pid, start.or_else(|| process_start_token(pid))))
 }
@@ -556,7 +557,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         let owned = spec.clone();
         Ok(match crate::blocking::blocking_io(move || find_on_disk(&owned)).await? {
             OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
-            OnDisk::Exited => Found::Exited,
+            OnDisk::Exited(pid, start) => Found::Exited(Some(self.handle(spec.deployment_id.clone(), pid, start))),
             OnDisk::NeverLaunched => Found::NeverLaunched,
         })
     }
@@ -830,7 +831,7 @@ mod tests {
         assert_eq!(p.find(&spec).await.unwrap(), Found::Running(h.clone()), "its process runs");
         assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "the record names another launch");
         p.terminate(&h, TerminationMode::Immediate).await.unwrap();
-        assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "its process is gone");
+        assert!(matches!(p.find(&spec).await.unwrap(), Found::Exited(Some(_))), "its process is gone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -905,7 +906,7 @@ mod tests {
         let spec = ResolvedNodeLaunch { executable: dir.join("no-such-executable"), ..launch(&dir) };
         let refused = ProcessDeploymentProvider::new().spawn(&spec).await.expect_err("the executable does not exist");
         assert!(refused.to_string().contains("no-such-executable"), "{refused}");
-        assert_eq!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::Exited, "its record names a process that is gone");
+        assert!(matches!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::Exited(Some(_))), "its record names a process that is gone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

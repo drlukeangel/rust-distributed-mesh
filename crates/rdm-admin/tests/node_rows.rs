@@ -1038,7 +1038,7 @@ mod writer {
         }
         async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
             self.found.lock().unwrap().push(spec.deployment_id.clone());
-            Ok(if self.exited.lock().unwrap().as_ref() == Some(&spec.deployment_id) { rdm_admin::deployment::provider::Found::Exited } else { rdm_admin::deployment::provider::Found::NeverLaunched })
+            Ok(if self.exited.lock().unwrap().as_ref() == Some(&spec.deployment_id) { rdm_admin::deployment::provider::Found::Exited(None) } else { rdm_admin::deployment::provider::Found::NeverLaunched })
         }
     }
 
@@ -1484,7 +1484,7 @@ mod writer {
         assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
         assert_eq!(spawned.len(), 1, "{spawned:?}");
         assert_ne!(spawned[0].as_str(), deployment, "B launches a deployment of its own, never the lost executor's");
-        assert_eq!(after.unwrap(), rdm_admin::deployment::provider::Found::Exited, "A's process was stopped through its record");
+        assert!(matches!(after.unwrap(), rdm_admin::deployment::provider::Found::Exited(_)), "A's process was stopped through its record");
         let stopped = cap.spans_named("rdm.node_admin.deployment.reject.via-lost-executor");
         assert_eq!(stopped.iter().map(|s| s["attributes"]["deployment_id"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>(), vec![deployment.clone()], "{stopped:#?}");
         eprintln!("trace {}: via-claimed-allocation node_id={x} outcome=launched-by-lost-executor; via-lost-executor deployment_id={deployment} pid={}", settled[0]["trace_id"].as_str().unwrap_or(""), handle.pid.unwrap());

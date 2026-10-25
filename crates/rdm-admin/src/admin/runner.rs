@@ -453,6 +453,9 @@ impl AdminRunner {
             Err(e) => {
                 return match self.claimed_launch(node, &incarnation).await {
                     Ok(Some((crate::deployment::provider::Found::Running(handle), record))) => Ok((record, handle)),
+                    // An exited launch with its exact handle: the delete inspects that runtime and its
+                    // Exited is the exit proof (node-delete.md "Crashed target", "Terminal event").
+                    Ok(Some((crate::deployment::provider::Found::Exited(Some(handle)), record))) => Ok((record, handle)),
                     Ok(Some((found, _))) => Err(format!("{e}; the launch its create's claim records is {}, so no runtime of it runs", found.name())),
                     Ok(None) => Err(e),
                     Err(why) => Err(format!("{e}; {why}")),

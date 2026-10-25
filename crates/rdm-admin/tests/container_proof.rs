@@ -111,9 +111,9 @@ async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_la
     assert_eq!(p.find(&spec).await.unwrap(), Found::Running(h.clone()), "its container runs");
     p.terminate(&h, TerminationMode::Immediate).await.expect("terminate the launch");
     assert_eq!(daemon_state(&container_id(&h)), "absent", "terminate removes the container");
-    assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "the launch ran and its container is gone: exited");
+    assert!(matches!(p.find(&spec).await.unwrap(), Found::Exited(_)), "the launch ran and its container is gone: exited");
     let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
-    assert_eq!(fresh.find(&spec).await.unwrap(), Found::Exited, "a provider of the same domain that never saw the launch proves it exited too");
+    assert!(matches!(fresh.find(&spec).await.unwrap(), Found::Exited(_)), "a provider of the same domain that never saw the launch proves it exited too");
     assert_eq!(fresh.find(&never).await.unwrap(), Found::NeverLaunched);
 }
 
@@ -158,9 +158,9 @@ async fn a_launch_whose_container_is_never_created_leaves_a_record_that_reads_ex
     let refused = p.spawn(&spec).await.expect_err("docker cannot place an address outside the fabric network");
     let listed = std::process::Command::new("docker").args(["ps", "-aq", "--filter", &format!("label=rafka.fabric={fabric}")]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "", "no container of the fabric exists after {refused}");
-    assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "the launch's record names it and no container is left");
+    assert!(matches!(p.find(&spec).await.unwrap(), Found::Exited(_)), "the launch's record names it and no container is left");
     let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
-    assert_eq!(fresh.find(&spec).await.unwrap(), Found::Exited, "a provider of the same domain that never saw the launch reads the same record");
+    assert!(matches!(fresh.find(&spec).await.unwrap(), Found::Exited(_)), "a provider of the same domain that never saw the launch reads the same record");
     assert_eq!(fresh.find(&launch(&p, &fabric, 1)).await.unwrap(), Found::NeverLaunched, "another launch has no record");
 }
 

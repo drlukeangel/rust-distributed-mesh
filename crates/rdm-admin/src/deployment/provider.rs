@@ -125,8 +125,9 @@ pub struct ResolvedNodeLaunch {
 pub enum Found {
     /// The launch's runtime runs: its exact handle.
     Running(DeploymentHandle),
-    /// The launch started a runtime, and that runtime has exited.
-    Exited,
+    /// The launch started a runtime, and that runtime has exited: its exact handle when the launch
+    /// record names one, so a successor's delete inspects that exact runtime for its exit proof.
+    Exited(Option<DeploymentHandle>),
     /// No runtime of the launch was ever started in this provider's control domain.
     NeverLaunched,
 }
@@ -136,7 +137,7 @@ impl Found {
     pub fn running(self) -> Option<DeploymentHandle> {
         match self {
             Found::Running(h) => Some(h),
-            Found::Exited | Found::NeverLaunched => None,
+            Found::Exited(_) | Found::NeverLaunched => None,
         }
     }
 
@@ -144,7 +145,7 @@ impl Found {
     pub fn name(&self) -> &'static str {
         match self {
             Found::Running(_) => "running",
-            Found::Exited => "exited",
+            Found::Exited(_) => "exited",
             Found::NeverLaunched => "never-launched",
         }
     }

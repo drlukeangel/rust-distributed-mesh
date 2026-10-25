@@ -481,7 +481,7 @@ impl ContainerDeploymentProvider {
             Err(e) if inspect_says_absent(&e) => {
                 let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
                 return match crate::blocking::blocking_io(move || recorded_launch(&dir, &deployment)).await.map_err(named)? {
-                    true => Ok(Found::Exited),
+                    true => Ok(Found::Exited(None)),
                     false => Ok(Found::NeverLaunched),
                 };
             }
@@ -493,7 +493,7 @@ impl ContainerDeploymentProvider {
         };
         match container_launch(status).map_err(named)? {
             ContainerLaunch::Running => {}
-            ContainerLaunch::Exited => return Ok(Found::Exited),
+            ContainerLaunch::Exited => return Ok(Found::Exited(None)),
             ContainerLaunch::NeverStarted => return Ok(Found::NeverLaunched),
         }
         let id = id.to_string();

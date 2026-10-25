@@ -232,7 +232,7 @@ impl DeploymentProvider for Fleet {
         use rdm_admin::deployment::provider::Found;
         Ok(match self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id) {
             Some(s) if self.running(s.pid) => Found::Running(s.handle.clone()),
-            Some(_) => Found::Exited,
+            Some(_) => Found::Exited(None),
             None => Found::NeverLaunched,
         })
     }

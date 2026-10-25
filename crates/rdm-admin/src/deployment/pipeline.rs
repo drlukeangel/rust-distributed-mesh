@@ -1533,7 +1533,7 @@ impl DeploymentPipeline<'_> {
             detail = tracing::field::Empty,
         );
         match self.provider.find(&spec).instrument(span.clone()).await {
-            Ok(Found::Exited) => {
+            Ok(Found::Exited(_)) => {
                 span.record("outcome", "launched-exited");
                 span.in_scope(|| tracing::info!("the claim names a birth this operation allocated whose deployment the provider proves was launched and has exited: the birth is decided afresh"));
                 rows.withdraw(&req.node, &identity.node_id, &run.operation, "the birth its claim names was launched by a lost executor and has exited: a fresh birth claims the name").await;
