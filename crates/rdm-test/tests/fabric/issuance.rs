@@ -93,7 +93,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let issued = named(&spans, "rdm.node_admin.cert.create.via-join");
     for node in ["mesh1.rpc.1", "mesh2.rpc.1"] {
         let held = held_by(&spans, node);
-        // The process holds the cert its birth was issued at its first join.
+        // The process holds a cert its birth was issued at a join.
         assert_eq!(held.len(), 1, "{node} booted once: {held:?}");
         let (inc, cert) = &held[0];
         let view = views.iter().find(|v| v.name.to_string() == node).expect("the node is in the view");
@@ -102,13 +102,19 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
             (node.to_string(), node.split('.').next().unwrap(), view.node_id.to_string(), inc.clone()),
             "the cert names the birth that holds it"
         );
-        let first_issue = issued
+        // Every JoinNode issues a fresh member cert (fabric-certs.md, When a cert is issued): a join the
+        // admin served again for the same birth (a resend under load) issues another, and the process
+        // holds the one its last answered join carried. The held cert is one this birth was issued.
+        let joins: Vec<&serde_json::Value> = issued
             .iter()
             .filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["incarnation_id"] == inc.as_str() && sp["attributes"]["outcome"] == "issued")
-            .min_by_key(|sp| s_u64(&sp["attributes"]["issued_at_rafka_ms"]))
-            .unwrap_or_else(|| panic!("no issuance span for {node} {inc}"));
-        assert_eq!(s_u64(&first_issue["attributes"]["expires_at_rafka_ms"]), cert.cert.expiry_ms, "the process holds the cert of its first join: {first_issue}");
-        let at = s_u64(&first_issue["attributes"]["issued_at_rafka_ms"]);
+            .collect();
+        assert!(!joins.is_empty(), "no issuance span for {node} {inc}");
+        let held_issue = joins
+            .iter()
+            .find(|sp| s_u64(&sp["attributes"]["expires_at_rafka_ms"]) == cert.cert.expiry_ms)
+            .unwrap_or_else(|| panic!("the process holds a cert its birth was issued at one of its joins: {} expiring {}, issued {joins:?}", cert.cert.name, cert.cert.expiry_ms));
+        let at = s_u64(&held_issue["attributes"]["issued_at_rafka_ms"]);
         assert_eq!(certs::verify(cert, &[root], at, 0), Ok(()), "{node}'s cert verifies to its issuer, the issuer to the fabric CA and the CA to the root");
         assert_eq!(cert.issuer.cert.mesh, node.split('.').next().unwrap(), "signed by its own mesh's issuer");
     }
