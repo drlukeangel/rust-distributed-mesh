@@ -16,7 +16,7 @@ This page covers:
 The contract is in these pages; this runbook only reads them for the person on call:
 - [fabric-recovery.md "Nothing alive"](../architecture/lifecycles/fabric-recovery.md#nothing-alive), Q156;
 - [node-admin-lifecycle.md §4.4](../architecture/node-admin-lifecycle.md#44-fabric-primary-recovery-and-who-starts-it);
-- [node-recovery.md](../architecture/lifecycles/node-recovery.md) for the members.
+- [node-recovery.md](../architecture/lifecycles/node-recovery.md) for the mesh's other nodes.
 
 The end-to-end cell is
 `elections::fabric_takeover::the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name_that_becomes_fabric_primary`
@@ -53,7 +53,7 @@ Do not set:
 - `RDM_NODE_ID`, `RDM_INCARNATION_ID` or `RDM_LAUNCHER`: an adoption launch has no launcher.
 - `RDM_MESH_PRIMARY` or `RDM_FABRIC_PRIMARY`: the role comes from the recorded primaries and the
   restore, never from a flag, and either flag is refused by name.
-- `RDM_SEEDS`: the members are read from the store.
+- `RDM_SEEDS`: the mesh's nodes are read from the store.
 
 Once it serves, it prints `RDM_NODE_ADMIN_API_BASE=rdm://<node id>`, with a new node id. Enter the
 fabric there.
@@ -73,14 +73,14 @@ Nothing more is commanded. In order:
    attempt closes through the failure path.
 4. **Releases the lost birth's name** and re-creates the birth as itself: same path.name, new node.id
    and incarnation, and its own member cert as its own maker.
-5. **Joins the live members** and adopts rafka-time from them. With no member alive, its own clock is
+5. **Joins the live nodes** and adopts rafka-time from them. With no other node alive, its own clock is
    rafka-time.
 6. **Becomes fabric-primary and mesh-primary.** Once it is ReadyForTraffic, step 4 of fabric
    recovery restores it to both roles, and the attempt completes.
 7. **Heals the mesh by itself**, as mesh-primary:
-   - A member that kept serving keeps its birth (node.id and incarnation) and stays
+   - A node that kept serving keeps its birth (node.id and incarnation) and stays
      ready-for-traffic. It is never re-created.
-   - A member that is gone is recovered through node recovery, never waited for: node.delete of the
+   - A node that is gone is recovered through node recovery, never waited for: node.delete of the
      exited birth, then node.create at the same path.name with a new node.id, over the inherited
      data dir when the provider found the runtime exited.
    - An old process on an inherited data dir that comes back is refused at admission, and its
@@ -93,8 +93,8 @@ Nothing more is commanded. In order:
 |---|---|
 | `rdm.node_admin.fabric.update.via-adoption-claim` | the claim; `outcome=won` and `lost_node_id` = the lost birth |
 | `rdm.node_admin.node.delete.via-node-row` with the lost `node_id` | the lost birth's name released, after the claim |
-| `rdm.mesh.entry.update.via-rafka-time-adopted` with `source=pull` | rafka-time adopted from a live member |
-| `rdm.node_rpc.status.update.via-declare-own` from the members | each serving member stays ready-for-traffic |
+| `rdm.mesh.entry.update.via-rafka-time-adopted` with `source=pull` | rafka-time adopted from a live node |
+| `rdm.node_rpc.status.update.via-declare-own` from the mesh's other nodes | each serving node stays ready-for-traffic |
 
 `node.get` on the new node-admin then shows `is_fabric_primary` and `is_primary`.
 
